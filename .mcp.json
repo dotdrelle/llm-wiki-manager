@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "cme": {
+      "type": "http",
+      "url": "http://localhost:3000/mcp/"
+    },
+    "llm-wiki": {
+      "type": "http",
+      "url": "http://localhost:3101/mcp"
+    }
+  }
+}

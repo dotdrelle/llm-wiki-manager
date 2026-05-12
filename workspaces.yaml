@@ -1,0 +1,18 @@
+# Root cockpit mapping for llm-wiki workspaces.
+# Adjust paths and ports for each workspace you want to pilot from this root.
+# `imports` is optional. If omitted or empty, `copy` copies nothing.
+
+workspaces:
+  webiaa:
+    path: /Users/dotdrelle/claude-llm-webiaa
+    servePort: 3200
+    mcpPort: 3201
+    # Optional explicit export directories to copy into this wiki workspace raw/untracked.
+    # imports:
+    #   - ../agent-cme/data/exports/export-directory
+  juno:
+    path: /Users/dotdrelle/claude-llm-wiki
+    servePort: 3100
+    mcpPort: 3101
+    imports:
+       - /Users/dotdrelle/Developpement/wikiLLM/agent-cme/data/exports/Jouvence de la chaîne de prévision production outre-mer

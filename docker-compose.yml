@@ -1,0 +1,85 @@
+# docker-compose.yml — llm-wiki-manager cockpit stack
+#
+# This compose file is driven by ./wiki-workspace. It can run:
+#   - one shared agent-cme MCP server
+#   - one llm-wiki serve + mcp-http pair per configured workspace
+#
+# Typical usage:
+#   ./wiki-workspace list
+#   ./wiki-workspace cme up
+#   ./wiki-workspace wiki <workspace> init
+#   ./wiki-workspace wiki <workspace> up
+#   ./wiki-workspace wiki <workspace> doctor
+#   ./wiki-workspace wiki <workspace> ingest
+#
+# OpenWebUI / MCP endpoints use the ports declared in workspaces.yaml.
+# agent-cme defaults to http://localhost:3000/mcp/
+
+services:
+
+  # ── llm-wiki ──────────────────────────────────────────────────────────────
+
+  wiki:
+    image: dotdrelle/llm-wiki:latest
+    profiles: [cli]
+    volumes:
+      - ${WIKI_WORKSPACE:?Set WIKI_WORKSPACE to an initialized llm-wiki workspace}:/workspace
+    environment:
+      - OPENAI_API_KEY
+      - ANTHROPIC_API_KEY
+    extra_hosts:
+      - host.docker.internal:host-gateway
+
+  serve:
+    image: dotdrelle/llm-wiki:latest
+    command: serve --port 3000
+    volumes:
+      - ${WIKI_WORKSPACE:?Set WIKI_WORKSPACE to an initialized llm-wiki workspace}:/workspace
+    environment:
+      - OPENAI_API_KEY
+      - ANTHROPIC_API_KEY
+    ports:
+      - '${WIKI_SERVE_PORT:-3100}:3000'
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    restart: unless-stopped
+
+  mcp-http:
+    image: dotdrelle/llm-wiki:latest
+    command: mcp-http --host 0.0.0.0 --port 3333 --path /mcp
+    volumes:
+      - ${WIKI_WORKSPACE:?Set WIKI_WORKSPACE to an initialized llm-wiki workspace}:/workspace
+      #- ${WIKI_CERTS:-./certs}:/certs:ro
+    environment:
+      - WIKI_MCP_ACCESS_KEY
+      #- WIKI_MCP_TLS_CERT_PATH
+      #- WIKI_MCP_TLS_KEY_PATH
+      #- WIKI_MCP_TLS_CA_PATH
+    ports:
+      - '${WIKI_MCP_HTTP_PORT:-3101}:3333'
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    restart: unless-stopped
+
+  # ── agent-cme ──────────────────────────────────────────────────────────────
+
+  cme-mcp:
+    image: dotdrelle/agent-cme:latest
+    environment:
+      - MCP_AUTH_TOKEN
+      - CME_EXPORT__OUTPUT_PATH=/data/exports
+    volumes:
+      - ../agent-cme/data:/data
+    ports:
+      - '${CME_MCP_PORT:-3000}:8080'
+    restart: unless-stopped
+
+  cme-cli:
+    image: dotdrelle/agent-cme:latest
+    profiles: [cli]
+    entrypoint: cme
+    environment:
+      - CME_CONFIG_PATH=/data/cme/app_data.json
+      - CME_EXPORT__OUTPUT_PATH=/data/exports
+    volumes:
+      - ../agent-cme/data:/data

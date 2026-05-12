@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${WIKI_WORKSPACES_FILE:-$ROOT_DIR/workspaces.yaml}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./wiki-workspace wiki <workspace> <command> [args...]
+  ./wiki-workspace list
+  ./wiki-workspace cme <up|down|logs>
+
+Commands:
+  list                              List configured workspaces
+  cme up                            Start the shared agent-cme MCP server
+  cme down                          Stop the shared agent-cme MCP server
+  cme logs                          Show agent-cme MCP logs
+  wiki <workspace> init             Initialize the workspace with wiki init
+  wiki <workspace> up               Start llm-wiki serve + mcp-http for this workspace
+  wiki <workspace> down             Stop serve + mcp-http for this workspace
+  wiki <workspace> doctor           Run wiki doctor
+  wiki <workspace> copy             Copy agent-cme exports into raw/untracked
+  wiki <workspace> ingest           Run wiki ingest
+  wiki <workspace> build            Run wiki build
+  wiki <workspace> export           Run wiki export
+  wiki <workspace> run <args...>    Run arbitrary wiki CLI args
+
+Configuration:
+  workspaces.yaml at repository root, or WIKI_WORKSPACES_FILE=/path/to/file.
+EOF
+}
+
+die() {
+  printf 'Error: %s\n' "$*" >&2
+  exit 1
+}
+
+normalize_path() {
+  local value="$1"
+  if command -v wslpath >/dev/null 2>&1 && [[ "$value" =~ ^[A-Za-z]:[\\/] ]]; then
+    wslpath -u "$value"
+    return
+  fi
+  printf '%s\n' "$value"
+}
+
+absolute_path() {
+  local value="$1"
+  value="$(normalize_path "$value")"
+  if [[ "$value" = /* ]]; then
+    printf '%s\n' "$value"
+  else
+    printf '%s\n' "$ROOT_DIR/$value"
+  fi
+}
+
+need_config() {
+  [[ -f "$CONFIG_FILE" ]] || die "missing config file: $CONFIG_FILE"
+}
+
+yaml_value() {
+  local workspace="$1"
+  local expr="$2"
+  ruby -ryaml -e '
+    begin
+      file, workspace, expr = ARGV
+      data = YAML.load_file(file)
+      node = data.fetch("workspaces").fetch(workspace)
+      expr.split(".").each { |part| node = node.fetch(part) }
+      puts node
+    rescue KeyError => e
+      warn "missing workspaces.yaml value for workspace=#{workspace}: #{expr} (#{e.message})"
+      exit 1
+    end
+  ' "$CONFIG_FILE" "$workspace" "$expr"
+}
+
+list_workspaces() {
+  ruby -ryaml -e '
+    begin
+      file = ARGV.fetch(0)
+      data = YAML.load_file(file)
+      workspaces = data.fetch("workspaces")
+      workspaces.each do |name, ws|
+        path = ws["path"] || "-"
+        serve = ws["servePort"] || "-"
+        mcp = ws["mcpPort"] || "-"
+        imports = Array(ws["imports"]).length
+        puts "#{name}\tpath=#{path}\tserve=#{serve}\tmcp=#{mcp}\timports=#{imports}"
+      end
+    rescue KeyError => e
+      warn "missing workspaces.yaml value (#{e.message})"
+      exit 1
+    end
+  ' "$CONFIG_FILE"
+}
+
+import_paths() {
+  local workspace="$1"
+  ruby -ryaml -e '
+    begin
+      file, workspace = ARGV
+      data = YAML.load_file(file)
+      ws = data.fetch("workspaces").fetch(workspace)
+      imports = ws["imports"]
+      exit 0 if imports.nil?
+      Array(imports).each do |entry|
+        unless entry.is_a?(String)
+          warn "imports entries must be paths, got: #{entry.inspect}"
+          exit 1
+        end
+        puts entry
+      end
+    rescue KeyError => e
+      warn "missing imports for workspace=#{workspace} (#{e.message})"
+      exit 1
+    end
+  ' "$CONFIG_FILE" "$workspace"
+}
+
+compose_project() {
+  local workspace="$1"
+  printf 'wiki-%s' "$workspace" | tr -c '[:alnum:]_-' '-'
+}
+
+compose_for_workspace() {
+  local workspace="$1"
+  shift
+  local ws_path serve_port mcp_port project
+  ws_path="$(normalize_path "$(yaml_value "$workspace" path)")"
+  serve_port="$(yaml_value "$workspace" servePort)"
+  mcp_port="$(yaml_value "$workspace" mcpPort)"
+  project="$(compose_project "$workspace")"
+
+  WIKI_WORKSPACE="$ws_path" \
+  WIKI_SERVE_PORT="$serve_port" \
+  WIKI_MCP_HTTP_PORT="$mcp_port" \
+  docker compose -f "$ROOT_DIR/docker-compose.yml" -p "$project" "$@"
+}
+
+compose_for_cme() {
+  docker compose -f "$ROOT_DIR/docker-compose.yml" -p wikillm-cme "$@"
+}
+
+run_wiki() {
+  local workspace="$1"
+  shift
+  compose_for_workspace "$workspace" run --rm wiki "$@"
+}
+
+copy_one_export() {
+  local workspace="$1"
+  local export_path="$2"
+  local ws_path source_abs target_abs
+
+  ws_path="$(normalize_path "$(yaml_value "$workspace" path)")"
+
+  source_abs="$(absolute_path "$export_path")"
+  target_abs="$ws_path/raw/untracked"
+
+  [[ -d "$source_abs" ]] || die "export path is not a directory: $source_abs"
+  mkdir -p "$target_abs"
+
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --include='*/' --include='*.md' --exclude='*' "$source_abs/" "$target_abs/"
+  else
+    find "$source_abs" -type f -name '*.md' -print0 | while IFS= read -r -d '' file; do
+      rel="${file#"$source_abs"/}"
+      mkdir -p "$target_abs/$(dirname "$rel")"
+      cp "$file" "$target_abs/$rel"
+    done
+  fi
+
+  printf 'Copied %s -> %s\n' "$source_abs" "$target_abs"
+}
+
+copy_exports() {
+  local workspace="$1"
+  local count=0
+  local configured_imports=()
+  while IFS= read -r export_path; do
+    [[ -n "$export_path" ]] || continue
+    configured_imports+=("$export_path")
+  done < <(import_paths "$workspace")
+
+  if [[ "${#configured_imports[@]}" -eq 0 ]]; then
+    printf 'No imports configured for workspace: %s\n' "$workspace"
+    return 0
+  fi
+
+  for export_path in "${configured_imports[@]}"; do
+    copy_one_export "$workspace" "$export_path"
+    count=$((count + 1))
+  done
+}
+
+main() {
+  if [[ $# -eq 1 && "$1" =~ ^(-h|--help|help)$ ]]; then
+    usage
+    exit 0
+  fi
+
+  if [[ $# -eq 1 && "$1" == "list" ]]; then
+    need_config
+    list_workspaces
+    exit 0
+  fi
+
+  if [[ $# -ge 2 && "$1" == "cme" ]]; then
+    local cme_command="$2"
+    shift 2
+    case "$cme_command" in
+      up)
+        [[ $# -eq 0 ]] || die "cme up does not take arguments"
+        compose_for_cme up -d cme-mcp
+        ;;
+      down)
+        [[ $# -eq 0 ]] || die "cme down does not take arguments"
+        compose_for_cme stop cme-mcp
+        ;;
+      logs)
+        compose_for_cme logs "$@" cme-mcp
+        ;;
+      *)
+        die "unknown cme command: $cme_command"
+        ;;
+    esac
+    exit 0
+  fi
+
+  [[ $# -ge 2 ]] || { usage; exit 2; }
+  need_config
+
+  local scope="$1"
+  [[ "$scope" == "wiki" ]] || die "unknown scope: $scope (expected: wiki, cme, or list)"
+  shift
+  [[ $# -ge 2 ]] || die "wiki requires a workspace and a command"
+
+  local workspace="$1"
+  local command="$2"
+  shift 2
+
+  case "$command" in
+    init)
+      run_wiki "$workspace" init "$@"
+      ;;
+    up)
+      compose_for_workspace "$workspace" up -d serve mcp-http
+      ;;
+    down)
+      compose_for_workspace "$workspace" down
+      ;;
+    doctor|ingest|build|export)
+      run_wiki "$workspace" "$command" "$@"
+      ;;
+    copy)
+      [[ $# -eq 0 ]] || die "copy does not take an import name; it copies all configured exports for the workspace"
+      copy_exports "$workspace"
+      ;;
+    run)
+      [[ $# -gt 0 ]] || die "run requires wiki CLI args"
+      run_wiki "$workspace" "$@"
+      ;;
+    -h|--help|help)
+      usage
+      ;;
+    *)
+      die "unknown command: $command"
+      ;;
+  esac
+}
+
+main "$@"

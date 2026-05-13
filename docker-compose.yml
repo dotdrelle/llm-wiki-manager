@@ -23,7 +23,9 @@ services:
     image: dotdrelle/llm-wiki:latest
     profiles: [cli]
     volumes:
-      - ${WIKI_WORKSPACE:?Set WIKI_WORKSPACE to an initialized llm-wiki workspace}:/workspace
+      # Compose interpolates all services before applying profiles, so this
+      # cannot be a required variable without breaking cme-cli-only commands.
+      - ${WIKI_WORKSPACE:-/tmp/llm-wiki-workspace-not-set}:/workspace
     environment:
       - OPENAI_API_KEY
       - ANTHROPIC_API_KEY
@@ -34,7 +36,7 @@ services:
     image: dotdrelle/llm-wiki:latest
     command: serve --port 3000
     volumes:
-      - ${WIKI_WORKSPACE:?Set WIKI_WORKSPACE to an initialized llm-wiki workspace}:/workspace
+      - ${WIKI_WORKSPACE:-/tmp/llm-wiki-workspace-not-set}:/workspace
     environment:
       - OPENAI_API_KEY
       - ANTHROPIC_API_KEY
@@ -48,7 +50,7 @@ services:
     image: dotdrelle/llm-wiki:latest
     command: mcp-http --host 0.0.0.0 --port 3333 --path /mcp
     volumes:
-      - ${WIKI_WORKSPACE:?Set WIKI_WORKSPACE to an initialized llm-wiki workspace}:/workspace
+      - ${WIKI_WORKSPACE:-/tmp/llm-wiki-workspace-not-set}:/workspace
       #- ${WIKI_CERTS:-./certs}:/certs:ro
     environment:
       - WIKI_MCP_ACCESS_KEY

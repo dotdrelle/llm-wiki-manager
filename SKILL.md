@@ -1,6 +1,6 @@
 ---
 name: agent-cme-llm-wiki-copy
-description: Copy agent-cme Confluence exports into an llm-wiki workspace, using agent-cme MCP when available and shell/CLI fallback when needed. Use when the user wants to refresh Confluence data, copy agent-cme exports into WIKI_WORKSPACE raw/untracked, then run llm-wiki doctor, ingest, build, and export safely without duplicating secrets or forcing full reprocessing.
+description: Copy agent-cme Confluence exports into an llm-wiki workspace, using agent-cme MCP when available and shell/CLI fallback when needed. Use when the user wants to refresh Confluence data, copy configured agent-cme exports into a workspace raw/untracked directory, then run llm-wiki doctor, ingest, build, plan, and export safely without duplicating secrets or forcing full reprocessing.
 ---
 
 # agent-cme -> llm-wiki Copy
@@ -19,6 +19,7 @@ agent-cme is the exporter. llm-wiki is the importer/knowledge base. Do not make 
 - llm-wiki workspace receives markdown under `raw/untracked`.
 - `wiki ingest` transforms `raw/untracked` into `wiki/` content and archives sources to `raw/ingested`.
 - `mcp.accessKey` protects llm-wiki's own MCP server; it is not a generic key for every external MCP.
+- `limits.*` and `wiki build --plan` describe llm-wiki build request budgets; they do not throttle agent-cme exports.
 
 ## Preconditions
 
@@ -28,7 +29,7 @@ Find or confirm:
 - Target workspace name from `workspaces.yaml`.
 - Explicit import paths listed under `workspaces.<workspace>.imports`.
 
-If the workspace is not configured, ask the user for the workspace name, path, and ports before editing `workspaces.yaml`.
+If `workspaces.yaml` is missing, create it from `workspaces.example.yaml`. If the workspace is not configured, ask the user for the workspace name, path, and ports before editing the local `workspaces.yaml`.
 
 ## Preferred Workflow
 
@@ -93,6 +94,7 @@ Never add `--force` unless the user explicitly wants all sources reprocessed.
 6. Build configured deliverables.
 
 ```bash
+./wiki-workspace wiki <workspace> build --plan
 ./wiki-workspace wiki <workspace> build
 ```
 
@@ -155,6 +157,6 @@ If running in a desktop agent with only MCP access:
 
 This repository root can act as one autonomous workspace bundle: compose files, agent-cme data, llm-wiki workspace configuration, and this copy workflow live together.
 
-For several workspaces, prefer one manager root with one `workspaces.yaml`, one compose file, and unique ports per workspace. Do not invent `.env` examples unless those files already exist in the current workspace.
+For several workspaces, prefer one manager root with one local `workspaces.yaml`, one compose file, and unique ports per workspace. Do not invent `.env` examples unless those files already exist in the current workspace.
 
 agent-cme may be shared, but a workspace can also carry its own agent-cme instance if it needs isolated credentials, exports, or ports.

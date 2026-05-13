@@ -2,13 +2,23 @@
 
 Root cockpit for running several `llm-wiki` workspaces and one shared `agent-cme` exporter from a single place.
 
+This repository is part of a three-repository toolchain:
+
+| Repository | Role |
+| ---------- | ---- |
+| [`llm-wiki`](https://github.com/dotdrelle/llm-wiki) | Workspace engine: CLI, web UI, MCP server, retrieval, and deliverable builder |
+| [`llm-wiki-manager`](https://github.com/dotdrelle/llm-wiki-manager) | Multi-workspace Docker orchestration and copy pipeline |
+| [`AgentCME`](https://github.com/dotdrelle/AgentCME) | Confluence Markdown exporter exposed over MCP |
+
+Each repository can be used separately. Together, they provide the intended Confluence -> Markdown export -> wiki ingest -> deliverable build flow.
+
 This directory does not contain wiki data. It contains the orchestration layer:
 
 ```text
 llm-wiki-manager/
 ├── docker-compose.yml   # shared agent-cme + per-workspace llm-wiki services
 ├── wiki-workspace       # wrapper around docker compose
-├── workspaces.yaml      # workspace names, paths, ports, and copy inputs
+├── workspaces.example.yaml # template for workspace names, paths, ports, and copy inputs
 ├── SKILL.md             # agent workflow for agent-cme -> llm-wiki copy + ingest
 └── .mcp.json            # local MCP client example
 ```
@@ -22,7 +32,11 @@ The sibling repositories provide the actual services:
 
 ## Configure Workspaces
 
-Edit `workspaces.yaml`:
+Create a local `workspaces.yaml` from the example, then edit it:
+
+```bash
+cp workspaces.example.yaml workspaces.yaml
+```
 
 ```yaml
 workspaces:
@@ -38,6 +52,18 @@ workspaces:
 
 Paths may be absolute or relative to `llm-wiki-manager`. On WSL, Windows-style paths are converted with `wslpath` when available.
 
+`workspaces.yaml` is intentionally ignored by Git because it usually contains local paths and workspace names. Commit only `workspaces.example.yaml`.
+
+The manager exports these values to Docker Compose for the selected workspace:
+
+| `workspaces.yaml` key | Compose variable | Purpose |
+| --------------------- | ---------------- | ------- |
+| `path` | `WIKI_WORKSPACE` | Host workspace mounted at `/workspace` in `llm-wiki` containers |
+| `servePort` | `WIKI_SERVE_PORT` | Host port for `wiki serve` |
+| `mcpPort` | `WIKI_MCP_HTTP_PORT` | Host port for `wiki mcp-http` |
+
+Do not create per-workspace `docker-compose.yml` files. `wiki init` creates workspace content and `.wikirc.yaml`; this manager owns Docker orchestration.
+
 ## Commands
 
 List configured workspaces:
@@ -51,6 +77,8 @@ Start the shared `agent-cme` MCP server:
 ```bash
 ./wiki-workspace cme up
 ```
+
+The endpoint is `http://localhost:3000/mcp/` unless `CME_MCP_PORT` is set.
 
 Start one workspace UI and MCP endpoint:
 
@@ -79,6 +107,12 @@ Run the normal llm-wiki pipeline:
 ./wiki-workspace wiki my-workspace export
 ```
 
+Inspect planned build calls before generation:
+
+```bash
+./wiki-workspace wiki my-workspace build --plan
+```
+
 Run any other `wiki` command:
 
 ```bash
@@ -100,7 +134,7 @@ workspaces:
     mcpPort: 3201
 ```
 
-`agent-cme` is shared by default on `http://localhost:3000/mcp/`.
+`agent-cme` is shared by default on `http://localhost:3000/mcp/`. Workspace MCP servers use each workspace's `mcpPort` and point to `wiki mcp-http`, not to `agent-cme`.
 
 ## Data Flow
 
@@ -113,6 +147,8 @@ Confluence
 ```
 
 The copy step only copies Markdown files. Attachments are not copied into `raw/untracked`.
+
+`agent-cme` writes exports under `../agent-cme/data/exports/`. `./wiki-workspace wiki <workspace> copy` copies only the export directories explicitly listed in `workspaces.yaml`; it never scans all exports automatically.
 
 ## Git Scope
 

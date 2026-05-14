@@ -42,6 +42,8 @@ services:
       - ANTHROPIC_API_KEY
       - WIKI_MCP_HTTP_PORT
       - CME_MCP_PORT
+      - WIKI_MCP_PROXY_URL=http://mcp-http:3333/mcp
+      - CME_MCP_PROXY_URL=http://cme-mcp:8080/mcp/
     ports:
       - '${WIKI_SERVE_PORT:-3100}:3000'
     extra_hosts:

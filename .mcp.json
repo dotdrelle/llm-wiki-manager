@@ -1,12 +1,28 @@
 {
   "mcpServers": {
-    "cme": {
-      "type": "http",
-      "url": "http://localhost:3000/mcp/"
+    "agent-cme-wiki": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote@latest",
+        "http://localhost:3000/mcp",
+        "--allow-http",
+        "--transport",
+        "http-only"
+      ]
     },
     "llm-wiki": {
-      "type": "http",
-      "url": "http://localhost:3101/mcp"
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote@latest",
+        "http://localhost:3101/mcp",
+        "--allow-http",
+        "--transport",
+        "http-only",
+        "--header",
+        "Authorization: Bearer dotdrelle"
+      ]
     }
   }
 }

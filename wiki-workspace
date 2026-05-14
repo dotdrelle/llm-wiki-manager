@@ -19,6 +19,7 @@ Commands:
   wiki <workspace> init             Initialize the workspace with wiki init
   wiki <workspace> up               Start llm-wiki serve + mcp-http for this workspace
   wiki <workspace> down             Stop serve + mcp-http for this workspace
+  wiki <workspace> serve [--open]   Start the web UI (foreground, port from workspaces.yaml; --open launches browser in app mode)
   wiki <workspace> doctor           Run wiki doctor
   wiki <workspace> copy             Copy agent-cme exports into raw/untracked
   wiki <workspace> ingest           Run wiki ingest
@@ -149,6 +150,56 @@ run_wiki() {
   compose_for_workspace "$workspace" run --rm wiki "$@"
 }
 
+open_app_mode() {
+  local url="$1"
+  case "$(uname -s)" in
+    Darwin)
+      open -na "Google Chrome" --args "--app=${url}" 2>/dev/null \
+        || open -na "Microsoft Edge" --args "--app=${url}" 2>/dev/null \
+        || open -a Safari "${url}" 2>/dev/null \
+        || open "${url}"
+      ;;
+    Linux)
+      for candidate in google-chrome google-chrome-stable chromium chromium-browser microsoft-edge microsoft-edge-stable; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+          "$candidate" "--app=${url}" &
+          return
+        fi
+      done
+      xdg-open "${url}" 2>/dev/null || true
+      ;;
+    MINGW*|MSYS*|CYGWIN*)
+      for candidate in \
+        "C:/Program Files/Google/Chrome/Application/chrome.exe" \
+        "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe" \
+        "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" \
+        "C:/Program Files/Microsoft/Edge/Application/msedge.exe"; do
+        if [[ -f "$candidate" ]]; then
+          "$candidate" "--app=${url}" &
+          return
+        fi
+      done
+      start "" "${url}" || true
+      ;;
+  esac
+}
+
+wait_and_open() {
+  local url="$1"
+  local max_attempts=30
+  local i=0
+  while (( i < max_attempts )); do
+    sleep 1
+    if curl -sf "${url}" >/dev/null 2>&1; then
+      open_app_mode "${url}"
+      return
+    fi
+    (( i++ )) || true
+  done
+  printf 'wiki-workspace: server did not become ready at %s after %ds, opening anyway\n' "${url}" "$max_attempts" >&2
+  open_app_mode "${url}"
+}
+
 copy_one_export() {
   local workspace="$1"
   local export_path="$2"
@@ -250,6 +301,24 @@ main() {
       ;;
     down)
       compose_for_workspace "$workspace" down
+      ;;
+    serve)
+      local open_browser=0
+      if [[ $# -eq 1 && "$1" == "--open" ]]; then
+        open_browser=1
+      elif [[ $# -ne 0 ]]; then
+        die "serve accepts only --open as optional flag; port is configured in workspaces.yaml"
+      fi
+      printf 'Starting mcp-http...\n'
+      compose_for_workspace "$workspace" up -d mcp-http
+      printf 'Starting cme-mcp...\n'
+      compose_for_cme up -d cme-mcp
+      if [[ $open_browser -eq 1 ]]; then
+        local serve_port
+        serve_port="$(yaml_value "$workspace" servePort)"
+        wait_and_open "http://localhost:${serve_port}" &
+      fi
+      compose_for_workspace "$workspace" up serve
       ;;
     doctor|ingest|build|export)
       run_wiki "$workspace" "$command" "$@"

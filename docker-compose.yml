@@ -40,6 +40,8 @@ services:
     environment:
       - OPENAI_API_KEY
       - ANTHROPIC_API_KEY
+      - WIKI_MCP_HTTP_PORT
+      - CME_MCP_PORT
     ports:
       - '${WIKI_SERVE_PORT:-3100}:3000'
     extra_hosts:

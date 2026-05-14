@@ -86,6 +86,23 @@ Start one workspace UI and MCP endpoint:
 ./wiki-workspace wiki my-workspace up
 ```
 
+Open the workspace UI at `http://localhost:<servePort>`. The UI exposes:
+
+- `/` for wiki browsing;
+- `/graph` for the source graph with a collapsible relations panel;
+- `/chat` for MCP-aware chat.
+
+The chat page is preconfigured with the workspace `llm-wiki` MCP endpoint and the
+shared `agent-cme` MCP endpoint. The `serve` container proxies browser MCP calls
+server-side, so it uses the host ports declared in `workspaces.yaml`:
+
+- `WIKI_MCP_PROXY_URL=http://host.docker.internal:${WIKI_MCP_HTTP_PORT}/mcp`
+- `CME_MCP_PROXY_URL=http://host.docker.internal:${CME_MCP_PORT}/mcp/`
+
+If the workspace MCP endpoint is protected, pass the same
+`WIKI_MCP_ACCESS_KEY` to both `serve` and `mcp-http`; the compose file forwards it
+to both services.
+
 Initialize a workspace path if needed:
 
 ```bash
@@ -134,7 +151,7 @@ workspaces:
     mcpPort: 3201
 ```
 
-`agent-cme` is shared by default on `http://localhost:3000/mcp/`. Workspace MCP servers use each workspace's `mcpPort` and point to `wiki mcp-http`, not to `agent-cme`.
+`agent-cme` is shared by default on `http://localhost:3000/mcp/`. Workspace MCP servers use each workspace's `mcpPort` and point to `wiki mcp-http`, not to `agent-cme`. The browser chat uses these same ports through the `serve` proxy instead of calling Docker-internal URLs directly.
 
 ## Data Flow
 

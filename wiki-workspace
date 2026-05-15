@@ -341,6 +341,10 @@ main() {
       compose_for_workspace "$workspace" up -d serve mcp-http
       compose_for_cme up -d cme-mcp
       compose_for_mailer up -d mailer-mcp
+      local serve_port
+      serve_port="$(yaml_value "$workspace" servePort)"
+      printf 'Workspace UI: http://localhost:%s\n' "$serve_port"
+      printf 'Chat MCP:     http://localhost:%s/chat\n' "$serve_port"
       ;;
     down)
       compose_for_workspace "$workspace" down
@@ -362,9 +366,12 @@ main() {
       compose_for_cme up -d cme-mcp
       printf 'Starting mailer-mcp...\n'
       compose_for_mailer up -d mailer-mcp
+      local serve_port
+      serve_port="$(yaml_value "$workspace" servePort)"
+      printf 'Workspace UI: http://localhost:%s\n' "$serve_port"
+      printf 'Chat MCP:     http://localhost:%s/chat\n' "$serve_port"
+      printf 'Note: compose logs may show http://localhost:3000, which is the container port.\n'
       if [[ $open_browser -eq 1 ]]; then
-        local serve_port
-        serve_port="$(yaml_value "$workspace" servePort)"
         wait_and_open "http://localhost:${serve_port}" &
       fi
       compose_for_workspace "$workspace" up serve

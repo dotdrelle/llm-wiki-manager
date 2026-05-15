@@ -141,9 +141,14 @@ ports declared in `workspaces.yaml` plus shared agent ports:
 - `CME_MCP_PROXY_URL=http://host.docker.internal:${CME_MCP_PORT}/mcp/`
 - `MAILER_MCP_PROXY_URL=http://host.docker.internal:${MAILER_MCP_PORT}/mcp/`
 
-If the workspace MCP endpoint is protected, pass the same
-`WIKI_MCP_ACCESS_KEY` to both `serve` and `mcp-http`; the compose file forwards it
-to both services.
+The shared local compose can protect MCP endpoints with distinct auth variables:
+
+- `WIKI_MCP_ACCESS_KEY` for the workspace `llm-wiki` MCP endpoint.
+- `CME_MCP_AUTH_TOKEN`, mapped to `MCP_AUTH_TOKEN` inside `agent-cme`.
+- `MAILER_MCP_AUTH_TOKEN`, mapped to `MCP_AUTH_TOKEN` inside `agent-mailer-api`.
+
+If a shared agent token is set, configure the matching bearer in the chat UI for
+that server.
 
 Initialize a workspace path if needed:
 

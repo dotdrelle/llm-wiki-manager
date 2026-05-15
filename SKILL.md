@@ -26,10 +26,10 @@ agent-cme is the exporter. llm-wiki is the importer/knowledge base. Do not make 
 Find or confirm:
 
 - agent-cme export root, usually `../agent-cme/data/exports` from this manager directory.
-- Target workspace name from `workspaces.yaml`.
-- Explicit import paths listed under `workspaces.<workspace>.imports`.
+- Target workspace name from `workspaces/<workspace>.env`.
+- Explicit import paths listed in `WIKI_IMPORTS`.
 
-If `workspaces.yaml` is missing, create it from `workspaces.example.yaml`. If the workspace is not configured, ask the user for the workspace name, path, and ports before editing the local `workspaces.yaml`.
+If the workspace env file is missing, create it from `workspaces/.env.example`. If the workspace is not configured, ask the user for the workspace name, path, ports, and import paths before editing the local `workspaces/<workspace>.env`.
 
 ## Preferred Workflow
 
@@ -157,6 +157,6 @@ If running in a desktop agent with only MCP access:
 
 This repository root can act as one autonomous workspace bundle: compose files, agent-cme data, llm-wiki workspace configuration, and this copy workflow live together.
 
-For several workspaces, prefer one manager root with one local `workspaces.yaml`, one compose file, and unique ports per workspace. Do not invent `.env` examples unless those files already exist in the current workspace.
+For several workspaces, prefer one manager root with one `workspaces/<workspace>.env` file per workspace, one compose file, and unique ports per workspace.
 
 agent-cme may be shared, but a workspace can also carry its own agent-cme instance if it needs isolated credentials, exports, or ports.

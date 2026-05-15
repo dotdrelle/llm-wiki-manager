@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="${WIKI_WORKSPACES_FILE:-$ROOT_DIR/workspaces.yaml}"
+WORKSPACES_DIR="${WIKI_WORKSPACES_DIR:-$ROOT_DIR/workspaces}"
+MANAGER_ENV_FILE="${WIKI_MANAGER_ENV_FILE:-$ROOT_DIR/.env}"
 
 usage() {
   cat <<'EOF'
@@ -22,9 +23,9 @@ Commands:
   mailer logs [args...]             Follow agent-mailer-api logs (tail 100 by default)
   wiki <workspace> init             Initialize the workspace with wiki init
   wiki <workspace> up               Start llm-wiki serve + mcp-http for this workspace
-  wiki <workspace> down             Stop serve + mcp-http for this workspace
-  wiki <workspace> logs [args...]   Follow workspace serve + mcp-http logs (tail 100 by default)
-  wiki <workspace> serve [--open]   Start the web UI (foreground, port from workspaces.yaml; --open launches browser in app mode)
+  wiki <workspace> down             Stop serve + mcp-http + production-mcp for this workspace
+  wiki <workspace> logs [args...]   Follow workspace serve + mcp-http + production-mcp logs (tail 100 by default)
+  wiki <workspace> serve [--open]   Start the web UI (foreground, port from workspaces/<name>.env; --open launches browser in app mode)
   wiki <workspace> doctor           Run wiki doctor
   wiki <workspace> copy             Copy agent-cme exports into raw/untracked
   wiki <workspace> ingest           Run wiki ingest
@@ -33,7 +34,7 @@ Commands:
   wiki <workspace> run <args...>    Run arbitrary wiki CLI args
 
 Configuration:
-  workspaces.yaml at repository root, or WIKI_WORKSPACES_FILE=/path/to/file.
+  workspaces/<workspace>.env at repository root, or WIKI_WORKSPACES_DIR=/path/to/dir.
 EOF
 }
 
@@ -61,68 +62,81 @@ absolute_path() {
   fi
 }
 
-need_config() {
-  [[ -f "$CONFIG_FILE" ]] || die "missing config file: $CONFIG_FILE"
+workspace_env_file() {
+  local workspace="$1"
+  printf '%s/%s.env\n' "$WORKSPACES_DIR" "$workspace"
 }
 
-yaml_value() {
+need_workspace_env() {
   local workspace="$1"
-  local expr="$2"
-  ruby -ryaml -e '
-    begin
-      file, workspace, expr = ARGV
-      data = YAML.load_file(file)
-      node = data.fetch("workspaces").fetch(workspace)
-      expr.split(".").each { |part| node = node.fetch(part) }
-      puts node
-    rescue KeyError => e
-      warn "missing workspaces.yaml value for workspace=#{workspace}: #{expr} (#{e.message})"
-      exit 1
-    end
-  ' "$CONFIG_FILE" "$workspace" "$expr"
+  local file
+  file="$(workspace_env_file "$workspace")"
+  [[ -f "$file" ]] || die "missing workspace env file: $file"
+}
+
+env_value() {
+  local file="$1"
+  local key="$2"
+  local default="${3-}"
+  local line value
+  [[ -f "$file" ]] || { printf '%s\n' "$default"; return 0; }
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ "$line" == "$key="* ]] || continue
+    value="${line#*=}"
+    if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+      value="${value:1:${#value}-2}"
+    elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+    printf '%s\n' "$value"
+    return 0
+  done < "$file"
+  printf '%s\n' "$default"
+}
+
+workspace_value() {
+  local workspace="$1"
+  local key="$2"
+  local default="${3-}"
+  env_value "$(workspace_env_file "$workspace")" "$key" "$default"
 }
 
 list_workspaces() {
-  ruby -ryaml -e '
-    begin
-      file = ARGV.fetch(0)
-      data = YAML.load_file(file)
-      workspaces = data.fetch("workspaces")
-      workspaces.each do |name, ws|
-        path = ws["path"] || "-"
-        serve = ws["servePort"] || "-"
-        mcp = ws["mcpPort"] || "-"
-        imports = Array(ws["imports"]).length
-        puts "#{name}\tpath=#{path}\tserve=#{serve}\tmcp=#{mcp}\timports=#{imports}"
-      end
-    rescue KeyError => e
-      warn "missing workspaces.yaml value (#{e.message})"
-      exit 1
-    end
-  ' "$CONFIG_FILE"
+  [[ -d "$WORKSPACES_DIR" ]] || die "missing workspaces directory: $WORKSPACES_DIR"
+  local found=0
+  local file name path serve mcp imports count
+  for file in "$WORKSPACES_DIR"/*.env; do
+    [[ -e "$file" ]] || continue
+    found=1
+    name="$(env_value "$file" WORKSPACE_NAME "$(basename "$file" .env)")"
+    path="$(env_value "$file" WIKI_WORKSPACE_PATH "-")"
+    serve="$(env_value "$file" WIKI_SERVE_PORT "-")"
+    mcp="$(env_value "$file" WIKI_MCP_PORT "-")"
+    imports="$(env_value "$file" WIKI_IMPORTS "")"
+    count=0
+    if [[ -n "$imports" ]]; then
+      local IFS='|'
+      read -r -a _imports <<< "$imports"
+      for entry in "${_imports[@]}"; do
+        [[ -n "$entry" ]] && count=$((count + 1))
+      done
+    fi
+    printf '%s\tpath=%s\tserve=%s\tmcp=%s\timports=%s\n' "$name" "$path" "$serve" "$mcp" "$count"
+  done
+  [[ "$found" -eq 1 ]] || printf 'No workspaces configured in %s\n' "$WORKSPACES_DIR"
 }
 
 import_paths() {
   local workspace="$1"
-  ruby -ryaml -e '
-    begin
-      file, workspace = ARGV
-      data = YAML.load_file(file)
-      ws = data.fetch("workspaces").fetch(workspace)
-      imports = ws["imports"]
-      exit 0 if imports.nil?
-      Array(imports).each do |entry|
-        unless entry.is_a?(String)
-          warn "imports entries must be paths, got: #{entry.inspect}"
-          exit 1
-        end
-        puts entry
-      end
-    rescue KeyError => e
-      warn "missing imports for workspace=#{workspace} (#{e.message})"
-      exit 1
-    end
-  ' "$CONFIG_FILE" "$workspace"
+  local imports entry
+  imports="$(workspace_value "$workspace" WIKI_IMPORTS "")"
+  [[ -n "$imports" ]] || return 0
+  local IFS='|'
+  read -r -a _imports <<< "$imports"
+  for entry in "${_imports[@]}"; do
+    [[ -n "$entry" ]] && printf '%s\n' "$entry"
+  done
 }
 
 compose_project() {
@@ -133,24 +147,34 @@ compose_project() {
 compose_for_workspace() {
   local workspace="$1"
   shift
-  local ws_path serve_port mcp_port project
-  ws_path="$(normalize_path "$(yaml_value "$workspace" path)")"
-  serve_port="$(yaml_value "$workspace" servePort)"
-  mcp_port="$(yaml_value "$workspace" mcpPort)"
+  need_workspace_env "$workspace"
+  local workspace_env ws_path serve_port mcp_port project
+  workspace_env="$(workspace_env_file "$workspace")"
+  ws_path="$(normalize_path "$(workspace_value "$workspace" WIKI_WORKSPACE_PATH)")"
+  serve_port="$(workspace_value "$workspace" WIKI_SERVE_PORT 3100)"
+  mcp_port="$(workspace_value "$workspace" WIKI_MCP_PORT 3101)"
   project="$(compose_project "$workspace")"
 
-  WIKI_WORKSPACE="$ws_path" \
+  local compose_env_args=()
+  [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
+  compose_env_args+=(--env-file "$workspace_env")
+
+  WIKI_WORKSPACE_PATH="$ws_path" \
   WIKI_SERVE_PORT="$serve_port" \
-  WIKI_MCP_HTTP_PORT="$mcp_port" \
-  docker compose -f "$ROOT_DIR/docker-compose.yml" -p "$project" "$@"
+  WIKI_MCP_PORT="$mcp_port" \
+  docker compose "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" -p "$project" "$@"
 }
 
 compose_for_cme() {
-  docker compose -f "$ROOT_DIR/docker-compose.yml" -p wikillm-cme "$@"
+  local compose_env_args=()
+  [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
+  docker compose "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" -p wikillm-cme "$@"
 }
 
 compose_for_mailer() {
-  docker compose -f "$ROOT_DIR/docker-compose.yml" -p wikillm-mailer "$@"
+  local compose_env_args=()
+  [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
+  docker compose "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" -p wikillm-mailer "$@"
 }
 
 logs_args() {
@@ -222,7 +246,7 @@ copy_one_export() {
   local export_path="$2"
   local ws_path source_abs target_abs
 
-  ws_path="$(normalize_path "$(yaml_value "$workspace" path)")"
+  ws_path="$(normalize_path "$(workspace_value "$workspace" WIKI_WORKSPACE_PATH)")"
 
   source_abs="$(absolute_path "$export_path")"
   target_abs="$ws_path/raw/untracked"
@@ -270,7 +294,6 @@ main() {
   fi
 
   if [[ $# -eq 1 && "$1" == "list" ]]; then
-    need_config
     list_workspaces
     exit 0
   fi
@@ -322,7 +345,6 @@ main() {
   fi
 
   [[ $# -ge 2 ]] || { usage; exit 2; }
-  need_config
 
   local scope="$1"
   [[ "$scope" == "wiki" ]] || die "unknown scope: $scope (expected: wiki, cme, mailer, or list)"
@@ -338,38 +360,44 @@ main() {
       run_wiki "$workspace" init "$@"
       ;;
     up)
-      compose_for_workspace "$workspace" up -d serve mcp-http
+      compose_for_workspace "$workspace" up -d serve mcp-http production-mcp
       compose_for_cme up -d cme-mcp
       compose_for_mailer up -d mailer-mcp
-      local serve_port
-      serve_port="$(yaml_value "$workspace" servePort)"
+      local serve_port production_port
+      serve_port="$(workspace_value "$workspace" WIKI_SERVE_PORT 3100)"
+      production_port="$(workspace_value "$workspace" PRODUCTION_MCP_PORT 3336)"
       printf 'Workspace UI: http://localhost:%s\n' "$serve_port"
       printf 'Chat MCP:     http://localhost:%s/chat\n' "$serve_port"
+      printf 'Production:   http://localhost:%s/mcp/\n' "$production_port"
       ;;
     down)
       compose_for_workspace "$workspace" down
       ;;
     logs)
       mapfile -t log_args < <(logs_args "$@")
-      compose_for_workspace "$workspace" logs "${log_args[@]}" serve mcp-http
+      compose_for_workspace "$workspace" logs "${log_args[@]}" serve mcp-http production-mcp
       ;;
     serve)
       local open_browser=0
       if [[ $# -eq 1 && "$1" == "--open" ]]; then
         open_browser=1
       elif [[ $# -ne 0 ]]; then
-        die "serve accepts only --open as optional flag; port is configured in workspaces.yaml"
+        die "serve accepts only --open as optional flag; port is configured in workspaces/<name>.env"
       fi
       printf 'Starting mcp-http...\n'
       compose_for_workspace "$workspace" up -d mcp-http
+      printf 'Starting production-mcp...\n'
+      compose_for_workspace "$workspace" up -d production-mcp
       printf 'Starting cme-mcp...\n'
       compose_for_cme up -d cme-mcp
       printf 'Starting mailer-mcp...\n'
       compose_for_mailer up -d mailer-mcp
-      local serve_port
-      serve_port="$(yaml_value "$workspace" servePort)"
+      local serve_port production_port
+      serve_port="$(workspace_value "$workspace" WIKI_SERVE_PORT 3100)"
+      production_port="$(workspace_value "$workspace" PRODUCTION_MCP_PORT 3336)"
       printf 'Workspace UI: http://localhost:%s\n' "$serve_port"
       printf 'Chat MCP:     http://localhost:%s/chat\n' "$serve_port"
+      printf 'Production:   http://localhost:%s/mcp/\n' "$production_port"
       printf 'Note: compose logs may show http://localhost:3000, which is the container port.\n'
       if [[ $open_browser -eq 1 ]]; then
         wait_and_open "http://localhost:${serve_port}" &

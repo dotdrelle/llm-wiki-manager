@@ -3,7 +3,7 @@
 # This compose file is driven by ./wiki-workspace. It can run:
 #   - one shared agent-cme MCP server
 #   - one shared agent-mailer-api MCP server
-#   - one llm-wiki serve + mcp-http pair per configured workspace
+#   - one llm-wiki serve + mcp-http + production MCP set per configured workspace
 #
 # Typical usage:
 #   ./wiki-workspace list
@@ -13,9 +13,10 @@
 #   ./wiki-workspace wiki <workspace> doctor
 #   ./wiki-workspace wiki <workspace> ingest
 #
-# OpenWebUI / MCP endpoints use the ports declared in workspaces.yaml.
+# Workspace UI / MCP endpoints use the ports declared in workspaces/<name>.env.
 # agent-cme defaults to http://localhost:3000/mcp/
 # agent-mailer-api defaults to http://localhost:3335/mcp/
+# agent-wiki-production defaults to http://localhost:3336/mcp/ per workspace
 
 services:
 
@@ -27,7 +28,7 @@ services:
     volumes:
       # Compose interpolates all services before applying profiles, so this
       # cannot be a required variable without breaking cme-cli-only commands.
-      - ${WIKI_WORKSPACE:-/tmp/llm-wiki-workspace-not-set}:/workspace
+      - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}:/workspace
     environment:
       - OPENAI_API_KEY
       - ANTHROPIC_API_KEY
@@ -38,17 +39,19 @@ services:
     image: dotdrelle/llm-wiki:latest
     command: serve --port 3000
     volumes:
-      - ${WIKI_WORKSPACE:-/tmp/llm-wiki-workspace-not-set}:/workspace
+      - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}:/workspace
     environment:
       - OPENAI_API_KEY
       - ANTHROPIC_API_KEY
-      - WIKI_MCP_HTTP_PORT
+      - WIKI_MCP_HTTP_PORT=${WIKI_MCP_PORT:-3101}
       - WIKI_MCP_ACCESS_KEY
       - CME_MCP_PORT
       - MAILER_MCP_PORT
-      - WIKI_MCP_PROXY_URL=http://host.docker.internal:${WIKI_MCP_HTTP_PORT:-3101}/mcp
+      - PRODUCTION_MCP_PORT
+      - WIKI_MCP_PROXY_URL=http://host.docker.internal:${WIKI_MCP_PORT:-3101}/mcp
       - CME_MCP_PROXY_URL=http://host.docker.internal:${CME_MCP_PORT:-3000}/mcp/
       - MAILER_MCP_PROXY_URL=http://host.docker.internal:${MAILER_MCP_PORT:-3335}/mcp/
+      - PRODUCTION_MCP_PROXY_URL=http://host.docker.internal:${PRODUCTION_MCP_PORT:-3336}/mcp/
     ports:
       - '${WIKI_SERVE_PORT:-3100}:3000'
     extra_hosts:
@@ -59,7 +62,7 @@ services:
     image: dotdrelle/llm-wiki:latest
     command: mcp-http --host 0.0.0.0 --port 3333 --path /mcp
     volumes:
-      - ${WIKI_WORKSPACE:-/tmp/llm-wiki-workspace-not-set}:/workspace
+      - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}:/workspace
       #- ${WIKI_CERTS:-./certs}:/certs:ro
     environment:
       - WIKI_MCP_ACCESS_KEY=${WIKI_MCP_ACCESS_KEY}
@@ -67,7 +70,7 @@ services:
       - WIKI_MCP_TLS_KEY_PATH
       - WIKI_MCP_TLS_CA_PATH
     ports:
-      - '${WIKI_MCP_HTTP_PORT:-3101}:3333'
+      - '${WIKI_MCP_PORT:-3101}:3333'
     extra_hosts:
       - host.docker.internal:host-gateway
     restart: unless-stopped
@@ -102,11 +105,31 @@ services:
     environment:
       - MCP_AUTH_TOKEN=${MAILER_MCP_AUTH_TOKEN}
       - MAILERSEND_API_KEY=${MAILERSEND_API_KEY}
-      - MAILERSEND_FROM_EMAIL=${MAILERSEND_FROM_EMAIL:-donna@itsdonna.events}
-      - MAILERSEND_FROM_NAME=${MAILERSEND_FROM_NAME:-Donna}
+      - MAILERSEND_FROM_EMAIL=${MAILERSEND_FROM_EMAIL:-no-reply@example.com}
+      - MAILERSEND_FROM_NAME=${MAILERSEND_FROM_NAME:-Mailer Agent}
       - MAILERSEND_USER_AGENT=${MAILERSEND_USER_AGENT:-curl/8.7.1}
       - MAILER_REQUIRE_CONFIRMATION=true
       - MAILER_DRY_RUN
     ports:
       - '${MAILER_MCP_PORT:-3335}:8080'
+    restart: unless-stopped
+
+  # ── agent-wiki-production ─────────────────────────────────────────────────
+
+  production-mcp:
+    image: dotdrelle/agent-wiki-production:latest
+    volumes:
+      - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}:/workspace
+      - ${CME_DATA_PATH:-../agent-cme/data}:/agent-cme-data:ro
+    environment:
+      - MCP_AUTH_TOKEN=${PRODUCTION_MCP_AUTH_TOKEN}
+      - WORKSPACE_NAME=${WORKSPACE_NAME:-workspace}
+      - WIKI_WORKSPACE_PATH=/workspace
+      - WIKI_IMPORTS=${WIKI_IMPORTS}
+      - PRODUCTION_IMPORT_PATH_MAPPINGS=${PRODUCTION_IMPORT_PATH_MAPPINGS:-../agent-cme/data=/agent-cme-data}
+      - PRODUCTION_ALLOWED_STEPS=${PRODUCTION_ALLOWED_STEPS:-copy,ingest,build,export,polish,pipeline}
+      - PRODUCTION_JOBS_DIR=${PRODUCTION_JOBS_DIR:-/workspace/.wiki/production-jobs}
+      - PRODUCTION_LOCKS_DIR=${PRODUCTION_LOCKS_DIR:-/workspace/.wiki/production-jobs/locks}
+    ports:
+      - '${PRODUCTION_MCP_PORT:-3336}:8080'
     restart: unless-stopped

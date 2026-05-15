@@ -1,6 +1,22 @@
 # llm-wiki-manager
 
-Root cockpit for running several `llm-wiki` workspaces and one shared `agent-cme` exporter from a single place.
+`llm-wiki` turns heterogeneous documentation into a living Markdown knowledge base
+that AI agents can search, explore, maintain, and use to generate up-to-date
+documents.
+
+The system moves beyond classic retrieval over raw files: source material is first
+converted into Markdown, ingested into a structured wiki, indexed for retrieval,
+connected as a graph, then reused through build contexts and Markdown templates.
+This creates a durable knowledge layer that can be rebuilt when sources evolve.
+
+`llm-wiki-manager` is the orchestration layer for that workflow. It coordinates
+workspace services, MCP endpoints, and optional source exporters so several
+`llm-wiki` workspaces can be run from one cockpit.
+
+The manager does not implement the `llm-wiki` or `agent-cme` services itself. It
+pulls their published Docker images, injects workspace-specific environment
+variables, and provides a shared Docker Compose setup plus the `wiki-workspace`
+helper script.
 
 This repository is part of a three-repository toolchain:
 

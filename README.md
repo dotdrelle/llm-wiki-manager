@@ -13,8 +13,8 @@ This creates a durable knowledge layer that can be rebuilt when sources evolve.
 workspace services, MCP endpoints, optional source exporters, and optional action
 agents so several `llm-wiki` workspaces can be run from one cockpit.
 
-The manager does not implement the `llm-wiki`, `agent-cme`, or
-`agent-mailer-api` services itself. It pulls their published Docker images,
+The manager does not implement the `llm-wiki`, `agent-cme`, `agent-mailer-api`, or
+`agent-wiki-production` services itself. It pulls their published Docker images,
 injects workspace-specific environment variables, and provides a shared Docker
 Compose setup plus the `wiki-workspace` helper script.
 
@@ -39,7 +39,7 @@ llm-wiki-manager/
 ├── .env.example         # template for shared secrets and shared agent ports
 ├── workspaces/.env.example # template for workspace names, paths, ports, and copy inputs
 ├── SKILL.md             # agent workflow for agent-cme -> llm-wiki copy + ingest
-└── .mcp.json            # local MCP client example
+└── workspaces/          # per-workspace env files (gitignored)
 ```
 
 The sibling repositories provide the actual services:
@@ -94,7 +94,8 @@ The manager exports these values to Docker Compose for the selected workspace:
 | `WIKI_SERVE_PORT` | Host port for `wiki serve` |
 | `WIKI_MCP_PORT` | Host port for `wiki mcp-http` |
 | `PRODUCTION_MCP_PORT` | Host port for the workspace production MCP agent |
-| `WIKI_IMPORTS` | Optional `|`-separated export directories copied by `wiki <workspace> copy` |
+| `WIKI_IMPORTS` | Optional `\|`-separated export directories copied by `wiki <workspace> copy` |
+| `PRODUCTION_IMPORT_PATH_MAPPINGS` | `\|`-separated `host=container` path remaps for the production agent copy step |
 
 Do not create per-workspace `docker-compose.yml` files. `wiki init` creates workspace content and `.wikirc.yaml`; this manager owns Docker orchestration.
 
@@ -168,6 +169,10 @@ The shared local compose can protect MCP endpoints with distinct auth variables:
 
 If a shared agent token is set, configure the matching bearer in the chat UI for
 that server.
+
+For a Claude Code MCP client, the bearer configured in a local `.mcp.json` must
+match the corresponding token from `.env`. For the workspace wiki endpoint,
+`Authorization: Bearer <token>` must match `WIKI_MCP_AUTH_TOKEN`.
 
 Initialize a workspace path if needed:
 

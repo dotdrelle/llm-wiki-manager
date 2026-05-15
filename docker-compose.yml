@@ -128,6 +128,7 @@ services:
       - WIKI_IMPORTS=${WIKI_IMPORTS}
       - PRODUCTION_IMPORT_PATH_MAPPINGS=${PRODUCTION_IMPORT_PATH_MAPPINGS:-../agent-cme/data=/agent-cme-data}
       - PRODUCTION_ALLOWED_STEPS=${PRODUCTION_ALLOWED_STEPS:-copy,ingest,build,export,polish,pipeline}
+      - PRODUCTION_REQUIRE_CONFIRMATION=${PRODUCTION_REQUIRE_CONFIRMATION:-true}
       - PRODUCTION_JOBS_DIR=${PRODUCTION_JOBS_DIR:-/workspace/.wiki/production-jobs}
       - PRODUCTION_LOCKS_DIR=${PRODUCTION_LOCKS_DIR:-/workspace/.wiki/production-jobs/locks}
     ports:

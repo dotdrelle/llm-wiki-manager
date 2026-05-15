@@ -10,21 +10,22 @@ connected as a graph, then reused through build contexts and Markdown templates.
 This creates a durable knowledge layer that can be rebuilt when sources evolve.
 
 `llm-wiki-manager` is the orchestration layer for that workflow. It coordinates
-workspace services, MCP endpoints, and optional source exporters so several
-`llm-wiki` workspaces can be run from one cockpit.
+workspace services, MCP endpoints, optional source exporters, and optional action
+agents so several `llm-wiki` workspaces can be run from one cockpit.
 
-The manager does not implement the `llm-wiki` or `agent-cme` services itself. It
-pulls their published Docker images, injects workspace-specific environment
-variables, and provides a shared Docker Compose setup plus the `wiki-workspace`
-helper script.
+The manager does not implement the `llm-wiki`, `agent-cme`, or
+`agent-mailer-api` services itself. It pulls their published Docker images,
+injects workspace-specific environment variables, and provides a shared Docker
+Compose setup plus the `wiki-workspace` helper script.
 
-This repository is part of a three-repository toolchain:
+This repository is part of a multi-repository toolchain:
 
 | Repository | Role |
 | ---------- | ---- |
 | [`llm-wiki`](https://github.com/dotdrelle/llm-wiki) | Workspace engine: CLI, web UI, MCP server, retrieval, and deliverable builder |
 | [`llm-wiki-manager`](https://github.com/dotdrelle/llm-wiki-manager) | Multi-workspace Docker orchestration and copy pipeline |
 | [`AgentCME`](https://github.com/dotdrelle/AgentCME) | Confluence Markdown exporter exposed over MCP |
+| `agent-mailer-api` | Send-only MailerSend MCP action agent |
 
 Each repository can be used separately. Together, they provide the intended Confluence -> Markdown export -> wiki ingest -> deliverable build flow.
 
@@ -32,7 +33,7 @@ This directory does not contain wiki data. It contains the orchestration layer:
 
 ```text
 llm-wiki-manager/
-├── docker-compose.yml   # shared agent-cme + per-workspace llm-wiki services
+├── docker-compose.yml   # shared agents + per-workspace llm-wiki services
 ├── wiki-workspace       # wrapper around docker compose
 ├── workspaces.example.yaml # template for workspace names, paths, ports, and copy inputs
 ├── SKILL.md             # agent workflow for agent-cme -> llm-wiki copy + ingest
@@ -43,6 +44,7 @@ The sibling repositories provide the actual services:
 
 ```text
 ../agent-cme/   # Confluence -> Markdown exporter and MCP server
+../agent-mailer-api/ # MailerSend send-only MCP server
 ../llm-wiki/    # local-first wiki CLI, web UI, and MCP server
 ```
 
@@ -95,8 +97,30 @@ Start the shared `agent-cme` MCP server:
 ```
 
 The endpoint is `http://localhost:3000/mcp/` unless `CME_MCP_PORT` is set.
+Logs follow the last 100 lines by default:
 
-Start one workspace UI and MCP endpoint:
+```bash
+./wiki-workspace cme logs
+```
+
+Start the shared MailerSend MCP action agent:
+
+```bash
+export MAILERSEND_API_KEY=...
+./wiki-workspace mailer up
+```
+
+The endpoint is `http://localhost:3335/mcp/` unless `MAILER_MCP_PORT` is set.
+The mailer exposes send-only tools and keeps the MailerSend API key inside the
+container environment.
+Logs follow the last 100 lines by default:
+
+```bash
+./wiki-workspace mailer logs
+```
+
+Start one workspace UI, its MCP endpoint, and the shared agents in the
+background:
 
 ```bash
 ./wiki-workspace wiki my-workspace up
@@ -108,12 +132,14 @@ Open the workspace UI at `http://localhost:<servePort>`. The UI exposes:
 - `/graph` for the source graph with a collapsible relations panel;
 - `/chat` for MCP-aware chat.
 
-The chat page is preconfigured with the workspace `llm-wiki` MCP endpoint and the
-shared `agent-cme` MCP endpoint. The `serve` container proxies browser MCP calls
-server-side, so it uses the host ports declared in `workspaces.yaml`:
+The chat page is preconfigured with the workspace `llm-wiki` MCP endpoint, the
+shared `agent-cme` MCP endpoint, and the optional `agent-mailer-api` MCP endpoint.
+The `serve` container proxies browser MCP calls server-side, so it uses the host
+ports declared in `workspaces.yaml` plus shared agent ports:
 
 - `WIKI_MCP_PROXY_URL=http://host.docker.internal:${WIKI_MCP_HTTP_PORT}/mcp`
 - `CME_MCP_PROXY_URL=http://host.docker.internal:${CME_MCP_PORT}/mcp/`
+- `MAILER_MCP_PROXY_URL=http://host.docker.internal:${MAILER_MCP_PORT}/mcp/`
 
 If the workspace MCP endpoint is protected, pass the same
 `WIKI_MCP_ACCESS_KEY` to both `serve` and `mcp-http`; the compose file forwards it
@@ -124,6 +150,15 @@ Initialize a workspace path if needed:
 ```bash
 ./wiki-workspace wiki my-workspace init
 ```
+
+Follow the workspace logs:
+
+```bash
+./wiki-workspace wiki my-workspace logs
+```
+
+`wiki <workspace> serve` is intentionally a foreground debug mode. For normal
+use, prefer `wiki <workspace> up` so the shell is not blocked.
 
 Copy configured `agent-cme` exports into the workspace:
 
@@ -167,7 +202,11 @@ workspaces:
     mcpPort: 3201
 ```
 
-`agent-cme` is shared by default on `http://localhost:3000/mcp/`. Workspace MCP servers use each workspace's `mcpPort` and point to `wiki mcp-http`, not to `agent-cme`. The browser chat uses these same ports through the `serve` proxy instead of calling Docker-internal URLs directly.
+`agent-cme` is shared by default on `http://localhost:3000/mcp/`.
+`agent-mailer-api` is shared by default on `http://localhost:3335/mcp/`.
+Workspace MCP servers use each workspace's `mcpPort` and point to
+`wiki mcp-http`, not to the shared agents. The browser chat uses these same
+ports through the `serve` proxy instead of calling Docker-internal URLs directly.
 
 ## Data Flow
 

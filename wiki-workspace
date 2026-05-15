@@ -10,15 +10,20 @@ Usage:
   ./wiki-workspace wiki <workspace> <command> [args...]
   ./wiki-workspace list
   ./wiki-workspace cme <up|down|logs>
+  ./wiki-workspace mailer <up|down|logs>
 
 Commands:
   list                              List configured workspaces
   cme up                            Start the shared agent-cme MCP server
   cme down                          Stop the shared agent-cme MCP server
-  cme logs                          Show agent-cme MCP logs
+  cme logs [args...]                Follow agent-cme MCP logs (tail 100 by default)
+  mailer up                         Start the shared agent-mailer-api MCP server
+  mailer down                       Stop the shared agent-mailer-api MCP server
+  mailer logs [args...]             Follow agent-mailer-api logs (tail 100 by default)
   wiki <workspace> init             Initialize the workspace with wiki init
   wiki <workspace> up               Start llm-wiki serve + mcp-http for this workspace
   wiki <workspace> down             Stop serve + mcp-http for this workspace
+  wiki <workspace> logs [args...]   Follow workspace serve + mcp-http logs (tail 100 by default)
   wiki <workspace> serve [--open]   Start the web UI (foreground, port from workspaces.yaml; --open launches browser in app mode)
   wiki <workspace> doctor           Run wiki doctor
   wiki <workspace> copy             Copy agent-cme exports into raw/untracked
@@ -142,6 +147,18 @@ compose_for_workspace() {
 
 compose_for_cme() {
   docker compose -f "$ROOT_DIR/docker-compose.yml" -p wikillm-cme "$@"
+}
+
+compose_for_mailer() {
+  docker compose -f "$ROOT_DIR/docker-compose.yml" -p wikillm-mailer "$@"
+}
+
+logs_args() {
+  if [[ $# -eq 0 ]]; then
+    printf '%s\n' --tail=100 -f
+  else
+    printf '%s\n' "$@"
+  fi
 }
 
 run_wiki() {
@@ -271,10 +288,34 @@ main() {
         compose_for_cme stop cme-mcp
         ;;
       logs)
-        compose_for_cme logs "$@" cme-mcp
+        mapfile -t log_args < <(logs_args "$@")
+        compose_for_cme logs "${log_args[@]}" cme-mcp
         ;;
       *)
         die "unknown cme command: $cme_command"
+        ;;
+    esac
+    exit 0
+  fi
+
+  if [[ $# -ge 2 && "$1" == "mailer" ]]; then
+    local mailer_command="$2"
+    shift 2
+    case "$mailer_command" in
+      up)
+        [[ $# -eq 0 ]] || die "mailer up does not take arguments"
+        compose_for_mailer up -d mailer-mcp
+        ;;
+      down)
+        [[ $# -eq 0 ]] || die "mailer down does not take arguments"
+        compose_for_mailer stop mailer-mcp
+        ;;
+      logs)
+        mapfile -t log_args < <(logs_args "$@")
+        compose_for_mailer logs "${log_args[@]}" mailer-mcp
+        ;;
+      *)
+        die "unknown mailer command: $mailer_command"
         ;;
     esac
     exit 0
@@ -284,7 +325,7 @@ main() {
   need_config
 
   local scope="$1"
-  [[ "$scope" == "wiki" ]] || die "unknown scope: $scope (expected: wiki, cme, or list)"
+  [[ "$scope" == "wiki" ]] || die "unknown scope: $scope (expected: wiki, cme, mailer, or list)"
   shift
   [[ $# -ge 2 ]] || die "wiki requires a workspace and a command"
 
@@ -298,9 +339,15 @@ main() {
       ;;
     up)
       compose_for_workspace "$workspace" up -d serve mcp-http
+      compose_for_cme up -d cme-mcp
+      compose_for_mailer up -d mailer-mcp
       ;;
     down)
       compose_for_workspace "$workspace" down
+      ;;
+    logs)
+      mapfile -t log_args < <(logs_args "$@")
+      compose_for_workspace "$workspace" logs "${log_args[@]}" serve mcp-http
       ;;
     serve)
       local open_browser=0
@@ -313,6 +360,8 @@ main() {
       compose_for_workspace "$workspace" up -d mcp-http
       printf 'Starting cme-mcp...\n'
       compose_for_cme up -d cme-mcp
+      printf 'Starting mailer-mcp...\n'
+      compose_for_mailer up -d mailer-mcp
       if [[ $open_browser -eq 1 ]]; then
         local serve_port
         serve_port="$(yaml_value "$workspace" servePort)"

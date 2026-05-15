@@ -161,7 +161,7 @@ ports declared in `workspaces/<name>.env` plus shared agent ports:
 
 The shared local compose can protect MCP endpoints with distinct auth variables:
 
-- `WIKI_MCP_ACCESS_KEY` for the workspace `llm-wiki` MCP endpoint.
+- `WIKI_MCP_AUTH_TOKEN` for the workspace `llm-wiki` MCP endpoint.
 - `PRODUCTION_MCP_AUTH_TOKEN`, mapped to `MCP_AUTH_TOKEN` inside `agent-wiki-production`.
 - `CME_MCP_AUTH_TOKEN`, mapped to `MCP_AUTH_TOKEN` inside `agent-cme`.
 - `MAILER_MCP_AUTH_TOKEN`, mapped to `MCP_AUTH_TOKEN` inside `agent-mailer-api`.

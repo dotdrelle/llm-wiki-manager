@@ -1,22 +1,20 @@
 # docker-compose.yml — llm-wiki-manager cockpit stack
 #
 # This compose file is driven by ./wiki-workspace. It can run:
-#   - one shared agent-cme MCP server
+#   - one workspace-scoped agent-cme MCP server per workspace
 #   - one shared agent-mailer-api MCP server
 #   - one llm-wiki serve + mcp-http + production MCP set per configured workspace
 #
 # Typical usage:
-#   ./wiki-workspace list
-#   ./wiki-workspace cme up
-#   ./wiki-workspace wiki <workspace> init
-#   ./wiki-workspace wiki <workspace> up
+#   ./wiki-workspace config <workspace> [path]
+#   ./wiki-workspace up <workspace>
 #   ./wiki-workspace wiki <workspace> doctor
 #   ./wiki-workspace wiki <workspace> ingest
+#   ./wiki-workspace cme <workspace> up
 #
-# Workspace UI / MCP endpoints use the ports declared in workspaces/<name>.env.
-# agent-cme defaults to http://localhost:3000/mcp/
+# Workspace UI / MCP endpoints use the ports declared in workspaces/<name>/.env.
+# agent-cme port is per-workspace (CME_MCP_PORT in workspace .env)
 # agent-mailer-api defaults to http://localhost:3335/mcp/
-# agent-wiki-production defaults to http://localhost:3336/mcp/ per workspace
 
 services:
 
@@ -98,7 +96,6 @@ services:
     profiles: [cli]
     entrypoint: cme
     environment:
-      - CME_CONFIG_PATH=/data/cme/app_data.json
       - CME_EXPORT__OUTPUT_PATH=/data/exports
     volumes:
       - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}/.cme:/data

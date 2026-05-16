@@ -348,6 +348,7 @@ config_workspace() {
 
 up_workspace() {
   local workspace="$1"
+  need_workspace_env "$workspace"
   local ws_path
   ws_path="$(normalize_path "$(workspace_value "$workspace" WIKI_WORKSPACE_PATH)")"
   ensure_workspace_dirs "$ws_path"

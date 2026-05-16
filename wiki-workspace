@@ -8,33 +8,40 @@ MANAGER_ENV_FILE="${WIKI_MANAGER_ENV_FILE:-$ROOT_DIR/.env}"
 usage() {
   cat <<'EOF'
 Usage:
+  ./wiki-workspace config <workspace> [path]
+  ./wiki-workspace up <workspace>
   ./wiki-workspace wiki <workspace> <command> [args...]
-  ./wiki-workspace list
-  ./wiki-workspace cme <up|down|logs>
+  ./wiki-workspace cme <workspace> <up|down|logs>
   ./wiki-workspace mailer <up|down|logs>
+  ./wiki-workspace list
 
 Commands:
+  config <workspace> [path]         Create workspace folder, auto-select ports, run wiki init
+  up <workspace>                    Start full stack: wiki + cme + mailer for this workspace
   list                              List configured workspaces
-  cme up                            Start the shared agent-cme MCP server
-  cme down                          Stop the shared agent-cme MCP server
-  cme logs [args...]                Follow agent-cme MCP logs (tail 100 by default)
+
+  cme <workspace> up                Start workspace-scoped agent-cme MCP server
+  cme <workspace> down              Stop workspace-scoped agent-cme MCP server
+  cme <workspace> logs [args...]    Follow workspace-scoped agent-cme logs (tail 100 by default)
+
   mailer up                         Start the shared agent-mailer-api MCP server
   mailer down                       Stop the shared agent-mailer-api MCP server
   mailer logs [args...]             Follow agent-mailer-api logs (tail 100 by default)
+
   wiki <workspace> init             Initialize the workspace with wiki init
-  wiki <workspace> up               Start llm-wiki serve + mcp-http for this workspace
-  wiki <workspace> down             Stop serve + mcp-http + production-mcp for this workspace
-  wiki <workspace> logs [args...]   Follow workspace serve + mcp-http + production-mcp logs (tail 100 by default)
-  wiki <workspace> serve [--open]   Start the web UI (foreground, port from workspaces/<name>.env; --open launches browser in app mode)
+  wiki <workspace> up               Start llm-wiki serve + mcp-http + production-mcp
+  wiki <workspace> down             Stop all services for this workspace
+  wiki <workspace> logs [args...]   Follow workspace service logs (tail 100 by default)
+  wiki <workspace> serve [--open]   Start the web UI in foreground (--open launches browser)
   wiki <workspace> doctor           Run wiki doctor
-  wiki <workspace> copy             Copy agent-cme exports into raw/untracked
   wiki <workspace> ingest           Run wiki ingest
   wiki <workspace> build            Run wiki build
   wiki <workspace> export           Run wiki export
   wiki <workspace> run <args...>    Run arbitrary wiki CLI args
 
 Configuration:
-  workspaces/<workspace>.env at repository root, or WIKI_WORKSPACES_DIR=/path/to/dir.
+  workspaces/<workspace>/.env
+  Override directory: WIKI_WORKSPACES_DIR=/path/to/dir
 EOF
 }
 
@@ -64,14 +71,14 @@ absolute_path() {
 
 workspace_env_file() {
   local workspace="$1"
-  printf '%s/%s.env\n' "$WORKSPACES_DIR" "$workspace"
+  printf '%s/%s/.env\n' "$WORKSPACES_DIR" "$workspace"
 }
 
 need_workspace_env() {
   local workspace="$1"
   local file
   file="$(workspace_env_file "$workspace")"
-  [[ -f "$file" ]] || die "missing workspace env file: $file"
+  [[ -f "$file" ]] || die "missing workspace env: $file — run: ./wiki-workspace config $workspace"
 }
 
 env_value() {
@@ -102,41 +109,70 @@ workspace_value() {
   env_value "$(workspace_env_file "$workspace")" "$key" "$default"
 }
 
+used_workspace_ports() {
+  local entry file key val
+  for entry in "$WORKSPACES_DIR"/*; do
+    [[ -d "$entry" ]] || continue
+    file="$entry/.env"
+    [[ -f "$file" ]] || continue
+    for key in WIKI_SERVE_PORT WIKI_MCP_PORT CME_MCP_PORT PRODUCTION_MCP_PORT; do
+      val="$(env_value "$file" "$key" "")"
+      [[ "$val" =~ ^[0-9]+$ ]] && printf '%s\n' "$val"
+    done
+  done
+  if [[ -f "$MANAGER_ENV_FILE" ]]; then
+    val="$(env_value "$MANAGER_ENV_FILE" MAILER_MCP_PORT "")"
+    [[ "$val" =~ ^[0-9]+$ ]] && printf '%s\n' "$val"
+  fi
+}
+
+is_port_in_use() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+  else
+    (echo >/dev/tcp/127.0.0.1/"$port") 2>/dev/null
+  fi
+}
+
+find_free_port() {
+  local start="${1:-3100}"
+  local port="$start"
+  local used_ports=()
+  read_lines_into_array used_ports used_workspace_ports
+  while true; do
+    local taken=0 p
+    for p in "${used_ports[@]}"; do
+      [[ "$p" == "$port" ]] && { taken=1; break; }
+    done
+    if [[ "$taken" -eq 0 ]] && ! is_port_in_use "$port"; then
+      printf '%s\n' "$port"
+      return 0
+    fi
+    port=$((port + 1))
+  done
+}
+
 list_workspaces() {
   [[ -d "$WORKSPACES_DIR" ]] || die "missing workspaces directory: $WORKSPACES_DIR"
-  local found=0
-  local file name path serve mcp imports count
-  for file in "$WORKSPACES_DIR"/*.env; do
-    [[ -e "$file" ]] || continue
+  local found=0 entry file name path serve mcp cme prod
+
+  for entry in "$WORKSPACES_DIR"/*; do
+    [[ -d "$entry" ]] || continue
+    file="$entry/.env"
+    [[ -f "$file" ]] || continue
     found=1
-    name="$(env_value "$file" WORKSPACE_NAME "$(basename "$file" .env)")"
+    name="$(env_value "$file" WORKSPACE_NAME "$(basename "$entry")")"
     path="$(env_value "$file" WIKI_WORKSPACE_PATH "-")"
     serve="$(env_value "$file" WIKI_SERVE_PORT "-")"
     mcp="$(env_value "$file" WIKI_MCP_PORT "-")"
-    imports="$(env_value "$file" WIKI_IMPORTS "")"
-    count=0
-    if [[ -n "$imports" ]]; then
-      local IFS='|'
-      read -r -a _imports <<< "$imports"
-      for entry in "${_imports[@]}"; do
-        [[ -n "$entry" ]] && count=$((count + 1))
-      done
-    fi
-    printf '%s\tpath=%s\tserve=%s\tmcp=%s\timports=%s\n' "$name" "$path" "$serve" "$mcp" "$count"
+    cme="$(env_value "$file" CME_MCP_PORT "-")"
+    prod="$(env_value "$file" PRODUCTION_MCP_PORT "-")"
+    printf '%s\tpath=%s\tserve=%s\tmcp=%s\tcme=%s\tprod=%s\n' \
+      "$name" "$path" "$serve" "$mcp" "$cme" "$prod"
   done
-  [[ "$found" -eq 1 ]] || printf 'No workspaces configured in %s\n' "$WORKSPACES_DIR"
-}
 
-import_paths() {
-  local workspace="$1"
-  local imports entry
-  imports="$(workspace_value "$workspace" WIKI_IMPORTS "")"
-  [[ -n "$imports" ]] || return 0
-  local IFS='|'
-  read -r -a _imports <<< "$imports"
-  for entry in "${_imports[@]}"; do
-    [[ -n "$entry" ]] && printf '%s\n' "$entry"
-  done
+  [[ "$found" -eq 1 ]] || printf 'No workspaces configured in %s\n' "$WORKSPACES_DIR"
 }
 
 compose_project() {
@@ -148,11 +184,12 @@ compose_for_workspace() {
   local workspace="$1"
   shift
   need_workspace_env "$workspace"
-  local workspace_env ws_path serve_port mcp_port project
+  local workspace_env ws_path serve_port mcp_port cme_port project
   workspace_env="$(workspace_env_file "$workspace")"
   ws_path="$(normalize_path "$(workspace_value "$workspace" WIKI_WORKSPACE_PATH)")"
   serve_port="$(workspace_value "$workspace" WIKI_SERVE_PORT 3100)"
   mcp_port="$(workspace_value "$workspace" WIKI_MCP_PORT 3101)"
+  cme_port="$(workspace_value "$workspace" CME_MCP_PORT 3102)"
   project="$(compose_project "$workspace")"
 
   local compose_env_args=()
@@ -162,13 +199,8 @@ compose_for_workspace() {
   WIKI_WORKSPACE_PATH="$ws_path" \
   WIKI_SERVE_PORT="$serve_port" \
   WIKI_MCP_PORT="$mcp_port" \
+  CME_MCP_PORT="$cme_port" \
   docker compose "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" -p "$project" "$@"
-}
-
-compose_for_cme() {
-  local compose_env_args=()
-  [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
-  docker compose "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" -p wikillm-cme "$@"
 }
 
 compose_for_mailer() {
@@ -183,6 +215,16 @@ logs_args() {
   else
     printf '%s\n' "$@"
   fi
+}
+
+read_lines_into_array() {
+  local array_name="$1"
+  shift
+  local line
+  eval "$array_name=()"
+  while IFS= read -r line; do
+    eval "$array_name+=(\"\$line\")"
+  done < <("$@")
 }
 
 run_wiki() {
@@ -241,50 +283,86 @@ wait_and_open() {
   open_app_mode "${url}"
 }
 
-copy_one_export() {
-  local workspace="$1"
-  local export_path="$2"
-  local ws_path source_abs target_abs
-
-  ws_path="$(normalize_path "$(workspace_value "$workspace" WIKI_WORKSPACE_PATH)")"
-
-  source_abs="$(absolute_path "$export_path")"
-  target_abs="$ws_path/raw/untracked"
-
-  [[ -d "$source_abs" ]] || die "export path is not a directory: $source_abs"
-  mkdir -p "$target_abs"
-
-  if command -v rsync >/dev/null 2>&1; then
-    rsync -a --include='*/' --include='*.md' --exclude='*' "$source_abs/" "$target_abs/"
-  else
-    find "$source_abs" -type f -name '*.md' -print0 | while IFS= read -r -d '' file; do
-      rel="${file#"$source_abs"/}"
-      mkdir -p "$target_abs/$(dirname "$rel")"
-      cp "$file" "$target_abs/$rel"
-    done
-  fi
-
-  printf 'Copied %s -> %s\n' "$source_abs" "$target_abs"
+ensure_workspace_dirs() {
+  local ws_path="$1"
+  mkdir -p "$ws_path/.cme"
+  mkdir -p "$ws_path/raw/untracked"
 }
 
-copy_exports() {
+register_workspace_path() {
   local workspace="$1"
-  local count=0
-  local configured_imports=()
-  while IFS= read -r export_path; do
-    [[ -n "$export_path" ]] || continue
-    configured_imports+=("$export_path")
-  done < <(import_paths "$workspace")
+  local target_path="$2"
+  local registry_path registry_abs
+  registry_path="$WORKSPACES_DIR/$workspace"
+  registry_abs="$(absolute_path "$registry_path")"
 
-  if [[ "${#configured_imports[@]}" -eq 0 ]]; then
-    printf 'No imports configured for workspace: %s\n' "$workspace"
-    return 0
+  [[ "$target_path" == "$registry_abs" ]] && return 0
+
+  mkdir -p "$WORKSPACES_DIR"
+  if [[ -e "$registry_path" || -L "$registry_path" ]]; then
+    die "workspace registry path already exists: $registry_path"
   fi
+  ln -s "$target_path" "$registry_path"
+  printf 'Registered %s -> %s\n' "$registry_path" "$target_path"
+}
 
-  for export_path in "${configured_imports[@]}"; do
-    copy_one_export "$workspace" "$export_path"
-    count=$((count + 1))
-  done
+config_workspace() {
+  local workspace="$1"
+  local target_path="${2:-$WORKSPACES_DIR/$workspace}"
+  target_path="$(absolute_path "$target_path")"
+
+  local env_file="$target_path/.env"
+  [[ -f "$env_file" ]] && die "workspace already configured: $env_file"
+
+  local serve_port mcp_port cme_port prod_port
+  serve_port="$(find_free_port 3100)"
+  mcp_port="$(find_free_port $((serve_port + 1)))"
+  cme_port="$(find_free_port $((mcp_port + 1)))"
+  prod_port="$(find_free_port $((cme_port + 1)))"
+
+  mkdir -p "$target_path"
+  register_workspace_path "$workspace" "$target_path"
+  ensure_workspace_dirs "$target_path"
+
+  printf 'WORKSPACE_NAME=%s\nWIKI_WORKSPACE_PATH=%s\nWIKI_SERVE_PORT=%s\nWIKI_MCP_PORT=%s\nCME_MCP_PORT=%s\nPRODUCTION_MCP_PORT=%s\n' \
+    "$workspace" "$target_path" "$serve_port" "$mcp_port" "$cme_port" "$prod_port" \
+    > "$env_file"
+
+  printf 'Created %s\n' "$env_file"
+  printf 'Ports  serve=%s  mcp=%s  cme=%s  production=%s\n' \
+    "$serve_port" "$mcp_port" "$cme_port" "$prod_port"
+
+  local compose_env_args=()
+  [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
+  compose_env_args+=(--env-file "$env_file")
+
+  WIKI_WORKSPACE_PATH="$target_path" \
+  WIKI_SERVE_PORT="$serve_port" \
+  WIKI_MCP_PORT="$mcp_port" \
+  CME_MCP_PORT="$cme_port" \
+    docker compose "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" run --rm wiki init
+
+  printf 'Workspace ready: %s\n' "$target_path"
+  printf 'Start with:      ./wiki-workspace up %s\n' "$workspace"
+}
+
+up_workspace() {
+  local workspace="$1"
+  local ws_path
+  ws_path="$(normalize_path "$(workspace_value "$workspace" WIKI_WORKSPACE_PATH)")"
+  ensure_workspace_dirs "$ws_path"
+
+  compose_for_workspace "$workspace" up -d serve mcp-http production-mcp cme-mcp
+  compose_for_mailer up -d mailer-mcp
+
+  local serve_port cme_port prod_port
+  serve_port="$(workspace_value "$workspace" WIKI_SERVE_PORT 3100)"
+  cme_port="$(workspace_value "$workspace" CME_MCP_PORT 3102)"
+  prod_port="$(workspace_value "$workspace" PRODUCTION_MCP_PORT 3103)"
+  printf 'Workspace UI: http://localhost:%s\n' "$serve_port"
+  printf 'Chat:         http://localhost:%s/chat\n' "$serve_port"
+  printf 'CME MCP:      http://localhost:%s/mcp/\n' "$cme_port"
+  printf 'Production:   http://localhost:%s/mcp/\n' "$prod_port"
 }
 
 main() {
@@ -298,29 +376,58 @@ main() {
     exit 0
   fi
 
-  if [[ $# -ge 2 && "$1" == "cme" ]]; then
-    local cme_command="$2"
-    shift 2
+  # config <workspace> [path]
+  if [[ $# -ge 2 && "$1" == "config" ]]; then
+    local cfg_workspace="$2"
+    local cfg_path="${3:-}"
+    if [[ -n "$cfg_path" ]]; then
+      config_workspace "$cfg_workspace" "$cfg_path"
+    else
+      config_workspace "$cfg_workspace"
+    fi
+    exit 0
+  fi
+
+  # up <workspace>
+  if [[ $# -eq 2 && "$1" == "up" ]]; then
+    up_workspace "$2"
+    exit 0
+  fi
+
+  # cme <workspace> <command>
+  if [[ $# -ge 1 && "$1" == "cme" ]]; then
+    [[ $# -ge 3 ]] || die "usage: ./wiki-workspace cme <workspace> <up|down|logs>"
+    local cme_workspace="$2"
+    local cme_command="$3"
+    shift 3
     case "$cme_command" in
       up)
         [[ $# -eq 0 ]] || die "cme up does not take arguments"
-        compose_for_cme up -d cme-mcp
+        local ws_path
+        ws_path="$(normalize_path "$(workspace_value "$cme_workspace" WIKI_WORKSPACE_PATH)")"
+        ensure_workspace_dirs "$ws_path"
+        compose_for_workspace "$cme_workspace" up -d cme-mcp
+        local cme_port
+        cme_port="$(workspace_value "$cme_workspace" CME_MCP_PORT 3102)"
+        printf 'CME MCP: http://localhost:%s/mcp/\n' "$cme_port"
         ;;
       down)
         [[ $# -eq 0 ]] || die "cme down does not take arguments"
-        compose_for_cme stop cme-mcp
+        compose_for_workspace "$cme_workspace" stop cme-mcp
         ;;
       logs)
-        mapfile -t log_args < <(logs_args "$@")
-        compose_for_cme logs "${log_args[@]}" cme-mcp
+        local log_args=()
+        read_lines_into_array log_args logs_args "$@"
+        compose_for_workspace "$cme_workspace" logs "${log_args[@]}" cme-mcp
         ;;
       *)
-        die "unknown cme command: $cme_command"
+        die "unknown cme command: $cme_command (expected: up, down, logs)"
         ;;
     esac
     exit 0
   fi
 
+  # mailer <command>
   if [[ $# -ge 2 && "$1" == "mailer" ]]; then
     local mailer_command="$2"
     shift 2
@@ -334,7 +441,8 @@ main() {
         compose_for_mailer stop mailer-mcp
         ;;
       logs)
-        mapfile -t log_args < <(logs_args "$@")
+        local log_args=()
+        read_lines_into_array log_args logs_args "$@"
         compose_for_mailer logs "${log_args[@]}" mailer-mcp
         ;;
       *)
@@ -347,7 +455,7 @@ main() {
   [[ $# -ge 2 ]] || { usage; exit 2; }
 
   local scope="$1"
-  [[ "$scope" == "wiki" ]] || die "unknown scope: $scope (expected: wiki, cme, mailer, or list)"
+  [[ "$scope" == "wiki" ]] || die "unknown scope: $scope (expected: wiki, cme, mailer, up, config, or list)"
   shift
   [[ $# -ge 2 ]] || die "wiki requires a workspace and a command"
 
@@ -361,20 +469,20 @@ main() {
       ;;
     up)
       compose_for_workspace "$workspace" up -d serve mcp-http production-mcp
-      compose_for_cme up -d cme-mcp
-      compose_for_mailer up -d mailer-mcp
       local serve_port production_port
       serve_port="$(workspace_value "$workspace" WIKI_SERVE_PORT 3100)"
-      production_port="$(workspace_value "$workspace" PRODUCTION_MCP_PORT 3336)"
+      production_port="$(workspace_value "$workspace" PRODUCTION_MCP_PORT 3103)"
       printf 'Workspace UI: http://localhost:%s\n' "$serve_port"
       printf 'Chat MCP:     http://localhost:%s/chat\n' "$serve_port"
       printf 'Production:   http://localhost:%s/mcp/\n' "$production_port"
+      printf 'Tip: use ./wiki-workspace up %s to also start CME and mailer.\n' "$workspace"
       ;;
     down)
       compose_for_workspace "$workspace" down
       ;;
     logs)
-      mapfile -t log_args < <(logs_args "$@")
+      local log_args=()
+      read_lines_into_array log_args logs_args "$@"
       compose_for_workspace "$workspace" logs "${log_args[@]}" serve mcp-http production-mcp
       ;;
     serve)
@@ -382,19 +490,15 @@ main() {
       if [[ $# -eq 1 && "$1" == "--open" ]]; then
         open_browser=1
       elif [[ $# -ne 0 ]]; then
-        die "serve accepts only --open as optional flag; port is configured in workspaces/<name>.env"
+        die "serve accepts only --open as optional flag; port is configured in the workspace .env"
       fi
       printf 'Starting mcp-http...\n'
       compose_for_workspace "$workspace" up -d mcp-http
       printf 'Starting production-mcp...\n'
       compose_for_workspace "$workspace" up -d production-mcp
-      printf 'Starting cme-mcp...\n'
-      compose_for_cme up -d cme-mcp
-      printf 'Starting mailer-mcp...\n'
-      compose_for_mailer up -d mailer-mcp
       local serve_port production_port
       serve_port="$(workspace_value "$workspace" WIKI_SERVE_PORT 3100)"
-      production_port="$(workspace_value "$workspace" PRODUCTION_MCP_PORT 3336)"
+      production_port="$(workspace_value "$workspace" PRODUCTION_MCP_PORT 3103)"
       printf 'Workspace UI: http://localhost:%s\n' "$serve_port"
       printf 'Chat MCP:     http://localhost:%s/chat\n' "$serve_port"
       printf 'Production:   http://localhost:%s/mcp/\n' "$production_port"
@@ -406,10 +510,6 @@ main() {
       ;;
     doctor|ingest|build|export)
       run_wiki "$workspace" "$command" "$@"
-      ;;
-    copy)
-      [[ $# -eq 0 ]] || die "copy does not take an import name; it copies all configured exports for the workspace"
-      copy_exports "$workspace"
       ;;
     run)
       [[ $# -gt 0 ]] || die "run requires wiki CLI args"

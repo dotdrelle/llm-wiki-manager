@@ -4,7 +4,7 @@
 .env.*
 !.env.example
 data/
-workspaces/*.env
+workspaces/*
 !workspaces/.env.example
 *.yaml
 *.yml

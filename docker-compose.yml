@@ -36,6 +36,7 @@ services:
   serve:
     image: dotdrelle/llm-wiki:latest
     command: serve --port 3000
+    stop_grace_period: 10s
     volumes:
       - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}:/workspace
     environment:

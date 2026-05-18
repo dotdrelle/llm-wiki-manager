@@ -77,14 +77,88 @@ function projectName(name) {
   return `wiki-${name}`.replace(/[^a-zA-Z0-9_-]/g, '-');
 }
 
-function openBrowser(url) {
+function appleScriptString(value) {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function openBrowser(url, workspaceName) {
   if (process.platform === 'darwin') {
-    const chrome = spawn('open', ['-a', 'Google Chrome', '--args', `--app=${url}`], { stdio: 'ignore', detached: true });
-    chrome.on('error', () => {
-      const edge = spawn('open', ['-a', 'Microsoft Edge', '--args', `--app=${url}`], { stdio: 'ignore', detached: true });
-      edge.on('error', () => spawn('open', [url], { stdio: 'ignore', detached: true }).unref());
-      edge.unref();
+    const targetUrl = appleScriptString(url);
+    const targetTitle = appleScriptString(workspaceName || '');
+    const focusScript = `
+on focusSystemWindow(targetTitle)
+  if targetTitle is "" then return false
+  tell application "System Events"
+    repeat with appName in {"Google Chrome", "Microsoft Edge"}
+      repeat with p in (application processes whose name is appName)
+        repeat with w in windows of p
+          try
+            if (name of w as text) contains targetTitle then
+              perform action "AXRaise" of w
+              set frontmost of p to true
+              return true
+            end if
+          end try
+        end repeat
+      end repeat
+    end repeat
+  end tell
+  return false
+end focusSystemWindow
+
+on focusChromeApp(appName, targetUrl)
+  tell application appName
+    repeat with w in windows
+      repeat with t in tabs of w
+        if (URL of t) starts with targetUrl then
+          set active tab index of w to (index of t)
+          set index of w to 1
+          activate
+          return true
+        end if
+      end repeat
+    end repeat
+  end tell
+  return false
+end focusChromeApp
+
+if focusSystemWindow("${targetTitle}") then
+  return
+end if
+if focusChromeApp("Google Chrome", "${targetUrl}") then
+  return
+end if
+try
+  if focusChromeApp("Microsoft Edge", "${targetUrl}") then
+    return
+  end if
+end try
+error "window not found"
+`;
+    const focus = spawn('osascript', ['-e', focusScript], { stdio: 'ignore' });
+    focus.on('close', code => {
+      if (code === 0) return;
+      openBrowserAppMode(url);
     });
+    focus.on('error', () => openBrowserAppMode(url));
+    focus.unref();
+    return;
+  }
+  openBrowserAppMode(url);
+}
+
+function openBrowserAppMode(url) {
+  if (process.platform === 'darwin') {
+    const fallback = () => spawn('open', [url], { stdio: 'ignore', detached: true }).unref();
+    const openEdge = () => {
+      const edge = spawn('open', ['-na', 'Microsoft Edge', '--args', `--app=${url}`], { stdio: 'ignore', detached: true });
+      edge.on('error', fallback);
+      edge.on('close', code => { if (code !== 0) fallback(); });
+      edge.unref();
+    };
+    const chrome = spawn('open', ['-na', 'Google Chrome', '--args', `--app=${url}`], { stdio: 'ignore', detached: true });
+    chrome.on('error', openEdge);
+    chrome.on('close', code => { if (code !== 0) openEdge(); });
     chrome.unref();
   } else if (process.platform === 'linux') {
     const candidates = [
@@ -168,6 +242,28 @@ function removeSession(pid) {
   return s.sessions.length;
 }
 
+function openWorkspaceTimestamps() {
+  const s = readState();
+  return s.openWorkspaceTimestamps && typeof s.openWorkspaceTimestamps === 'object'
+    ? s.openWorkspaceTimestamps
+    : {};
+}
+
+function markWorkspaceOpened(name) {
+  const s = readState();
+  s.openWorkspaceTimestamps =
+    s.openWorkspaceTimestamps && typeof s.openWorkspaceTimestamps === 'object'
+      ? s.openWorkspaceTimestamps
+      : {};
+  s.openWorkspaceTimestamps[name] = Date.now();
+  saveState(s);
+}
+
+async function stopAllServeContainers() {
+  const all = listWorkspaces();
+  await Promise.allSettled(all.map(ws => dockerCompose(ws, ['stop', 'serve'])));
+}
+
 // ── HTTP server ───────────────────────────────────────────────────────────────
 
 function sendJson(res, status, data) {
@@ -197,9 +293,16 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && urlPath === 'workspaces') {
       const all  = listWorkspaces();
       const runs = await Promise.all(all.map(w => isListening(w.servePort)));
+      const opened = openWorkspaceTimestamps();
+      const now = Date.now();
       return sendJson(res, 200, {
         ok: true,
-        workspaces: all.map((w, i) => ({ name: w.name, servePort: w.servePort, running: runs[i] })),
+        workspaces: all.map((w, i) => ({
+          name: w.name,
+          servePort: w.servePort,
+          running: runs[i],
+          opened: Boolean(opened[w.name] && now - opened[w.name] < 15000),
+        })),
       });
     }
 
@@ -211,8 +314,10 @@ const server = http.createServer(async (req, res) => {
 
       if (parts[2] === 'start') {
         // Fire-and-forget; browser polls /workspaces for ready status
-        dockerCompose(ws, ['up', '-d', 'serve', 'mcp-http', 'production-mcp'])
-          .catch(e => process.stderr.write(`hub start ${ws.name}: ${e.message}\n`));
+        (async () => {
+          await dockerCompose(ws, ['up', '-d', 'mcp-http', 'production-mcp']);
+          await dockerCompose(ws, ['up', '-d', '--force-recreate', 'serve']);
+        })().catch(e => process.stderr.write(`hub start ${ws.name}: ${e.message}\n`));
         return sendJson(res, 200, { ok: true, starting: true });
       }
 
@@ -223,7 +328,14 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (parts[2] === 'open') {
-        openBrowser(`http://localhost:${ws.servePort}`);
+        await dockerCompose(ws, ['up', '-d', '--force-recreate', 'serve']);
+        markWorkspaceOpened(ws.name);
+        openBrowser(`http://localhost:${ws.servePort}`, ws.name);
+        return sendJson(res, 200, { ok: true, opened: true });
+      }
+
+      if (parts[2] === 'heartbeat') {
+        markWorkspaceOpened(ws.name);
         return sendJson(res, 200, { ok: true });
       }
     }
@@ -238,6 +350,9 @@ const server = http.createServer(async (req, res) => {
       }
       if (parts[1] === 'deregister') {
         const remaining = removeSession(data.pid);
+        if (remaining === 0) {
+          await stopAllServeContainers();
+        }
         return sendJson(res, 200, { ok: true, remaining });
       }
     }

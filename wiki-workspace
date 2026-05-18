@@ -220,6 +220,7 @@ logs_args() {
 # ── hub helpers ───────────────────────────────────────────────────────────────
 
 hub_state_file() { printf '%s/.hub/state.json\n' "$ROOT_DIR"; }
+hub_token_file() { printf '%s/.hub/token\n' "$ROOT_DIR"; }
 
 _hub_field_num() { grep -o "\"$2\":[[:space:]]*[0-9]*" "$1" 2>/dev/null | head -1 | grep -o '[0-9]*$'; }
 _hub_field_str() { grep -o "\"$2\":[[:space:]]*\"[^\"]*\"" "$1" 2>/dev/null | head -1 | sed 's/.*"[[:space:]]*:[[:space:]]*"//' | tr -d '"'; }
@@ -246,7 +247,14 @@ ensure_hub() {
     return 0
   fi
 
-  HUB_TOKEN="$(node -e "process.stdout.write(require('crypto').randomBytes(16).toString('hex'))")"
+  mkdir -p "$ROOT_DIR/.hub"
+  if [[ -f "$(hub_token_file)" ]]; then
+    HUB_TOKEN="$(cat "$(hub_token_file)")"
+  else
+    HUB_TOKEN="$(node -e "process.stdout.write(require('crypto').randomBytes(16).toString('hex'))")"
+    printf '%s\n' "$HUB_TOKEN" > "$(hub_token_file)"
+    chmod 600 "$(hub_token_file)" 2>/dev/null || true
+  fi
   node "$ROOT_DIR/hub.js" "$ROOT_DIR" "$WORKSPACES_DIR" "$HUB_TOKEN" >/dev/null 2>&1 &
 
   local i
@@ -284,11 +292,12 @@ register_hub_session() {
 
 cleanup_hub_session() {
   [[ -z "$HUB_PORT" || -z "$HUB_TOKEN" ]] && return 0
-  local remaining
-  remaining="$(curl -sf -X POST "http://127.0.0.1:${HUB_PORT}/sessions/deregister" \
+  local response remaining
+  response="$(curl -sf -X POST "http://127.0.0.1:${HUB_PORT}/sessions/deregister" \
     -H "Authorization: Bearer ${HUB_TOKEN}" \
     -H "Content-Type: application/json" \
-    -d "{\"pid\":$$}" 2>/dev/null | grep -o '"remaining":[0-9]*' | grep -o '[0-9]*')" || remaining=1
+    -d "{\"pid\":$$}" 2>/dev/null)" || response=''
+  remaining="$(printf '%s' "$response" | grep -o '"remaining":[0-9]*' | grep -o '[0-9]*')" || remaining=1
   if [[ "${remaining:-1}" -eq 0 ]]; then
     local hub_pid
     hub_pid="$(_hub_field_num "$(hub_state_file)" pid)" 2>/dev/null || true

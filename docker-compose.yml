@@ -30,6 +30,7 @@ services:
     environment:
       - OPENAI_API_KEY
       - ANTHROPIC_API_KEY
+      - WIKI_WORKSPACE_PATH=/workspace
     extra_hosts:
       - host.docker.internal:host-gateway
 
@@ -42,6 +43,7 @@ services:
     environment:
       - OPENAI_API_KEY
       - ANTHROPIC_API_KEY
+      - WIKI_WORKSPACE_PATH=/workspace
       - WIKI_MCP_HTTP_PORT=${WIKI_MCP_PORT:-3101}
       - WIKI_MCP_AUTH_TOKEN
       - CME_MCP_PORT
@@ -65,6 +67,7 @@ services:
       #- ${WIKI_CERTS:-./certs}:/certs:ro
     environment:
       - WIKI_MCP_AUTH_TOKEN=${WIKI_MCP_AUTH_TOKEN}
+      - WIKI_WORKSPACE_PATH=/workspace
       - WIKI_MCP_TLS_CERT_PATH
       - WIKI_MCP_TLS_KEY_PATH
       - WIKI_MCP_TLS_CA_PATH

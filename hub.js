@@ -328,7 +328,6 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (parts[2] === 'open') {
-        await dockerCompose(ws, ['up', '-d', '--force-recreate', 'serve']);
         markWorkspaceOpened(ws.name);
         openBrowser(`http://localhost:${ws.servePort}`, ws.name);
         return sendJson(res, 200, { ok: true, opened: true });

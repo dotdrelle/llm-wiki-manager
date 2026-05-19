@@ -308,11 +308,15 @@ cleanup_hub_session() {
 read_lines_into_array() {
   local array_name="$1"
   shift
-  local line
-  eval "$array_name=()"
+  [[ "$array_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "invalid array name: $array_name"
+
+  local line assignment
+  assignment="$array_name=("
   while IFS= read -r line; do
-    eval "$array_name+=(\"\$line\")"
+    assignment+=" $(printf '%q' "$line")"
   done < <("$@")
+  assignment+=" )"
+  eval "$assignment"
 }
 
 run_wiki() {

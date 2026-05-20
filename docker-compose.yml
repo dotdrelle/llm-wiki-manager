@@ -69,7 +69,6 @@ services:
       - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}:/workspace
       #- ${WIKI_CERTS:-./certs}:/certs:ro
     environment:
-      - WIKI_MCP_AUTH_TOKEN=${WIKI_MCP_AUTH_TOKEN}
       - WIKI_WORKSPACE_PATH=/workspace
       - WIKI_MCP_TLS_CERT_PATH
       - WIKI_MCP_TLS_KEY_PATH

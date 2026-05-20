@@ -188,7 +188,9 @@ used_workspace_ports() {
 
 is_port_in_use() {
   local port="$1"
-  if command -v lsof >/dev/null 2>&1; then
+  if command -v ss >/dev/null 2>&1; then
+    ss -tln 2>/dev/null | grep -q ":${port} "
+  elif command -v lsof >/dev/null 2>&1; then
     lsof -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
   else
     (echo >/dev/tcp/127.0.0.1/"$port") 2>/dev/null
@@ -422,6 +424,27 @@ open_app_mode() {
         || open "${url}"
       ;;
     Linux)
+      # WSL2: Windows browsers are not on PATH — probe known Windows paths via wslpath.
+      if command -v wslpath >/dev/null 2>&1; then
+        local wsl_candidate wsl_path
+        for wsl_candidate in \
+          "C:/Program Files/Google/Chrome/Application/chrome.exe" \
+          "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe" \
+          "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" \
+          "C:/Program Files/Microsoft/Edge/Application/msedge.exe"; do
+          wsl_path="$(wslpath -u "$wsl_candidate" 2>/dev/null)" || continue
+          [[ -f "$wsl_path" ]] || continue
+          "$wsl_path" "--app=${url}" &
+          return
+        done
+        for wsl_candidate in \
+          "C:/Program Files/Mozilla Firefox/firefox.exe"; do
+          wsl_path="$(wslpath -u "$wsl_candidate" 2>/dev/null)" || continue
+          [[ -f "$wsl_path" ]] || continue
+          "$wsl_path" "${url}" &
+          return
+        done
+      fi
       for candidate in google-chrome google-chrome-stable chromium chromium-browser microsoft-edge microsoft-edge-stable; do
         if command -v "$candidate" >/dev/null 2>&1; then
           "$candidate" "--app=${url}" &
@@ -438,6 +461,13 @@ open_app_mode() {
         "C:/Program Files/Microsoft/Edge/Application/msedge.exe"; do
         if [[ -f "$candidate" ]]; then
           "$candidate" "--app=${url}" &
+          return
+        fi
+      done
+      for candidate in \
+        "C:/Program Files/Mozilla Firefox/firefox.exe"; do
+        if [[ -f "$candidate" ]]; then
+          "$candidate" "${url}" &
           return
         fi
       done
@@ -507,6 +537,9 @@ config_workspace() {
   register_workspace_path "$workspace" "$target_path"
   ensure_workspace_dirs "$target_path"
   ensure_manager_mailer_token
+  # Ensure the container (node, UID 1000) can write to the workspace.
+  # Needed on WSL2 when the host UID differs from the container UID.
+  chmod -R a+rwX "$target_path" 2>/dev/null || true
 
   printf 'WORKSPACE_NAME=%s\nWIKI_WORKSPACE_PATH=%s\nWIKI_SERVE_PORT=%s\nWIKI_MCP_PORT=%s\nCME_MCP_PORT=%s\nPRODUCTION_MCP_PORT=%s\nWIKI_MCP_AUTH_TOKEN=%s\nCME_MCP_AUTH_TOKEN=%s\nPRODUCTION_MCP_AUTH_TOKEN=%s\n' \
     "$workspace" "$target_path" "$serve_port" "$mcp_port" "$cme_port" "$prod_port" "$wiki_token" "$cme_token" "$prod_token" \

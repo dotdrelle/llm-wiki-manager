@@ -17,7 +17,7 @@ Usage:
 
 Commands:
   config <workspace> [path]         Create workspace folder, auto-select ports, run wiki init
-  up <workspace>                    Start full stack: wiki + cme + mailer for this workspace
+  up <workspace> [--open]           Start full stack: wiki + cme + mailer for this workspace
   list                              List configured workspaces
 
   cme <workspace> up                Start workspace-scoped agent-cme MCP server
@@ -565,6 +565,7 @@ config_workspace() {
 
 up_workspace() {
   local workspace="$1"
+  local open_browser="${2:-0}"
   need_workspace_env "$workspace"
   local ws_path
   ws_path="$(normalize_path "$(workspace_value "$workspace" WIKI_WORKSPACE_PATH)")"
@@ -581,6 +582,10 @@ up_workspace() {
   printf 'Chat:         http://localhost:%s/chat\n' "$serve_port"
   printf 'CME MCP:      http://localhost:%s/mcp/\n' "$cme_port"
   printf 'Production:   http://localhost:%s/mcp/\n' "$prod_port"
+
+  if [[ "$open_browser" == "1" ]]; then
+    wait_and_open "http://localhost:${serve_port}/chat" &
+  fi
 }
 
 main() {
@@ -606,9 +611,11 @@ main() {
     exit 0
   fi
 
-  # up <workspace>
-  if [[ $# -eq 2 && "$1" == "up" ]]; then
-    up_workspace "$2"
+  # up <workspace> [--open]
+  if [[ $# -ge 2 && "$1" == "up" ]]; then
+    local up_open=0
+    [[ "${3:-}" == "--open" ]] && up_open=1
+    up_workspace "$2" "$up_open"
     exit 0
   fi
 

@@ -12,21 +12,19 @@ Usage:
   ./wiki-workspace up <workspace>
   ./wiki-workspace wiki <workspace> <command> [args...]
   ./wiki-workspace cme <workspace> <up|down|logs>
-  ./wiki-workspace mailer <up|down|logs>
+  ./wiki-workspace mailer status
   ./wiki-workspace list
 
 Commands:
   config <workspace> [path]         Create workspace folder, auto-select ports, run wiki init
-  up <workspace> [--open]           Start full stack: wiki + cme + mailer for this workspace
+  up <workspace> [--open]           Start workspace stack: wiki + cme + production
   list                              List configured workspaces
 
   cme <workspace> up                Start workspace-scoped agent-cme MCP server
   cme <workspace> down              Stop workspace-scoped agent-cme MCP server
   cme <workspace> logs [args...]    Follow workspace-scoped agent-cme logs (tail 100 by default)
 
-  mailer up                         Start the shared agent-mailer-api MCP server
-  mailer down                       Stop the shared agent-mailer-api MCP server
-  mailer logs [args...]             Follow agent-mailer-api logs (tail 100 by default)
+  mailer status                     Check external agent-mailer-api URL/token configuration
 
   wiki <workspace> init             Initialize the workspace with wiki init
   wiki <workspace> up               Start llm-wiki serve + mcp-http + production-mcp
@@ -145,23 +143,6 @@ set_env_value() {
   mv "$tmp" "$file"
 }
 
-ensure_manager_mailer_token() {
-  local current
-  current="$(env_value "$MANAGER_ENV_FILE" MAILER_MCP_AUTH_TOKEN "")"
-  [[ -n "$current" ]] && return 0
-
-  mkdir -p "$(dirname "$MANAGER_ENV_FILE")"
-  if [[ ! -f "$MANAGER_ENV_FILE" ]]; then
-    {
-      printf '# Shared manager configuration.\n'
-      printf '# Keep real secrets local.\n\n'
-    } > "$MANAGER_ENV_FILE"
-  fi
-
-  set_env_value "$MANAGER_ENV_FILE" MAILER_MCP_AUTH_TOKEN "$(generate_token)"
-  printf 'Created shared MAILER_MCP_AUTH_TOKEN in %s\n' "$MANAGER_ENV_FILE"
-}
-
 workspace_value() {
   local workspace="$1"
   local key="$2"
@@ -180,10 +161,6 @@ used_workspace_ports() {
       [[ "$val" =~ ^[0-9]+$ ]] && printf '%s\n' "$val"
     done
   done
-  if [[ -f "$MANAGER_ENV_FILE" ]]; then
-    val="$(env_value "$MANAGER_ENV_FILE" MAILER_MCP_PORT "")"
-    [[ "$val" =~ ^[0-9]+$ ]] && printf '%s\n' "$val"
-  fi
 }
 
 is_port_in_use() {
@@ -290,12 +267,6 @@ compose_for_workspace() {
   CME_MCP_PORT="$cme_port" \
   PRODUCTION_MCP_PORT="$prod_port" \
   docker compose "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" -p "$project" "$@"
-}
-
-compose_for_mailer() {
-  local compose_env_args=()
-  [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
-  docker compose "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" -p wikillm-mailer "$@"
 }
 
 logs_args() {
@@ -536,7 +507,6 @@ config_workspace() {
   mkdir -p "$target_path"
   register_workspace_path "$workspace" "$target_path"
   ensure_workspace_dirs "$target_path"
-  ensure_manager_mailer_token
   # Ensure the container (node, UID 1000) can write to the workspace.
   # Needed on WSL2 when the host UID differs from the container UID.
   chmod -R a+rwX "$target_path" 2>/dev/null || true
@@ -572,8 +542,6 @@ up_workspace() {
   ensure_workspace_dirs "$ws_path"
 
   compose_for_workspace "$workspace" up -d serve mcp-http production-mcp cme-mcp
-  ensure_manager_mailer_token
-  compose_for_mailer up -d --force-recreate mailer-mcp
 
   local serve_port cme_port prod_port
   serve_port="$(workspace_value "$workspace" WIKI_SERVE_PORT 3100)"
@@ -583,6 +551,7 @@ up_workspace() {
   printf 'Chat:         http://localhost:%s/chat\n' "$serve_port"
   printf 'CME MCP:      http://localhost:%s/mcp/\n' "$cme_port"
   printf 'Production:   http://localhost:%s/mcp/\n' "$prod_port"
+  printf 'Mailer:       external (%s)\n' "$(env_value "$MANAGER_ENV_FILE" MAILER_MCP_PROXY_URL "http://host.docker.internal:3335/mcp/")"
 
   if [[ "$open_browser" == "1" ]]; then
     wait_and_open "http://localhost:${serve_port}/chat" &
@@ -658,23 +627,30 @@ main() {
     local mailer_command="$2"
     shift 2
     case "$mailer_command" in
-      up)
-        [[ $# -eq 0 ]] || die "mailer up does not take arguments"
-        ensure_manager_mailer_token
-        compose_for_mailer up -d --force-recreate mailer-mcp
-        printf 'Mailer restarted with the current manager token. If MAILER_MCP_AUTH_TOKEN changed, restart workspace serve too.\n'
-        ;;
-      down)
-        [[ $# -eq 0 ]] || die "mailer down does not take arguments"
-        compose_for_mailer stop mailer-mcp
-        ;;
-      logs)
-        local log_args=()
-        read_lines_into_array log_args logs_args "$@"
-        compose_for_mailer logs "${log_args[@]}" mailer-mcp
+      status)
+        [[ $# -eq 0 ]] || die "mailer status does not take arguments"
+        local mailer_url mailer_token
+        mailer_url="$(env_value "$MANAGER_ENV_FILE" MAILER_MCP_PROXY_URL "http://host.docker.internal:3335/mcp/")"
+        mailer_token="$(env_value "$MANAGER_ENV_FILE" MAILER_MCP_AUTH_TOKEN "")"
+        printf 'Mailer MCP URL:   %s\n' "$mailer_url"
+        if [[ -n "$mailer_token" ]]; then
+          printf 'Mailer MCP token: configured\n'
+        else
+          printf 'Mailer MCP token: missing (set MAILER_MCP_AUTH_TOKEN in %s)\n' "$MANAGER_ENV_FILE"
+        fi
+        if command -v curl >/dev/null 2>&1; then
+          local status_url="${mailer_url/host.docker.internal/localhost}"
+          if curl -fs -H 'Accept: text/html' "$status_url" >/dev/null; then
+            printf 'Reachability:     ok\n'
+          else
+            printf 'Reachability:     failed\n'
+          fi
+        else
+          printf 'Reachability:     skipped (curl not installed)\n'
+        fi
         ;;
       *)
-        die "unknown mailer command: $mailer_command"
+        die "unknown mailer command: $mailer_command (expected: status)"
         ;;
     esac
     exit 0
@@ -703,7 +679,7 @@ main() {
       printf 'Workspace UI: http://localhost:%s\n' "$serve_port"
       printf 'Chat MCP:     http://localhost:%s/chat\n' "$serve_port"
       printf 'Production:   http://localhost:%s/mcp/\n' "$production_port"
-      printf 'Tip: use ./wiki-workspace up %s to also start CME and mailer.\n' "$workspace"
+      printf 'Tip: use ./wiki-workspace up %s to also start CME.\n' "$workspace"
       ;;
     down)
       compose_for_workspace "$workspace" down

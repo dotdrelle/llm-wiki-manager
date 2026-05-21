@@ -2,7 +2,6 @@
 #
 # This compose file is driven by ./wiki-workspace. It can run:
 #   - one workspace-scoped agent-cme MCP server per workspace
-#   - one shared agent-mailer-api MCP server
 #   - one llm-wiki serve + mcp-http + production MCP set per configured workspace
 #
 # Typical usage:
@@ -14,7 +13,7 @@
 #
 # Workspace UI / MCP endpoints use the ports declared in workspaces/<name>/.env.
 # agent-cme port is per-workspace (CME_MCP_PORT in workspace .env)
-# agent-mailer-api defaults to http://localhost:3335/mcp/
+# agent-mailer-api is external to the manager; serve receives MAILER_MCP_PROXY_URL.
 
 services:
 
@@ -46,7 +45,6 @@ services:
       - MAILER_MCP_AUTH_TOKEN
       - PRODUCTION_MCP_AUTH_TOKEN
       - CME_MCP_PORT
-      - MAILER_MCP_PORT
       - PRODUCTION_MCP_PORT
       - HUB_PORT
       - HUB_TOKEN
@@ -54,7 +52,7 @@ services:
       - WORKSPACE_NAME
       - WIKI_MCP_PROXY_URL=http://host.docker.internal:${WIKI_MCP_PORT:-3101}/mcp
       - CME_MCP_PROXY_URL=http://host.docker.internal:${CME_MCP_PORT:-3000}/mcp/
-      - MAILER_MCP_PROXY_URL=http://host.docker.internal:${MAILER_MCP_PORT:-3335}/mcp/
+      - MAILER_MCP_PROXY_URL=${MAILER_MCP_PROXY_URL:-http://host.docker.internal:3335/mcp/}
       - PRODUCTION_MCP_PROXY_URL=http://host.docker.internal:${PRODUCTION_MCP_PORT:-3336}/mcp/
     ports:
       - '${WIKI_SERVE_PORT:-3100}:3000'
@@ -106,23 +104,6 @@ services:
     volumes:
       - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}/.cme:/data
       - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}/raw/untracked:/data/exports
-
-  # ── agent-mailer-api ──────────────────────────────────────────────────────
-
-  mailer-mcp:
-    image: dotdrelle/agent-mailer-api:latest
-    environment:
-      - MCP_AUTH_TOKEN=${MAILER_MCP_AUTH_TOKEN:-}
-      - MAILERSEND_API_KEY=${MAILERSEND_API_KEY:-}
-      - MAILERSEND_FROM_EMAIL=${MAILERSEND_FROM_EMAIL:-no-reply@example.com}
-      - MAILERSEND_FROM_NAME=${MAILERSEND_FROM_NAME:-Mailer Agent}
-      - MAILERSEND_USER_AGENT=${MAILERSEND_USER_AGENT:-curl/8.7.1}
-      - MAILERSEND_VERIFY_SSL=${MAILERSEND_VERIFY_SSL:-true}
-      - MAILER_REQUIRE_CONFIRMATION=true
-      - MAILER_DRY_RUN
-    ports:
-      - '${MAILER_MCP_PORT:-3335}:8080'
-    restart: unless-stopped
 
   # ── agent-wiki-production ─────────────────────────────────────────────────
 

@@ -5,13 +5,15 @@ that AI agents can search, explore, maintain, and use to generate up-to-date
 documents.
 
 `llm-wiki-manager` is the orchestration layer for that workflow. It coordinates
-workspace services, MCP endpoints, a Confluence exporter, and an action agent so
+workspace services, MCP endpoints, a Confluence exporter, and production jobs so
 several `llm-wiki` workspaces can be run from one cockpit.
 
-The manager does not implement the `llm-wiki`, `agent-cme`, `agent-mailer-api`, or
+The manager does not implement the `llm-wiki`, `agent-cme`, or
 `agent-wiki-production` services itself. It pulls their published Docker images,
 injects workspace-specific environment variables, and provides a shared Docker
-Compose setup plus the `wiki-workspace` helper script.
+Compose setup plus the `wiki-workspace` helper script. `agent-mailer-api` is
+external infrastructure: the manager only passes its MCP URL and bearer token to
+`llm-wiki serve`.
 
 This repository is part of a multi-repository toolchain:
 
@@ -20,7 +22,7 @@ This repository is part of a multi-repository toolchain:
 | [`llm-wiki`](https://github.com/dotdrelle/llm-wiki) | Workspace engine: CLI, web UI, MCP server, retrieval, and deliverable builder |
 | [`llm-wiki-manager`](https://github.com/dotdrelle/llm-wiki-manager) | Multi-workspace Docker orchestration |
 | [`agent-cme`](https://github.com/dotdrelle/agent-cme) | Confluence Markdown exporter exposed over MCP |
-| `agent-mailer-api` | Send-only MailerSend MCP action agent |
+| `agent-mailer-api` | External send-only MailerSend MCP action agent |
 | `agent-wiki-production` | Workspace-scoped llm-wiki production jobs exposed over MCP |
 
 ---
@@ -55,7 +57,7 @@ For that reason, manager production pipelines do not include the legacy
 llm-wiki-manager/
 ├── docker-compose.yml          # shared compose for all workspace services
 ├── wiki-workspace              # CLI wrapper around docker compose
-├── .env.example                # template for shared manager settings and mailer secrets
+├── .env.example                # template for shared manager settings and external mailer URL/token
 ├── workspaces/.env.example     # template for per-workspace configuration
 ├── SKILL.md                    # agent skill: Confluence → wiki pipeline
 └── workspaces/                 # per-workspace config (gitignored)
@@ -74,8 +76,8 @@ cp .env.example .env
 ```
 
 LLM and vector provider settings, including `apiKey`, live in each workspace's
-`.wikirc.yaml`. The manager `.env` is for shared settings such as the mailer and
-optional production guards.
+`.wikirc.yaml`. The manager `.env` is for shared settings such as optional
+production guards and the external mailer endpoint consumed by `serve`.
 
 ---
 
@@ -112,8 +114,8 @@ workspace by name:
 ./wiki-workspace up my-project
 ```
 
-Starts the full stack: wiki UI, wiki MCP, production MCP, workspace CME, and the
-shared mailer agent.
+Starts the workspace stack: wiki UI, wiki MCP, production MCP, and workspace CME.
+The mailer is external; `serve` connects to it through `MAILER_MCP_PROXY_URL`.
 
 | Service | Port variable |
 | ------- | ------------- |
@@ -121,7 +123,6 @@ shared mailer agent.
 | Wiki MCP | `WIKI_MCP_PORT` |
 | CME MCP | `CME_MCP_PORT` |
 | Production MCP | `PRODUCTION_MCP_PORT` |
-| Mailer MCP (shared) | `MAILER_MCP_PORT` in root `.env` |
 
 ---
 
@@ -145,23 +146,22 @@ Start the full stack:
 ./wiki-workspace up my-project
 ```
 
-Start only wiki services (no CME or mailer):
+Start only wiki services (no CME):
 
 ```bash
 ./wiki-workspace wiki my-project up
 ```
 
-Run the web UI in the foreground without starting CME or mailer:
+Run the web UI in the foreground without starting CME:
 
 ```bash
 ./wiki-workspace wiki my-project serve
 ```
 
-Start CME or mailer manually when the workspace needs them:
+Start CME manually when the workspace needs it:
 
 ```bash
 ./wiki-workspace cme my-project up
-./wiki-workspace mailer up
 ./wiki-workspace wiki my-project serve
 ```
 
@@ -173,12 +173,10 @@ Manage workspace CME:
 ./wiki-workspace cme my-project down
 ```
 
-Manage the shared mailer:
+Check the external mailer configuration:
 
 ```bash
-./wiki-workspace mailer up
-./wiki-workspace mailer logs
-./wiki-workspace mailer down
+./wiki-workspace mailer status
 ```
 
 Run the wiki pipeline:
@@ -251,11 +249,20 @@ Edit the workspace `.env` to change them.
 
 ## MCP auth tokens
 
-The shared mailer token lives in the root manager `.env`:
+External transverse MCP endpoints live in the root manager `.env`:
 
 ```env
+MAILER_MCP_PROXY_URL=http://host.docker.internal:3335/mcp/
 MAILER_MCP_AUTH_TOKEN=
+
+ATLASSIAN_MCP_PROXY_URL=http://host.docker.internal:9000/mcp
+ATLASSIAN_MCP_AUTH_TOKEN=
 ```
+
+`ATLASSIAN_MCP_AUTH_TOKEN` is kept as the manager-side MCP key for clients or a
+future auth proxy. The upstream `mcp-atlassian` HTTP server uses Atlassian
+credentials from `agent-atlassian/.env`; do not put Confluence/Jira secrets in
+the manager `.env`.
 
 Workspace-scoped tokens live in each `workspaces/<name>/.env` and are generated
 by `./wiki-workspace config`:

@@ -572,7 +572,8 @@ up_workspace() {
   ensure_workspace_dirs "$ws_path"
 
   compose_for_workspace "$workspace" up -d serve mcp-http production-mcp cme-mcp
-  compose_for_mailer up -d mailer-mcp
+  ensure_manager_mailer_token
+  compose_for_mailer up -d --force-recreate mailer-mcp
 
   local serve_port cme_port prod_port
   serve_port="$(workspace_value "$workspace" WIKI_SERVE_PORT 3100)"
@@ -659,7 +660,9 @@ main() {
     case "$mailer_command" in
       up)
         [[ $# -eq 0 ]] || die "mailer up does not take arguments"
-        compose_for_mailer up -d mailer-mcp
+        ensure_manager_mailer_token
+        compose_for_mailer up -d --force-recreate mailer-mcp
+        printf 'Mailer restarted with the current manager token. If MAILER_MCP_AUTH_TOKEN changed, restart workspace serve too.\n'
         ;;
       down)
         [[ $# -eq 0 ]] || die "mailer down does not take arguments"

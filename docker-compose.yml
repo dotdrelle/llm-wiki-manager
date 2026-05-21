@@ -88,7 +88,7 @@ services:
   cme-mcp:
     image: dotdrelle/agent-cme:latest
     environment:
-      - MCP_AUTH_TOKEN=${CME_MCP_AUTH_TOKEN}
+      - MCP_AUTH_TOKEN=${CME_MCP_AUTH_TOKEN:-}
       - CME_EXPORT__OUTPUT_PATH=/data/exports
     volumes:
       - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}/.cme:/data
@@ -112,11 +112,12 @@ services:
   mailer-mcp:
     image: dotdrelle/agent-mailer-api:latest
     environment:
-      - MCP_AUTH_TOKEN=${MAILER_MCP_AUTH_TOKEN}
-      - MAILERSEND_API_KEY=${MAILERSEND_API_KEY}
+      - MCP_AUTH_TOKEN=${MAILER_MCP_AUTH_TOKEN:-}
+      - MAILERSEND_API_KEY=${MAILERSEND_API_KEY:-}
       - MAILERSEND_FROM_EMAIL=${MAILERSEND_FROM_EMAIL:-no-reply@example.com}
       - MAILERSEND_FROM_NAME=${MAILERSEND_FROM_NAME:-Mailer Agent}
       - MAILERSEND_USER_AGENT=${MAILERSEND_USER_AGENT:-curl/8.7.1}
+      - MAILERSEND_VERIFY_SSL=${MAILERSEND_VERIFY_SSL:-true}
       - MAILER_REQUIRE_CONFIRMATION=true
       - MAILER_DRY_RUN
     ports:
@@ -130,7 +131,7 @@ services:
     volumes:
       - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}:/workspace
     environment:
-      - MCP_AUTH_TOKEN=${PRODUCTION_MCP_AUTH_TOKEN}
+      - MCP_AUTH_TOKEN=${PRODUCTION_MCP_AUTH_TOKEN:-}
       - WORKSPACE_NAME=${WORKSPACE_NAME:-workspace}
       - WIKI_WORKSPACE_PATH=/workspace
       - PRODUCTION_ALLOWED_STEPS=${PRODUCTION_ALLOWED_STEPS:-doctor,ingest,build,export,polish,pipeline}

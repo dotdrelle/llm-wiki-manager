@@ -2,6 +2,10 @@
 
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
 
+<p align="center">
+  <img src="https://www.itsdonna.events/assets/LocalFirstAIKnowledgeCore.png" alt="Donna local-first AI knowledge core architecture" width="760">
+</p>
+
 `llm-wiki` turns heterogeneous documentation into a living Markdown knowledge base
 that AI agents can search, explore, maintain, and use to generate up-to-date
 documents.

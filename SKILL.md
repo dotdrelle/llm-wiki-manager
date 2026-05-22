@@ -1,12 +1,12 @@
 ---
 name: agent-cme-llm-wiki-pipeline
-description: Run the Confluence → wiki pipeline for a workspace. agent-cme exports directly into raw/untracked; no copy step needed. Use when the user wants to refresh Confluence data and rebuild the wiki.
+description: Run the Confluence → wiki pipeline for a workspace. agent-cme exports directly into raw/untracked; no copy step needed. Use when the user wants to refresh Confluence data, rebuild the wiki, and regenerate deliverables.
 ---
 
 # Confluence → llm-wiki Pipeline
 
 ```text
-Confluence -> cme_export_run -> <workspace>/raw/untracked -> wiki ingest -> wiki build -> wiki export
+Confluence -> cme_export_run -> <workspace>/raw/untracked -> wiki ingest -> wiki build -> wiki export --polish
 ```
 
 agent-cme writes exports **directly** into the workspace `raw/untracked` directory via a Docker volume mount. There is no copy step for CME-sourced data.
@@ -17,6 +17,7 @@ agent-cme writes exports **directly** into the workspace `raw/untracked` directo
 - llm-wiki workspace receives markdown under `raw/untracked`.
 - `wiki ingest` transforms `raw/untracked` into `wiki/` content and archives sources to `raw/ingested`.
 - `wiki build` generates deliverables from templates and build context.
+- `wiki export <deliverable> --polish` expands cited sources and runs the final editorial pass.
 
 ## Preconditions
 
@@ -61,14 +62,18 @@ Exports land in `<workspace>/raw/untracked/` automatically.
 ./wiki-workspace wiki <workspace> ingest
 ./wiki-workspace wiki <workspace> build --plan
 ./wiki-workspace wiki <workspace> build
-./wiki-workspace wiki <workspace> export
+./wiki-workspace wiki <workspace> export <deliverable> --polish
 ```
+
+Do not run bare `wiki export` without a deliverable path. If several
+deliverables need publication, export each generated file explicitly.
 
 ### 4. Verify results
 
 ```bash
-find "<workspace-path>/raw/untracked" -type f -name '*.md' | wc -l
-find "<workspace-path>/raw/ingested" -type f -name '*.md' | wc -l
+./wiki-workspace wiki <workspace> run lint
+find <workspace-path>/raw/untracked -type f -name '*.md' | wc -l
+find <workspace-path>/raw/ingested -type f -name '*.md' | wc -l
 ```
 
 Expected: after ingest, processed files move from `raw/untracked` to `raw/ingested`.
@@ -79,3 +84,4 @@ Expected: after ingest, processed files move from `raw/untracked` to `raw/ingest
 - Do not add `--force` to ingest unless the user explicitly wants all sources reprocessed.
 - Do not delete `raw/ingested` to "fix" duplicate ingestion — that removes the skip baseline.
 - Do not copy attachments into `raw/untracked`.
+- Do not commit workspace `.env`, `.cme`, generated raw exports, or local MCP tokens.

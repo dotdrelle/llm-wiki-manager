@@ -1,5 +1,7 @@
 # llm-wiki-manager
 
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
+
 `llm-wiki` turns heterogeneous documentation into a living Markdown knowledge base
 that AI agents can search, explore, maintain, and use to generate up-to-date
 documents.
@@ -22,8 +24,8 @@ This repository is part of a multi-repository toolchain:
 | [`llm-wiki`](https://github.com/dotdrelle/llm-wiki) | Workspace engine: CLI, web UI, MCP server, retrieval, and deliverable builder |
 | [`llm-wiki-manager`](https://github.com/dotdrelle/llm-wiki-manager) | Multi-workspace Docker orchestration |
 | [`agent-cme`](https://github.com/dotdrelle/agent-cme) | Confluence Markdown exporter exposed over MCP |
-| `agent-mailer-api` | External send-only MailerSend MCP action agent |
-| `agent-wiki-production` | Workspace-scoped llm-wiki production jobs exposed over MCP |
+| [`agent-mailer-api`](https://github.com/dotdrelle/agent-mailer-api) | External send-only MailerSend MCP action agent |
+| [`agent-wiki-production`](https://github.com/dotdrelle/agent-wiki-production) | Workspace-scoped llm-wiki production jobs exposed over MCP |
 
 ---
 
@@ -249,6 +251,14 @@ Edit the workspace `.env` to change them.
 
 ## MCP auth tokens
 
+MCP auth tokens are local coordination secrets used by the manager, workspace
+services, and local MCP clients to authenticate internal calls between local
+endpoints. They are not API keys for MailerSend, Atlassian, or model providers.
+
+The values below are examples of the expected `.env` keys. Generate or choose
+your own tokens for each local deployment; do not copy the empty placeholders as
+production values.
+
 External transverse MCP endpoints live in the root manager `.env`:
 
 ```env
@@ -264,8 +274,9 @@ future auth proxy. The upstream `mcp-atlassian` HTTP server uses Atlassian
 credentials from `agent-atlassian/.env`; do not put Confluence/Jira secrets in
 the manager `.env`.
 
-Workspace-scoped tokens live in each `workspaces/<name>/.env` and are generated
-by `./wiki-workspace config`:
+Workspace-scoped tokens live in each `workspaces/<name>/.env`. The examples
+below show the keys that `./wiki-workspace config` creates for local internal
+calls:
 
 ```env
 WIKI_MCP_AUTH_TOKEN=
@@ -273,8 +284,9 @@ CME_MCP_AUTH_TOKEN=
 PRODUCTION_MCP_AUTH_TOKEN=
 ```
 
-The workspace chat UI is preconfigured with the correct proxy URLs. For an
-external Claude Code MCP client, set the bearer in `.mcp.json` to match.
+The workspace chat UI is preconfigured with the correct proxy URLs and bearer
+tokens for local calls. For an external Claude Code MCP client on the same
+machine, set the bearer in `.mcp.json` to match the generated workspace token.
 
 ---
 
@@ -282,3 +294,7 @@ external Claude Code MCP client, set the bearer in `.mcp.json` to match.
 
 `llm-wiki-manager` is intended to be its own repository. It tracks orchestration
 files only. `workspaces/*/` is gitignored.
+
+## License
+
+Released under the **PolyForm Noncommercial License 1.0.0**. See [LICENSE](LICENSE).

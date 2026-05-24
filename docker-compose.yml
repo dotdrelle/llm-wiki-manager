@@ -68,6 +68,7 @@ services:
       #- ${WIKI_CERTS:-./certs}:/certs:ro
     environment:
       - WIKI_WORKSPACE_PATH=/workspace
+      - WIKI_MCP_AUTH_TOKEN
       - WIKI_MCP_TLS_CERT_PATH
       - WIKI_MCP_TLS_KEY_PATH
       - WIKI_MCP_TLS_CA_PATH

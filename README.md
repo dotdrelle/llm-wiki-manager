@@ -269,6 +269,9 @@ External transverse MCP endpoints live in the root manager `.env`:
 MAILER_MCP_PROXY_URL=http://host.docker.internal:3335/mcp/
 MAILER_MCP_AUTH_TOKEN=
 
+DOCUMENTS_MCP_PROXY_URL=http://host.docker.internal:3337/mcp/
+DOCUMENTS_MCP_AUTH_TOKEN=
+
 ATLASSIAN_MCP_PROXY_URL=http://host.docker.internal:9000/mcp
 ATLASSIAN_MCP_AUTH_TOKEN=
 ```

@@ -552,6 +552,7 @@ up_workspace() {
   printf 'CME MCP:      http://localhost:%s/mcp/\n' "$cme_port"
   printf 'Production:   http://localhost:%s/mcp/\n' "$prod_port"
   printf 'Mailer:       external (%s)\n' "$(env_value "$MANAGER_ENV_FILE" MAILER_MCP_PROXY_URL "http://host.docker.internal:3335/mcp/")"
+  printf 'Documents:    external (%s)\n' "$(env_value "$MANAGER_ENV_FILE" DOCUMENTS_MCP_PROXY_URL "http://host.docker.internal:3337/mcp/")"
 
   if [[ "$open_browser" == "1" ]]; then
     wait_and_open "http://localhost:${serve_port}/chat" &

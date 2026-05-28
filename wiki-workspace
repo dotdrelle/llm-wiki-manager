@@ -382,6 +382,9 @@ read_lines_into_array() {
 run_wiki() {
   local workspace="$1"
   shift
+  local ws_path
+  ws_path="$(normalize_path "$(workspace_value "$workspace" WIKI_WORKSPACE_PATH)")"
+  ensure_workspace_dirs "$ws_path"
   compose_for_workspace "$workspace" run --rm wiki "$@"
 }
 
@@ -466,7 +469,12 @@ wait_and_open() {
 ensure_workspace_dirs() {
   local ws_path="$1"
   mkdir -p "$ws_path/.cme"
+  mkdir -p "$ws_path/.wiki/vector-index"
   mkdir -p "$ws_path/raw/untracked"
+  # The llm-wiki container runs as the unprivileged `node` user. On WSL2,
+  # Rancher Desktop, and bind mounts created by the host, runtime folders can
+  # end up owned by a different UID and become read-only from the container.
+  chmod -R a+rwX "$ws_path/.wiki" "$ws_path/.cme" "$ws_path/raw" 2>/dev/null || true
 }
 
 register_workspace_path() {

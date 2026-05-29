@@ -37,7 +37,7 @@ services:
     stop_grace_period: 10s
     volumes:
       - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}:/workspace
-      - ../ca-certificates.crt:/usr/local/share/ca-certificates/mf/ca-certificates.crt:ro
+      - ../ca-certificates.crt:/usr/local/share/ca-certificates/ca-certificates.crt:ro
     environment:
       - WIKI_WORKSPACE_PATH=/workspace
       - WIKI_MCP_HTTP_PORT=${WIKI_MCP_PORT:-3101}
@@ -57,7 +57,7 @@ services:
       - MAILER_MCP_PROXY_URL=${MAILER_MCP_PROXY_URL:-http://host.docker.internal:3335/mcp/}
       - DOCUMENTS_MCP_PROXY_URL=${DOCUMENTS_MCP_PROXY_URL:-http://host.docker.internal:3337/mcp/}
       - PRODUCTION_MCP_PROXY_URL=http://host.docker.internal:${PRODUCTION_MCP_PORT:-3336}/mcp/
-      - NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/mf/ca-certificates.crt
+      - NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/ca-certificates.crt
     ports:
       - '${WIKI_SERVE_PORT:-3100}:3000'
     extra_hosts:

@@ -1,0 +1,44 @@
+{
+  "name": "@dotdrelle/wiki-manager",
+  "version": "0.1.0",
+  "description": "Agentic shell and orchestration cockpit for llm-wiki workspaces.",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "author": "dotdrelle",
+  "type": "module",
+  "bin": {
+    "wiki-manager": "bin/wiki-manager.js"
+  },
+  "scripts": {
+    "start": "node ./bin/wiki-manager.js",
+    "check": "node ./bin/wiki-manager.js --version && node ./bin/wiki-manager.js --help && node ./bin/wiki-manager.js --once \"verifie le mode agent\""
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "files": [
+    "bin",
+    "src",
+    "docker-compose.yml",
+    ".env.example",
+    "workspaces/.env.example",
+    "README.md",
+    "LICENSE",
+    "SKILL.md",
+    "WIKI_MANAGER_AGENT_SHELL.md"
+  ],
+  "keywords": [
+    "llm",
+    "wiki",
+    "agent",
+    "mcp",
+    "orchestration",
+    "cli"
+  ],
+  "packageManager": "pnpm@10.29.2",
+  "dependencies": {
+    "@langchain/langgraph": "^1.3.2",
+    "marked": "^15.0.12",
+    "marked-terminal": "^7.3.0",
+    "yaml": "^2.9.0"
+  }
+}

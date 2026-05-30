@@ -48,9 +48,6 @@ services:
       - PRODUCTION_MCP_AUTH_TOKEN
       - CME_MCP_PORT
       - PRODUCTION_MCP_PORT
-      - HUB_PORT
-      - HUB_TOKEN
-      - HUB_INTERNAL_HOST=host.docker.internal
       - WORKSPACE_NAME
       - WIKI_MCP_PROXY_URL=http://host.docker.internal:${WIKI_MCP_PORT:-3101}/mcp
       - CME_MCP_PROXY_URL=http://host.docker.internal:${CME_MCP_PORT:-3000}/mcp/

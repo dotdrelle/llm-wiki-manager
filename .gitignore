@@ -1,4 +1,5 @@
 .DS_Store
+node_modules/
 .hub/
 *.log
 .env
@@ -10,3 +11,5 @@ workspaces/*
 *.yaml
 *.yml
 *.json
+!package.json
+!pnpm-lock.yaml

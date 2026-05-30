@@ -277,93 +277,6 @@ logs_args() {
   fi
 }
 
-# ── hub helpers ───────────────────────────────────────────────────────────────
-
-hub_state_file() { printf '%s/.hub/state.json\n' "$ROOT_DIR"; }
-hub_token_file() { printf '%s/.hub/token\n' "$ROOT_DIR"; }
-
-_hub_field_num() { grep -o "\"$2\":[[:space:]]*[0-9]*" "$1" 2>/dev/null | head -1 | grep -o '[0-9]*$'; }
-_hub_field_str() { grep -o "\"$2\":[[:space:]]*\"[^\"]*\"" "$1" 2>/dev/null | head -1 | sed 's/.*"[[:space:]]*:[[:space:]]*"//' | tr -d '"'; }
-
-# Sets HUB_PORT and HUB_TOKEN; starts hub.js if not already running.
-ensure_hub() {
-  local state
-  state="$(hub_state_file)"
-  HUB_PORT='' HUB_TOKEN=''
-
-  if [[ -f "$state" ]]; then
-    local pid
-    pid="$(_hub_field_num "$state" pid)"
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      HUB_PORT="$(_hub_field_num "$state" port)"
-      HUB_TOKEN="$(_hub_field_str "$state" token)"
-      return 0
-    fi
-    rm -f "$state"
-  fi
-
-  if ! command -v node >/dev/null 2>&1; then
-    printf 'wiki-workspace: node not found — workspace switcher unavailable\n' >&2
-    return 0
-  fi
-
-  mkdir -p "$ROOT_DIR/.hub"
-  if [[ -f "$(hub_token_file)" ]]; then
-    HUB_TOKEN="$(cat "$(hub_token_file)")"
-  else
-    HUB_TOKEN="$(node -e "process.stdout.write(require('crypto').randomBytes(16).toString('hex'))")"
-    printf '%s\n' "$HUB_TOKEN" > "$(hub_token_file)"
-    chmod 600 "$(hub_token_file)" 2>/dev/null || true
-  fi
-  node "$ROOT_DIR/hub.js" "$ROOT_DIR" "$WORKSPACES_DIR" "$HUB_TOKEN" >/dev/null 2>&1 &
-
-  local i
-  for i in $(seq 1 30); do
-    sleep 0.1
-    [[ -f "$state" ]] && break
-  done
-
-  if [[ ! -f "$state" ]]; then
-    printf 'wiki-workspace: hub failed to start — workspace switcher unavailable\n' >&2
-    HUB_PORT='' HUB_TOKEN=''
-    return 0
-  fi
-
-  HUB_PORT="$(_hub_field_num "$state" port)"
-
-  # Wait until the hub HTTP server is actually ready (max 5s)
-  local j status
-  for j in $(seq 1 50); do
-    sleep 0.1
-    status=$(curl -sf -o /dev/null -w '%{http_code}' \
-      -H "Authorization: Bearer ${HUB_TOKEN}" \
-      "http://127.0.0.1:${HUB_PORT}/workspaces" 2>/dev/null) || status=0
-    [[ "$status" == "200" ]] && break
-  done
-}
-
-register_hub_session() {
-  [[ -z "$HUB_PORT" || -z "$HUB_TOKEN" ]] && return 0
-  curl -sf -X POST "http://127.0.0.1:${HUB_PORT}/sessions/register" \
-    -H "Authorization: Bearer ${HUB_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d "{\"workspace\":\"$1\",\"pid\":$$}" >/dev/null 2>&1 || true
-}
-
-cleanup_hub_session() {
-  [[ -z "$HUB_PORT" || -z "$HUB_TOKEN" ]] && return 0
-  local response remaining
-  response="$(curl -sf -X POST "http://127.0.0.1:${HUB_PORT}/sessions/deregister" \
-    -H "Authorization: Bearer ${HUB_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d "{\"pid\":$$}" 2>/dev/null)" || response=''
-  remaining="$(printf '%s' "$response" | grep -o '"remaining":[0-9]*' | grep -o '[0-9]*')" || remaining=1
-  if [[ "${remaining:-1}" -eq 0 ]]; then
-    local hub_pid
-    hub_pid="$(_hub_field_num "$(hub_state_file)" pid)" 2>/dev/null || true
-    [[ -n "$hub_pid" ]] && kill "$hub_pid" 2>/dev/null || true
-  fi
-}
 
 read_lines_into_array() {
   local array_name="$1"
@@ -706,9 +619,6 @@ main() {
         die "serve accepts only --open as optional flag; port is configured in the workspace .env"
       fi
 
-      ensure_hub
-      export HUB_PORT HUB_TOKEN
-
       printf 'Starting mcp-http...\n'
       compose_for_workspace "$workspace" up -d mcp-http
       printf 'Starting production-mcp...\n'
@@ -723,9 +633,6 @@ main() {
       if [[ $open_browser -eq 1 ]]; then
         wait_and_open "http://localhost:${serve_port}" &
       fi
-
-      register_hub_session "$workspace"
-      trap 'cleanup_hub_session' EXIT
 
       compose_for_workspace "$workspace" up serve
       ;;

@@ -11,5 +11,6 @@ workspaces/*
 *.yaml
 *.yml
 *.json
+WIKI_MANAGER_AGENT_SHELL.md
 !package.json
 !pnpm-lock.yaml

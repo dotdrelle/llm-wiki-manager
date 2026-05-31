@@ -1,10 +1,13 @@
+import { execFile } from 'node:child_process';
 import { existsSync, readdirSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { readEnvFile } from './env.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(__dirname, '../..');
+const execFileAsync = promisify(execFile);
 
 export function managerRoot() {
   return process.env.WIKI_MANAGER_ROOT
@@ -44,4 +47,26 @@ export function listWorkspaces() {
 
 export function findWorkspace(name) {
   return listWorkspaces().find((workspace) => workspace.name === name);
+}
+
+export async function createWorkspace(name, targetPath = null, options = {}) {
+  if (!name || !/^[a-zA-Z0-9_.-]+$/.test(name)) {
+    throw new Error('Usage: /workspace init <name> [path]');
+  }
+  const args = ['config', name];
+  if (targetPath) args.push(targetPath);
+  const { stdout, stderr } = await execFileAsync(
+    join(managerRoot(), 'wiki-workspace'),
+    args,
+    {
+      cwd: managerRoot(),
+      env: {
+        ...process.env,
+        WIKI_WORKSPACES_DIR: workspacesDir(),
+      },
+      maxBuffer: options.maxBuffer ?? 1024 * 1024 * 8,
+      timeout: options.timeout ?? 600_000,
+    },
+  );
+  return [stdout, stderr].filter(Boolean).join('\n').trim();
 }

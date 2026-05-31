@@ -1,6 +1,19 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createLlmClientFromWikiConfig } from '../agent/llm.js';
-import { buildMcpStatus, formatMcpStatus } from '../core/mcp.js';
-import { findWorkspace, listWorkspaces } from '../core/workspaces.js';
+import { composeServices, listServices, runWikiCli, serviceLogs, serviceStates, startService, stopService } from '../core/compose.js';
+import {
+  applyMcpRuntimeStatus,
+  buildMcpStatus,
+  callMcpTool,
+  discoverMcpTools,
+  formatMcpToolResult,
+  formatMcpStatus,
+  formatMcpToolSummary,
+  formatMcpTools,
+} from '../core/mcp.js';
+import { createWorkspace, findWorkspace, listWorkspaces } from '../core/workspaces.js';
+import { findSkill, listSkills } from '../core/skills.js';
 import {
   listWikircProfiles,
   loadWikircProfile,
@@ -23,6 +36,157 @@ function wikircSummaryText(summary) {
     `vector=${summary.vectorEnabled ? 'enabled' : 'disabled'}`,
     `embedding=${summary.embeddingModel ?? '-'}`,
   ].join('\n');
+}
+
+function workspaceLoadedText(workspace, summary, session) {
+  return [
+    `Workspace: ${workspace.name}`,
+    '',
+    `Path: ${workspace.workspacePath}`,
+    `Env: ${workspace.envFile}`,
+    '',
+    'Active config',
+    '',
+    `profile: ${summary.profile}`,
+    `file: ${summary.fileName}`,
+    `language: ${summary.language ?? '-'}`,
+    `provider: ${summary.provider ?? '-'}`,
+    `model: ${summary.model ?? '-'}`,
+    `baseUrl: ${summary.baseUrl ?? '-'}`,
+    `apiKey: ${summary.hasApiKey ? 'configured' : 'missing'}`,
+    `vector: ${summary.vectorEnabled ? 'enabled' : 'disabled'}`,
+    `embedding: ${summary.embeddingModel ?? '-'}`,
+    '',
+    'Session',
+    '',
+    `llm: ${session.llm ? 'configured' : 'missing config'}`,
+    `mcp: ${Object.values(session.mcp ?? {}).filter((value) => value.status === 'connected').length} connected`,
+  ].join('\n');
+}
+
+function workspaceLoadedWithoutConfigText(workspace, message) {
+  return [
+    `Workspace: ${workspace.name}`,
+    '',
+    `Path: ${workspace.workspacePath}`,
+    `Env: ${workspace.envFile}`,
+    '',
+    'Active config',
+    '',
+    `Wikirc not loaded: ${message}`,
+  ].join('\n');
+}
+
+function serviceStatesText(states) {
+  const entries = Object.entries(states ?? {});
+  if (entries.length === 0) return 'No running compose services.';
+  return entries
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([service, state]) => `- ${service}: ${state.running ? 'running' : state.state || 'unknown'}`)
+    .join('\n');
+}
+
+function mcpEndpointsText(mcpStatus) {
+  const entries = Object.entries(mcpStatus ?? {});
+  if (entries.length === 0) return 'No MCP endpoints configured.';
+  return entries
+    .map(([name, endpoint]) => {
+      const token = endpoint.token ? 'configured' : 'missing';
+      const url = endpoint.url ?? '-';
+      return `${name}\t${url}\ttoken: ${token}\tstatus: ${endpoint.status}`;
+    })
+    .join('\n');
+}
+
+function skillsText(session) {
+  const skills = listSkills(session);
+  if (skills.length === 0) return 'No skills discovered.';
+  return skills
+    .map((skill) => `${skill.name}\t${skill.scope}\t${skill.description || '-'}\t${skill.path}`)
+    .join('\n');
+}
+
+function skillDetailText(skill) {
+  return [
+    `# ${skill.name}`,
+    '',
+    `Scope: ${skill.scope}`,
+    `Path: ${skill.path}`,
+    skill.description ? `Description: ${skill.description}` : null,
+    skill.params?.length ? `Params: ${skill.params.join(', ')}` : null,
+    '',
+    skill.body || '_Empty skill body._',
+  ].filter(Boolean).join('\n');
+}
+
+function skillRunText(skill) {
+  return [
+    `# Skill plan: ${skill.name}`,
+    '',
+    'This shell does not execute skill Markdown blindly.',
+    'dotdrelle will use this workflow as operating instructions, then choose concrete primitives/MCP tools.',
+    'Costly or mutating steps still require explicit confirmation.',
+    '',
+    'Use a natural-language request such as:',
+    '',
+    `run the ${skill.name} skill for this workspace`,
+    '',
+    'Skill content:',
+    '',
+    skill.body || '_Empty skill body._',
+  ].join('\n');
+}
+
+async function refreshMcpRuntimeStatus(session) {
+  session.mcp = buildMcpStatus(session);
+  if (!session.workspacePath) return null;
+  try {
+    const states = await serviceStates(session);
+    session.mcp = applyMcpRuntimeStatus(session.mcp, states);
+    session.mcp = await discoverMcpTools(session.mcp);
+    return states;
+  } catch {
+    session.mcp = await discoverMcpTools(session.mcp);
+    return null;
+  }
+}
+
+async function statusText(session) {
+  const states = await refreshMcpRuntimeStatus(session);
+  const services = session.workspacePath
+    ? await composeServices(session).catch(() => [])
+    : [];
+  return [
+    'Session',
+    `workspace: ${session.workspace ?? '-'}`,
+    `workspacePath: ${session.workspacePath ?? '-'}`,
+    `workspaceEnv: ${session.workspaceEnvFile ?? '-'}`,
+    '',
+    'Config',
+    `wikirc: ${session.wikirc?.profile ?? '-'}${session.wikirc?.fileName ? ` (${session.wikirc.fileName})` : ''}`,
+    `language: ${session.language ?? '-'}`,
+    `llm: ${session.llm ? 'configured' : 'missing'}`,
+    `provider: ${session.wikircConfig?.llm?.provider ?? '-'}`,
+    `model: ${session.wikircConfig?.llm?.model ?? '-'}`,
+    `baseUrl: ${session.wikircConfig?.llm?.baseUrl ?? '-'}`,
+    '',
+    'Services',
+    services.length > 0 ? services.map((service) => `- ${service}`).join('\n') : 'No workspace loaded.',
+    '',
+    'Runtime',
+    states ? serviceStatesText(states) : 'Docker runtime not available or no workspace loaded.',
+    '',
+    'MCP',
+    formatMcpStatus(session.mcp),
+    '',
+    'MCP tool summary',
+    formatMcpToolSummary(session.mcp),
+  ].join('\n');
+}
+
+function loadWorkspaceSystemPrompt(workspacePath) {
+  const promptPath = join(workspacePath, '.wiki', 'system-prompt.md');
+  return existsSync(promptPath) ? readFileSync(promptPath, 'utf8').trim() || null : null;
 }
 
 function loadSessionWikirc(session, profileName = 'default') {
@@ -63,16 +227,34 @@ Interactive shell:
   /config use <name>   Reload session LLM/config from .wikirc.yaml.<name>
   /config status       Show active wikirc profile without secrets
   /status              Show current workspace/session state
+  /services            List workspace Docker Compose services
+  /start [service]     Start one service, or the workspace service set
+  /stop [service]      Stop one service, or the workspace service set
+  /logs <service>      Show recent service logs
+  /mcp status          Show MCP connection status
+  /mcp endpoints       Show MCP URLs and token presence
+  /mcp tools [mcp]     Show discovered MCP tools
+  /mcp call <mcp> <tool> [json]
+  /workspace init <name> [path]
+                       Create/configure a new workspace
+  /wiki                Run one-off llm-wiki index on current workspace
+  /wiki run <args...>  Explicit low-level llm-wiki CLI backup hatch
+  /skills              List manager/workspace skills
+  /skill show <name>   Show one skill
+  /skill run <name>    Prepare one skill for guided agent execution
   /exit                Exit the shell
+  Ctrl+Y               Copy last dotdrelle response to clipboard
+  Ctrl+T               Toggle mouse-wheel scrolling for the message pane
+  Ctrl+C               Exit
 
 Agent mode:
   Any input without a leading / is routed to the LangGraph orchestrator.
 
 Status:
-  Step 2 is installed: minimal agent-first shell backed by LangGraph.
+  Step 7 is partially installed: agent-first shell with workspace services, MCP calls, wiki CLI, and skill discovery.
   Shell UI is English. Agent exchange language is read from the active .wikirc.yaml.
   LLM config is intentionally workspace-scoped and will be read from .wikirc.yaml after /use <workspace>.
-  Workspace, service, MCP and skill tools will be added in the next increments.
+  Guided skill execution is started; autonomous scheduling is not wired yet.
 `;
 }
 
@@ -80,9 +262,10 @@ export function printHelp(packageJson) {
   console.log(helpText(packageJson));
 }
 
-export function handleSlashCommand(line, context) {
+export async function handleSlashCommand(line, context) {
   const args = line.slice(1).trim().split(/\s+/).filter(Boolean);
   const [command] = args;
+  const step = context.onStep ?? (() => {});
 
   switch (command) {
     case '':
@@ -102,17 +285,8 @@ export function handleSlashCommand(line, context) {
       };
     }
     case 'status': {
-      return {
-        output: [
-          `workspace=${context.session.workspace ?? '-'}`,
-          `workspacePath=${context.session.workspacePath ?? '-'}`,
-          `wikirc=${context.session.wikirc?.profile ?? '-'}`,
-          `wikircFile=${context.session.wikirc?.fileName ?? '-'}`,
-          `language=${context.session.language ?? '-'}`,
-          `llm=${context.session.llm ? 'configured' : 'missing'}`,
-          formatMcpStatus(context.session.mcp),
-        ].join('\n'),
-      };
+      step('Shell: refreshing workspace, services and MCP status…');
+      return { output: await statusText(context.session) };
     }
     case 'use': {
       const workspaceName = args[1];
@@ -126,26 +300,21 @@ export function handleSlashCommand(line, context) {
       context.session.workspace = workspace.name;
       context.session.workspacePath = workspace.workspacePath;
       context.session.workspaceEnv = workspace.env;
+      context.session.workspaceEnvFile = workspace.envFile;
       context.session.mcp = buildMcpStatus(context.session);
+      context.session.systemPrompt = loadWorkspaceSystemPrompt(workspace.workspacePath);
       try {
+        step(`Workspace: loading ${workspace.name} config…`);
         const summary = loadSessionWikirc(context.session, 'default');
+        step(`Workspace: discovering ${workspace.name} MCP tools…`);
+        await refreshMcpRuntimeStatus(context.session);
         return {
-          output: [
-            `Workspace loaded: ${workspace.name}`,
-            `Path: ${workspace.workspacePath}`,
-            'Active wikirc:',
-            wikircSummaryText(summary),
-            context.session.llm ? 'LLM session: configured' : 'LLM session: missing config',
-          ].join('\n'),
+          output: workspaceLoadedText(workspace, summary, context.session),
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return {
-          output: [
-            `Workspace loaded: ${workspace.name}`,
-            `Path: ${workspace.workspacePath}`,
-            `Wikirc not loaded: ${message}`,
-          ].join('\n'),
+          output: workspaceLoadedWithoutConfigText(workspace, message),
         };
       }
     }
@@ -205,6 +374,167 @@ export function handleSlashCommand(line, context) {
         return { output: wikircSummaryText(summary) };
       }
       return { output: 'Usage: /config <list|use|status>' };
+    }
+    case 'services': {
+      try {
+        step('Services: reading compose state…');
+        await refreshMcpRuntimeStatus(context.session);
+        return { output: await listServices(context.session) };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { output: message };
+      }
+    }
+    case 'start': {
+      const service = args[1];
+      try {
+        step(`Services: starting ${service ?? 'workspace services'}…`);
+        const output = await startService(context.session, service);
+        step('Services: refreshing MCP runtime…');
+        await refreshMcpRuntimeStatus(context.session);
+        return { output };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { output: message };
+      }
+    }
+    case 'stop': {
+      const service = args[1];
+      try {
+        step(`Services: stopping ${service ?? 'workspace services'}…`);
+        const output = await stopService(context.session, service);
+        step('Services: refreshing MCP runtime…');
+        await refreshMcpRuntimeStatus(context.session);
+        return { output };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { output: message };
+      }
+    }
+    case 'logs': {
+      const service = args[1];
+      const tail = args[2] ? Number(args[2]) : 120;
+      try {
+        step(`Services: reading logs for ${service ?? 'service'}…`);
+        return { output: await serviceLogs(context.session, service, { tail }) };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { output: message };
+      }
+    }
+    case 'mcp': {
+      const subcommand = args[1] ?? 'status';
+      step('MCP: refreshing endpoints and tools…');
+      await refreshMcpRuntimeStatus(context.session);
+      if (subcommand === 'status') {
+        return { output: formatMcpStatus(context.session.mcp) };
+      }
+      if (subcommand === 'endpoints') {
+        return { output: mcpEndpointsText(context.session.mcp) };
+      }
+      if (subcommand === 'tools') {
+        const filterName = args[2] ?? null;
+        if (filterName && !context.session.mcp?.[filterName]) {
+          return { output: `Unknown MCP: ${filterName}` };
+        }
+        return { output: formatMcpTools(context.session.mcp, filterName) };
+      }
+      if (subcommand === 'call') {
+        const serverName = args[2];
+        const toolName = args[3];
+        if (!serverName || !toolName) {
+          return { output: 'Usage: /mcp call <mcp> <tool> [json]' };
+        }
+        try {
+          const rawArgs = args.slice(4).join(' ');
+          const toolArgs = rawArgs ? JSON.parse(rawArgs) : {};
+          step(`MCP: calling ${serverName}.${toolName}…`);
+          const result = await callMcpTool(context.session.mcp, serverName, toolName, toolArgs);
+          return { output: formatMcpToolResult(result) };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return { output: message };
+        }
+      }
+      return { output: 'Usage: /mcp <status|endpoints|tools|call> [mcp]' };
+    }
+    case 'workspace': {
+      const subcommand = args[1];
+      if (subcommand !== 'init') {
+        return { output: 'Usage: /workspace init <name> [path]' };
+      }
+      const workspaceName = args[2];
+      if (!workspaceName) {
+        return {
+          output: [
+            'Usage: /workspace init <name> [path]',
+            '',
+            'Creates/configures a new workspace through wiki-workspace config.',
+            'For llm-wiki init inside the current workspace, use /wiki run init.',
+          ].join('\n'),
+        };
+      }
+      try {
+        const targetPath = args[3] ?? null;
+        step(`Workspace: creating ${workspaceName}…`);
+        const output = await createWorkspace(workspaceName, targetPath, { timeout: 600_000 });
+        return {
+          output: [
+            output,
+            '',
+            `Workspace created: ${workspaceName}`,
+            `Use /use ${workspaceName} to load it.`,
+          ].filter(Boolean).join('\n'),
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { output: message };
+      }
+    }
+    case 'wiki': {
+      const subcommand = args[1];
+      if (!subcommand) {
+        try {
+          step('Wiki: running index…');
+          return { output: await runWikiCli(context.session, ['index'], { timeout: 600_000 }) };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return { output: message };
+        }
+      }
+      try {
+        if (subcommand === 'run') {
+          const wikiArgs = args.slice(2);
+          if (wikiArgs.length === 0) return { output: 'Usage: /wiki run <args...>' };
+          step(`Wiki: running ${wikiArgs.join(' ')}…`);
+          return { output: await runWikiCli(context.session, wikiArgs) };
+        }
+        return {
+          output: [
+            `/${command} ${subcommand} is not a direct shell primitive.`,
+            subcommand === 'init' ? 'Use /workspace init <name> [path] to create a new workspace, or /wiki run init for the explicit current-workspace init hatch.' : null,
+            subcommand === 'index' ? 'Use /wiki for index, or /wiki run index for the explicit backup hatch.' : null,
+            'Use the MCP production agent for ingest/build/export/polish/pipeline actions.',
+            'Diagnostics stay behind the explicit hatch: /wiki run doctor.',
+          ].filter(Boolean).join('\n'),
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { output: message };
+      }
+    }
+    case 'skills': {
+      return { output: skillsText(context.session) };
+    }
+    case 'skill': {
+      const subcommand = args[1] ?? 'show';
+      const name = args[2];
+      if (!name) return { output: 'Usage: /skill <show|run> <name>' };
+      const skill = findSkill(context.session, name);
+      if (!skill) return { output: `Skill not found: ${name}` };
+      if (subcommand === 'show') return { output: skillDetailText(skill) };
+      if (subcommand === 'run') return { output: skillRunText(skill) };
+      return { output: 'Usage: /skill <show|run> <name>' };
     }
     case 'exit':
     case 'quit':

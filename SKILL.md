@@ -19,6 +19,12 @@ agent-cme writes exports **directly** into the workspace `raw/untracked` directo
 - `wiki build` generates deliverables from templates and build context.
 - `wiki export <deliverable> --polish` expands cited sources and runs the final editorial pass.
 
+Terminology guardrail:
+
+- Confluence/CME/source export = `cme_export_run` + `cme_export_status` on the CME MCP server.
+- Wiki/deliverable/publication export = production/wiki export of generated deliverables.
+- Never use production `type="export"` to export Confluence sources.
+
 ## Preconditions
 
 Confirm:

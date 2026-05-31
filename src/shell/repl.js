@@ -6,7 +6,11 @@ import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
 import { buildAgentSystemPrompt, buildLimitedAgentResponse } from '../agent/graph.js';
 import { handleSlashCommand } from '../commands/slash.js';
-import { formatMcpStatus } from '../core/mcp.js';
+import { COMPOSE_SERVICES } from '../core/compose.js';
+import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
+import { listSkills } from '../core/skills.js';
+import { listWikircProfiles } from '../core/wikirc.js';
+import { listWorkspaces } from '../core/workspaces.js';
 
 marked.use(markedTerminal());
 // marked-terminal's text renderer extracts token.text (raw string) instead of
@@ -21,6 +25,17 @@ marked.use({
       }
       return token.text ?? String(token);
     },
+    table(token) {
+      const cols = output.columns || 100;
+      const numCols = token.header.length || 1;
+      const colWidth = Math.max(6, Math.floor((cols - 1 - numCols * 3) / numCols));
+      const parseCell = (cell) => {
+        if (!cell) return '';
+        if (cell.tokens) return stripAnsi(this.parser.parseInline(cell.tokens)).replace(/\s+/g, ' ').trim();
+        return String(cell.text ?? cell ?? '').trim();
+      };
+      return renderTerminalTable(token, parseCell, colWidth);
+    },
   },
 });
 
@@ -28,21 +43,97 @@ function createSession() {
   return {
     workspace: null,
     workspacePath: null,
+    workspaceEnvFile: null,
     wikirc: null,
     wikircConfig: null,
     language: null,
     mcp: null,
-    commands: ['help', 'version', 'exit', 'workspaces', 'use', 'config', 'status'],
+    commands: ['help', 'version', 'exit', 'workspaces', 'workspace', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'skill'],
     llm: null,
+    productionActivity: null,
   };
 }
 
 function promptFor(session) {
-  return session.workspace ? `${session.workspace}> ` : 'donna> ';
+  return session.workspace ? `${session.workspace}> ` : 'dotdrelle> ';
 }
 
 function slashCompletions(session) {
   return session.commands.map((command) => `/${command}`).sort();
+}
+
+function tokenCompletions(inputBuffer, values) {
+  const lastSpace = inputBuffer.lastIndexOf(' ');
+  const prefix = inputBuffer.slice(lastSpace + 1);
+  const base = inputBuffer.slice(0, lastSpace + 1);
+  const matches = values.filter((value) => value.startsWith(prefix));
+  if (matches.length === 0) return { inputBuffer, message: `No completion matches ${prefix}` };
+  if (matches.length === 1) return { inputBuffer: `${base}${matches[0]} `, message: null };
+  const shared = commonPrefix(matches);
+  return {
+    inputBuffer: shared.length > prefix.length ? `${base}${shared}` : inputBuffer,
+    message: `Completions: ${matches.join('  ')}`,
+  };
+}
+
+function mcpNames(session) {
+  return Object.entries(session.mcp ?? {})
+    .filter(([, value]) => value.status === 'connected' || value.status === 'configured')
+    .map(([name]) => name)
+    .sort();
+}
+
+function mcpToolNames(session, serverName) {
+  return (session.mcp?.[serverName]?.tools ?? [])
+    .map((tool) => tool.name)
+    .sort();
+}
+
+function workspaceNames() {
+  return listWorkspaces().map((workspace) => workspace.name).sort();
+}
+
+function wikircProfileNames(session) {
+  return session.workspacePath
+    ? listWikircProfiles(session.workspacePath).map((profile) => profile.name).sort()
+    : [];
+}
+
+function serviceNames() {
+  return [...COMPOSE_SERVICES, 'all', 'mcp', 'wiki', 'cme', 'production', 'ui'].sort();
+}
+
+function skillNames(session) {
+  return listSkills(session).map((skill) => skill.name).sort();
+}
+
+function completionValuesFor(parts, inputBuffer, session) {
+  const command = parts[0];
+  const completingNewToken = inputBuffer.endsWith(' ');
+  const tokenIndex = completingNewToken ? parts.length : parts.length - 1;
+  const previousToken = completingNewToken ? parts.at(-1) : parts.at(-2);
+
+  if (tokenIndex === 0) return slashCompletions(session);
+  if (command === '/use' && tokenIndex === 1) return workspaceNames();
+  if (command === '/config' && tokenIndex === 1) return ['list', 'status', 'use'];
+  if (command === '/config' && previousToken === 'use') return wikircProfileNames(session);
+  if (command === '/mcp' && tokenIndex === 1) return ['call', 'endpoints', 'status', 'tools'];
+  if (command === '/mcp' && previousToken === 'tools') return mcpNames(session);
+  if (command === '/mcp' && previousToken === 'call') return mcpNames(session);
+  if (command === '/mcp' && parts[1] === 'call' && tokenIndex === 3) return mcpToolNames(session, parts[2]);
+  if (command === '/workspace' && tokenIndex === 1) return ['init'];
+  if (command === '/wiki' && tokenIndex === 1) return ['run'];
+  if ((command === '/start' || command === '/stop' || command === '/logs') && tokenIndex === 1) return serviceNames();
+  if (command === '/skill' && tokenIndex === 1) return ['run', 'show'];
+  if (command === '/skill' && (previousToken === 'run' || previousToken === 'show')) return skillNames(session);
+  return [];
+}
+
+function toConversationHistory(replMessages, maxExchanges = 6) {
+  return replMessages
+    .filter((m) => m.role === 'user' || m.role === 'dotdrelle')
+    .slice(-(maxExchanges * 2))
+    .map((m) => ({ role: m.role === 'dotdrelle' ? 'assistant' : 'user', content: m.content }));
 }
 
 function commonPrefix(values) {
@@ -58,23 +149,61 @@ function commonPrefix(values) {
 
 function completeSlashCommand(inputBuffer, session) {
   if (!inputBuffer.startsWith('/')) return null;
-  const parts = inputBuffer.split(/\s+/);
-  if (parts.length > 1 && parts[0] && !inputBuffer.endsWith(' ')) return null;
-
-  const current = parts[0];
-  const matches = slashCompletions(session).filter((command) => command.startsWith(current));
-  if (matches.length === 0) return { inputBuffer, message: `No command matches ${current}` };
-  if (matches.length === 1) return { inputBuffer: `${matches[0]} `, message: null };
-
-  const prefix = commonPrefix(matches);
-  return {
-    inputBuffer: prefix.length > current.length ? prefix : inputBuffer,
-    message: `Commands: ${matches.join('  ')}`,
-  };
+  const parts = inputBuffer.trimEnd().split(/\s+/).filter(Boolean);
+  const values = completionValuesFor(parts, inputBuffer, session);
+  if (values.length === 0) return null;
+  return tokenCompletions(inputBuffer, values);
 }
 
 function stripAnsi(value) {
   return value.replace(/\u001b\[[0-9;]*m/g, '');
+}
+
+function wrapCellText(text, width) {
+  const lines = [];
+  for (const para of text.split('\n')) {
+    if (!para) { lines.push(''); continue; }
+    let line = '';
+    for (const word of para.split(' ')) {
+      if (!word) continue;
+      if (line.length + (line ? 1 : 0) + word.length <= width) {
+        line += (line ? ' ' : '') + word;
+      } else if (word.length >= width) {
+        if (line) { lines.push(line); line = ''; }
+        for (let i = 0; i < word.length; i += width) {
+          const chunk = word.slice(i, i + width);
+          if (i + width >= word.length) line = chunk;
+          else lines.push(chunk);
+        }
+      } else {
+        if (line) lines.push(line);
+        line = word;
+      }
+    }
+    lines.push(line);
+  }
+  return lines.length ? lines : [''];
+}
+
+function renderTerminalTable(token, parseCell, colWidth) {
+  const numCols = token.header.length || 1;
+  const border = (l, m, r) =>
+    `${styles.gray}${l}${Array.from({ length: numCols }, () => '─'.repeat(colWidth + 2)).join(m)}${r}${styles.reset}`;
+  const sep = `${styles.gray}│${styles.reset}`;
+  const drawRow = (cells, bold) => {
+    const wrapped = cells.map((c) => wrapCellText(parseCell(c), colWidth));
+    const height = Math.max(...wrapped.map((c) => c.length));
+    return Array.from({ length: height }, (_, i) =>
+      `${sep}${wrapped.map((c) => {
+        const txt = (c[i] ?? '').padEnd(colWidth, ' ');
+        return bold ? ` [1m${txt}[0m ` : ` ${txt} `;
+      }).join(sep)}${sep}`,
+    );
+  };
+  const rows = [border('┌', '┬', '┐'), ...drawRow(token.header, true), border('├', '┼', '┤')];
+  for (const row of token.rows) rows.push(...drawRow(row, false));
+  rows.push(border('└', '┴', '┘'));
+  return rows.join('\n') + '\n\n';
 }
 
 function stripHtml(value) {
@@ -120,23 +249,129 @@ const styles = {
 
 function colorizeStatus(text) {
   return marked(stripHtml(text)).trimEnd()
-    .replaceAll('●', `${styles.green}●${styles.reset}`)
-    .replaceAll('○', `${styles.gray}○${styles.reset}`)
+    .split('\n')
+    .map((line) => {
+      if (line.startsWith('●') && /\bconnected\b/.test(line)) return `${styles.green}●${styles.reset}${line.slice(1)}`;
+      if (line.startsWith('◐') && /\bconfigured\b/.test(line)) return `${styles.orange}◐${styles.reset}${line.slice(1)}`;
+      if (line.startsWith('○') && /\bmissing\b/.test(line)) return `${styles.red}○${styles.reset}${line.slice(1)}`;
+      if (line.startsWith('○')) return `${styles.gray}○${styles.reset}${line.slice(1)}`;
+      return line;
+    })
+    .join('\n')
     .replace(/\b(configured|ready|enabled|reinitialized|loaded)\b/g, `${styles.green}$1${styles.reset}`)
     .replace(/\b(missing|limited|disabled|not loaded|not found)\b/g, `${styles.yellow}$1${styles.reset}`);
 }
 
+function visibleLength(value) {
+  return stripAnsi(String(value)).length;
+}
+
+function padVisible(value, width) {
+  const text = String(value);
+  return `${text}${' '.repeat(Math.max(0, width - visibleLength(text)))}`;
+}
+
+function splitTabularBlocks(lines) {
+  const blocks = [];
+  let current = [];
+  let tabular = null;
+  for (const line of lines) {
+    const isTabular = line.includes('\t');
+    if (tabular === null || tabular === isTabular) {
+      current.push(line);
+      tabular = isTabular;
+      continue;
+    }
+    blocks.push({ tabular, lines: current });
+    current = [line];
+    tabular = isTabular;
+  }
+  if (current.length > 0) blocks.push({ tabular, lines: current });
+  return blocks;
+}
+
+function renderPlainTable(lines, maxWidth) {
+  const rows = lines.map((line) => line.split('\t').map((cell) => cell.trim()));
+  const columnCount = Math.max(...rows.map((row) => row.length), 1);
+  const normalized = rows.map((row) => Array.from({ length: columnCount }, (_, i) => row[i] ?? ''));
+  const available = Math.max(24, maxWidth - columnCount - 1);
+  const natural = Array.from({ length: columnCount }, (_, i) =>
+    Math.max(3, ...normalized.map((row) => visibleLength(row[i]))),
+  );
+  const totalNatural = natural.reduce((sum, width) => sum + width, 0) + columnCount * 2;
+  const widths = totalNatural <= available
+    ? natural
+    : natural.map((width) => Math.max(6, Math.floor((width / totalNatural) * available)));
+  const border = (left, middle, right) =>
+    `${styles.gray}${left}${widths.map((width) => '─'.repeat(width + 2)).join(middle)}${right}${styles.reset}`;
+  const separator = `${styles.gray}│${styles.reset}`;
+  const formatCell = (cell, index) => {
+    const clean = cell.length > widths[index] ? `${cell.slice(0, Math.max(1, widths[index] - 1))}…` : cell;
+    return ` ${padVisible(clean, widths[index])} `;
+  };
+
+  return [
+    border('┌', '┬', '┐'),
+    ...normalized.map((row) => `${separator}${row.map(formatCell).join(separator)}${separator}`),
+    border('└', '┴', '┘'),
+  ];
+}
+
+function colorizeCommandLine(line, previousLine = '', nextLine = '') {
+  if (line.startsWith('●') && /\bconnected\b/.test(line)) return `${styles.green}●${styles.reset}${line.slice(1)}`;
+  if (line.startsWith('◐') && /\bconfigured\b/.test(line)) return `${styles.orange}◐${styles.reset}${line.slice(1)}`;
+  if (line.startsWith('○') && /\bmissing\b/.test(line)) return `${styles.red}○${styles.reset}${line.slice(1)}`;
+  if (line.startsWith('○')) return `${styles.gray}○${styles.reset}${line.slice(1)}`;
+
+  const heading = line.match(/^#{1,3}\s+(.+)$/);
+  if (heading) return `${styles.bold}${styles.cyan}${heading[1]}${styles.reset}`;
+
+  if (
+    line.trim()
+    && !line.startsWith(' ')
+    && !line.startsWith('- ')
+    && !line.includes(':')
+    && !line.includes('=')
+    && (nextLine.includes(':') || nextLine.includes('=') || previousLine === '')
+  ) {
+    return `${styles.bold}${styles.cyan}${line}${styles.reset}`;
+  }
+
+  const keyValue = line.match(/^([A-Za-z][A-Za-z0-9 _./-]{0,34}):\s*(.*)$/);
+  if (keyValue) return `${styles.dim}${keyValue[1]}:${styles.reset} ${keyValue[2]}`;
+
+  const equalsValue = line.match(/^([A-Za-z][A-Za-z0-9 _./-]{0,34})=(.*)$/);
+  if (equalsValue) return `${styles.dim}${equalsValue[1]}=${styles.reset}${equalsValue[2]}`;
+
+  const listItem = line.match(/^(-)\s+(.+)$/);
+  if (listItem) return `${styles.gray}-${styles.reset} ${listItem[2]}`;
+
+  return line;
+}
+
+function colorizeCommand(text, maxWidth = output.columns || 100) {
+  const lines = String(text)
+    .split('\n')
+    .map((line) => line.replace(/\s+$/g, ''));
+  const out = [];
+  for (const block of splitTabularBlocks(lines)) {
+    if (block.tabular) {
+      out.push(...renderPlainTable(block.lines, maxWidth));
+      continue;
+    }
+    block.lines.forEach((line, index) => {
+      out.push(colorizeCommandLine(line, block.lines[index - 1] ?? '', block.lines[index + 1] ?? ''));
+    });
+  }
+  return out.join('\n');
+}
+
 function formatMcpStatusForPanel(mcpStatus) {
-  const entries = Object.entries(mcpStatus ?? {});
-  if (entries.length === 0) return [`${styles.red}●${styles.reset} none`];
+  const entries = Object.entries(mcpStatus ?? {}).filter(([, value]) => value.status === 'connected');
+  if (entries.length === 0) return [];
   return entries.map(([name, value]) => {
-    const color =
-      value.status === 'connected'
-        ? styles.green
-        : value.status === 'configured'
-          ? styles.orange
-          : styles.red;
-    return `${color}●${styles.reset} ${name}${value.detail ? ` ${value.detail}` : ''}`;
+    const detail = [value.status, value.detail].filter(Boolean).join(' ');
+    return `${styles.green}●${styles.reset} ${name}${detail ? ` ${detail}` : ''}`;
   });
 }
 
@@ -173,35 +408,36 @@ function wrapText(text, width) {
     .flatMap((line) => wrapLine(line, width));
 }
 
-function donnaBanner(columns) {
-  const compact = ['Donna'];
+function dotdrelleBanner(columns) {
+  const compact = ['> dotdrelle'];
   const full = [
-    '██████╗  ██████╗ ███╗   ██╗███╗   ██╗ █████╗',
-    '██╔══██╗██╔═══██╗████╗  ██║████╗  ██║██╔══██╗',
-    '██║  ██║██║   ██║██╔██╗ ██║██╔██╗ ██║███████║',
-    '██║  ██║██║   ██║██║╚██╗██║██║╚██╗██║██╔══██║',
-    '██████╔╝╚██████╔╝██║ ╚████║██║ ╚████║██║  ██║',
-    '╚═════╝  ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═══╝╚═╝  ╚═╝',
+    '██╗   ██████╗  ██████╗ ████████╗██████╗ ██████╗ ███████╗██╗     ██╗     ███████╗',
+    '╚██╗  ██╔══██╗██╔═══██╗╚══██╔══╝██╔══██╗██╔══██╗██╔════╝██║     ██║     ██╔════╝',
+    ' ╚██╗ ██║  ██║██║   ██║   ██║   ██║  ██║██████╔╝█████╗  ██║     ██║     █████╗  ',
+    ' ██╔╝ ██║  ██║██║   ██║   ██║   ██║  ██║██╔══██╗██╔══╝  ██║     ██║     ██╔══╝  ',
+    '╚██╔╝ ██████╔╝╚██████╔╝   ██║   ██████╔╝██║  ██╗███████╗███████╗███████╗███████╗',
+    ' ╚═╝  ╚═════╝  ╚═════╝    ╚═╝   ╚═════╝ ╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝╚══════╝',
   ];
-  const lines = columns >= 56 ? full : compact;
+  const lines = columns >= 82 ? full : compact;
   return lines.map((line) => line.slice(0, columns));
 }
 
-function donnaBannerWithMcp(columns, session) {
-  const banner = donnaBanner(columns);
-  if (banner.length === 1 || columns < 72) {
-    return banner.map((line) => `${styles.bold}${styles.magenta}${line}${styles.reset}`);
+function dotdrelleBannerWithMcp(columns, session) {
+  const banner = dotdrelleBanner(columns);
+  const activeMcpLines = session.workspace ? formatMcpStatusForPanel(session.mcp) : [];
+  if (banner.length === 1 || columns < 72 || activeMcpLines.length === 0) {
+    return banner.map((line) => `${styles.bold}${styles.blue}${line}${styles.reset}`);
   }
 
   const panelWidth = Math.min(28, Math.max(22, Math.floor(columns * 0.32)));
   const bannerWidth = columns - panelWidth - 3;
-  const mcpLines = ['', 'MCP', ...formatMcpStatusForPanel(session.mcp)];
+  const mcpLines = ['', 'MCP', ...activeMcpLines];
   const lineCount = Math.max(banner.length, mcpLines.length);
   const lines = [];
 
   for (let index = 0; index < lineCount; index += 1) {
     const leftRaw = (banner[index] ?? '').slice(0, bannerWidth).padEnd(bannerWidth, ' ');
-    const left = `${styles.bold}${styles.magenta}${leftRaw}${styles.reset}`;
+    const left = `${styles.bold}${styles.blue}${leftRaw}${styles.reset}`;
     const rightRaw = truncateAnsi(mcpLines[index] ?? '', panelWidth);
     const right = `${rightRaw}${' '.repeat(Math.max(0, panelWidth - stripAnsi(rightRaw).length))}`;
     lines.push(`${left}   ${right}`);
@@ -212,10 +448,101 @@ function donnaBannerWithMcp(columns, session) {
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-function renderScreen({ packageJson, session, messages, inputBuffer, busy = false, spinnerFrame = 0, scrollOffset = 0 }) {
+function parseJsonText(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function pathBaseName(value) {
+  return String(value ?? '').split('/').filter(Boolean).pop() ?? '';
+}
+
+function productionActivityFromPayload(payload) {
+  const progress = payload?.progress;
+  const job = payload?.job;
+  const jobId = payload?.jobId ?? job?.jobId;
+  if (!progress && !job && !jobId) return null;
+  const status = job?.status ?? payload?.status ?? progress?.status ?? 'running';
+  const percent = Number.isFinite(Number(progress?.percent))
+    ? `${Math.round(Number(progress.percent))}%`
+    : null;
+  const sourceCount = Number(progress?.sourceCount);
+  const sourceIndex = Number(progress?.sourceIndex);
+  const sourceDoneCount = Number(progress?.sourceDoneCount);
+  const fileProgress = Number.isFinite(sourceCount) && sourceCount > 0
+    ? Number.isFinite(sourceIndex)
+      ? `file ${Math.min(sourceCount, sourceIndex + 1)}/${sourceCount}`
+      : Number.isFinite(sourceDoneCount)
+        ? `files ${Math.min(sourceCount, sourceDoneCount)}/${sourceCount}`
+        : null
+    : null;
+  const batchProgress = progress?.batchCount
+    ? `batch ${Number(progress.batchIndex ?? 0) + 1}/${progress.batchCount}`
+    : null;
+  const progressDetail = batchProgress && /^batch\s+\d+\/\d+/i.test(String(progress?.detail ?? ''))
+    ? null
+    : progress?.detail;
+  const detail = [
+    progress?.currentStep ?? job?.type ?? 'production',
+    status,
+    percent,
+    fileProgress,
+    batchProgress,
+    progress?.source ? pathBaseName(progress.source) : null,
+    progress?.template ? pathBaseName(progress.template) : null,
+    progress?.deliverable ? pathBaseName(progress.deliverable) : null,
+    progressDetail,
+    progress?.lastEvent ? `last ${progress.lastEvent}` : null,
+  ].filter(Boolean).join(' · ');
+  return {
+    jobId: jobId ?? null,
+    status,
+    label: detail ? `Production: ${detail}` : `Production: ${status}`,
+    terminal: ['done', 'failed', 'cancelled'].includes(String(status)),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function rememberProductionActivity(session, payload) {
+  const activity = productionActivityFromPayload(payload);
+  if (!activity) return false;
+  session.productionActivity = {
+    ...(session.productionActivity ?? {}),
+    ...activity,
+    jobId: activity.jobId ?? session.productionActivity?.jobId ?? null,
+  };
+  return true;
+}
+
+function activityText(session) {
+  const activity = session.productionActivity;
+  if (!activity?.label) return '';
+  const color = activity.terminal
+    ? activity.status === 'done'
+      ? styles.green
+      : styles.red
+    : styles.cyan;
+  return `${color}${truncateAnsi(activity.label, 72)}${styles.reset}`;
+}
+
+function dividerWithActivity(session, columns) {
+  const activity = activityText(session);
+  if (!activity) return '─'.repeat(columns);
+  const plain = stripAnsi(activity);
+  const slot = ` ${plain} `;
+  const visible = Math.min(columns, slot.length);
+  const left = Math.max(0, columns - visible);
+  const clipped = truncateAnsi(activity, Math.max(0, columns - left - 2));
+  return `${styles.gray}${'─'.repeat(left)}${styles.reset} ${clipped} `;
+}
+
+function renderScreen({ packageJson, session, messages, inputBuffer, busy = false, spinnerFrame = 0, scrollOffset = 0, spinnerLabel = 'Thinking…' }) {
   const columns = output.columns || 100;
   const rows = output.rows || 30;
-  const banner = donnaBannerWithMcp(columns, session);
+  const banner = dotdrelleBannerWithMcp(columns, session);
   const bottomPadding = 3;
   const middleHeight = Math.max(5, rows - banner.length - 4 - bottomPadding);
   lastMiddleHeight = middleHeight;
@@ -237,9 +564,16 @@ function renderScreen({ packageJson, session, messages, inputBuffer, busy = fals
         ? `${styles.cyan}You${styles.reset}`
         : message.role === 'command'
           ? `${styles.gray}Shell${styles.reset}`
-          : `${styles.green}Donna${styles.reset}`;
-    const content = message.role === 'user' ? message.content : colorizeStatus(message.content);
-    const lines = wrapText(`${label}: ${content}`, columns);
+          : `${styles.green}dotdrelle${styles.reset}`;
+    const lines = message.role === 'command'
+      ? [
+        `${label}:`,
+        ...wrapText(colorizeCommand(message.content, columns), columns),
+      ]
+      : wrapText(
+        `${label}: ${message.role === 'dotdrelle' ? colorizeStatus(message.content) : message.content}`,
+        columns,
+      );
     return index === 0 ? lines : ['', ...lines];
   });
   lastBodyLineCount = bodyLines.length;
@@ -260,20 +594,20 @@ function renderScreen({ packageJson, session, messages, inputBuffer, busy = fals
 
   const spinner = SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length];
   const inputLine = busy
-    ? `${styles.cyan}${spinner}${styles.reset} ${styles.dim}Donna is thinking…${styles.reset}`
+    ? `${styles.cyan}${spinner}${styles.reset} ${styles.dim}${spinnerLabel}${styles.reset}`
     : `${prompt}${inputBuffer}`;
 
   output.write('\u001b[?25l');
   output.write('\u001b[H\u001b[2J');
   output.write(`${header.slice(0, columns).padEnd(columns, ' ')}\n`);
   output.write('\n');
-  if (banner.length > 1) {
+  if (banner.length > 0) {
     output.write(`${banner.map((line) => line.padEnd(columns, ' ')).join('\n')}\n`);
   }
   output.write(`${topDivider}\n`);
   output.write(`${visibleBody.join('\n')}\n`);
   output.write('\n');
-  output.write(`${divider}\n`);
+  output.write(`${dividerWithActivity(session, columns)}\n`);
   const clippedInputLine = inputLine.slice(0, columns);
   output.write(clippedInputLine);
   output.write('\n');
@@ -282,56 +616,75 @@ function renderScreen({ packageJson, session, messages, inputBuffer, busy = fals
   output.write('\u001b[?25h');
 }
 
-async function runLine(line, { agent, packageJson, session, messages, onUpdate }) {
+async function runLine(line, { agent, packageJson, session, messages, onUpdate, onStep }) {
   const trimmed = stripHtml(line).trim();
   if (!trimmed) return { exit: false };
 
   if (trimmed.startsWith('/')) {
-    const result = handleSlashCommand(trimmed, { packageJson, session });
-    if (result.output) messages.push({ role: 'command', content: result.output });
+    onStep?.(`Shell: ${trimmed}`);
+    const result = await handleSlashCommand(trimmed, { packageJson, session, onStep });
+    if (result.output) {
+      const parts = trimmed.split(/\s+/);
+      if (parts[0] === '/mcp' && parts[1] === 'call' && parts[2] === 'production') {
+        rememberProductionActivity(session, parseJsonText(result.output));
+      }
+      messages.push({ role: 'command', content: result.output });
+    }
     return { exit: Boolean(result.exit) };
   }
 
+  const history = toConversationHistory(messages);
   messages.push({ role: 'user', content: trimmed });
-  if (session.llm?.stream) {
-    const donnaMessage = { role: 'donna', content: '' };
-    messages.push(donnaMessage);
-    onUpdate?.();
-    try {
-      for await (const delta of session.llm.stream({
-        system: buildAgentSystemPrompt({ input: trimmed, session }),
-        input: trimmed,
-      })) {
-        donnaMessage.content += delta;
-        onUpdate?.();
-      }
-      if (!donnaMessage.content.trim()) {
-        donnaMessage.content = buildLimitedAgentResponse(
-          { input: trimmed, session },
-          'LLM stream ended without content',
-        );
-      }
-      onUpdate?.();
-      return { exit: false };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      donnaMessage.content = buildLimitedAgentResponse(
-        { input: trimmed, session },
-        `LLM indisponible: ${message}`,
-      );
-      onUpdate?.();
-      return { exit: false };
-    }
+  onUpdate?.();
+
+  session._onStep = onStep ?? null;
+  let result;
+  try {
+    result = await agent.invoke({ input: trimmed, session, messages: history });
+  } finally {
+    delete session._onStep;
   }
 
-  const result = await agent.invoke({ input: trimmed, session });
-  messages.push({ role: 'donna', content: result.response });
+  if (result.response != null) {
+    messages.push({ role: 'dotdrelle', content: result.response });
+    onUpdate?.();
+    return { exit: false };
+  }
+
+  if (result.readyToStream && session.llm?.stream) {
+    const dotdrelleMessage = { role: 'dotdrelle', content: '' };
+    messages.push(dotdrelleMessage);
+    onUpdate?.();
+    const { system, messages: streamMessages = [] } = result.streamContext ?? {};
+    try {
+      onStep?.('Agent: streaming final answer…');
+      for await (const delta of session.llm.stream({
+        system: system ?? buildAgentSystemPrompt({ input: trimmed, session }),
+        messages: streamMessages,
+      })) {
+        dotdrelleMessage.content += delta;
+        onUpdate?.();
+      }
+      if (!dotdrelleMessage.content.trim()) {
+        dotdrelleMessage.content = buildLimitedAgentResponse({ input: trimmed, session }, 'LLM stream ended without content');
+        onUpdate?.();
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      dotdrelleMessage.content = buildLimitedAgentResponse({ input: trimmed, session }, `LLM indisponible: ${message}`);
+      onUpdate?.();
+    }
+    return { exit: false };
+  }
+
+  messages.push({ role: 'dotdrelle', content: buildLimitedAgentResponse({ input: trimmed, session }) });
+  onUpdate?.();
   return { exit: false };
 }
 
 async function runPipeShell({ agent, packageJson, session }) {
   const rl = createInterface({ input, output, prompt: promptFor(session) });
-  console.log(`Donna  wiki-manager ${packageJson.version}  non-interactive`);
+  console.log(`dotdrelle  wiki-manager ${packageJson.version}  non-interactive`);
   console.log('─'.repeat(80));
   console.log('Agent-first shell active. Type /help for commands, /exit to quit.');
   rl.prompt();
@@ -356,17 +709,28 @@ let lastMiddleHeight = 5;
 async function runTuiShell({ agent, packageJson, session }) {
   const messages = [
     {
-      role: 'donna',
-      content: 'Orchestrator agent ready. Commands start with /. Chat stays at the bottom.',
+      role: 'dotdrelle',
+      content: [
+        'Orchestrator agent ready.',
+        '',
+        'Load a workspace with `/use <workspace>`, then chat or use commands.',
+        'Type `/help` for all commands — `Ctrl+Y` copies the last response.',
+      ].join('\n'),
     },
   ];
+  {
+    const { output: wsOutput } = await handleSlashCommand('/workspaces', { packageJson, session });
+    if (wsOutput) messages.push({ role: 'command', content: wsOutput });
+  }
   let inputBuffer = '';
   const inputHistory = [];
   let historyIndex = null;
   let busy = false;
   let spinnerFrame = 0;
   let spinnerInterval = null;
+  let spinnerLabel = 'Thinking…';
   let scrollOffset = 0;
+  let mouseScrollEnabled = false;
   let done = false;
   let processing = Promise.resolve();
   let finish;
@@ -377,9 +741,29 @@ async function runTuiShell({ agent, packageJson, session }) {
   input.setRawMode(true);
   input.resume();
   output.write('\u001b[?1049h');
-  output.write('\u001b[?1000h\u001b[?1006h');
 
-  const rerender = () => renderScreen({ packageJson, session, messages, inputBuffer, busy, spinnerFrame, scrollOffset });
+  const rerender = () => renderScreen({ packageJson, session, messages, inputBuffer, busy, spinnerFrame, scrollOffset, spinnerLabel });
+  let productionPollBusy = false;
+  const productionPollInterval = setInterval(async () => {
+    const activity = session.productionActivity;
+    const jobId = activity?.jobId;
+    if (!jobId || activity?.terminal || productionPollBusy || session.mcp?.production?.status !== 'connected') return;
+    productionPollBusy = true;
+    try {
+      const result = await callMcpTool(session.mcp, 'production', 'production_job_status', { jobId });
+      const payload = parseJsonText(formatMcpToolResult(result));
+      if (rememberProductionActivity(session, payload)) rerender();
+    } catch {
+      // Keep the last known status visible; transient MCP errors should not interrupt typing.
+    } finally {
+      productionPollBusy = false;
+    }
+  }, 2500);
+
+  const setMouseScrollEnabled = (enabled) => {
+    mouseScrollEnabled = enabled;
+    output.write(enabled ? '\u001b[?1000h\u001b[?1006h' : '\u001b[?1000l\u001b[?1006l');
+  };
 
   const mouseFilter = new Transform({
     transform(chunk, _enc, cb) {
@@ -409,7 +793,39 @@ async function runTuiShell({ agent, packageJson, session }) {
   const handleKeypress = async (str, key) => {
     if (done) return;
 
+    if (key?.ctrl && key.name === 't') {
+      const prevLabel = spinnerLabel;
+      const prevBusy = busy;
+      setMouseScrollEnabled(!mouseScrollEnabled);
+      spinnerLabel = mouseScrollEnabled
+        ? 'Mouse scroll enabled — use Shift+drag if selection is captured'
+        : 'Mouse scroll disabled — native text selection restored';
+      busy = true;
+      rerender();
+      setTimeout(() => { spinnerLabel = prevLabel; busy = prevBusy; rerender(); }, 1800);
+      return;
+    }
 
+    if (key?.ctrl && key.name === 'y') {
+      const lastdotdrelle = [...messages].reverse().find((m) => m.role === 'dotdrelle');
+      if (lastdotdrelle) {
+        const text = stripAnsi(colorizeStatus(lastdotdrelle.content)).replace(/\[[0-9;]*m/g, '');
+        const clipCmd = process.platform === 'darwin' ? 'pbcopy' : 'xclip -selection clipboard';
+        const { execSync } = await import('node:child_process');
+        const prevLabel = spinnerLabel;
+        const prevBusy = busy;
+        try {
+          execSync(clipCmd, { input: text });
+          spinnerLabel = 'Copied to clipboard ✓';
+        } catch {
+          spinnerLabel = 'Copy failed — pbcopy / xclip not available';
+        }
+        busy = true;
+        rerender();
+        setTimeout(() => { spinnerLabel = prevLabel; busy = prevBusy; rerender(); }, 1800);
+      }
+      return;
+    }
     if (key?.ctrl && key.name === 'c') {
       done = true;
       finish();
@@ -430,10 +846,12 @@ async function runTuiShell({ agent, packageJson, session }) {
         rerender();
       }, 80);
       rerender();
-      const result = await runLine(line, { agent, packageJson, session, messages, onUpdate: rerender });
+      const onStep = (label) => { spinnerLabel = label; rerender(); };
+      const result = await runLine(line, { agent, packageJson, session, messages, onUpdate: rerender, onStep });
       clearInterval(spinnerInterval);
       spinnerInterval = null;
       busy = false;
+      spinnerLabel = 'Thinking…';
       scrollOffset = 0;
       done = result.exit;
       rerender();
@@ -514,12 +932,13 @@ async function runTuiShell({ agent, packageJson, session }) {
     await processing;
   } finally {
     mouseFilter.off('keypress', onKeypress);
+    clearInterval(productionPollInterval);
     output.off('resize', onResize);
+    setMouseScrollEnabled(false);
     input.unpipe(mouseFilter);
     mouseFilter.destroy();
     input.setRawMode(false);
     input.pause();
-    output.write('\u001b[?1000l\u001b[?1006l');
     output.write('\u001b[?25h\u001b[H\u001b[2J\u001b[?1049l');
   }
 }

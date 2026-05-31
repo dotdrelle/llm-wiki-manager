@@ -42,7 +42,45 @@ export function createLlmClientFromWikiConfig(config) {
       }
       return content;
     },
-    async *stream({ system, input }) {
+    async completeWithTools({ system, tools = [], messages = [] }) {
+      const allMessages = [
+        { role: 'system', content: system },
+        ...messages,
+      ];
+      const body = {
+        model,
+        messages: allMessages,
+        temperature: typeof llmConfig.temperature === 'number' ? llmConfig.temperature : 0.2,
+      };
+      if (tools.length > 0) {
+        body.tools = tools;
+        body.tool_choice = 'auto';
+      }
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`HTTP ${response.status} ${text.slice(0, 240)}`);
+      }
+      const data = await response.json();
+      const msg = data?.choices?.[0]?.message;
+      return {
+        content: msg?.content ?? null,
+        tool_calls: msg?.tool_calls?.length > 0 ? msg.tool_calls : null,
+        message: { role: 'assistant', content: msg?.content ?? null, tool_calls: msg?.tool_calls },
+      };
+    },
+    async *stream({ system, messages = [] }) {
+      const allMessages = [
+        { role: 'system', content: system },
+        ...messages,
+      ];
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -51,10 +89,7 @@ export function createLlmClientFromWikiConfig(config) {
         },
         body: JSON.stringify({
           model,
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: input },
-          ],
+          messages: allMessages,
           temperature: typeof llmConfig.temperature === 'number' ? llmConfig.temperature : 0.2,
           stream: true,
         }),
@@ -66,7 +101,8 @@ export function createLlmClientFromWikiConfig(config) {
       }
 
       if (!response.body) {
-        yield await this.complete({ system, input });
+        const fallback = await this.completeWithTools({ system, messages });
+        yield fallback.content ?? '';
         return;
       }
 

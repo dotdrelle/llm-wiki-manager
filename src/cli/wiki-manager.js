@@ -34,11 +34,12 @@ export async function runCli(argv) {
       session: {
         workspace: null,
         workspacePath: null,
+        workspaceEnvFile: null,
         wikirc: null,
         wikircConfig: null,
         language: null,
         mcp: null,
-        commands: ['help', 'version', 'exit', 'workspaces', 'use', 'config', 'status'],
+        commands: ['help', 'version', 'exit', 'workspaces', 'workspace', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'skill'],
         llm: null,
       },
     });

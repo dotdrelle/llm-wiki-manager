@@ -37,7 +37,16 @@ export function resolveWikircProfile(workspacePath, profileName = 'default') {
 
 export function loadWikircProfile(workspacePath, profileName = 'default') {
   const profile = resolveWikircProfile(workspacePath, profileName);
-  const config = YAML.parse(readFileSync(profile.path, 'utf8'));
+  const doc = YAML.parseDocument(readFileSync(profile.path, 'utf8'), {
+    schema: 'core',
+  });
+  if (doc.errors.length > 0) {
+    throw new Error(`wikirc YAML invalide: ${doc.errors[0].message}`);
+  }
+  const config = doc.toJSON();
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error('wikirc YAML invalide: objet attendu a la racine');
+  }
   return { profile, config };
 }
 

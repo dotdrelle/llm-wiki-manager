@@ -25,11 +25,11 @@ This repository is part of a multi-repository toolchain:
 
 | Repository | Role |
 | ---------- | ---- |
-| [`llm-wiki`](https://github.com/dotdrelle/llm-wiki) | Workspace engine: CLI, web UI, MCP server, retrieval, and deliverable builder |
-| [`llm-wiki-manager`](https://github.com/dotdrelle/llm-wiki-manager) | Multi-workspace Docker orchestration |
-| [`agent-cme`](https://github.com/dotdrelle/agent-cme) | Confluence Markdown exporter exposed over MCP |
-| [`agent-mailer-api`](https://github.com/dotdrelle/agent-mailer-api) | External send-only MailerSend MCP action agent |
-| [`agent-wiki-production`](https://github.com/dotdrelle/agent-wiki-production) | Workspace-scoped llm-wiki production jobs exposed over MCP |
+| [`llm-wiki`](https://github.com/dot/llm-wiki) | Workspace engine: CLI, web UI, MCP server, retrieval, and deliverable builder |
+| [`llm-wiki-manager`](https://github.com/dot/llm-wiki-manager) | Multi-workspace Docker orchestration |
+| [`agent-cme`](https://github.com/dot/agent-cme) | Confluence Markdown exporter exposed over MCP |
+| [`agent-mailer-api`](https://github.com/dot/agent-mailer-api) | External send-only MailerSend MCP action agent |
+| [`agent-wiki-production`](https://github.com/dot/agent-wiki-production) | Workspace-scoped llm-wiki production jobs exposed over MCP |
 
 ---
 

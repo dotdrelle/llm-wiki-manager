@@ -39,6 +39,8 @@ marked.use({
   },
 });
 
+const GLOBAL_CONVERSATION_KEY = '__global__';
+
 function createSession() {
   return {
     workspace: null,
@@ -51,11 +53,23 @@ function createSession() {
     commands: ['help', 'version', 'exit', 'workspaces', 'workspace', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'skill'],
     llm: null,
     productionActivity: null,
+    conversations: { [GLOBAL_CONVERSATION_KEY]: [] },
   };
 }
 
+function conversationKey(session) {
+  return session.workspace || GLOBAL_CONVERSATION_KEY;
+}
+
+function conversationMessages(session) {
+  const key = conversationKey(session);
+  session.conversations ??= { [GLOBAL_CONVERSATION_KEY]: [] };
+  session.conversations[key] ??= [];
+  return session.conversations[key];
+}
+
 function promptFor(session) {
-  return session.workspace ? `${session.workspace}> ` : 'dotdrelle> ';
+  return session.workspace ? `${session.workspace}> ` : 'dot > ';
 }
 
 function slashCompletions(session) {
@@ -131,9 +145,9 @@ function completionValuesFor(parts, inputBuffer, session) {
 
 function toConversationHistory(replMessages, maxExchanges = 6) {
   return replMessages
-    .filter((m) => m.role === 'user' || m.role === 'dotdrelle')
+    .filter((m) => m.role === 'user' || m.role === 'dot')
     .slice(-(maxExchanges * 2))
-    .map((m) => ({ role: m.role === 'dotdrelle' ? 'assistant' : 'user', content: m.content }));
+    .map((m) => ({ role: m.role === 'dot' ? 'assistant' : 'user', content: m.content }));
 }
 
 function commonPrefix(values) {
@@ -244,6 +258,7 @@ const styles = {
   orange: '\u001b[38;5;208m',
   gray: '\u001b[90m',
   blue: '\u001b[34m',
+  white: '\u001b[37m',
   inverse: '\u001b[7m',
 };
 
@@ -408,25 +423,25 @@ function wrapText(text, width) {
     .flatMap((line) => wrapLine(line, width));
 }
 
-function dotdrelleBanner(columns) {
-  const compact = ['> dotdrelle'];
+function dotBanner(columns) {
+  const compact = ['> dot'];
   const full = [
-    '██╗   ██████╗  ██████╗ ████████╗██████╗ ██████╗ ███████╗██╗     ██╗     ███████╗',
-    '╚██╗  ██╔══██╗██╔═══██╗╚══██╔══╝██╔══██╗██╔══██╗██╔════╝██║     ██║     ██╔════╝',
-    ' ╚██╗ ██║  ██║██║   ██║   ██║   ██║  ██║██████╔╝█████╗  ██║     ██║     █████╗  ',
-    ' ██╔╝ ██║  ██║██║   ██║   ██║   ██║  ██║██╔══██╗██╔══╝  ██║     ██║     ██╔══╝  ',
-    '╚██╔╝ ██████╔╝╚██████╔╝   ██║   ██████╔╝██║  ██╗███████╗███████╗███████╗███████╗',
-    ' ╚═╝  ╚═════╝  ╚═════╝    ╚═╝   ╚═════╝ ╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝╚══════╝',
+    '  ██╗   ██████╗  ██████╗ ████████╗',
+    '  ╚██╗  ██╔══██╗██╔═══██╗╚══██╔══╝',
+    '   ╚██╗ ██║  ██║██║   ██║   ██║   ',
+    '   ██╔╝ ██║  ██║██║   ██║   ██║   ',
+    '  ██╔╝  ██████╔╝╚██████╔╝   ██║   ',
+    '  ╚═╝   ╚═════╝  ╚═════╝    ╚═╝   ',
   ];
-  const lines = columns >= 82 ? full : compact;
+  const lines = columns >= 30 ? full : compact;
   return lines.map((line) => line.slice(0, columns));
 }
 
-function dotdrelleBannerWithMcp(columns, session) {
-  const banner = dotdrelleBanner(columns);
+function dotBannerWithMcp(columns, session) {
+  const banner = dotBanner(columns);
   const activeMcpLines = session.workspace ? formatMcpStatusForPanel(session.mcp) : [];
   if (banner.length === 1 || columns < 72 || activeMcpLines.length === 0) {
-    return banner.map((line) => `${styles.bold}${styles.blue}${line}${styles.reset}`);
+    return banner.map((line) => `${styles.bold}${styles.white}${line}${styles.reset}`);
   }
 
   const panelWidth = Math.min(28, Math.max(22, Math.floor(columns * 0.32)));
@@ -437,7 +452,7 @@ function dotdrelleBannerWithMcp(columns, session) {
 
   for (let index = 0; index < lineCount; index += 1) {
     const leftRaw = (banner[index] ?? '').slice(0, bannerWidth).padEnd(bannerWidth, ' ');
-    const left = `${styles.bold}${styles.blue}${leftRaw}${styles.reset}`;
+    const left = `${styles.bold}${styles.white}${leftRaw}${styles.reset}`;
     const rightRaw = truncateAnsi(mcpLines[index] ?? '', panelWidth);
     const right = `${rightRaw}${' '.repeat(Math.max(0, panelWidth - stripAnsi(rightRaw).length))}`;
     lines.push(`${left}   ${right}`);
@@ -542,7 +557,7 @@ function dividerWithActivity(session, columns) {
 function renderScreen({ packageJson, session, messages, inputBuffer, busy = false, spinnerFrame = 0, scrollOffset = 0, spinnerLabel = 'Thinking…' }) {
   const columns = output.columns || 100;
   const rows = output.rows || 30;
-  const banner = dotdrelleBannerWithMcp(columns, session);
+  const banner = dotBannerWithMcp(columns, session);
   const bottomPadding = 3;
   const middleHeight = Math.max(5, rows - banner.length - 4 - bottomPadding);
   lastMiddleHeight = middleHeight;
@@ -564,14 +579,14 @@ function renderScreen({ packageJson, session, messages, inputBuffer, busy = fals
         ? `${styles.cyan}You${styles.reset}`
         : message.role === 'command'
           ? `${styles.gray}Shell${styles.reset}`
-          : `${styles.green}dotdrelle${styles.reset}`;
+          : `${styles.green}dot${styles.reset}`;
     const lines = message.role === 'command'
       ? [
         `${label}:`,
         ...wrapText(colorizeCommand(message.content, columns), columns),
       ]
       : wrapText(
-        `${label}: ${message.role === 'dotdrelle' ? colorizeStatus(message.content) : message.content}`,
+        `${label}: ${message.role === 'dot' ? colorizeStatus(message.content) : message.content}`,
         columns,
       );
     return index === 0 ? lines : ['', ...lines];
@@ -616,13 +631,14 @@ function renderScreen({ packageJson, session, messages, inputBuffer, busy = fals
   output.write('\u001b[?25h');
 }
 
-async function runLine(line, { agent, packageJson, session, messages, onUpdate, onStep }) {
+async function runLine(line, { agent, packageJson, session, onUpdate, onStep }) {
   const trimmed = stripHtml(line).trim();
   if (!trimmed) return { exit: false };
 
   if (trimmed.startsWith('/')) {
     onStep?.(`Shell: ${trimmed}`);
     const result = await handleSlashCommand(trimmed, { packageJson, session, onStep });
+    const messages = conversationMessages(session);
     if (result.output) {
       const parts = trimmed.split(/\s+/);
       if (parts[0] === '/mcp' && parts[1] === 'call' && parts[2] === 'production') {
@@ -633,11 +649,13 @@ async function runLine(line, { agent, packageJson, session, messages, onUpdate, 
     return { exit: Boolean(result.exit) };
   }
 
+  const messages = conversationMessages(session);
   const history = toConversationHistory(messages);
   messages.push({ role: 'user', content: trimmed });
   onUpdate?.();
 
   session._onStep = onStep ?? null;
+  session.packageJson = packageJson;
   let result;
   try {
     result = await agent.invoke({ input: trimmed, session, messages: history });
@@ -646,14 +664,14 @@ async function runLine(line, { agent, packageJson, session, messages, onUpdate, 
   }
 
   if (result.response != null) {
-    messages.push({ role: 'dotdrelle', content: result.response });
+    messages.push({ role: 'dot', content: result.response });
     onUpdate?.();
     return { exit: false };
   }
 
   if (result.readyToStream && session.llm?.stream) {
-    const dotdrelleMessage = { role: 'dotdrelle', content: '' };
-    messages.push(dotdrelleMessage);
+    const dotMessage = { role: 'dot', content: '' };
+    messages.push(dotMessage);
     onUpdate?.();
     const { system, messages: streamMessages = [] } = result.streamContext ?? {};
     try {
@@ -662,38 +680,41 @@ async function runLine(line, { agent, packageJson, session, messages, onUpdate, 
         system: system ?? buildAgentSystemPrompt({ input: trimmed, session }),
         messages: streamMessages,
       })) {
-        dotdrelleMessage.content += delta;
+        dotMessage.content += delta;
         onUpdate?.();
       }
-      if (!dotdrelleMessage.content.trim()) {
-        dotdrelleMessage.content = buildLimitedAgentResponse({ input: trimmed, session }, 'LLM stream ended without content');
+      if (!dotMessage.content.trim()) {
+        dotMessage.content = buildLimitedAgentResponse({ input: trimmed, session }, 'LLM stream ended without content');
         onUpdate?.();
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      dotdrelleMessage.content = buildLimitedAgentResponse({ input: trimmed, session }, `LLM indisponible: ${message}`);
+      dotMessage.content = buildLimitedAgentResponse({ input: trimmed, session }, `LLM indisponible: ${message}`);
       onUpdate?.();
     }
     return { exit: false };
   }
 
-  messages.push({ role: 'dotdrelle', content: buildLimitedAgentResponse({ input: trimmed, session }) });
+  messages.push({ role: 'dot', content: buildLimitedAgentResponse({ input: trimmed, session }) });
   onUpdate?.();
   return { exit: false };
 }
 
 async function runPipeShell({ agent, packageJson, session }) {
   const rl = createInterface({ input, output, prompt: promptFor(session) });
-  console.log(`dotdrelle  wiki-manager ${packageJson.version}  non-interactive`);
+  console.log(`dot  wiki-manager ${packageJson.version}  non-interactive`);
   console.log('─'.repeat(80));
   console.log('Agent-first shell active. Type /help for commands, /exit to quit.');
   rl.prompt();
 
   try {
     for await (const rawLine of rl) {
-      const messages = [];
-      const result = await runLine(rawLine, { agent, packageJson, session, messages });
-      for (const message of messages) console.log(message.content);
+      const beforeMessages = conversationMessages(session);
+      const beforeLength = beforeMessages.length;
+      const result = await runLine(rawLine, { agent, packageJson, session });
+      const afterMessages = conversationMessages(session);
+      const emitted = afterMessages === beforeMessages ? afterMessages.slice(beforeLength) : afterMessages;
+      for (const message of emitted) console.log(message.content);
       if (result.exit) break;
       rl.setPrompt(promptFor(session));
       rl.prompt();
@@ -707,20 +728,18 @@ let lastBodyLineCount = 0;
 let lastMiddleHeight = 5;
 
 async function runTuiShell({ agent, packageJson, session }) {
-  const messages = [
-    {
-      role: 'dotdrelle',
-      content: [
-        'Orchestrator agent ready.',
-        '',
-        'Load a workspace with `/use <workspace>`, then chat or use commands.',
-        'Type `/help` for all commands — `Ctrl+Y` copies the last response.',
-      ].join('\n'),
-    },
-  ];
+  conversationMessages(session).push({
+    role: 'dot',
+    content: [
+      'Orchestrator agent ready.',
+      '',
+      'Load a workspace with `/use <workspace>`, then chat or use commands.',
+      'Type `/help` for all commands — `Ctrl+Y` copies the last response.',
+    ].join('\n'),
+  });
   {
     const { output: wsOutput } = await handleSlashCommand('/workspaces', { packageJson, session });
-    if (wsOutput) messages.push({ role: 'command', content: wsOutput });
+    if (wsOutput) conversationMessages(session).push({ role: 'command', content: wsOutput });
   }
   let inputBuffer = '';
   const inputHistory = [];
@@ -742,7 +761,7 @@ async function runTuiShell({ agent, packageJson, session }) {
   input.resume();
   output.write('\u001b[?1049h');
 
-  const rerender = () => renderScreen({ packageJson, session, messages, inputBuffer, busy, spinnerFrame, scrollOffset, spinnerLabel });
+  const rerender = () => renderScreen({ packageJson, session, messages: conversationMessages(session), inputBuffer, busy, spinnerFrame, scrollOffset, spinnerLabel });
   let productionPollBusy = false;
   const productionPollInterval = setInterval(async () => {
     const activity = session.productionActivity;
@@ -807,15 +826,18 @@ async function runTuiShell({ agent, packageJson, session }) {
     }
 
     if (key?.ctrl && key.name === 'y') {
-      const lastdotdrelle = [...messages].reverse().find((m) => m.role === 'dotdrelle');
-      if (lastdotdrelle) {
-        const text = stripAnsi(colorizeStatus(lastdotdrelle.content)).replace(/\[[0-9;]*m/g, '');
-        const clipCmd = process.platform === 'darwin' ? 'pbcopy' : 'xclip -selection clipboard';
-        const { execSync } = await import('node:child_process');
+      const messages = conversationMessages(session);
+      const lastdot = [...messages].reverse().find((m) => m.role === 'dot');
+      if (lastdot) {
+        const text = stripAnsi(colorizeStatus(lastdot.content)).replace(/\[[0-9;]*m/g, '');
+        const clipCmd = process.platform === 'darwin'
+          ? { command: 'pbcopy', args: [] }
+          : { command: 'xclip', args: ['-selection', 'clipboard'] };
+        const { execFileSync } = await import('node:child_process');
         const prevLabel = spinnerLabel;
         const prevBusy = busy;
         try {
-          execSync(clipCmd, { input: text });
+          execFileSync(clipCmd.command, clipCmd.args, { input: text });
           spinnerLabel = 'Copied to clipboard ✓';
         } catch {
           spinnerLabel = 'Copy failed — pbcopy / xclip not available';
@@ -847,7 +869,7 @@ async function runTuiShell({ agent, packageJson, session }) {
       }, 80);
       rerender();
       const onStep = (label) => { spinnerLabel = label; rerender(); };
-      const result = await runLine(line, { agent, packageJson, session, messages, onUpdate: rerender, onStep });
+      const result = await runLine(line, { agent, packageJson, session, onUpdate: rerender, onStep });
       clearInterval(spinnerInterval);
       spinnerInterval = null;
       busy = false;
@@ -890,7 +912,7 @@ async function runTuiShell({ agent, packageJson, session }) {
       if (completion) {
         inputBuffer = completion.inputBuffer;
         historyIndex = null;
-        if (completion.message) messages.push({ role: 'command', content: completion.message });
+        if (completion.message) conversationMessages(session).push({ role: 'command', content: completion.message });
         rerender();
       }
       return;

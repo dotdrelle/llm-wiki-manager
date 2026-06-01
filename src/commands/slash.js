@@ -124,7 +124,7 @@ function skillRunText(skill) {
     `# Skill plan: ${skill.name}`,
     '',
     'This shell does not execute skill Markdown blindly.',
-    'dotdrelle will use this workflow as operating instructions, then choose concrete primitives/MCP tools.',
+    'dot will use this workflow as operating instructions, then choose concrete primitives/MCP tools.',
     'Costly or mutating steps still require explicit confirmation.',
     '',
     'Use a natural-language request such as:',
@@ -243,7 +243,7 @@ Interactive shell:
   /skill show <name>   Show one skill
   /skill run <name>    Prepare one skill for guided agent execution
   /exit                Exit the shell
-  Ctrl+Y               Copy last dotdrelle response to clipboard
+  Ctrl+Y               Copy last dot response to clipboard
   Ctrl+T               Toggle mouse-wheel scrolling for the message pane
   Ctrl+C               Exit
 

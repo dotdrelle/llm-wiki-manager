@@ -49,8 +49,16 @@ export function findWorkspace(name) {
   return listWorkspaces().find((workspace) => workspace.name === name);
 }
 
+function isValidWorkspaceName(name) {
+  return (
+    typeof name === 'string' &&
+    /^[a-zA-Z0-9][a-zA-Z0-9_.-]*[a-zA-Z0-9]$|^[a-zA-Z0-9]$/.test(name) &&
+    !name.includes('..')
+  );
+}
+
 export async function createWorkspace(name, targetPath = null, options = {}) {
-  if (!name || !/^[a-zA-Z0-9_.-]+$/.test(name)) {
+  if (!isValidWorkspaceName(name)) {
     throw new Error('Usage: /workspace init <name> [path]');
   }
   const args = ['config', name];

@@ -7,9 +7,45 @@ import {
   parseToolCallName,
 } from '../core/mcp.js';
 import { formatSkillsForAgent } from '../core/skills.js';
+import { handleSlashCommand } from '../commands/slash.js';
 
-const MAX_TOOL_ITERATIONS = 8;
+const MAX_TOOL_ITERATIONS = 25;
 const MAX_SPINNER_ARG_LENGTH = 96;
+const AGENT_SLASH_COMMANDS = new Set([
+  'help',
+  'version',
+  'workspaces',
+  'workspace',
+  'use',
+  'config',
+  'status',
+  'services',
+  'skills',
+  'skill',
+]);
+
+const SHELL_RUN_COMMAND_TOOL = {
+  type: 'function',
+  function: {
+    name: 'shell__run_command',
+    description: [
+      'Run a deterministic wiki-manager slash command inside the current shell session.',
+      'Allowed commands: /workspaces, /workspace init <name> [path], /use <workspace>, /config, /status, /services, /skills, /skill.',
+      'Do not use for arbitrary system shell commands, /mcp call, /wiki run, /start, /stop, /logs, or /exit.',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        command: {
+          type: 'string',
+          description: 'Slash command to run, for example "/workspaces", "/workspace init demo", or "/use juno".',
+        },
+      },
+      required: ['command'],
+    },
+  },
+};
 
 const AgentState = Annotation.Root({
   input: Annotation(),
@@ -103,6 +139,40 @@ function formatProductionProgress(payload) {
   return parts.length > 0 ? `Production: ${parts.join(' · ')}` : null;
 }
 
+function normalizeShellCommand(value) {
+  const command = String(value ?? '').trim();
+  return command.startsWith('/') ? command : `/${command}`;
+}
+
+function assertAgentSlashCommandAllowed(commandLine) {
+  const parts = commandLine.slice(1).trim().split(/\s+/).filter(Boolean);
+  const command = parts[0] ?? '';
+  if (!AGENT_SLASH_COMMANDS.has(command)) {
+    throw new Error(`Command is not available to the agent: /${command}`);
+  }
+  if (command === 'workspace' && parts[1] !== 'init') {
+    throw new Error('Only /workspace init is available to the agent.');
+  }
+  if (command === 'skill' && !['show', 'run'].includes(parts[1] ?? 'show')) {
+    throw new Error('Only /skill show and /skill run are available to the agent.');
+  }
+}
+
+async function runShellCommandTool(session, commandLine) {
+  const command = normalizeShellCommand(commandLine);
+  assertAgentSlashCommandAllowed(command);
+  session._onStep?.(`Shell: ${command}`);
+  const result = await handleSlashCommand(command, {
+    packageJson: session.packageJson ?? { version: '0.0.0' },
+    session,
+    onStep: session._onStep,
+  });
+  if (result.exit) {
+    throw new Error('/exit is not available to the agent.');
+  }
+  return result.output ?? 'Command completed.';
+}
+
 function rememberProductionProgress(session, payload, label) {
   const job = payload?.job;
   const jobId = payload?.jobId ?? job?.jobId;
@@ -126,9 +196,9 @@ export function buildAgentSystemPrompt(state) {
   const customPrompt = state.session.systemPrompt ?? null;
 
   const agentContext = [
-    'You are dotdrelle, the terminal orchestrator agent for llm-wiki-manager.',
+    'You are dot, the terminal orchestrator agent for llm-wiki-manager.',
     'The shell is agent-first: every input without a leading slash is routed to you.',
-    'Commands starting with / are deterministic primitives you may recommend.',
+    'Commands starting with / are deterministic primitives. You may run a safe subset through shell__run_command.',
     `Reply language: ${language}.`,
     `Current workspace: ${workspace}.`,
     `Current wikirc profile: ${wikirc}.`,
@@ -138,12 +208,13 @@ export function buildAgentSystemPrompt(state) {
     'Available skills:',
     skills,
     'You can call MCP tools directly using the provided tool functions.',
+    'You can call shell__run_command for safe manager slash commands such as /workspaces, /workspace init <name> [path], /use <workspace>, /config, /status, /services, /skills, and /skill.',
     'Skills are workflow instructions, not executable code. When a user asks to run a skill, inspect it, propose the concrete primitive/tool plan, and ask for confirmation before costly or mutating actions.',
     'For service actions, recommend /services, /start, /stop or /logs with the exact service name.',
     'Disambiguate export requests carefully.',
     'Confluence/CME/source export means exporting external Confluence sources into raw/untracked: use cme MCP tools (`cme_export_run`, then `cme_export_status`). Never use production `type=export` for Confluence source export.',
     'Wiki/deliverable/publication export means exporting generated deliverables from the wiki: use production MCP tools (`production_start_job` with `type:"export"` or pipeline steps). Require the deliverable path when exporting deliverables.',
-    'For ingest/build/deliverable-export/polish/pipeline workflows, use production MCP tools. Do not route these through direct /wiki shortcuts.',
+    'For ingest/build/export/polish/pipeline workflows, use production MCP tools. Do not route these through direct /wiki shortcuts. To chain multiple sequential steps (e.g. build then polish), always use a single production_start_job call with type="pipeline" and steps=["build","polish"] — never start them as separate jobs: the first job is asynchronous and the second would run before it completes. Do not ask the user to confirm between steps; start the pipeline call directly.',
     'For diagnostics, use /wiki run doctor when the user asks for doctor. Use /workspace init <name> [path] to create/configure a new workspace. Use /wiki for index, or /wiki run index through the explicit backup hatch. Use /wiki run init only for explicit current-workspace llm-wiki init.',
     'If an action requires tools or skills not available yet, explain the limitation and name the expected primitive.',
   ].join('\n');
@@ -157,7 +228,7 @@ export function buildLimitedAgentResponse(state, reason = 'no workspace loaded w
   const language = state.session.language ?? 'en-US';
   if (language.toLowerCase().startsWith('fr')) {
     return [
-      `dotdrelle est active. Workspace courant: ${workspace}.`,
+      `dot est active. Workspace courant: ${workspace}.`,
       `Profil wikirc courant: ${wikirc}.`,
       '',
       "Je suis deja la boucle principale du shell: les entrees sans `/` passent par ce graphe LangGraph.",
@@ -172,7 +243,7 @@ export function buildLimitedAgentResponse(state, reason = 'no workspace loaded w
     ].join('\n');
   }
   return [
-    `dotdrelle is active. Current workspace: ${workspace}.`,
+    `dot is active. Current workspace: ${workspace}.`,
     `Current wikirc profile: ${wikirc}.`,
     '',
     'I am already the shell main loop: inputs without `/` are routed through this LangGraph graph.',
@@ -198,7 +269,7 @@ export function createAgentGraph(options = {}) {
     const iterations = state.toolIterations ?? 0;
     if (iterations >= MAX_TOOL_ITERATIONS) {
       return {
-        response: `[dotdrelle] Tool-use cap reached after ${iterations} iterations.`,
+        response: `[dot] Tool-use cap reached after ${iterations} iterations.`,
         pendingToolCalls: null,
         readyToStream: false,
       };
@@ -210,7 +281,7 @@ export function createAgentGraph(options = {}) {
       state.session._onStep?.('Agent: planning next action…');
     }
 
-    const tools = buildLlmTools(state.session.mcp);
+    const tools = [SHELL_RUN_COMMAND_TOOL, ...buildLlmTools(state.session.mcp)];
     const system = buildAgentSystemPrompt(state);
 
     // On iteration 0: prior history is in state.messages, user input must be appended.
@@ -281,13 +352,17 @@ export function createAgentGraph(options = {}) {
       const { server, tool } = parseToolCallName(call.function.name);
       const argsSummary = summarizeToolArguments(call.function.arguments);
       state.session._onStep?.(
-        `[${state.toolIterations}/${MAX_TOOL_ITERATIONS}] MCP ${server}.${tool}${argsSummary ? ` (${argsSummary})` : ''}`,
+        `[${state.toolIterations}/${MAX_TOOL_ITERATIONS}] ${server === 'shell' ? 'Shell' : 'MCP'} ${server}.${tool}${argsSummary ? ` (${argsSummary})` : ''}`,
       );
       let resultText;
       try {
         const args = JSON.parse(call.function.arguments ?? '{}');
-        const result = await callMcpTool(state.session.mcp, server, tool, args);
-        resultText = formatMcpToolResult(result);
+        if (server === 'shell' && tool === 'run_command') {
+          resultText = await runShellCommandTool(state.session, args.command);
+        } else {
+          const result = await callMcpTool(state.session.mcp, server, tool, args);
+          resultText = formatMcpToolResult(result);
+        }
         if (server === 'production') {
           const payload = parseJsonToolResult(resultText);
           const progressLabel = formatProductionProgress(payload);

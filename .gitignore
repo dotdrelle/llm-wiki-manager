@@ -10,6 +10,7 @@ workspaces/*
 !workspaces/.env.example
 *.yaml
 *.yml
+docker-compose*.local.yml
 *.json
 WIKI_MANAGER_AGENT_SHELL.md
 !package.json

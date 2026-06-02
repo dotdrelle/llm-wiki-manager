@@ -24,6 +24,14 @@ const MCP_SERVICE_MAP = {
 export function buildMcpStatus(session) {
   const workspaceEnv = session.workspaceEnv ?? {};
   const managerEnv = readManagerEnv();
+  const external = {};
+
+  for (const [key, url] of Object.entries(managerEnv)) {
+    if (!key.endsWith('_MCP_PROXY_URL') || !url) continue;
+    const name = key.slice(0, -'_MCP_PROXY_URL'.length).toLowerCase();
+    const token = managerEnv[`${name.toUpperCase()}_MCP_AUTH_TOKEN`] || null;
+    external[name] = { ...endpointStatus(!!url), url, token };
+  }
 
   return {
     wiki: {
@@ -50,21 +58,7 @@ export function buildMcpStatus(session) {
       url: workspaceEnv.PRODUCTION_MCP_PORT ? `http://127.0.0.1:${workspaceEnv.PRODUCTION_MCP_PORT}/mcp/` : null,
       token: workspaceEnv.PRODUCTION_MCP_AUTH_TOKEN || null,
     },
-    mailer: {
-      ...endpointStatus(managerEnv.MAILER_MCP_PROXY_URL && managerEnv.MAILER_MCP_AUTH_TOKEN),
-      url: managerEnv.MAILER_MCP_PROXY_URL || null,
-      token: managerEnv.MAILER_MCP_AUTH_TOKEN || null,
-    },
-    documents: {
-      ...endpointStatus(managerEnv.DOCUMENTS_MCP_PROXY_URL && managerEnv.DOCUMENTS_MCP_AUTH_TOKEN),
-      url: managerEnv.DOCUMENTS_MCP_PROXY_URL || null,
-      token: managerEnv.DOCUMENTS_MCP_AUTH_TOKEN || null,
-    },
-    atlassian: {
-      ...endpointStatus(managerEnv.ATLASSIAN_MCP_PROXY_URL && managerEnv.ATLASSIAN_MCP_AUTH_TOKEN),
-      url: managerEnv.ATLASSIAN_MCP_PROXY_URL || null,
-      token: managerEnv.ATLASSIAN_MCP_AUTH_TOKEN || null,
-    },
+    ...external,
   };
 }
 
@@ -123,22 +117,22 @@ function clarifyToolDescription(serverName, toolName, description) {
 }
 
 async function listMcpTools(endpoint) {
-  if (!endpoint.url || !endpoint.token) throw new Error('missing endpoint URL or token');
+  if (!endpoint.url) throw new Error('missing endpoint URL');
   const payload = await mcpRequest(endpoint, 'tools/list', {});
   return payload?.result?.tools ?? [];
 }
 
 async function mcpRequest(endpoint, method, params) {
-  if (!endpoint.url || !endpoint.token) throw new Error('missing endpoint URL or token');
+  if (!endpoint.url) throw new Error('missing endpoint URL');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
 
   const buildHeaders = () => {
     const h = {
       accept: 'application/json, text/event-stream',
-      authorization: `Bearer ${endpoint.token}`,
       'content-type': 'application/json',
     };
+    if (endpoint.token) h.authorization = `Bearer ${endpoint.token}`;
     if (endpoint._sessionId) h['mcp-session-id'] = endpoint._sessionId;
     return h;
   };

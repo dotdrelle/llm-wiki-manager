@@ -14,6 +14,7 @@ import {
 } from '../core/mcp.js';
 import { createWorkspace, findWorkspace, listWorkspaces } from '../core/workspaces.js';
 import { findSkill, listSkills } from '../core/skills.js';
+import { formatActivityError, formatActivitySummary } from '../core/activity.js';
 import {
   listWikircProfiles,
   loadWikircProfile,
@@ -137,6 +138,47 @@ function skillRunText(skill) {
   ].join('\n');
 }
 
+function skillActionCommand(session, action, name) {
+  if (!name) return { output: `Usage: /${action}-skill <name>\nLegacy: /skill ${action} <name>` };
+  const skill = findSkill(session, name);
+  if (!skill) return { output: `Skill not found: ${name}` };
+  return { output: action === 'run' ? skillRunText(skill) : skillDetailText(skill) };
+}
+
+async function createWorkspaceCommand(context, workspaceName, targetPath) {
+  if (!workspaceName) {
+    return {
+      output: [
+        'Usage: /new <name> [path]',
+        '',
+        'Creates/configures a new workspace through wiki-workspace config.',
+        'Legacy form: /workspace init <name> [path].',
+        'For llm-wiki init inside the current workspace, use /wiki run init.',
+      ].join('\n'),
+    };
+  }
+  try {
+    context.onStep?.(`Workspace: creating ${workspaceName}…`);
+    const output = await createWorkspace(workspaceName, targetPath, { timeout: 600_000 });
+    return {
+      output: [
+        output,
+        '',
+        `Workspace created: ${workspaceName}`,
+        `Use /use ${workspaceName} to load it.`,
+      ].filter(Boolean).join('\n'),
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { output: message };
+  }
+}
+
+function formatMcpCallActivity(serverName, toolName, resultText) {
+  if (serverName === 'production') return null;
+  return formatActivitySummary(serverName, toolName, resultText);
+}
+
 async function refreshMcpRuntimeStatus(session) {
   session.mcp = buildMcpStatus(session);
   if (!session.workspacePath) return null;
@@ -222,6 +264,7 @@ Interactive shell:
   /help                Show shell commands
   /version             Show version
   /workspaces          List configured workspaces
+  /new <name> [path]   Create/configure a new workspace
   /use <workspace>     Load a workspace and its default .wikirc.yaml
   /config list         List .wikirc.yaml profiles for the current workspace
   /config use <name>   Reload session LLM/config from .wikirc.yaml.<name>
@@ -235,17 +278,15 @@ Interactive shell:
   /mcp endpoints       Show MCP URLs and token presence
   /mcp tools [mcp]     Show discovered MCP tools
   /mcp call <mcp> <tool> [json]
-  /workspace init <name> [path]
-                       Create/configure a new workspace
   /wiki                Run one-off llm-wiki index on current workspace
   /wiki run <args...>  Explicit low-level llm-wiki CLI backup hatch
   /skills              List manager/workspace skills
-  /skill show <name>   Show one skill
-  /skill run <name>    Prepare one skill for guided agent execution
+  /show-skill <name>   Show one skill
+  /run-skill <name>    Prepare one skill for guided agent execution
   /exit                Exit the shell
   Ctrl+Y               Copy last dot response to clipboard
   Ctrl+T               Toggle mouse-wheel scrolling for the message pane
-  Ctrl+C               Exit
+  Ctrl+C Ctrl+C        Exit
 
 Agent mode:
   Any input without a leading / is routed to the LangGraph orchestrator.
@@ -382,6 +423,7 @@ export async function handleSlashCommand(line, context) {
         return { output: await listServices(context.session) };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        step(formatActivityError('services', 'list', err));
         return { output: message };
       }
     }
@@ -395,6 +437,7 @@ export async function handleSlashCommand(line, context) {
         return { output };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        step(formatActivityError('services', 'stop', err));
         return { output: message };
       }
     }
@@ -408,6 +451,7 @@ export async function handleSlashCommand(line, context) {
         return { output };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        step(formatActivityError('services', 'logs', err));
         return { output: message };
       }
     }
@@ -450,55 +494,40 @@ export async function handleSlashCommand(line, context) {
           const toolArgs = rawArgs ? JSON.parse(rawArgs) : {};
           step(`MCP: calling ${serverName}.${toolName}…`);
           const result = await callMcpTool(context.session.mcp, serverName, toolName, toolArgs);
-          return { output: formatMcpToolResult(result) };
+          const output = formatMcpToolResult(result);
+          const activity = formatMcpCallActivity(serverName, toolName, output);
+          if (activity) step(activity);
+          return { output };
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
+          step(formatActivityError(serverName, toolName, err));
           return { output: message };
         }
       }
       return { output: 'Usage: /mcp <status|endpoints|tools|call> [mcp]' };
     }
+    case 'new': {
+      return createWorkspaceCommand(context, args[1], args[2] ?? null);
+    }
     case 'workspace': {
       const subcommand = args[1];
       if (subcommand !== 'init') {
-        return { output: 'Usage: /workspace init <name> [path]' };
+        return { output: 'Usage: /new <name> [path]\nLegacy: /workspace init <name> [path]' };
       }
-      const workspaceName = args[2];
-      if (!workspaceName) {
-        return {
-          output: [
-            'Usage: /workspace init <name> [path]',
-            '',
-            'Creates/configures a new workspace through wiki-workspace config.',
-            'For llm-wiki init inside the current workspace, use /wiki run init.',
-          ].join('\n'),
-        };
-      }
-      try {
-        const targetPath = args[3] ?? null;
-        step(`Workspace: creating ${workspaceName}…`);
-        const output = await createWorkspace(workspaceName, targetPath, { timeout: 600_000 });
-        return {
-          output: [
-            output,
-            '',
-            `Workspace created: ${workspaceName}`,
-            `Use /use ${workspaceName} to load it.`,
-          ].filter(Boolean).join('\n'),
-        };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return { output: message };
-      }
+      return createWorkspaceCommand(context, args[2], args[3] ?? null);
     }
     case 'wiki': {
       const subcommand = args[1];
       if (!subcommand) {
         try {
           step('Wiki: running index…');
-          return { output: await runWikiCli(context.session, ['index'], { timeout: 600_000 }) };
+          const output = await runWikiCli(context.session, ['index'], { timeout: 600_000 });
+          const activity = formatActivitySummary('wiki', 'index', output);
+          if (activity) step(activity);
+          return { output };
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
+          step(formatActivityError('wiki', 'index', err));
           return { output: message };
         }
       }
@@ -507,7 +536,10 @@ export async function handleSlashCommand(line, context) {
           const wikiArgs = args.slice(2);
           if (wikiArgs.length === 0) return { output: 'Usage: /wiki run <args...>' };
           step(`Wiki: running ${wikiArgs.join(' ')}…`);
-          return { output: await runWikiCli(context.session, wikiArgs) };
+          const output = await runWikiCli(context.session, wikiArgs);
+          const activity = formatActivitySummary('wiki', wikiArgs[0] ?? 'run', output);
+          if (activity) step(activity);
+          return { output };
         }
         return {
           output: [
@@ -520,21 +552,26 @@ export async function handleSlashCommand(line, context) {
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        step(formatActivityError('wiki', subcommand ?? 'run', err));
         return { output: message };
       }
     }
     case 'skills': {
       return { output: skillsText(context.session) };
     }
+    case 'show-skill': {
+      return skillActionCommand(context.session, 'show', args[1]);
+    }
+    case 'run-skill': {
+      return skillActionCommand(context.session, 'run', args[1]);
+    }
     case 'skill': {
       const subcommand = args[1] ?? 'show';
       const name = args[2];
-      if (!name) return { output: 'Usage: /skill <show|run> <name>' };
-      const skill = findSkill(context.session, name);
-      if (!skill) return { output: `Skill not found: ${name}` };
-      if (subcommand === 'show') return { output: skillDetailText(skill) };
-      if (subcommand === 'run') return { output: skillRunText(skill) };
-      return { output: 'Usage: /skill <show|run> <name>' };
+      if (subcommand === 'show' || subcommand === 'run') {
+        return skillActionCommand(context.session, subcommand, name);
+      }
+      return { output: 'Usage: /show-skill <name> or /run-skill <name>\nLegacy: /skill <show|run> <name>' };
     }
     case 'exit':
     case 'quit':

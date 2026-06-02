@@ -8,6 +8,7 @@ import {
 } from '../core/mcp.js';
 import { formatSkillsForAgent } from '../core/skills.js';
 import { handleSlashCommand } from '../commands/slash.js';
+import { formatActivitySummary } from '../core/activity.js';
 
 const MAX_TOOL_ITERATIONS = 25;
 const MAX_SPINNER_ARG_LENGTH = 96;
@@ -15,12 +16,15 @@ const AGENT_SLASH_COMMANDS = new Set([
   'help',
   'version',
   'workspaces',
+  'new',
   'workspace',
   'use',
   'config',
   'status',
   'services',
   'skills',
+  'show-skill',
+  'run-skill',
   'skill',
 ]);
 
@@ -30,7 +34,7 @@ const SHELL_RUN_COMMAND_TOOL = {
     name: 'shell__run_command',
     description: [
       'Run a deterministic wiki-manager slash command inside the current shell session.',
-      'Allowed commands: /workspaces, /workspace init <name> [path], /use <workspace>, /config, /status, /services, /skills, /skill.',
+      'Allowed commands: /workspaces, /new <name> [path], /use <workspace>, /config, /status, /services, /skills, /show-skill <name>, /run-skill <name>.',
       'Do not use for arbitrary system shell commands, /mcp call, /wiki run, /start, /stop, /logs, or /exit.',
     ].join(' '),
     parameters: {
@@ -39,7 +43,7 @@ const SHELL_RUN_COMMAND_TOOL = {
       properties: {
         command: {
           type: 'string',
-          description: 'Slash command to run, for example "/workspaces", "/workspace init demo", or "/use juno".',
+          description: 'Slash command to run, for example "/workspaces", "/new demo", or "/use juno".',
         },
       },
       required: ['command'],
@@ -150,11 +154,14 @@ function assertAgentSlashCommandAllowed(commandLine) {
   if (!AGENT_SLASH_COMMANDS.has(command)) {
     throw new Error(`Command is not available to the agent: /${command}`);
   }
+  if (command === 'new' && parts.length < 2) {
+    throw new Error('Usage: /new <name> [path].');
+  }
   if (command === 'workspace' && parts[1] !== 'init') {
     throw new Error('Only /workspace init is available to the agent.');
   }
   if (command === 'skill' && !['show', 'run'].includes(parts[1] ?? 'show')) {
-    throw new Error('Only /skill show and /skill run are available to the agent.');
+    throw new Error('Use /show-skill <name> or /run-skill <name>. Legacy /skill show|run is also accepted.');
   }
 }
 
@@ -208,14 +215,14 @@ export function buildAgentSystemPrompt(state) {
     'Available skills:',
     skills,
     'You can call MCP tools directly using the provided tool functions.',
-    'You can call shell__run_command for safe manager slash commands such as /workspaces, /workspace init <name> [path], /use <workspace>, /config, /status, /services, /skills, and /skill.',
+    'You can call shell__run_command for safe manager slash commands such as /workspaces, /new <name> [path], /use <workspace>, /config, /status, /services, /skills, /show-skill <name>, and /run-skill <name>.',
     'Skills are workflow instructions, not executable code. When a user asks to run a skill, inspect it, propose the concrete primitive/tool plan, and ask for confirmation before costly or mutating actions.',
     'For service actions, recommend /services, /start, /stop or /logs with the exact service name.',
     'Disambiguate export requests carefully.',
     'Confluence/CME/source export means exporting external Confluence sources into raw/untracked: use cme MCP tools (`cme_export_run`, then `cme_export_status`). Never use production `type=export` for Confluence source export.',
     'Wiki/deliverable/publication export means exporting generated deliverables from the wiki: use production MCP tools (`production_start_job` with `type:"export"` or pipeline steps). Require the deliverable path when exporting deliverables.',
     'For ingest/build/export/polish/pipeline workflows, use production MCP tools. Do not route these through direct /wiki shortcuts. To chain multiple sequential steps (e.g. build then polish), always use a single production_start_job call with type="pipeline" and steps=["build","polish"] — never start them as separate jobs: the first job is asynchronous and the second would run before it completes. Do not ask the user to confirm between steps; start the pipeline call directly.',
-    'For diagnostics, use /wiki run doctor when the user asks for doctor. Use /workspace init <name> [path] to create/configure a new workspace. Use /wiki for index, or /wiki run index through the explicit backup hatch. Use /wiki run init only for explicit current-workspace llm-wiki init.',
+    'For diagnostics, use /wiki run doctor when the user asks for doctor. Use /new <name> [path] to create/configure a new workspace. Use /wiki for index, or /wiki run index through the explicit backup hatch. Use /wiki run init only for explicit current-workspace llm-wiki init.',
     'If an action requires tools or skills not available yet, explain the limitation and name the expected primitive.',
   ].join('\n');
 
@@ -368,6 +375,9 @@ export function createAgentGraph(options = {}) {
           const progressLabel = formatProductionProgress(payload);
           if (progressLabel) state.session._onStep?.(progressLabel);
           rememberProductionProgress(state.session, payload, progressLabel);
+        } else {
+          const activityLabel = formatActivitySummary(server, tool, resultText);
+          if (activityLabel) state.session._onStep?.(activityLabel);
         }
       } catch (err) {
         resultText = `Error: ${err instanceof Error ? err.message : String(err)}`;

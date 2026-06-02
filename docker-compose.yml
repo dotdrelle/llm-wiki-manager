@@ -33,6 +33,8 @@ services:
 
   serve:
     image: dotdrelle/llm-wiki:latest
+    labels:
+      wiki-manager.description: "Workspace web UI and local wiki browser."
     command: serve --port 3000
     stop_grace_period: 10s
     volumes:
@@ -61,6 +63,8 @@ services:
 
   mcp-http:
     image: dotdrelle/llm-wiki:latest
+    labels:
+      wiki-manager.description: "llm-wiki MCP HTTP server for wiki tools."
     command: mcp-http --host 0.0.0.0 --port 3333 --path /mcp
     volumes:
       - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}:/workspace
@@ -85,6 +89,8 @@ services:
 
   cme-mcp:
     image: dotdrelle/agent-cme:latest
+    labels:
+      wiki-manager.description: "CME agent MCP server for external source export."
     environment:
       - MCP_AUTH_TOKEN=${CME_MCP_AUTH_TOKEN:-}
       - CME_EXPORT__OUTPUT_PATH=/data/exports
@@ -109,6 +115,8 @@ services:
 
   production-mcp:
     image: dotdrelle/agent-wiki-production:latest
+    labels:
+      wiki-manager.description: "Production MCP server for ingest/build/export jobs."
     volumes:
       - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}:/workspace
     environment:
@@ -122,3 +130,24 @@ services:
     ports:
       - '${PRODUCTION_MCP_PORT:-3336}:8080'
     restart: unless-stopped
+
+x-wiki-manager:
+  service-aliases:
+    all:
+      targets: [serve, mcp-http, cme-mcp, production-mcp]
+      description: "Full workspace service set."
+    ui:
+      targets: [serve]
+      description: "Alias for serve: workspace web UI."
+    wiki:
+      targets: [mcp-http]
+      description: "Alias for mcp-http: wiki MCP server."
+    mcp:
+      targets: [mcp-http]
+      description: "Alias for mcp-http: wiki MCP server."
+    cme:
+      targets: [cme-mcp]
+      description: "Alias for cme-mcp: CME source agent."
+    production:
+      targets: [production-mcp]
+      description: "Alias for production-mcp: production jobs."

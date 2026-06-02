@@ -39,7 +39,7 @@ export async function runCli(argv) {
         wikircConfig: null,
         language: null,
         mcp: null,
-        commands: ['help', 'version', 'exit', 'workspaces', 'workspace', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'skill'],
+        commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'show-skill', 'run-skill'],
         llm: null,
         packageJson,
         conversations: { __global__: [] },

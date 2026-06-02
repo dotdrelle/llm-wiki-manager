@@ -1,24 +1,22 @@
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import YAML from 'yaml';
 import { managerRoot } from './workspaces.js';
 
 const execFileAsync = promisify(execFile);
 
 export const COMPOSE_SERVICES = ['serve', 'mcp-http', 'cme-mcp', 'production-mcp'];
+const SERVICE_DESCRIPTION_LABEL = 'wiki-manager.description';
 
-const SERVICE_ALIASES = {
+const DEFAULT_SERVICE_ALIASES = {
   all: COMPOSE_SERVICES,
   ui: ['serve'],
-  serve: ['serve'],
   wiki: ['mcp-http'],
   mcp: ['mcp-http'],
-  'mcp-http': ['mcp-http'],
   cme: ['cme-mcp'],
-  'cme-mcp': ['cme-mcp'],
   production: ['production-mcp'],
-  'production-mcp': ['production-mcp'],
 };
 
 function requireWorkspace(session) {
@@ -29,6 +27,60 @@ function requireWorkspace(session) {
 
 function composeFile() {
   return join(managerRoot(), 'docker-compose.yml');
+}
+
+function readComposeConfig() {
+  try {
+    return YAML.parse(readFileSync(composeFile(), 'utf8')) ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizeLabels(labels) {
+  if (!labels) return {};
+  if (!Array.isArray(labels)) return labels;
+  return Object.fromEntries(
+    labels.flatMap((entry) => {
+      const text = String(entry ?? '');
+      const index = text.indexOf('=');
+      return index > 0 ? [[text.slice(0, index), text.slice(index + 1)]] : [];
+    }),
+  );
+}
+
+function composeAliasMetadata() {
+  return readComposeConfig()?.['x-wiki-manager']?.['service-aliases'] ?? {};
+}
+
+function serviceAliases() {
+  const aliases = { ...DEFAULT_SERVICE_ALIASES };
+  for (const [name, value] of Object.entries(composeAliasMetadata())) {
+    const targets = Array.isArray(value?.targets) ? value.targets.map(String).filter(Boolean) : [];
+    if (targets.length > 0) aliases[name] = targets;
+  }
+  return aliases;
+}
+
+function serviceDescriptions() {
+  const config = readComposeConfig();
+  const descriptions = {};
+  for (const [name, service] of Object.entries(config.services ?? {})) {
+    const labels = normalizeLabels(service?.labels);
+    if (labels[SERVICE_DESCRIPTION_LABEL]) descriptions[name] = String(labels[SERVICE_DESCRIPTION_LABEL]);
+  }
+  for (const [name, value] of Object.entries(composeAliasMetadata())) {
+    if (value?.description) descriptions[name] = String(value.description);
+  }
+  return descriptions;
+}
+
+export function serviceNames() {
+  return [...new Set([...COMPOSE_SERVICES, ...Object.keys(serviceAliases())])].sort();
+}
+
+export function serviceDescription(name) {
+  return serviceDescriptions()[name] ?? null;
 }
 
 function projectName(session) {
@@ -132,13 +184,15 @@ export async function serviceStates(session) {
 }
 
 export async function startService(session, service) {
-  const targets = service ? (SERVICE_ALIASES[service] ?? [service]) : COMPOSE_SERVICES;
+  const aliases = serviceAliases();
+  const targets = service ? (aliases[service] ?? [service]) : COMPOSE_SERVICES;
   const output = await runCompose(session, ['up', '-d', ...targets], { timeout: 180_000 });
   return [`Started: ${targets.join(', ')}`, output].filter(Boolean).join('\n');
 }
 
 export async function stopService(session, service) {
-  const targets = service ? (SERVICE_ALIASES[service] ?? [service]) : COMPOSE_SERVICES;
+  const aliases = serviceAliases();
+  const targets = service ? (aliases[service] ?? [service]) : COMPOSE_SERVICES;
   const output = await runCompose(session, ['stop', ...targets], { timeout: 120_000 });
   return [`Stopped: ${targets.join(', ')}`, output].filter(Boolean).join('\n');
 }

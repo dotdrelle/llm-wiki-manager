@@ -6,7 +6,7 @@ import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
 import { buildAgentSystemPrompt, buildLimitedAgentResponse } from '../agent/graph.js';
 import { handleSlashCommand } from '../commands/slash.js';
-import { COMPOSE_SERVICES } from '../core/compose.js';
+import { serviceDescription, serviceNames as composeServiceNames } from '../core/compose.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { listSkills } from '../core/skills.js';
 import { listWikircProfiles } from '../core/wikirc.js';
@@ -40,6 +40,45 @@ marked.use({
 });
 
 const GLOBAL_CONVERSATION_KEY = '__global__';
+const ACTIVITY_PANEL_ROWS = 2;
+const COMPLETION_PANEL_ROWS = 5;
+const LOWER_PANEL_SEPARATOR_ROWS = 1;
+const LOWER_PANEL_ROWS = LOWER_PANEL_SEPARATOR_ROWS + ACTIVITY_PANEL_ROWS + COMPLETION_PANEL_ROWS;
+const BOTTOM_PADDING_ROWS = 3;
+const MOUSE_SELECTION_RESUME_MS = 2400;
+const COMMAND_COMPLETION_DESCRIPTIONS = {
+  '/help': 'Show shell commands.',
+  '/version': 'Print the wiki-manager version.',
+  '/exit': 'Exit the shell.',
+  '/workspaces': 'List configured workspaces.',
+  '/new': 'Create or configure a new workspace.',
+  '/use': 'Load a workspace and its default config.',
+  '/config': 'Inspect or switch .wikirc.yaml profiles.',
+  '/status': 'Show the current workspace and session state.',
+  '/services': 'List workspace Docker Compose services.',
+  '/start': 'Start one service or the workspace service set.',
+  '/stop': 'Stop one service or the workspace service set.',
+  '/logs': 'Show recent logs for a service.',
+  '/mcp': 'Inspect or call workspace MCP servers.',
+  '/wiki': 'Run llm-wiki commands for the active workspace.',
+  '/skills': 'List manager and workspace skills.',
+  '/show-skill': 'Show one skill.',
+  '/run-skill': 'Prepare one skill for guided execution.',
+};
+
+const SUBCOMMAND_COMPLETION_DESCRIPTIONS = {
+  '/config:list': 'List .wikirc.yaml profiles.',
+  '/config:status': 'Show the active wikirc profile.',
+  '/config:use': 'Reload session config from a profile.',
+  '/mcp:call': 'Call one MCP tool with optional JSON.',
+  '/mcp:endpoints': 'Show MCP URLs and token presence.',
+  '/mcp:status': 'Show MCP connection status.',
+  '/mcp:tools': 'Show discovered MCP tools.',
+  '/workspace:init': 'Legacy form of /new.',
+  '/wiki:run': 'Use the low-level llm-wiki CLI fallback.',
+  '/skill:run': 'Legacy form of /run-skill.',
+  '/skill:show': 'Legacy form of /show-skill.',
+};
 
 function createSession() {
   return {
@@ -50,7 +89,7 @@ function createSession() {
     wikircConfig: null,
     language: null,
     mcp: null,
-    commands: ['help', 'version', 'exit', 'workspaces', 'workspace', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'skill'],
+    commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'show-skill', 'run-skill'],
     llm: null,
     productionActivity: null,
     conversations: { [GLOBAL_CONVERSATION_KEY]: [] },
@@ -81,12 +120,11 @@ function tokenCompletions(inputBuffer, values) {
   const prefix = inputBuffer.slice(lastSpace + 1);
   const base = inputBuffer.slice(0, lastSpace + 1);
   const matches = values.filter((value) => value.startsWith(prefix));
-  if (matches.length === 0) return { inputBuffer, message: `No completion matches ${prefix}` };
-  if (matches.length === 1) return { inputBuffer: `${base}${matches[0]} `, message: null };
+  if (matches.length === 0) return { inputBuffer };
+  if (matches.length === 1) return { inputBuffer: `${base}${matches[0]} ` };
   const shared = commonPrefix(matches);
   return {
     inputBuffer: shared.length > prefix.length ? `${base}${shared}` : inputBuffer,
-    message: `Completions: ${matches.join('  ')}`,
   };
 }
 
@@ -114,7 +152,7 @@ function wikircProfileNames(session) {
 }
 
 function serviceNames() {
-  return [...COMPOSE_SERVICES, 'all', 'mcp', 'wiki', 'cme', 'production', 'ui'].sort();
+  return composeServiceNames();
 }
 
 function skillNames(session) {
@@ -128,6 +166,7 @@ function completionValuesFor(parts, inputBuffer, session) {
   const previousToken = completingNewToken ? parts.at(-1) : parts.at(-2);
 
   if (tokenIndex === 0) return slashCompletions(session);
+  if (command === '/new' && tokenIndex === 1) return [];
   if (command === '/use' && tokenIndex === 1) return workspaceNames();
   if (command === '/config' && tokenIndex === 1) return ['list', 'status', 'use'];
   if (command === '/config' && previousToken === 'use') return wikircProfileNames(session);
@@ -138,6 +177,7 @@ function completionValuesFor(parts, inputBuffer, session) {
   if (command === '/workspace' && tokenIndex === 1) return ['init'];
   if (command === '/wiki' && tokenIndex === 1) return ['run'];
   if ((command === '/start' || command === '/stop' || command === '/logs') && tokenIndex === 1) return serviceNames();
+  if ((command === '/show-skill' || command === '/run-skill') && tokenIndex === 1) return skillNames(session);
   if (command === '/skill' && tokenIndex === 1) return ['run', 'show'];
   if (command === '/skill' && (previousToken === 'run' || previousToken === 'show')) return skillNames(session);
   return [];
@@ -167,6 +207,65 @@ function completeSlashCommand(inputBuffer, session) {
   const values = completionValuesFor(parts, inputBuffer, session);
   if (values.length === 0) return null;
   return tokenCompletions(inputBuffer, values);
+}
+
+function completionContext(inputBuffer, session) {
+  if (!inputBuffer.startsWith('/')) return null;
+  const parts = inputBuffer.trimEnd().split(/\s+/).filter(Boolean);
+  const values = completionValuesFor(parts, inputBuffer, session);
+  if (values.length === 0) return null;
+  const lastSpace = inputBuffer.lastIndexOf(' ');
+  const prefix = inputBuffer.endsWith(' ') ? '' : inputBuffer.slice(lastSpace + 1);
+  const matches = values.filter((value) => value.startsWith(prefix));
+  return { parts, matches, prefix };
+}
+
+function completionDescription(value, parts) {
+  if (value.startsWith('/')) return COMMAND_COMPLETION_DESCRIPTIONS[value] ?? 'Run this shell command.';
+  const command = parts[0];
+  const subcommand = SUBCOMMAND_COMPLETION_DESCRIPTIONS[`${command}:${value}`];
+  if (subcommand) return subcommand;
+  if (command === '/use') return 'Load this workspace.';
+  if (command === '/start') return serviceDescription(value) ?? 'Start this Docker Compose service.';
+  if (command === '/stop') return serviceDescription(value) ?? 'Stop this Docker Compose service.';
+  if (command === '/logs') return serviceDescription(value) ?? 'Show logs for this Docker Compose service.';
+  if (command === '/mcp') return parts[1] === 'call' ? 'Use this MCP server.' : 'Filter tools to this MCP server.';
+  if (command === '/skill') return ['run', 'show'].includes(parts[1]) ? 'Select this skill.' : 'Choose a skill action.';
+  if (command === '/config') return parts.at(-1) === 'use' ? 'Load this wikirc profile.' : 'Choose a config action.';
+  return 'Complete this argument.';
+}
+
+function completionLines(inputBuffer, session, columns) {
+  const context = completionContext(inputBuffer, session);
+  if (!context) return [];
+  if (context.matches.length === 0) {
+    return [`${styles.dim}No completions for ${context.prefix || 'current input'}.${styles.reset}`];
+  }
+
+  const items = context.matches.slice(0, 10).map((value) => ({
+    value,
+    description: completionDescription(value, context.parts),
+  }));
+  const oneColumn = columns < 96 || items.length <= 3;
+  const itemWidth = oneColumn ? columns : Math.floor((columns - 3) / 2);
+  const renderItem = (item) => {
+    const valueWidth = Math.min(18, Math.max(10, Math.floor(itemWidth * 0.34)));
+    const value = `${styles.cyan}${truncateAnsi(item.value, valueWidth)}${styles.reset}`;
+    const descWidth = Math.max(8, itemWidth - valueWidth - 2);
+    const desc = `${styles.dim}${truncateAnsi(item.description, descWidth)}${styles.reset}`;
+    return `${padVisible(value, valueWidth)} ${desc}`;
+  };
+
+  const rendered = items.map(renderItem);
+  if (oneColumn) return rendered;
+
+  const lines = [];
+  for (let index = 0; index < rendered.length; index += 2) {
+    const left = rendered[index];
+    const right = rendered[index + 1] ?? '';
+    lines.push(`${left}${' '.repeat(Math.max(3, itemWidth - stripAnsi(left).length + 3))}${right}`);
+  }
+  return lines;
 }
 
 function stripAnsi(value) {
@@ -554,12 +653,26 @@ function dividerWithActivity(session, columns) {
   return `${styles.gray}${'─'.repeat(left)}${styles.reset} ${clipped} `;
 }
 
-function renderScreen({ packageJson, session, messages, inputBuffer, busy = false, spinnerFrame = 0, scrollOffset = 0, spinnerLabel = 'Thinking…' }) {
+function renderActivityLines(activityLines, columns) {
+  return activityLines
+    .slice(-ACTIVITY_PANEL_ROWS)
+    .map((line) => `${styles.dim}${truncateAnsi(line, Math.max(10, columns - 2))}${styles.reset}`);
+}
+
+function isDurableActivityLine(label) {
+  return /^[a-z0-9_-]+\.[a-z0-9_-]+:/i.test(String(label).trim());
+}
+
+function renderScreen({ packageJson, session, messages, inputBuffer, busy = false, spinnerFrame = 0, scrollOffset = 0, spinnerLabel = 'Thinking…', activityLines = [] }) {
   const columns = output.columns || 100;
   const rows = output.rows || 30;
   const banner = dotBannerWithMcp(columns, session);
-  const bottomPadding = 3;
-  const middleHeight = Math.max(5, rows - banner.length - 4 - bottomPadding);
+  const completions = busy ? [] : completionLines(inputBuffer, session, columns);
+  const visibleCompletions = completions.slice(0, COMPLETION_PANEL_ROWS);
+  const activity = renderActivityLines(activityLines, columns);
+  const productionActivityRows = 1;
+  const fixedRows = 4 + banner.length + productionActivityRows + 1 + LOWER_PANEL_ROWS + BOTTOM_PADDING_ROWS;
+  const middleHeight = Math.max(5, rows - fixedRows);
   lastMiddleHeight = middleHeight;
   const prompt = promptFor(session);
   const title = '';
@@ -621,12 +734,21 @@ function renderScreen({ packageJson, session, messages, inputBuffer, busy = fals
   }
   output.write(`${topDivider}\n`);
   output.write(`${visibleBody.join('\n')}\n`);
-  output.write('\n');
+  // Keep this line reserved: production jobs publish their progress here.
   output.write(`${dividerWithActivity(session, columns)}\n`);
   const clippedInputLine = inputLine.slice(0, columns);
-  output.write(clippedInputLine);
-  output.write('\n');
-  output.write('\u001b[1A');
+  output.write(`${clippedInputLine}\n`);
+  output.write(`${styles.white}${'─'.repeat(columns)}${styles.reset}\n`);
+  for (let index = 0; index < ACTIVITY_PANEL_ROWS; index += 1) {
+    output.write(`${padVisible(activity[index] ?? '', columns)}\n`);
+  }
+  for (let index = 0; index < COMPLETION_PANEL_ROWS; index += 1) {
+    output.write(`${padVisible(visibleCompletions[index] ?? '', columns)}\n`);
+  }
+  for (let index = 0; index < BOTTOM_PADDING_ROWS; index += 1) {
+    output.write(`${' '.repeat(columns)}\n`);
+  }
+  output.write(`\u001b[${LOWER_PANEL_ROWS + BOTTOM_PADDING_ROWS + 1}A`);
   output.write(`\u001b[${stripAnsi(clippedInputLine).length + 1}G`);
   output.write('\u001b[?25h');
 }
@@ -728,7 +850,8 @@ let lastBodyLineCount = 0;
 let lastMiddleHeight = 5;
 
 async function runTuiShell({ agent, packageJson, session }) {
-  conversationMessages(session).push({
+  const messages = conversationMessages(session);
+  messages.push({
     role: 'dot',
     content: [
       'Orchestrator agent ready.',
@@ -737,10 +860,6 @@ async function runTuiShell({ agent, packageJson, session }) {
       'Type `/help` for all commands — `Ctrl+Y` copies the last response.',
     ].join('\n'),
   });
-  {
-    const { output: wsOutput } = await handleSlashCommand('/workspaces', { packageJson, session });
-    if (wsOutput) conversationMessages(session).push({ role: 'command', content: wsOutput });
-  }
   let inputBuffer = '';
   const inputHistory = [];
   let historyIndex = null;
@@ -748,8 +867,13 @@ async function runTuiShell({ agent, packageJson, session }) {
   let spinnerFrame = 0;
   let spinnerInterval = null;
   let spinnerLabel = 'Thinking…';
+  let activityLines = [];
+  let lastCtrlCAt = 0;
+  let ctrlCTimer = null;
   let scrollOffset = 0;
-  let mouseScrollEnabled = false;
+  let mouseScrollEnabled = true;
+  let desiredMouseScrollEnabled = true;
+  let mouseSelectionTimer = null;
   let done = false;
   let processing = Promise.resolve();
   let finish;
@@ -761,7 +885,27 @@ async function runTuiShell({ agent, packageJson, session }) {
   input.resume();
   output.write('\u001b[?1049h');
 
-  const rerender = () => renderScreen({ packageJson, session, messages: conversationMessages(session), inputBuffer, busy, spinnerFrame, scrollOffset, spinnerLabel });
+  const rerender = () => renderScreen({ packageJson, session, messages: conversationMessages(session), inputBuffer, busy, spinnerFrame, scrollOffset, spinnerLabel, activityLines });
+  busy = true;
+  spinnerLabel = 'Loading wiki-manager shell...';
+  spinnerInterval = setInterval(() => {
+    spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length;
+    rerender();
+  }, 80);
+  rerender();
+
+  try {
+    const { output: wsOutput } = await handleSlashCommand('/workspaces', { packageJson, session });
+    if (wsOutput) messages.push({ role: 'command', content: wsOutput });
+  } finally {
+    clearInterval(spinnerInterval);
+    spinnerInterval = null;
+    busy = false;
+    spinnerFrame = 0;
+    spinnerLabel = 'Thinking…';
+    rerender();
+  }
+
   let productionPollBusy = false;
   const productionPollInterval = setInterval(async () => {
     const activity = session.productionActivity;
@@ -784,10 +928,18 @@ async function runTuiShell({ agent, packageJson, session }) {
     output.write(enabled ? '\u001b[?1000h\u001b[?1006h' : '\u001b[?1000l\u001b[?1006l');
   };
 
+  const suspendMouseForSelection = () => {
+    setMouseScrollEnabled(false);
+    clearTimeout(mouseSelectionTimer);
+    mouseSelectionTimer = setTimeout(() => {
+      if (!done && desiredMouseScrollEnabled) setMouseScrollEnabled(true);
+    }, MOUSE_SELECTION_RESUME_MS);
+  };
+
   const mouseFilter = new Transform({
     transform(chunk, _enc, cb) {
       const str = chunk.toString('utf8');
-      const filtered = str.replace(/\u001b\[<(\d+);\d+;\d+[Mm]/g, (_, btnStr) => {
+      const filtered = str.replace(/\u001b\[<(\d+);\d+;\d+([Mm])/g, (_, btnStr, suffix) => {
         const btn = parseInt(btnStr, 10);
         if (btn === 64) {
           scrollOffset = Math.min(scrollOffset + 3, Math.max(0, lastBodyLineCount - lastMiddleHeight));
@@ -795,6 +947,12 @@ async function runTuiShell({ agent, packageJson, session }) {
         } else if (btn === 65) {
           scrollOffset = Math.max(0, scrollOffset - 3);
           setImmediate(rerender);
+        } else if (suffix === 'M') {
+          suspendMouseForSelection();
+        } else if (suffix === 'm') {
+          clearTimeout(mouseSelectionTimer);
+          mouseSelectionTimer = null;
+          if (desiredMouseScrollEnabled) setMouseScrollEnabled(true);
         }
         return '';
       });
@@ -804,6 +962,7 @@ async function runTuiShell({ agent, packageJson, session }) {
   });
   input.pipe(mouseFilter);
   emitKeypressEvents(mouseFilter);
+  setMouseScrollEnabled(true);
 
   const onResize = () => rerender();
   output.on('resize', onResize);
@@ -815,9 +974,10 @@ async function runTuiShell({ agent, packageJson, session }) {
     if (key?.ctrl && key.name === 't') {
       const prevLabel = spinnerLabel;
       const prevBusy = busy;
-      setMouseScrollEnabled(!mouseScrollEnabled);
-      spinnerLabel = mouseScrollEnabled
-        ? 'Mouse scroll enabled — use Shift+drag if selection is captured'
+      desiredMouseScrollEnabled = !desiredMouseScrollEnabled;
+      setMouseScrollEnabled(desiredMouseScrollEnabled);
+      spinnerLabel = desiredMouseScrollEnabled
+        ? 'Mouse scroll enabled — click temporarily restores native selection'
         : 'Mouse scroll disabled — native text selection restored';
       busy = true;
       rerender();
@@ -849,8 +1009,24 @@ async function runTuiShell({ agent, packageJson, session }) {
       return;
     }
     if (key?.ctrl && key.name === 'c') {
-      done = true;
-      finish();
+      const now = Date.now();
+      if (now - lastCtrlCAt <= 1500) {
+        done = true;
+        finish();
+        return;
+      }
+      lastCtrlCAt = now;
+      const exitHint = 'Shell: press Ctrl+C again to exit.';
+      activityLines = [...activityLines.filter((line) => line !== exitHint), exitHint].slice(-ACTIVITY_PANEL_ROWS);
+      rerender();
+      clearTimeout(ctrlCTimer);
+      ctrlCTimer = setTimeout(() => {
+        if (Date.now() - lastCtrlCAt >= 1500) {
+          activityLines = activityLines.filter((line) => line !== exitHint);
+          lastCtrlCAt = 0;
+          rerender();
+        }
+      }, 1600);
       return;
     }
     if (key?.name === 'return' || str === '\n' || str === '\r') {
@@ -862,18 +1038,26 @@ async function runTuiShell({ agent, packageJson, session }) {
       historyIndex = null;
       scrollOffset = 0;
       busy = true;
+      activityLines = [];
       spinnerFrame = 0;
+      spinnerLabel = 'Working…';
       spinnerInterval = setInterval(() => {
         spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length;
         rerender();
       }, 80);
       rerender();
-      const onStep = (label) => { spinnerLabel = label; rerender(); };
+      const onStep = (label) => {
+        if (!String(label).startsWith('Production:')) {
+          activityLines = [...activityLines, label].slice(-2);
+        }
+        rerender();
+      };
       const result = await runLine(line, { agent, packageJson, session, onUpdate: rerender, onStep });
       clearInterval(spinnerInterval);
       spinnerInterval = null;
       busy = false;
       spinnerLabel = 'Thinking…';
+      activityLines = activityLines.filter(isDurableActivityLine).slice(-ACTIVITY_PANEL_ROWS);
       scrollOffset = 0;
       done = result.exit;
       rerender();
@@ -912,7 +1096,6 @@ async function runTuiShell({ agent, packageJson, session }) {
       if (completion) {
         inputBuffer = completion.inputBuffer;
         historyIndex = null;
-        if (completion.message) conversationMessages(session).push({ role: 'command', content: completion.message });
         rerender();
       }
       return;
@@ -955,6 +1138,8 @@ async function runTuiShell({ agent, packageJson, session }) {
   } finally {
     mouseFilter.off('keypress', onKeypress);
     clearInterval(productionPollInterval);
+    clearTimeout(ctrlCTimer);
+    clearTimeout(mouseSelectionTimer);
     output.off('resize', onResize);
     setMouseScrollEnabled(false);
     input.unpipe(mouseFilter);

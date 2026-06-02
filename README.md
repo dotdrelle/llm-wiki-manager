@@ -2,306 +2,273 @@
 
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
 
-<p align="center">
-  <img src="https://www.itsdonna.events/assets/LocalFirstAIKnowledgeCore.png" alt="Donna local-first AI knowledge core architecture" width="760">
-</p>
+`llm-wiki-manager` is the local cockpit for several `llm-wiki` workspaces.
 
-`llm-wiki` turns heterogeneous documentation into a living Markdown knowledge base
-that AI agents can search, explore, maintain, and use to generate up-to-date
-documents.
+It creates workspace folders, assigns ports, starts Docker services, exposes MCP
+endpoints, and provides the `dot` shell: an agent-first terminal UI that can
+inspect workspaces, run safe manager commands, call MCP tools, and guide
+production jobs.
 
-`llm-wiki-manager` is the orchestration layer for that workflow. It coordinates
-workspace services, MCP endpoints, a Confluence exporter, and production jobs so
-several `llm-wiki` workspaces can be run from one cockpit.
+The manager does not implement the wiki engine or external agents. It
+orchestrates them.
 
-The manager does not implement the `llm-wiki`, `agent-cme`, or
-`agent-wiki-production` services itself. It pulls their published Docker images,
-injects workspace-specific environment variables, and provides a shared Docker
-Compose setup plus the `wiki-workspace` helper script. `agent-mailer-api` is
-external infrastructure: the manager only passes its MCP URL and bearer token to
-`llm-wiki serve`.
-
-This repository is part of a multi-repository toolchain:
+## Toolchain
 
 | Repository | Role |
-| ---------- | ---- |
-| [`llm-wiki`](https://github.com/dot/llm-wiki) | Workspace engine: CLI, web UI, MCP server, retrieval, and deliverable builder |
-| [`llm-wiki-manager`](https://github.com/dot/llm-wiki-manager) | Multi-workspace Docker orchestration |
-| [`agent-cme`](https://github.com/dot/agent-cme) | Confluence Markdown exporter exposed over MCP |
-| [`agent-mailer-api`](https://github.com/dot/agent-mailer-api) | External send-only MailerSend MCP action agent |
-| [`agent-wiki-production`](https://github.com/dot/agent-wiki-production) | Workspace-scoped llm-wiki production jobs exposed over MCP |
+| --- | --- |
+| [`llm-wiki`](https://github.com/dotdrelle/llm-wiki) | Workspace engine: CLI, web UI, MCP server, retrieval, deliverables, skills |
+| [`llm-wiki-manager`](https://github.com/dotdrelle/llm-wiki-manager) | Multi-workspace cockpit, Docker orchestration, `dot` shell |
+| [`agent-cme`](https://github.com/dotdrelle/agent-cme) | Workspace-scoped Confluence to Markdown exporter |
+| [`agent-wiki-production`](https://github.com/dotdrelle/agent-wiki-production) | Workspace-scoped production jobs: ingest, build, export, polish, pipeline |
+| [`agent-mailer-api`](https://github.com/dotdrelle/agent-mailer-api) | Optional external mailer MCP endpoint |
 
----
+## Workspace Model
 
-## Workspace model
-
-Each workspace is a self-contained directory:
+Each managed workspace is a normal `llm-wiki` workspace plus manager metadata:
 
 ```text
-workspaces/my-project/
-  .env                 # ports, workspace path, MCP tokens (auto-generated)
-  .cme/                # agent-cme credentials and state
+workspaces/<name>/
+  .env                 # ports, tokens, workspace path
+  .cme/                # Confluence exporter state
+  .wikirc.yaml         # LLM/vector config for this workspace
   raw/
-    untracked/         # CME writes exports here directly
-    ingested/          # wiki ingest archives processed sources here
-  wiki/                # structured wiki pages
-  templates/           # deliverable templates
-  build-context/       # generated build context
-  .wikirc.yaml         # provider/model/baseUrl/apiKey config (created by wiki init)
+  wiki/
+  templates/
+  build-context/
+  deliverables/
+  .wiki/
 ```
 
-`agent-cme` exports land directly in `raw/untracked/` via a Docker volume mount —
-no copy step needed.
-For that reason, manager production pipelines do not include the legacy
-`copy` step by default; the normal sequence starts at `ingest`.
+The `.env` file is manager-owned. The `.wikirc.yaml` file is workspace-owned and
+stores provider/model/baseUrl/apiKey/retrieval settings.
 
----
-
-## Repository layout
+Confluence exports land directly in:
 
 ```text
-llm-wiki-manager/
-├── docker-compose.yml          # shared compose for all workspace services
-├── wiki-workspace              # CLI wrapper around docker compose
-├── .env.example                # template for shared manager settings and external mailer URL/token
-├── workspaces/.env.example     # template for per-workspace configuration
-├── SKILL.md                    # agent skill: Confluence → wiki pipeline
-└── workspaces/                 # per-workspace config (gitignored)
-    └── <name>/
-        └── .env
+raw/untracked/
 ```
 
----
+The normal production pipeline starts at ingest:
 
-## Initial setup
+```text
+ingest -> build -> export -> polish
+```
 
-Copy the shared manager env for shared orchestration settings:
+The legacy copy step is only for deployments that explicitly configure external
+import mappings.
+
+## Initial Setup
 
 ```bash
+corepack enable
+pnpm install
 cp .env.example .env
-```
-
-LLM and vector provider settings, including `apiKey`, live in each workspace's
-`.wikirc.yaml`. The manager `.env` is for shared settings such as optional
-production guards and the external mailer endpoint consumed by `serve`.
-
----
-
-## Create a workspace
-
-```bash
-./wiki-workspace config my-project [path]
-```
-
-This command:
-
-1. Creates `workspaces/my-project/` with `.cme/` and `raw/untracked/`
-2. Auto-selects four free host ports (serve, mcp, cme, production)
-3. Writes `workspaces/my-project/.env`
-4. Runs `wiki init` inside the workspace via Docker
-
-Edit the generated `.env` to adjust ports if needed.
-
-If `path` is omitted, the workspace is created under
-`workspaces/my-project/`. If `path` points somewhere else, the manager creates a
-symlink at `workspaces/my-project` so later commands can still address the
-workspace by name:
-
-```bash
-./wiki-workspace config my-project /absolute/path/to/my-project
-./wiki-workspace up my-project
-```
-
----
-
-## Start a workspace
-
-```bash
-./wiki-workspace up my-project
-```
-
-Starts the workspace stack: wiki UI, wiki MCP, production MCP, and workspace CME.
-The mailer is external; `serve` connects to it through `MAILER_MCP_PROXY_URL`.
-
-| Service | Port variable |
-| ------- | ------------- |
-| Wiki UI + chat | `WIKI_SERVE_PORT` |
-| Wiki MCP | `WIKI_MCP_PORT` |
-| CME MCP | `CME_MCP_PORT` |
-| Production MCP | `PRODUCTION_MCP_PORT` |
-
----
-
-## Commands
-
-List configured workspaces:
-
-```bash
-./wiki-workspace list
 ```
 
 Create a workspace:
 
 ```bash
-./wiki-workspace config my-project [./workspaces/my-project]
+./wiki-workspace config my-project [path]
 ```
 
-Start the full stack:
+Start it:
 
 ```bash
 ./wiki-workspace up my-project
 ```
 
-Start only wiki services (no CME):
-
-```bash
-./wiki-workspace wiki my-project up
-```
-
-Run the web UI in the foreground without starting CME:
-
-```bash
-./wiki-workspace wiki my-project serve
-```
-
-Start CME manually when the workspace needs it:
-
-```bash
-./wiki-workspace cme my-project up
-./wiki-workspace wiki my-project serve
-```
-
-Manage workspace CME:
-
-```bash
-./wiki-workspace cme my-project up
-./wiki-workspace cme my-project logs
-./wiki-workspace cme my-project down
-```
-
-Check the external mailer configuration:
-
-```bash
-./wiki-workspace mailer status
-```
-
-Run the wiki pipeline:
+Run wiki commands:
 
 ```bash
 ./wiki-workspace wiki my-project doctor
 ./wiki-workspace wiki my-project ingest
 ./wiki-workspace wiki my-project build --plan
 ./wiki-workspace wiki my-project build
-./wiki-workspace wiki my-project export
 ```
 
-Follow logs:
+## Services
+
+The shared `docker-compose.yml` starts one workspace stack:
+
+| Service | Role | Port variable |
+| --- | --- | --- |
+| `serve` | Wiki web UI and browser chat | `WIKI_SERVE_PORT` |
+| `mcp-http` | llm-wiki MCP endpoint | `WIKI_MCP_PORT` |
+| `cme-mcp` | Confluence exporter MCP endpoint | `CME_MCP_PORT` |
+| `production-mcp` | Production job MCP endpoint | `PRODUCTION_MCP_PORT` |
+
+Use `wiki-workspace` whenever possible so Compose receives the right project
+name, env file, ports, and volume mounts.
 
 ```bash
+./wiki-workspace list
+./wiki-workspace up my-project
 ./wiki-workspace wiki my-project logs
+./wiki-workspace cme my-project up
 ./wiki-workspace cme my-project logs
+./wiki-workspace mailer status
 ```
 
-Stop a workspace:
+## The `dot` Shell
+
+Start the agent shell:
 
 ```bash
-./wiki-workspace wiki my-project down
+pnpm start
 ```
 
-Run any wiki CLI command:
+The shell is agent-first:
 
-```bash
-./wiki-workspace wiki my-project run query "your question"
-./wiki-workspace wiki my-project run index
-```
+- input starting with `/` runs a deterministic shell primitive;
+- any other input goes to the LangGraph orchestrator;
+- the visible agent name is `dot`;
+- conversation history is separated per workspace.
 
----
-
-## Data flow
+Useful primitives:
 
 ```text
-Confluence
-  -> cme_export_run()
-  -> <workspace>/raw/untracked/     (written directly by CME via Docker volume)
-  -> wiki ingest                    (processes raw/untracked, archives to raw/ingested)
-  -> wiki build / export            (generates deliverables)
+/workspaces
+/new <name> [path]
+/use <workspace>
+/config status
+/services
+/start [service]
+/stop [service]
+/logs <service>
+/mcp status
+/mcp tools [mcp]
+/wiki
+/wiki run <args...>
+/skills
+/show-skill <name>
+/run-skill <name>
 ```
 
----
+Workspace switching is isolated. When you run:
 
-## Ports
-
-Each workspace receives a block of four host ports in a 100-port slice. The
-first workspace uses `31xx`, the second uses `32xx`, then `33xx`, and so on:
-
-```env
-# workspaces/first/.env
-WIKI_SERVE_PORT=3100
-WIKI_MCP_PORT=3101
-CME_MCP_PORT=3102
-PRODUCTION_MCP_PORT=3103
-
-# workspaces/second/.env
-WIKI_SERVE_PORT=3200
-WIKI_MCP_PORT=3201
-CME_MCP_PORT=3202
-PRODUCTION_MCP_PORT=3203
+```text
+/use juno
 ```
 
-`./wiki-workspace config` selects the first fully free slice automatically.
-Edit the workspace `.env` to change them.
+the shell switches both the displayed conversation and the LLM history to
+`juno`. Returning to another workspace restores that workspace's in-memory
+conversation for the current shell process.
 
----
+## Agent Tooling
 
-## MCP auth tokens
+The LLM can call MCP tools directly when they are connected.
 
-MCP auth tokens are local coordination secrets used by the manager, workspace
-services, and local MCP clients to authenticate internal calls between local
-endpoints. They are not API keys for MailerSend, Atlassian, or model providers.
+It can also call an internal restricted tool:
 
-The values below are examples of the expected `.env` keys. Generate or choose
-your own tokens for each local deployment; do not copy the empty placeholders as
-production values.
-
-External transverse MCP endpoints live in the root manager `.env`:
-
-```env
-MAILER_MCP_PROXY_URL=http://host.docker.internal:3335/mcp/
-MAILER_MCP_AUTH_TOKEN=
-
-DOCUMENTS_MCP_PROXY_URL=http://host.docker.internal:3337/mcp/
-DOCUMENTS_MCP_AUTH_TOKEN=
-
-ATLASSIAN_MCP_PROXY_URL=http://host.docker.internal:9000/mcp
-ATLASSIAN_MCP_AUTH_TOKEN=
+```text
+shell__run_command
 ```
 
-`ATLASSIAN_MCP_AUTH_TOKEN` is kept as the manager-side MCP key for clients or a
-future auth proxy. The upstream `mcp-atlassian` HTTP server uses Atlassian
-credentials from `agent-atlassian/.env`; do not put Confluence/Jira secrets in
-the manager `.env`.
+This tool can run only safe manager slash commands:
 
-Workspace-scoped tokens live in each `workspaces/<name>/.env`. The examples
-below show the keys that `./wiki-workspace config` creates for local internal
-calls:
-
-```env
-WIKI_MCP_AUTH_TOKEN=
-CME_MCP_AUTH_TOKEN=
-PRODUCTION_MCP_AUTH_TOKEN=
+```text
+/workspaces
+/new <name> [path]
+/use <workspace>
+/config ...
+/status
+/services
+/skills
+/show-skill <name>
+/run-skill <name>
 ```
 
-The workspace chat UI is preconfigured with the correct proxy URLs and bearer
-tokens for local calls. For an external Claude Code MCP client on the same
-machine, set the bearer in `.mcp.json` to match the generated workspace token.
+It is not a general shell. It does not expose arbitrary system commands, `/mcp
+call`, `/wiki run`, `/start`, `/stop`, `/logs`, or `/exit`.
 
----
+This keeps the LLM useful for workspace navigation and inspection without giving
+it unrestricted command execution.
 
-## Git scope
+## Non-Interactive Mode
 
-`llm-wiki-manager` is intended to be its own repository. It tracks orchestration
-files only. `workspaces/*/` is gitignored.
+The existing `--once` mode runs one agent turn:
+
+```bash
+node ./bin/wiki-manager.js --once "list configured workspaces"
+```
+
+It is intentionally lightweight and does not preload a workspace, LLM config, or
+MCP endpoints.
+
+Scheduled unattended execution should use a future dedicated headless mode, not
+`--once`. A proper headless mode should create a normal session, run `/use`, run
+`/run-skill`, execute the skill, log to disk, and exit non-zero on failure.
+
+## Local Compose Overrides
+
+Do not put machine-specific settings in the shared `docker-compose.yml`.
+
+For example, if a VPN/proxy requires a custom CA bundle, create a local ignored
+override such as:
+
+```text
+docker-compose.ca.local.yml
+```
+
+and run:
+
+```bash
+docker compose \
+  -p wiki-my-project \
+  -f docker-compose.yml \
+  -f docker-compose.ca.local.yml \
+  --env-file workspaces/my-project/.env \
+  up -d serve production-mcp
+```
+
+Files matching `docker-compose*.local.yml` are ignored by Git.
+
+## Security Model
+
+- Workspace names created by `/workspace init` are path-safe identifiers:
+  alphanumeric at both ends, only letters/digits/underscore/dot/dash inside, and
+  no `..` sequence.
+- Manager MCP tokens are local coordination secrets. They are stored in memory
+  for local calls and are not displayed by status commands.
+- Provider API keys belong in the workspace `.wikirc.yaml` or in the owning
+  service environment, not in manager-level docs.
+- Clipboard copy uses `execFileSync`, not shell-string execution.
+- `.wikirc.yaml` is parsed as YAML `core` schema and must be an object.
+- `.env` quoted values support basic escapes such as `\"`, `\\`, `\n`, `\r`,
+  and `\t`.
+
+## Development
+
+```bash
+pnpm install
+pnpm start
+pnpm run check
+```
+
+`pnpm run check` verifies:
+
+- CLI version;
+- help output;
+- limited `--once` mode.
+
+## Repository Layout
+
+```text
+llm-wiki-manager/
+├── bin/wiki-manager.js
+├── src/
+│   ├── agent/          # LangGraph orchestration and LLM client
+│   ├── cli/            # CLI entrypoint
+│   ├── commands/       # slash commands
+│   ├── core/           # compose, env, MCP, skills, workspace registry
+│   └── shell/          # TUI and pipe shell
+├── docker-compose.yml
+├── wiki-workspace
+├── workspaces/         # gitignored local workspace registry
+├── .env.example
+└── workspaces/.env.example
+```
 
 ## License
 
-Released under the **PolyForm Noncommercial License 1.0.0**. See [LICENSE](LICENSE).
+Released under the PolyForm Noncommercial License 1.0.0. See `LICENSE`.

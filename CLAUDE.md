@@ -125,7 +125,7 @@ pnpm run check
 For shell/session changes, also test at least:
 
 ```bash
-printf '/use juno\n/config status\n/workspaces\n/exit\n' | node ./bin/wiki-manager.js
+printf '/use <workspace-name>\n/config status\n/workspaces\n/exit\n' | node ./bin/wiki-manager.js
 ```
 
 For workspace-name validation, verify that `.`, `..`, and names containing `..`
@@ -138,7 +138,7 @@ are rejected by `/workspace init`.
 A future scheduled mode should be explicit, for example:
 
 ```bash
-wiki-manager --headless --workspace juno --skill pipeline
+wiki-manager --headless --workspace <workspace-name> --skill pipeline
 ```
 
 That mode should create a normal session, call `/use`, call `/skill run`, execute

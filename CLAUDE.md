@@ -24,7 +24,7 @@ src/core/workspaces.js      Workspace registry and creation
 src/core/mcp.js             MCP endpoint discovery and tool calls
 src/core/env.js             .env parser
 src/core/wikirc.js          .wikirc.yaml profile loading
-src/core/skills.js          Workspace/manager skill discovery
+src/core/skills.js          Workspace skill discovery
 ```
 
 ## Shell Model
@@ -34,11 +34,19 @@ The interactive shell is the product surface.
 - The visible agent is `dot`.
 - Lines beginning with `/` execute deterministic primitives.
 - Other lines go to the LangGraph orchestrator.
+- `/chat <message>` is the explicit direct-chat escape hatch and must not use
+  agent tools.
 - Conversation history is scoped by workspace for the current process.
 - The global context is used only before a workspace is loaded.
+- Ctrl+C while busy should abort active LLM/MCP work; Ctrl+C twice exits only
+  when idle.
 
 When changing `/use`, workspace state and conversation state must move together.
 Do not reintroduce a single global message buffer for all workspaces.
+
+The top TUI layout must keep the logo height stable. The MCP status panel stays
+to the right of the logo, uses two compact columns, and must summarize overflow
+instead of increasing banner height or pushing into the conversation area.
 
 ## Safe LLM Actions
 
@@ -65,11 +73,19 @@ It must not become arbitrary shell execution. Do not expose `/mcp call`,
 `/wiki run`, `/start`, `/stop`, `/logs`, `/exit`, or raw system commands through
 this tool without a separate confirmation/allowlist design.
 
+Do not route natural-language input away from the orchestrator by keyword
+heuristics. If a fast path is needed, keep it explicit, as `/chat` is.
+
 ## Workspace Rules
 
 - Workspaces are registered under `workspaces/`, which is gitignored.
 - Generated workspace `.env` files, `.cme` state, exports, raw content, wiki
   output, and symlink targets must not be committed.
+- The manager must not contain a root `SKILL.md` or a root `skills/` directory.
+- Workspace skills must follow the `depot-skills` layout: `skill.yaml`,
+  `CLAUDE.md`, `templates/`, `build-context/`, `.wiki/system-prompt.md`, and
+  executable UI skills under `.wiki/skills/` unless `skill.yaml` declares
+  another `entrypoints.uiSkillDir`.
 - Workspace names created by `/workspace init` must be path-safe:
   alphanumeric at both ends, only letters/digits/underscore/dot/dash inside, and
   no `..`.
@@ -112,6 +128,7 @@ this tool without a separate confirmation/allowlist design.
 
 pnpm start
 pnpm run check
+node ./bin/wiki-manager.js --headless --workspace <workspace-name> --prompt "check production status"
 ```
 
 ## Validation
@@ -128,19 +145,30 @@ For shell/session changes, also test at least:
 printf '/use <workspace-name>\n/config status\n/workspaces\n/exit\n' | node ./bin/wiki-manager.js
 ```
 
+For headless changes, test an error path that does not require provider access:
+
+```bash
+node ./bin/wiki-manager.js --headless --workspace __missing__ --prompt test
+```
+
 For workspace-name validation, verify that `.`, `..`, and names containing `..`
 are rejected by `/workspace init`.
 
-## Headless Direction
+## Headless Mode
 
 `--once` is intentionally limited and does not preload a workspace.
 
-A future scheduled mode should be explicit, for example:
+Use explicit headless mode for scheduled runs:
 
 ```bash
 wiki-manager --headless --workspace <workspace-name> --skill pipeline
+wiki-manager --headless --workspace <workspace-name> --prompt "check production status"
 ```
 
-That mode should create a normal session, call `/use`, call `/skill run`, execute
-the skill without interactive confirmation, write a log file, and exit non-zero
-on failure.
+Headless mode creates a normal session, calls `/use`, executes one skill or
+prompt through the orchestrator, writes a log file, and exits non-zero on
+failure.
+
+Use `--log-file <path>` when tests need to assert log creation without touching
+a workspace. Headless mode should keep using the same safe primitives and MCP
+tooling as the interactive orchestrator.

@@ -25,6 +25,31 @@ export function printVersion(packageJson) {
   console.log(packageJson.version);
 }
 
+const styles = {
+  reset: '\u001b[0m',
+  cyan: '\u001b[36m',
+  bold: '\u001b[1m',
+};
+
+function stripAnsi(value) {
+  return String(value).replace(/\u001b\[[0-9;]*m/g, '');
+}
+
+function padVisible(value, width) {
+  const text = String(value);
+  return `${text}${' '.repeat(Math.max(0, width - stripAnsi(text).length))}`;
+}
+
+function commandLabel(value) {
+  return `${styles.bold}${styles.cyan}${value}${styles.reset}`;
+}
+
+function helpPair(leftCommand, leftText, rightCommand, rightText) {
+  const left = `${padVisible(commandLabel(leftCommand), 18)}${leftText}`;
+  const right = rightCommand ? `${padVisible(commandLabel(rightCommand), 18)}${rightText}` : '';
+  return `  ${padVisible(left, 38)}${right}`;
+}
+
 function wikircSummaryText(summary) {
   return [
     `profile=${summary.profile}`,
@@ -103,7 +128,11 @@ function skillsText(session) {
   const skills = listSkills(session);
   if (skills.length === 0) return 'No skills discovered.';
   return skills
-    .map((skill) => `${skill.name}\t${skill.scope}\t${skill.description || '-'}\t${skill.path}`)
+    .map((skill) => {
+      const description = String(skill.description || 'workflow skill').replace(/\s+/g, ' ').trim();
+      const compact = description.length > 96 ? `${description.slice(0, 93)}...` : description;
+      return `${skill.name}\t${skill.scope}\t${compact}`;
+    })
     .join('\n');
 }
 
@@ -259,43 +288,37 @@ Options:
   -v, --version        Print version
   -h, --help           Print help
   --once <prompt>      Run one agent turn and exit
+  --headless           Run a workspace task non-interactively
+  --workspace <name>   Workspace for --headless
+  --skill <name>       Skill to run in --headless
+  --prompt <text>      Task or extra instruction for --headless
+  --log-file <path>    Optional headless log path
 
 Interactive shell:
-  /help                Show shell commands
-  /version             Show version
-  /workspaces          List configured workspaces
-  /new <name> [path]   Create/configure a new workspace
-  /use <workspace>     Load a workspace and its default .wikirc.yaml
-  /config list         List .wikirc.yaml profiles for the current workspace
-  /config use <name>   Reload session LLM/config from .wikirc.yaml.<name>
-  /config status       Show active wikirc profile without secrets
-  /status              Show current workspace/session state
-  /services            List workspace Docker Compose services
-  /start [service]     Start one service, or the workspace service set
-  /stop [service]      Stop one service, or the workspace service set
-  /logs <service>      Show recent service logs
-  /mcp status          Show MCP connection status
-  /mcp endpoints       Show MCP URLs and token presence
-  /mcp tools [mcp]     Show discovered MCP tools
-  /mcp call <mcp> <tool> [json]
-  /wiki                Run one-off llm-wiki index on current workspace
-  /wiki run <args...>  Explicit low-level llm-wiki CLI backup hatch
-  /skills              List manager/workspace skills
-  /show-skill <name>   Show one skill
-  /run-skill <name>    Prepare one skill for guided agent execution
-  /exit                Exit the shell
-  Ctrl+Y               Copy last dot response to clipboard
-  Ctrl+T               Toggle mouse-wheel scrolling for the message pane
-  Ctrl+C Ctrl+C        Exit
+${helpPair('/help', 'Help', '/version', 'Version')}
+${helpPair('/workspaces', 'Workspaces', '/new <n> [path]', 'New workspace')}
+${helpPair('/use <workspace>', 'Use workspace', '/status', 'Session status')}
+${helpPair('/config list', 'Config profiles', '/config use <n>', 'Use config')}
+${helpPair('/config status', 'Active config', '/services', 'Services')}
+${helpPair('/start [service]', 'Start service(s)', '/stop [service]', 'Stop service(s)')}
+${helpPair('/logs <service>', 'Service logs', '/skills', 'List skills')}
+${helpPair('/show-skill <n>', 'Show skill', '/run-skill <n>', 'Run skill guide')}
+${helpPair('/mcp status', 'MCP status', '/mcp endpoints', 'MCP endpoints')}
+${helpPair('/mcp tools [mcp]', 'MCP tools', '/mcp call ...', 'Call MCP tool')}
+${helpPair('/wiki', 'Run wiki index', '/wiki run <args>', 'Raw wiki CLI')}
+${helpPair('/chat <message>', 'Direct chat', '/clear', 'Clear screen')}
+${helpPair('/exit', 'Exit', 'Ctrl+Y', 'Copy last reply')}
+${helpPair('Ctrl+T', 'Toggle mouse scroll', 'Ctrl+C Ctrl+C', 'Exit')}
 
 Agent mode:
   Any input without a leading / is routed to the LangGraph orchestrator.
+  Use /chat <message> for direct LLM chat without agent tools.
 
 Status:
-  Step 7 is partially installed: agent-first shell with workspace services, MCP calls, wiki CLI, and skill discovery.
+  Agent-first shell is installed with workspace services, MCP calls, wiki CLI, skill discovery, and headless runs.
   Shell UI is English. Agent exchange language is read from the active .wikirc.yaml.
   LLM config is intentionally workspace-scoped and will be read from .wikirc.yaml after /use <workspace>.
-  Guided skill execution is started; autonomous scheduling is not wired yet.
+  Headless mode supports one-shot workspace prompts and skill runs with log output.
 `;
 }
 
@@ -572,6 +595,11 @@ export async function handleSlashCommand(line, context) {
         return skillActionCommand(context.session, subcommand, name);
       }
       return { output: 'Usage: /show-skill <name> or /run-skill <name>\nLegacy: /skill <show|run> <name>' };
+    }
+    case 'clear': {
+      const key = context.session.workspace || '__global__';
+      context.session.conversations[key] = [];
+      return { output: null };
     }
     case 'exit':
     case 'quit':

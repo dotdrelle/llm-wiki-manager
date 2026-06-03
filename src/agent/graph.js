@@ -217,6 +217,7 @@ export function buildAgentSystemPrompt(state) {
     'You can call MCP tools directly using the provided tool functions.',
     'You can call shell__run_command for safe manager slash commands such as /workspaces, /new <name> [path], /use <workspace>, /config, /status, /services, /skills, /show-skill <name>, and /run-skill <name>.',
     'Skills are workflow instructions, not executable code. When a user asks to run a skill, inspect it, propose the concrete primitive/tool plan, and ask for confirmation before costly or mutating actions.',
+    state.session.headless ? 'Headless mode is active: execute the requested skill or task using available safe primitives and MCP tools, do not ask for interactive confirmation unless the request is ambiguous or outside the loaded workspace.' : null,
     'For service actions, recommend /services, /start, /stop or /logs with the exact service name.',
     'Disambiguate export requests carefully.',
     'Confluence/CME/source export means exporting external Confluence sources into raw/untracked: use cme MCP tools (`cme_export_run`, then `cme_export_status`). Never use production `type=export` for Confluence source export.',
@@ -245,7 +246,7 @@ export function buildLimitedAgentResponse(state, reason = 'no workspace loaded w
       'Outils MCP connectes:',
       formatMcpToolsForAgent(state.session.mcp),
       '',
-      "Mode limite: workspace, Docker Compose, appels MCP, echappatoire /wiki et decouverte skills sont branches; le scheduler autonome n'est pas encore cable.",
+      'Mode limite: workspace, Docker Compose, appels MCP, echappatoire /wiki, decouverte skills et mode headless sont branches.',
       "Utilise `/help` pour voir les commandes deterministes disponibles.",
     ].join('\n');
   }
@@ -260,7 +261,7 @@ export function buildLimitedAgentResponse(state, reason = 'no workspace loaded w
     'Connected MCP tools:',
     formatMcpToolsForAgent(state.session.mcp),
     '',
-    'Limited mode: workspace, Docker Compose tools, MCP calls, /wiki fallback, and skill discovery are wired; autonomous scheduling is not wired yet.',
+    'Limited mode: workspace, Docker Compose tools, MCP calls, /wiki fallback, skill discovery, and headless mode are wired.',
     'Use `/help` to see deterministic shell commands.',
   ].join('\n');
 }
@@ -303,6 +304,7 @@ export function createAgentGraph(options = {}) {
         system,
         tools,
         messages: conversationMessages,
+        signal: state.session._abortSignal,
       });
 
       if (result.tool_calls?.length > 0) {
@@ -346,6 +348,7 @@ export function createAgentGraph(options = {}) {
         streamContext: { system, messages: conversationMessages },
       };
     } catch (err) {
+      if (err.name === 'AbortError') throw err;
       const message = err instanceof Error ? err.message : String(err);
       return { response: buildLimitedAgentResponse(state, `LLM indisponible: ${message}`), pendingToolCalls: null, readyToStream: false };
     }
@@ -367,7 +370,7 @@ export function createAgentGraph(options = {}) {
         if (server === 'shell' && tool === 'run_command') {
           resultText = await runShellCommandTool(state.session, args.command);
         } else {
-          const result = await callMcpTool(state.session.mcp, server, tool, args);
+          const result = await callMcpTool(state.session.mcp, server, tool, args, state.session._abortSignal);
           resultText = formatMcpToolResult(result);
         }
         if (server === 'production') {
@@ -380,6 +383,7 @@ export function createAgentGraph(options = {}) {
           if (activityLabel) state.session._onStep?.(activityLabel);
         }
       } catch (err) {
+        if (err.name === 'AbortError' && state.session._abortSignal?.aborted) throw err;
         resultText = `Error: ${err instanceof Error ? err.message : String(err)}`;
       }
       toolResultMessages.push({

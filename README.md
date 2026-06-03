@@ -6,8 +6,8 @@
 
 It creates workspace folders, assigns ports, starts Docker services, exposes MCP
 endpoints, and provides the `dot` shell: an agent-first terminal UI that can
-inspect workspaces, run safe manager commands, call MCP tools, and guide
-production jobs.
+inspect workspaces, run safe manager commands, call MCP tools, guide production
+jobs, and run one-shot headless tasks.
 
 The manager does not implement the wiki engine or external agents. It
 orchestrates them.
@@ -121,8 +121,14 @@ The shell is agent-first:
 
 - input starting with `/` runs a deterministic shell primitive;
 - any other input goes to the LangGraph orchestrator;
+- `/chat <message>` bypasses agent tools for direct LLM chat;
 - the visible agent name is `dot`;
 - conversation history is separated per workspace.
+- Ctrl+C interrupts active LLM/MCP calls; Ctrl+C twice exits when idle.
+
+The TUI keeps the logo and MCP status panel in a fixed top layout. Connected MCP
+servers are shown in the right-side panel, two columns wide, with a summary when
+more servers are connected than fit.
 
 Useful primitives:
 
@@ -130,19 +136,47 @@ Useful primitives:
 /workspaces
 /new <name> [path]
 /use <workspace>
+/config list
+/config use <name>
 /config status
 /services
 /start [service]
 /stop [service]
 /logs <service>
+/mcp endpoints
 /mcp status
 /mcp tools [mcp]
+/mcp call <mcp> <tool> [json]
 /wiki
 /wiki run <args...>
 /skills
 /show-skill <name>
 /run-skill <name>
+/chat <message>
+/clear
 ```
+
+Skills are loaded only from the active workspace. The manager itself has no
+root `SKILL.md` and no root `skills/` directory.
+
+A workspace skill follows the `depot-skills` structure:
+
+```text
+workspaces/<name>/
+  skill.yaml
+  CLAUDE.md
+  templates/
+  build-context/
+  .wiki/
+    system-prompt.md
+    skills/
+      <command>.md
+```
+
+`skill.yaml` declares the workspace skill metadata and entrypoints. The manager
+uses `entrypoints.uiSkillDir` for executable shell skills, defaulting to
+`.wiki/skills`, and `entrypoints.claude` for the workspace context body,
+defaulting to `CLAUDE.md`.
 
 Workspace switching is isolated. When you run:
 
@@ -195,9 +229,20 @@ node ./bin/wiki-manager.js --once "list configured workspaces"
 It is intentionally lightweight and does not preload a workspace, LLM config, or
 MCP endpoints.
 
-Scheduled unattended execution should use a future dedicated headless mode, not
-`--once`. A proper headless mode should create a normal session, run `/use`, run
-`/run-skill`, execute the skill, log to disk, and exit non-zero on failure.
+Scheduled unattended execution uses headless mode, not `--once`:
+
+```bash
+node ./bin/wiki-manager.js --headless --workspace my-project --skill pipeline
+node ./bin/wiki-manager.js --headless --workspace my-project --prompt "check production status"
+```
+
+Headless mode creates a normal session, runs `/use`, executes one skill or
+prompt through the orchestrator, writes a log under `.wiki/logs/` by default,
+and exits non-zero on failure.
+
+Use `--log-file <path>` to choose a specific log path. When a workspace has
+loaded successfully, failures are still written to the headless log before the
+process exits non-zero.
 
 ## Local Compose Overrides
 
@@ -250,6 +295,12 @@ pnpm run check
 - CLI version;
 - help output;
 - limited `--once` mode.
+
+For headless changes, also test a controlled error path, for example:
+
+```bash
+node ./bin/wiki-manager.js --headless --workspace __missing__ --prompt test
+```
 
 ## Repository Layout
 

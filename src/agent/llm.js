@@ -42,7 +42,7 @@ export function createLlmClientFromWikiConfig(config) {
       }
       return content;
     },
-    async completeWithTools({ system, tools = [], messages = [] }) {
+    async completeWithTools({ system, tools = [], messages = [], signal }) {
       const allMessages = [
         { role: 'system', content: system },
         ...messages,
@@ -58,6 +58,7 @@ export function createLlmClientFromWikiConfig(config) {
       }
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
+        signal,
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
@@ -76,13 +77,14 @@ export function createLlmClientFromWikiConfig(config) {
         message: { role: 'assistant', content: msg?.content ?? null, tool_calls: msg?.tool_calls },
       };
     },
-    async *stream({ system, messages = [] }) {
+    async *stream({ system, messages = [], signal }) {
       const allMessages = [
         { role: 'system', content: system },
         ...messages,
       ];
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
+        signal,
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',

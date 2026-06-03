@@ -23,7 +23,6 @@
     "workspaces/.env.example",
     "README.md",
     "LICENSE",
-    "SKILL.md",
     "WIKI_MANAGER_AGENT_SHELL.md"
   ],
   "keywords": [

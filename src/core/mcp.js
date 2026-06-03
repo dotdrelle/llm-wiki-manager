@@ -122,10 +122,11 @@ async function listMcpTools(endpoint) {
   return payload?.result?.tools ?? [];
 }
 
-async function mcpRequest(endpoint, method, params) {
+async function mcpRequest(endpoint, method, params, signal) {
   if (!endpoint.url) throw new Error('missing endpoint URL');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
+  const requestSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
 
   const buildHeaders = () => {
     const h = {
@@ -140,7 +141,7 @@ async function mcpRequest(endpoint, method, params) {
   const doRequest = async (m, p) => {
     const response = await fetch(endpoint.url, {
       method: 'POST',
-      signal: controller.signal,
+      signal: requestSignal,
       headers: buildHeaders(),
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: m, params: p }),
     });
@@ -157,7 +158,7 @@ async function mcpRequest(endpoint, method, params) {
       endpoint._sessionId = null;
       const initResponse = await fetch(endpoint.url, {
         method: 'POST',
-        signal: controller.signal,
+        signal: requestSignal,
         headers: buildHeaders(),
         body: JSON.stringify({
           jsonrpc: '2.0',
@@ -195,14 +196,14 @@ async function mcpRequest(endpoint, method, params) {
   }
 }
 
-export async function callMcpTool(mcpStatus, serverName, toolName, args = {}) {
+export async function callMcpTool(mcpStatus, serverName, toolName, args = {}, signal) {
   const endpoint = mcpStatus?.[serverName];
   if (!endpoint) throw new Error(`Unknown MCP: ${serverName}`);
   if (endpoint.status !== 'connected') throw new Error(`MCP is not connected: ${serverName}`);
   const payload = await mcpRequest(endpoint, 'tools/call', {
     name: toolName,
     arguments: args,
-  });
+  }, signal);
   if (payload?.result?.isError) {
     throw new Error(formatMcpToolResult(payload.result));
   }

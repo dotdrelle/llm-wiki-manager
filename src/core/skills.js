@@ -1,8 +1,9 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { managerRoot } from './workspaces.js';
+import { parse as parseYaml } from 'yaml';
 
 const SKILL_NAME_RE = /^[a-zA-Z0-9_-]{1,80}$/;
+const DEFAULT_UI_SKILL_DIR = '.wiki/skills';
 
 function parseFrontmatter(raw) {
   const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
@@ -45,6 +46,64 @@ function readSkillFile(filePath, fallbackName, scope) {
   };
 }
 
+function readOptionalText(filePath) {
+  if (!existsSync(filePath)) return '';
+  return readFileSync(filePath, 'utf8').trim();
+}
+
+function safeRelativeEntry(value, fallback) {
+  const text = String(value || fallback).trim();
+  if (!text || text.startsWith('/') || text.includes('..')) return fallback;
+  return text;
+}
+
+function readWorkspaceManifest(workspacePath) {
+  const manifestPath = join(workspacePath, 'skill.yaml');
+  if (!existsSync(manifestPath)) return null;
+  try {
+    const manifest = parseYaml(readFileSync(manifestPath, 'utf8'));
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return null;
+    return { manifest, manifestPath };
+  } catch {
+    return null;
+  }
+}
+
+function readWorkspaceManifestSkill(workspacePath, loadedManifest = null) {
+  const loaded = loadedManifest ?? readWorkspaceManifest(workspacePath);
+  if (!loaded) return null;
+  const { manifest, manifestPath } = loaded;
+  const name = String(manifest.name || basename(workspacePath)).trim();
+  if (!SKILL_NAME_RE.test(name)) return null;
+  const entrypoints = manifest.entrypoints && typeof manifest.entrypoints === 'object'
+    ? manifest.entrypoints
+    : {};
+  const claude = safeRelativeEntry(entrypoints.claude, 'CLAUDE.md');
+  const body = readOptionalText(join(workspacePath, claude));
+  return {
+    name,
+    title: String(manifest.title || name).trim(),
+    description: String(manifest.description || '').trim(),
+    params: [],
+    body,
+    scope: 'workspace',
+    path: manifestPath,
+    manifest,
+    entrypoints,
+    version: manifest.version ? String(manifest.version) : null,
+    language: manifest.language ? String(manifest.language) : null,
+  };
+}
+
+function workspaceUiSkillDir(loadedManifest = null) {
+  if (!loadedManifest) return DEFAULT_UI_SKILL_DIR;
+  const { manifest } = loadedManifest;
+  const entrypoints = manifest?.entrypoints && typeof manifest.entrypoints === 'object'
+    ? manifest.entrypoints
+    : {};
+  return safeRelativeEntry(entrypoints.uiSkillDir, DEFAULT_UI_SKILL_DIR);
+}
+
 function collectDirectorySkills(dir, scope) {
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { withFileTypes: true })
@@ -58,21 +117,11 @@ function collectDirectorySkills(dir, scope) {
 
 export function listSkills(session = {}) {
   const skills = [];
-  const rootSkill = join(managerRoot(), 'SKILL.md');
-  if (existsSync(rootSkill)) {
-    const skill = readSkillFile(rootSkill, 'agent-cme-llm-wiki-pipeline', 'manager');
-    if (skill) skills.push(skill);
-  }
-  skills.push(...collectDirectorySkills(join(managerRoot(), 'skills'), 'manager'));
-
   if (session.workspacePath) {
-    const workspaceSkill = join(session.workspacePath, 'SKILL.md');
-    if (existsSync(workspaceSkill)) {
-      const skill = readSkillFile(workspaceSkill, `${session.workspace}-workflow`, 'workspace');
-      if (skill) skills.push(skill);
-    }
-    skills.push(...collectDirectorySkills(join(session.workspacePath, 'skills'), 'workspace'));
-    skills.push(...collectDirectorySkills(join(session.workspacePath, '.wiki', 'skills'), 'workspace'));
+    const loadedManifest = readWorkspaceManifest(session.workspacePath);
+    const manifestSkill = readWorkspaceManifestSkill(session.workspacePath, loadedManifest);
+    if (manifestSkill) skills.push(manifestSkill);
+    skills.push(...collectDirectorySkills(join(session.workspacePath, workspaceUiSkillDir(loadedManifest)), 'workspace'));
   }
 
   const byName = new Map();

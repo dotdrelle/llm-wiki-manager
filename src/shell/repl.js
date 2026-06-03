@@ -40,12 +40,12 @@ marked.use({
 });
 
 const GLOBAL_CONVERSATION_KEY = '__global__';
-const ACTIVITY_PANEL_ROWS = 2;
+const LOWER_DETAIL_ROWS = 8;
 const COMPLETION_PANEL_ROWS = 5;
 const LOWER_PANEL_SEPARATOR_ROWS = 1;
-const LOWER_PANEL_ROWS = LOWER_PANEL_SEPARATOR_ROWS + ACTIVITY_PANEL_ROWS + COMPLETION_PANEL_ROWS;
+const LOWER_PANEL_ROWS = LOWER_PANEL_SEPARATOR_ROWS + LOWER_DETAIL_ROWS;
 const BOTTOM_PADDING_ROWS = 3;
-const MOUSE_SELECTION_RESUME_MS = 2400;
+const MOUSE_SELECTION_RESUME_MS = 5000;
 const COMMAND_COMPLETION_DESCRIPTIONS = {
   '/help': 'Show shell commands.',
   '/version': 'Print the wiki-manager version.',
@@ -61,9 +61,11 @@ const COMMAND_COMPLETION_DESCRIPTIONS = {
   '/logs': 'Show recent logs for a service.',
   '/mcp': 'Inspect or call workspace MCP servers.',
   '/wiki': 'Run llm-wiki commands for the active workspace.',
-  '/skills': 'List manager and workspace skills.',
+  '/skills': 'List workspace skills.',
   '/show-skill': 'Show one skill.',
   '/run-skill': 'Prepare one skill for guided execution.',
+  '/clear': 'Clear the conversation screen.',
+  '/chat': 'Stream a direct chat answer without agent tools.',
 };
 
 const SUBCOMMAND_COMPLETION_DESCRIPTIONS = {
@@ -89,7 +91,7 @@ function createSession() {
     wikircConfig: null,
     language: null,
     mcp: null,
-    commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'show-skill', 'run-skill'],
+    commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'show-skill', 'run-skill', 'clear', 'chat'],
     llm: null,
     productionActivity: null,
     conversations: { [GLOBAL_CONVERSATION_KEY]: [] },
@@ -188,6 +190,20 @@ function toConversationHistory(replMessages, maxExchanges = 6) {
     .filter((m) => m.role === 'user' || m.role === 'dot')
     .slice(-(maxExchanges * 2))
     .map((m) => ({ role: m.role === 'dot' ? 'assistant' : 'user', content: m.content }));
+}
+
+function buildDirectChatSystemPrompt(session) {
+  const workspace = session.workspace ?? 'no workspace selected';
+  const wikirc = session.wikirc?.profile ?? 'no profile loaded';
+  const language = session.language ?? 'en-US';
+  return [
+    'You are dot, the llm-wiki-manager chat assistant.',
+    'Answer directly and concisely. Do not claim to have called tools or changed files.',
+    'If the user asks for an action that needs workspace commands, MCP tools, services, files, or mutations, say to ask as an agent action instead of pretending to execute it.',
+    `Reply language: ${language}.`,
+    `Current workspace: ${workspace}.`,
+    `Current wikirc profile: ${wikirc}.`,
+  ].join('\n');
 }
 
 function commonPrefix(values) {
@@ -536,28 +552,46 @@ function dotBanner(columns) {
   return lines.map((line) => line.slice(0, columns));
 }
 
-function dotBannerWithMcp(columns, session) {
+function renderBannerWithMcpPanel(columns, session) {
   const banner = dotBanner(columns);
   const activeMcpLines = session.workspace ? formatMcpStatusForPanel(session.mcp) : [];
   if (banner.length === 1 || columns < 72 || activeMcpLines.length === 0) {
     return banner.map((line) => `${styles.bold}${styles.white}${line}${styles.reset}`);
   }
 
-  const panelWidth = Math.min(28, Math.max(22, Math.floor(columns * 0.32)));
+  const panelWidth = Math.min(48, Math.max(34, Math.floor(columns * 0.44)));
   const bannerWidth = columns - panelWidth - 3;
-  const mcpLines = ['', 'MCP', ...activeMcpLines];
-  const lineCount = Math.max(banner.length, mcpLines.length);
-  const lines = [];
+  const columnGap = 2;
+  const columnWidth = Math.max(10, Math.floor((panelWidth - columnGap) / 2));
+  const maxPanelRows = Math.max(0, banner.length - 2);
+  const maxVisible = maxPanelRows * 2;
+  const needsSummary = activeMcpLines.length > maxVisible;
+  const visibleCount = Math.max(0, maxVisible - (needsSummary ? 1 : 0));
+  const visible = activeMcpLines.slice(0, visibleCount);
+  const hidden = Math.max(0, activeMcpLines.length - visible.length);
+  const mcpRows = [];
+  for (let index = 0; index < Math.min(maxPanelRows, Math.ceil(visible.length / 2)); index += 1) {
+    const left = truncateAnsi(visible[index * 2] ?? '', columnWidth);
+    const right = truncateAnsi(visible[index * 2 + 1] ?? '', columnWidth);
+    mcpRows.push(`${padVisible(left, columnWidth)}${' '.repeat(columnGap)}${right}`);
+  }
+  if (hidden > 0) {
+    const summary = `${styles.dim}+${hidden} MCP more${styles.reset}`;
+    if (mcpRows.length < maxPanelRows) {
+      mcpRows.push(summary);
+    } else if (mcpRows.length > 0) {
+      mcpRows[mcpRows.length - 1] = summary;
+    }
+  }
+  const mcpLines = ['', 'MCP', ...mcpRows];
 
-  for (let index = 0; index < lineCount; index += 1) {
-    const leftRaw = (banner[index] ?? '').slice(0, bannerWidth).padEnd(bannerWidth, ' ');
+  return banner.map((line, index) => {
+    const leftRaw = line.slice(0, bannerWidth).padEnd(bannerWidth, ' ');
     const left = `${styles.bold}${styles.white}${leftRaw}${styles.reset}`;
     const rightRaw = truncateAnsi(mcpLines[index] ?? '', panelWidth);
     const right = `${rightRaw}${' '.repeat(Math.max(0, panelWidth - stripAnsi(rightRaw).length))}`;
-    lines.push(`${left}   ${right}`);
-  }
-
-  return lines;
+    return `${left}   ${right}`;
+  });
 }
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -653,9 +687,9 @@ function dividerWithActivity(session, columns) {
   return `${styles.gray}${'─'.repeat(left)}${styles.reset} ${clipped} `;
 }
 
-function renderActivityLines(activityLines, columns) {
+function renderActivityLines(activityLines, columns, rows) {
   return activityLines
-    .slice(-ACTIVITY_PANEL_ROWS)
+    .slice(-rows)
     .map((line) => `${styles.dim}${truncateAnsi(line, Math.max(10, columns - 2))}${styles.reset}`);
 }
 
@@ -666,10 +700,12 @@ function isDurableActivityLine(label) {
 function renderScreen({ packageJson, session, messages, inputBuffer, busy = false, spinnerFrame = 0, scrollOffset = 0, spinnerLabel = 'Thinking…', activityLines = [] }) {
   const columns = output.columns || 100;
   const rows = output.rows || 30;
-  const banner = dotBannerWithMcp(columns, session);
+  const banner = renderBannerWithMcpPanel(columns, session);
   const completions = busy ? [] : completionLines(inputBuffer, session, columns);
   const visibleCompletions = completions.slice(0, COMPLETION_PANEL_ROWS);
-  const activity = renderActivityLines(activityLines, columns);
+  const completionRows = visibleCompletions.length > 0 ? COMPLETION_PANEL_ROWS : 0;
+  const activityRows = LOWER_DETAIL_ROWS - completionRows;
+  const activity = renderActivityLines(activityLines, columns, activityRows);
   const productionActivityRows = 1;
   const fixedRows = 4 + banner.length + productionActivityRows + 1 + LOWER_PANEL_ROWS + BOTTOM_PADDING_ROWS;
   const middleHeight = Math.max(5, rows - fixedRows);
@@ -725,37 +761,80 @@ function renderScreen({ packageJson, session, messages, inputBuffer, busy = fals
     ? `${styles.cyan}${spinner}${styles.reset} ${styles.dim}${spinnerLabel}${styles.reset}`
     : `${prompt}${inputBuffer}`;
 
-  output.write('\u001b[?25l');
-  output.write('\u001b[H\u001b[2J');
-  output.write(`${header.slice(0, columns).padEnd(columns, ' ')}\n`);
-  output.write('\n');
+  const clippedInputLine = truncateAnsi(inputLine, columns);
+  let buf = '\u001b[?25l\u001b[H';
+  buf += `${header.slice(0, columns).padEnd(columns, ' ')}\n`;
+  buf += `${' '.repeat(columns)}\n`;
   if (banner.length > 0) {
-    output.write(`${banner.map((line) => line.padEnd(columns, ' ')).join('\n')}\n`);
+    buf += `${banner.map((line) => line.padEnd(columns, ' ')).join('\n')}\n`;
   }
-  output.write(`${topDivider}\n`);
-  output.write(`${visibleBody.join('\n')}\n`);
+  buf += `${topDivider}\n`;
+  buf += `${visibleBody.map((line) => padVisible(line, columns)).join('\n')}\n`;
   // Keep this line reserved: production jobs publish their progress here.
-  output.write(`${dividerWithActivity(session, columns)}\n`);
-  const clippedInputLine = inputLine.slice(0, columns);
-  output.write(`${clippedInputLine}\n`);
-  output.write(`${styles.white}${'─'.repeat(columns)}${styles.reset}\n`);
-  for (let index = 0; index < ACTIVITY_PANEL_ROWS; index += 1) {
-    output.write(`${padVisible(activity[index] ?? '', columns)}\n`);
+  buf += `${padVisible(dividerWithActivity(session, columns), columns)}\n`;
+  buf += `${padVisible(clippedInputLine, columns)}\n`;
+  buf += `${styles.white}${'─'.repeat(columns)}${styles.reset}\n`;
+  for (let index = 0; index < activityRows; index += 1) {
+    buf += `${padVisible(activity[index] ?? '', columns)}\n`;
   }
-  for (let index = 0; index < COMPLETION_PANEL_ROWS; index += 1) {
-    output.write(`${padVisible(visibleCompletions[index] ?? '', columns)}\n`);
+  for (let index = 0; index < completionRows; index += 1) {
+    buf += `${padVisible(visibleCompletions[index] ?? '', columns)}\n`;
   }
   for (let index = 0; index < BOTTOM_PADDING_ROWS; index += 1) {
-    output.write(`${' '.repeat(columns)}\n`);
+    buf += `${' '.repeat(columns)}\n`;
   }
-  output.write(`\u001b[${LOWER_PANEL_ROWS + BOTTOM_PADDING_ROWS + 1}A`);
-  output.write(`\u001b[${stripAnsi(clippedInputLine).length + 1}G`);
-  output.write('\u001b[?25h');
+  buf += `\u001b[${LOWER_PANEL_ROWS + BOTTOM_PADDING_ROWS + 1}A`;
+  buf += `\u001b[${stripAnsi(clippedInputLine).length + 1}G`;
+  buf += '\u001b[?25h';
+  output.write(buf);
 }
 
 async function runLine(line, { agent, packageJson, session, onUpdate, onStep }) {
   const trimmed = stripHtml(line).trim();
   if (!trimmed) return { exit: false };
+
+  if (trimmed.startsWith('/chat')) {
+    const directInput = trimmed.replace(/^\/chat(?:\s+|$)/, '').trim();
+    if (!directInput) {
+      conversationMessages(session).push({ role: 'command', content: 'Usage: /chat <message>' });
+      return { exit: false };
+    }
+    if (!session.llm?.stream) {
+      conversationMessages(session).push({ role: 'command', content: 'Direct chat unavailable: no streaming LLM configured.' });
+      return { exit: false };
+    }
+    const messages = conversationMessages(session);
+    const history = toConversationHistory(messages);
+    messages.push({ role: 'user', content: directInput });
+    onUpdate?.();
+    const dotMessage = { role: 'dot', content: '' };
+    messages.push(dotMessage);
+    onUpdate?.();
+    try {
+      onStep?.('Chat: streaming direct answer…');
+      for await (const delta of session.llm.stream({
+        system: buildDirectChatSystemPrompt(session),
+        messages: [...history, { role: 'user', content: directInput }],
+        signal: session._abortSignal,
+      })) {
+        dotMessage.content += delta;
+        onUpdate?.();
+      }
+      if (!dotMessage.content.trim()) {
+        dotMessage.content = buildLimitedAgentResponse({ input: directInput, session }, 'LLM stream ended without content');
+        onUpdate?.();
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        messages.pop();
+        return { exit: false, aborted: true };
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      dotMessage.content = buildLimitedAgentResponse({ input: directInput, session }, `LLM indisponible: ${message}`);
+      onUpdate?.();
+    }
+    return { exit: false };
+  }
 
   if (trimmed.startsWith('/')) {
     onStep?.(`Shell: ${trimmed}`);
@@ -781,6 +860,10 @@ async function runLine(line, { agent, packageJson, session, onUpdate, onStep }) 
   let result;
   try {
     result = await agent.invoke({ input: trimmed, session, messages: history });
+  } catch (err) {
+    delete session._onStep;
+    if (err.name === 'AbortError') return { exit: false, aborted: true };
+    throw err;
   } finally {
     delete session._onStep;
   }
@@ -801,6 +884,7 @@ async function runLine(line, { agent, packageJson, session, onUpdate, onStep }) 
       for await (const delta of session.llm.stream({
         system: system ?? buildAgentSystemPrompt({ input: trimmed, session }),
         messages: streamMessages,
+        signal: session._abortSignal,
       })) {
         dotMessage.content += delta;
         onUpdate?.();
@@ -810,6 +894,10 @@ async function runLine(line, { agent, packageJson, session, onUpdate, onStep }) 
         onUpdate?.();
       }
     } catch (err) {
+      if (err.name === 'AbortError') {
+        messages.pop();
+        return { exit: false, aborted: true };
+      }
       const message = err instanceof Error ? err.message : String(err);
       dotMessage.content = buildLimitedAgentResponse({ input: trimmed, session }, `LLM indisponible: ${message}`);
       onUpdate?.();
@@ -870,6 +958,7 @@ async function runTuiShell({ agent, packageJson, session }) {
   let activityLines = [];
   let lastCtrlCAt = 0;
   let ctrlCTimer = null;
+  let currentAbortController = null;
   let scrollOffset = 0;
   let mouseScrollEnabled = true;
   let desiredMouseScrollEnabled = true;
@@ -1009,6 +1098,12 @@ async function runTuiShell({ agent, packageJson, session }) {
       return;
     }
     if (key?.ctrl && key.name === 'c') {
+      if (busy) {
+        currentAbortController?.abort();
+        spinnerLabel = 'Interrupting…';
+        rerender();
+        return;
+      }
       const now = Date.now();
       if (now - lastCtrlCAt <= 1500) {
         done = true;
@@ -1017,7 +1112,7 @@ async function runTuiShell({ agent, packageJson, session }) {
       }
       lastCtrlCAt = now;
       const exitHint = 'Shell: press Ctrl+C again to exit.';
-      activityLines = [...activityLines.filter((line) => line !== exitHint), exitHint].slice(-ACTIVITY_PANEL_ROWS);
+      activityLines = [...activityLines.filter((line) => line !== exitHint), exitHint].slice(-LOWER_DETAIL_ROWS);
       rerender();
       clearTimeout(ctrlCTimer);
       ctrlCTimer = setTimeout(() => {
@@ -1048,19 +1143,35 @@ async function runTuiShell({ agent, packageJson, session }) {
       rerender();
       const onStep = (label) => {
         if (!String(label).startsWith('Production:')) {
-          activityLines = [...activityLines, label].slice(-2);
+          activityLines = [...activityLines, label].slice(-LOWER_DETAIL_ROWS);
         }
         rerender();
       };
-      const result = await runLine(line, { agent, packageJson, session, onUpdate: rerender, onStep });
-      clearInterval(spinnerInterval);
-      spinnerInterval = null;
-      busy = false;
-      spinnerLabel = 'Thinking…';
-      activityLines = activityLines.filter(isDurableActivityLine).slice(-ACTIVITY_PANEL_ROWS);
-      scrollOffset = 0;
-      done = result.exit;
-      rerender();
+      currentAbortController = new AbortController();
+      session._abortSignal = currentAbortController.signal;
+      let aborted = false;
+      try {
+        const result = await runLine(line, { agent, packageJson, session, onUpdate: rerender, onStep });
+        done = result.exit;
+        aborted = result.aborted ?? false;
+      } catch (err) {
+        if (err.name !== 'AbortError') throw err;
+        aborted = true;
+      } finally {
+        currentAbortController = null;
+        delete session._abortSignal;
+        clearInterval(spinnerInterval);
+        spinnerInterval = null;
+        busy = false;
+        spinnerLabel = 'Thinking…';
+        activityLines = activityLines.filter(isDurableActivityLine).slice(-LOWER_DETAIL_ROWS);
+        scrollOffset = 0;
+        rerender();
+      }
+      if (aborted) {
+        activityLines = ['Interrupted.'];
+        rerender();
+      }
       if (done) finish();
       return;
     }

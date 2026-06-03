@@ -789,6 +789,64 @@ function renderScreen({ packageJson, session, messages, inputBuffer, busy = fals
   output.write(buf);
 }
 
+async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
+  const messages = conversationMessages(session);
+  const history = toConversationHistory(messages);
+  session._onStep = onStep ?? null;
+  session.packageJson = session.packageJson ?? {};
+  let agentResult;
+  try {
+    agentResult = await agent.invoke({ input, session, messages: history });
+  } catch (err) {
+    delete session._onStep;
+    if (err.name === 'AbortError') return { aborted: true };
+    throw err;
+  } finally {
+    delete session._onStep;
+  }
+
+  if (agentResult.response != null) {
+    messages.push({ role: 'dot', content: agentResult.response });
+    onUpdate?.();
+    return {};
+  }
+
+  if (agentResult.readyToStream && session.llm?.stream) {
+    const dotMessage = { role: 'dot', content: '' };
+    messages.push(dotMessage);
+    onUpdate?.();
+    const { system, messages: streamMessages = [] } = agentResult.streamContext ?? {};
+    try {
+      onStep?.('Agent: streaming final answer…');
+      for await (const delta of session.llm.stream({
+        system: system ?? buildAgentSystemPrompt({ input, session }),
+        messages: streamMessages,
+        signal: session._abortSignal,
+      })) {
+        dotMessage.content += delta;
+        onUpdate?.();
+      }
+      if (!dotMessage.content.trim()) {
+        dotMessage.content = buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
+        onUpdate?.();
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        messages.pop();
+        return { aborted: true };
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      dotMessage.content = buildLimitedAgentResponse({ input, session }, `LLM indisponible: ${message}`);
+      onUpdate?.();
+    }
+    return {};
+  }
+
+  messages.push({ role: 'dot', content: buildLimitedAgentResponse({ input, session }) });
+  onUpdate?.();
+  return {};
+}
+
 async function runLine(line, { agent, packageJson, session, onUpdate, onStep }) {
   const trimmed = stripHtml(line).trim();
   if (!trimmed) return { exit: false };
@@ -846,67 +904,20 @@ async function runLine(line, { agent, packageJson, session, onUpdate, onStep }) 
         rememberProductionActivity(session, parseJsonText(result.output));
       }
       messages.push({ role: 'command', content: result.output });
+      onUpdate?.();
+    }
+    if (result.agentTrigger && agent) {
+      const agentResult = await runAgentTurn(result.agentTrigger, { agent, session, onUpdate, onStep });
+      if (agentResult.aborted) return { exit: false, aborted: true };
     }
     return { exit: Boolean(result.exit) };
   }
 
   const messages = conversationMessages(session);
-  const history = toConversationHistory(messages);
   messages.push({ role: 'user', content: trimmed });
   onUpdate?.();
-
-  session._onStep = onStep ?? null;
-  session.packageJson = packageJson;
-  let result;
-  try {
-    result = await agent.invoke({ input: trimmed, session, messages: history });
-  } catch (err) {
-    delete session._onStep;
-    if (err.name === 'AbortError') return { exit: false, aborted: true };
-    throw err;
-  } finally {
-    delete session._onStep;
-  }
-
-  if (result.response != null) {
-    messages.push({ role: 'dot', content: result.response });
-    onUpdate?.();
-    return { exit: false };
-  }
-
-  if (result.readyToStream && session.llm?.stream) {
-    const dotMessage = { role: 'dot', content: '' };
-    messages.push(dotMessage);
-    onUpdate?.();
-    const { system, messages: streamMessages = [] } = result.streamContext ?? {};
-    try {
-      onStep?.('Agent: streaming final answer…');
-      for await (const delta of session.llm.stream({
-        system: system ?? buildAgentSystemPrompt({ input: trimmed, session }),
-        messages: streamMessages,
-        signal: session._abortSignal,
-      })) {
-        dotMessage.content += delta;
-        onUpdate?.();
-      }
-      if (!dotMessage.content.trim()) {
-        dotMessage.content = buildLimitedAgentResponse({ input: trimmed, session }, 'LLM stream ended without content');
-        onUpdate?.();
-      }
-    } catch (err) {
-      if (err.name === 'AbortError') {
-        messages.pop();
-        return { exit: false, aborted: true };
-      }
-      const message = err instanceof Error ? err.message : String(err);
-      dotMessage.content = buildLimitedAgentResponse({ input: trimmed, session }, `LLM indisponible: ${message}`);
-      onUpdate?.();
-    }
-    return { exit: false };
-  }
-
-  messages.push({ role: 'dot', content: buildLimitedAgentResponse({ input: trimmed, session }) });
-  onUpdate?.();
+  const agentResult = await runAgentTurn(trimmed, { agent, session, onUpdate, onStep });
+  if (agentResult.aborted) return { exit: false, aborted: true };
   return { exit: false };
 }
 

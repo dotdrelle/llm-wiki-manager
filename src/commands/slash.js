@@ -149,29 +149,26 @@ function skillDetailText(skill) {
   ].filter(Boolean).join('\n');
 }
 
-function skillRunText(skill) {
+
+
+function buildSkillRunPrompt(skill) {
   return [
-    `# Skill plan: ${skill.name}`,
+    `Execute the "${skill.name}" skill for the current workspace.`,
+    'Follow the workflow steps below. Call MCP tools and shell commands as needed for each step.',
+    'Report progress as you go. Ask for confirmation before irreversible or costly actions not already defined in the skill.',
     '',
-    'This shell does not execute skill Markdown blindly.',
-    'dot will use this workflow as operating instructions, then choose concrete primitives/MCP tools.',
-    'Costly or mutating steps still require explicit confirmation.',
-    '',
-    'Use a natural-language request such as:',
-    '',
-    `run the ${skill.name} skill for this workspace`,
-    '',
-    'Skill content:',
-    '',
-    skill.body || '_Empty skill body._',
-  ].join('\n');
+    skill.body || '',
+  ].filter(Boolean).join('\n');
 }
 
 function skillActionCommand(session, action, name) {
   if (!name) return { output: `Usage: /${action}-skill <name>\nLegacy: /skill ${action} <name>` };
   const skill = findSkill(session, name);
   if (!skill) return { output: `Skill not found: ${name}` };
-  return { output: action === 'run' ? skillRunText(skill) : skillDetailText(skill) };
+  if (action === 'run') {
+    return { output: `Skill: ${skill.name} — launching…`, agentTrigger: buildSkillRunPrompt(skill) };
+  }
+  return { output: skillDetailText(skill) };
 }
 
 async function createWorkspaceCommand(context, workspaceName, targetPath) {

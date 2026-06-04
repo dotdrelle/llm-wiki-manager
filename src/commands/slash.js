@@ -162,13 +162,26 @@ function buildSkillRunPrompt(skill) {
 }
 
 function skillActionCommand(session, action, name) {
-  if (!name) return { output: `Usage: /${action}-skill <name>\nLegacy: /skill ${action} <name>` };
+  if (!name) {
+    const available = listSkills(session);
+    if (!available.length) return { output: `No skills available. Load a workspace with /use first.` };
+    return { output: `Available skills: ${available.map((s) => s.name).join(', ')}\nUsage: /${action}-skill <name>` };
+  }
   const skill = findSkill(session, name);
-  if (!skill) return { output: `Skill not found: ${name}` };
+  if (!skill) {
+    const available = listSkills(session);
+    const hint = available.length ? ` Available: ${available.map((s) => s.name).join(', ')}` : '';
+    return { output: `Skill not found: ${name}.${hint}` };
+  }
   if (action === 'run') {
     return { output: `Skill: ${skill.name} — launching…`, agentTrigger: buildSkillRunPrompt(skill) };
   }
   return { output: skillDetailText(skill) };
+}
+
+function skillNameFromLine(line, command) {
+  const match = String(line).match(new RegExp(`^/${command}-skill\\s+(.+?)\\s*$`));
+  return match?.[1]?.trim() || null;
 }
 
 async function createWorkspaceCommand(context, workspaceName, targetPath) {
@@ -580,18 +593,18 @@ export async function handleSlashCommand(line, context) {
       return { output: skillsText(context.session) };
     }
     case 'show-skill': {
-      return skillActionCommand(context.session, 'show', args[1]);
+      return skillActionCommand(context.session, 'show', args[1] ?? skillNameFromLine(line, 'show'));
     }
     case 'run-skill': {
-      return skillActionCommand(context.session, 'run', args[1]);
+      return skillActionCommand(context.session, 'run', args[1] ?? skillNameFromLine(line, 'run'));
     }
     case 'skill': {
       const subcommand = args[1] ?? 'show';
-      const name = args[2];
       if (subcommand === 'show' || subcommand === 'run') {
-        return skillActionCommand(context.session, subcommand, name);
+        return skillActionCommand(context.session, subcommand, args[2]);
       }
-      return { output: 'Usage: /show-skill <name> or /run-skill <name>\nLegacy: /skill <show|run> <name>' };
+      // /skill <name> — treat as /skill show <name>
+      return skillActionCommand(context.session, 'show', subcommand);
     }
     case 'clear': {
       const key = context.session.workspace || '__global__';

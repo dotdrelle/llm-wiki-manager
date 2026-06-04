@@ -15,7 +15,14 @@ It must stay a manager. It should not absorb the responsibilities of
 wiki-workspace              Operator CLI around Docker Compose
 docker-compose.yml          Shared workspace service stack
 src/cli/wiki-manager.js     Node CLI entrypoint
-src/shell/repl.js           Interactive TUI and pipe shell
+src/shell/repl.js           Pipe shell and legacy TUI (Node fallback)
+src/shell/tui.tsx           OpenTUI shell root (Bun only)
+src/shell/LeftPane.tsx      Conversation view + chat input
+src/shell/RightPane.tsx     MCP server list + log panel
+src/shell/SlashDialog.tsx   Completion overlay
+src/shell/useSession.ts     Reactive session state (SolidJS signals)
+src/shell/useAgent.ts       runLine wrapper with busy/abort
+src/shell/renderer.ts       Markdown stripping and line coloring helpers
 src/agent/graph.js          LangGraph orchestrator
 src/agent/llm.js            OpenAI-compatible chat/tool client
 src/commands/slash.js       Deterministic slash commands
@@ -25,6 +32,8 @@ src/core/mcp.js             MCP endpoint discovery and tool calls
 src/core/env.js             .env parser
 src/core/wikirc.js          .wikirc.yaml profile loading
 src/core/skills.js          Workspace skill discovery
+bunfig.toml                 Bun preload for @opentui/solid
+tsconfig.json               TSX compilation config (jsxImportSource = @opentui/solid)
 ```
 
 ## Shell Model
@@ -38,15 +47,40 @@ The interactive shell is the product surface.
   agent tools.
 - Conversation history is scoped by workspace for the current process.
 - The global context is used only before a workspace is loaded.
-- Ctrl+C while busy should abort active LLM/MCP work; Ctrl+C twice exits only
-  when idle.
+- Ctrl+C while busy aborts active LLM/MCP work; Ctrl+C when idle exits.
 
 When changing `/use`, workspace state and conversation state must move together.
 Do not reintroduce a single global message buffer for all workspaces.
 
-The top TUI layout must keep the logo height stable. The MCP status panel stays
-to the right of the logo, uses two compact columns, and must summarize overflow
-instead of increasing banner height or pushing into the conversation area.
+### OpenTUI TUI (Bun)
+
+When launched with Bun and a TTY is detected, the shell uses the OpenTUI-based
+two-pane layout:
+
+- **Left pane**: scrollable conversation thread + chat input at the bottom.
+  Slash dialog (`/` completion overlay) opens above the input.
+- **Right pane**: MCP server list (● connected / ◐ configured / ○ missing)
+  and a live log/trace panel.
+
+The OpenTUI TUI requires Bun (`bun start` or `bun ./bin/wiki-manager.js`).
+
+When running under Node, or when `--legacy-tui` is passed, or when stdin/stdout
+are not a TTY (headless, pipe mode), the shell falls back to `repl.js`.
+
+The guard in `src/cli/wiki-manager.js`:
+
+```js
+const canUseOpenTui = process.versions.bun
+  && process.stdin.isTTY && process.stdout.isTTY
+  && !argv.includes('--legacy-tui')
+  && process.env.WIKI_MANAGER_LEGACY_TUI !== '1';
+```
+
+Do not change the layout without understanding the OpenTUI box model
+(`flexDirection`, `flexGrow`, `flexShrink`, `overflow`). All rendering goes
+through `conversationLines` → `segmentsForLine` → `Segment[]` per line.
+Color is determined on the raw (unwrapped) line and applied to all wrapped
+pieces; do not evaluate `colorForRenderedLine` on wrapped fragments.
 
 ## Safe LLM Actions
 
@@ -126,7 +160,9 @@ heuristics. If a fast path is needed, keep it explicit, as `/chat` is.
 ./wiki-workspace cme <workspace> up
 ./wiki-workspace mailer status
 
-pnpm start
+bun start                   # full OpenTUI shell (requires Bun)
+pnpm start                  # alias for bun start
+pnpm run start:node         # legacy repl.js shell (Node)
 pnpm run check
 node ./bin/wiki-manager.js --headless --workspace <workspace-name> --prompt "check production status"
 ```
@@ -139,7 +175,13 @@ Before committing manager changes, run:
 pnpm run check
 ```
 
-For shell/session changes, also test at least:
+For OpenTUI shell changes, launch with Bun and exercise the golden path:
+- Tab completion for `/show-skill`, `/use`, etc.
+- Conversation scroll (mouse wheel or PageUp/PageDown)
+- Slash dialog navigation (up/down, Tab to complete, Esc to dismiss)
+- Ctrl+C interrupts a busy agent; Ctrl+C again exits when idle
+
+For shell/session changes under Node, also test at least:
 
 ```bash
 printf '/use <workspace-name>\n/config status\n/workspaces\n/exit\n' | node ./bin/wiki-manager.js

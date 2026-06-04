@@ -82,7 +82,7 @@ const SUBCOMMAND_COMPLETION_DESCRIPTIONS = {
   '/skill:show': 'Legacy form of /show-skill.',
 };
 
-function createSession() {
+export function createSession() {
   return {
     workspace: null,
     workspacePath: null,
@@ -98,18 +98,18 @@ function createSession() {
   };
 }
 
-function conversationKey(session) {
+export function conversationKey(session) {
   return session.workspace || GLOBAL_CONVERSATION_KEY;
 }
 
-function conversationMessages(session) {
+export function conversationMessages(session) {
   const key = conversationKey(session);
   session.conversations ??= { [GLOBAL_CONVERSATION_KEY]: [] };
   session.conversations[key] ??= [];
   return session.conversations[key];
 }
 
-function promptFor(session) {
+export function promptFor(session) {
   return session.workspace ? `${session.workspace}> ` : 'dot > ';
 }
 
@@ -225,7 +225,7 @@ function completeSlashCommand(inputBuffer, session) {
   return tokenCompletions(inputBuffer, values);
 }
 
-function completionContext(inputBuffer, session) {
+export function completionContext(inputBuffer, session) {
   if (!inputBuffer.startsWith('/')) return null;
   const parts = inputBuffer.trimEnd().split(/\s+/).filter(Boolean);
   const values = completionValuesFor(parts, inputBuffer, session);
@@ -236,7 +236,7 @@ function completionContext(inputBuffer, session) {
   return { parts, matches, prefix };
 }
 
-function completionDescription(value, parts) {
+export function completionDescription(value, parts) {
   if (value.startsWith('/')) return COMMAND_COMPLETION_DESCRIPTIONS[value] ?? 'Run this shell command.';
   const command = parts[0];
   const subcommand = SUBCOMMAND_COMPLETION_DESCRIPTIONS[`${command}:${value}`];
@@ -342,6 +342,13 @@ function stripHtml(value) {
     .replace(/<\/?[^>]+>/g, '');
 }
 
+function stripDsmlArtifacts(value) {
+  return String(value ?? '')
+    .replace(/<\s*[|｜]{2}\s*DSML\s*[|｜]{2}[^>\r\n]*(?:>|$)/gi, '')
+    .replace(/^[^\S\r\n]*.*[|｜]{2}\s*DSML\s*[|｜]{2}.*(?:\r?\n|$)/gim, '')
+    .replace(/\n{3,}/g, '\n\n');
+}
+
 function truncateAnsi(value, maxWidth) {
   let visible = 0;
   let out = '';
@@ -377,7 +384,7 @@ const styles = {
   inverse: '\u001b[7m',
 };
 
-function colorizeStatus(text) {
+export function colorizeStatus(text) {
   return marked(stripHtml(text)).trimEnd()
     .split('\n')
     .map((line) => {
@@ -806,7 +813,7 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
   }
 
   if (agentResult.response != null) {
-    messages.push({ role: 'dot', content: agentResult.response });
+    messages.push({ role: 'dot', content: stripDsmlArtifacts(agentResult.response) });
     onUpdate?.();
     return {};
   }
@@ -823,9 +830,13 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
         messages: streamMessages,
         signal: session._abortSignal,
       })) {
-        dotMessage.content += delta;
-        onUpdate?.();
+        const cleanDelta = stripDsmlArtifacts(delta);
+        if (cleanDelta) {
+          dotMessage.content += cleanDelta;
+          onUpdate?.();
+        }
       }
+      dotMessage.content = stripDsmlArtifacts(dotMessage.content).trimEnd();
       if (!dotMessage.content.trim()) {
         dotMessage.content = buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
         onUpdate?.();
@@ -847,7 +858,7 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
   return {};
 }
 
-async function runLine(line, { agent, packageJson, session, onUpdate, onStep }) {
+export async function runLine(line, { agent, packageJson, session, onUpdate, onStep }) {
   const trimmed = stripHtml(line).trim();
   if (!trimmed) return { exit: false };
 
@@ -875,9 +886,13 @@ async function runLine(line, { agent, packageJson, session, onUpdate, onStep }) 
         messages: [...history, { role: 'user', content: directInput }],
         signal: session._abortSignal,
       })) {
-        dotMessage.content += delta;
-        onUpdate?.();
+        const cleanDelta = stripDsmlArtifacts(delta);
+        if (cleanDelta) {
+          dotMessage.content += cleanDelta;
+          onUpdate?.();
+        }
       }
+      dotMessage.content = stripDsmlArtifacts(dotMessage.content).trimEnd();
       if (!dotMessage.content.trim()) {
         dotMessage.content = buildLimitedAgentResponse({ input: directInput, session }, 'LLM stream ended without content');
         onUpdate?.();
@@ -1278,5 +1293,5 @@ export async function runShell({ agent, packageJson }) {
     await runPipeShell({ agent, packageJson, session });
     return;
   }
-  await runTuiShell({ agent, packageJson, session });
+  throw new Error('Interactive TUI requires Bun/OpenTUI. Run: bun ./bin/wiki-manager.js');
 }

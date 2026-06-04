@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 function formatStartupError(err) {
   const message = err instanceof Error ? err.message : String(err);

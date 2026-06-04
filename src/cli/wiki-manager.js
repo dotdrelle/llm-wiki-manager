@@ -149,5 +149,14 @@ export async function runCli(argv) {
     return;
   }
 
+  if (process.stdin.isTTY && process.stdout.isTTY) {
+    if (!process.versions.bun) {
+      throw new Error('Interactive TUI requires Bun. Run: bun ./bin/wiki-manager.js');
+    }
+    const { runOpenTuiShell } = await import('../shell/tui.tsx');
+    await runOpenTuiShell({ agent, packageJson });
+    return;
+  }
+
   await runShell({ agent, packageJson });
 }

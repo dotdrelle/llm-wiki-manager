@@ -114,7 +114,9 @@ name, env file, ports, and volume mounts.
 Start the agent shell:
 
 ```bash
-pnpm start
+bun start          # full OpenTUI shell (requires Bun ≥ 1.2)
+pnpm start         # alias for bun start
+pnpm run start:node  # fallback: legacy repl.js shell under Node
 ```
 
 The shell is agent-first:
@@ -123,12 +125,15 @@ The shell is agent-first:
 - any other input goes to the LangGraph orchestrator;
 - `/chat <message>` bypasses agent tools for direct LLM chat;
 - the visible agent name is `dot`;
-- conversation history is separated per workspace.
+- conversation history is separated per workspace;
 - Ctrl+C interrupts active LLM/MCP calls; Ctrl+C twice exits when idle.
 
-The TUI keeps the logo and MCP status panel in a fixed top layout. Connected MCP
-servers are shown in the right-side panel, two columns wide, with a summary when
-more servers are connected than fit.
+The TUI uses a two-pane layout:
+
+- **Left** — scrollable conversation thread with a chat input at the bottom.
+  Typing `/` opens a slash-command completion overlay just above the input.
+  PageUp/PageDown and mouse scroll move through the conversation.
+- **Right** — connected MCP servers (● / ◐ / ○) and a live log/trace panel.
 
 Useful primitives:
 
@@ -307,15 +312,25 @@ node ./bin/wiki-manager.js --headless --workspace __missing__ --prompt test
 ```text
 llm-wiki-manager/
 ├── bin/wiki-manager.js
+├── bunfig.toml             # Bun preload for @opentui/solid
+├── tsconfig.json           # TSX compilation (jsxImportSource = @opentui/solid)
 ├── src/
-│   ├── agent/          # LangGraph orchestration and LLM client
-│   ├── cli/            # CLI entrypoint
-│   ├── commands/       # slash commands
-│   ├── core/           # compose, env, MCP, skills, workspace registry
-│   └── shell/          # TUI and pipe shell
+│   ├── agent/              # LangGraph orchestration and LLM client
+│   ├── cli/                # CLI entrypoint
+│   ├── commands/           # slash commands
+│   ├── core/               # compose, env, MCP, skills, workspace registry
+│   └── shell/
+│       ├── repl.js         # legacy TUI and pipe shell (Node fallback)
+│       ├── tui.tsx         # OpenTUI shell root (Bun)
+│       ├── LeftPane.tsx    # conversation view + chat input
+│       ├── RightPane.tsx   # MCP server list + log panel
+│       ├── SlashDialog.tsx # completion overlay
+│       ├── useSession.ts   # reactive session state
+│       ├── useAgent.ts     # agent call wrapper
+│       └── renderer.ts     # markdown stripping and line coloring
 ├── docker-compose.yml
 ├── wiki-workspace
-├── workspaces/         # gitignored local workspace registry
+├── workspaces/             # gitignored local workspace registry
 ├── .env.example
 └── workspaces/.env.example
 ```

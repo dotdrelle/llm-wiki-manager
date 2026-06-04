@@ -9,11 +9,12 @@
     "wiki-manager": "bin/wiki-manager.js"
   },
   "scripts": {
-    "start": "node ./bin/wiki-manager.js",
-    "check": "node ./bin/wiki-manager.js --version && node ./bin/wiki-manager.js --help && node ./bin/wiki-manager.js --once \"verifie le mode agent\""
+    "start": "bun ./bin/wiki-manager.js",
+    "check": "bun ./bin/wiki-manager.js --version && bun ./bin/wiki-manager.js --help && bun ./bin/wiki-manager.js --once \"verifie le mode agent\""
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.0.0",
+    "bun": ">=1.2.0"
   },
   "files": [
     "bin",
@@ -36,8 +37,11 @@
   "packageManager": "pnpm@10.29.2",
   "dependencies": {
     "@langchain/langgraph": "^1.3.2",
+    "@opentui/core": "^0.3.2",
+    "@opentui/solid": "^0.3.2",
     "marked": "^15.0.12",
     "marked-terminal": "^7.3.0",
+    "solid-js": "1.9.12",
     "yaml": "^2.9.0"
   }
 }

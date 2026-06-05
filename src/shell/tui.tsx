@@ -11,6 +11,8 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
   const renderer = useRenderer();
   const dimensions = useTerminalDimensions();
   const [spinnerIndex, setSpinnerIndex] = createSignal(0);
+  const [exitHint, setExitHint] = createSignal(false);
+  let ctrlCTimer: ReturnType<typeof setTimeout> | null = null;
   const state = useSession(props);
   const conversationRows = createMemo(() => Math.max(4, dimensions().height - 7));
   const rightColumns = createMemo(() => {
@@ -22,6 +24,10 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
     return Math.max(24, leftColumns() - 4);
   });
   const submit = (value?: string) => {
+    if (state.slash()) {
+      state.completeSelected();
+      return;
+    }
     void state.submitInput(value).then((result) => {
       if (result?.exit) renderer.destroy();
     });
@@ -30,12 +36,27 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
   const spinnerTimer = setInterval(() => {
     if (state.busy()) setSpinnerIndex((value) => (value + 1) % 10);
   }, 90);
-  onCleanup(() => clearInterval(spinnerTimer));
+  onCleanup(() => {
+    clearInterval(spinnerTimer);
+    if (ctrlCTimer) clearTimeout(ctrlCTimer);
+  });
 
   useKeyboard((key) => {
     if (key.ctrl && key.name === 'c') {
-      if (state.busy()) state.abort();
-      else renderer.destroy();
+      if (state.busy()) {
+        state.abort();
+        return;
+      }
+      if (exitHint()) {
+        renderer.destroy();
+        return;
+      }
+      setExitHint(true);
+      if (ctrlCTimer) clearTimeout(ctrlCTimer);
+      ctrlCTimer = setTimeout(() => {
+        setExitHint(false);
+        ctrlCTimer = null;
+      }, 1600);
       return;
     }
     if (state.busy()) return;
@@ -57,7 +78,7 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
       <LeftPane
         width={leftColumns()}
         title={state.title()}
-        statusLine={state.statusLine()}
+        statusLine={exitHint() ? `${state.statusLine()}  · Ctrl+C again to exit` : state.statusLine()}
         messages={state.messages()}
         prompt={state.prompt()}
         input={state.input()}

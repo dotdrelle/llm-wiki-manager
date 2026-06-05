@@ -125,9 +125,11 @@ function tokenCompletions(inputBuffer, values) {
   if (matches.length === 0) return { inputBuffer };
   if (matches.length === 1) return { inputBuffer: `${base}${matches[0]} ` };
   const shared = commonPrefix(matches);
-  return {
-    inputBuffer: shared.length > prefix.length ? `${base}${shared}` : inputBuffer,
-  };
+  if (shared.length > prefix.length) return { inputBuffer: `${base}${shared}` };
+  // Completing an argument (base contains a space): select the first match.
+  // Completing the command itself (no space yet): leave unchanged so the user can keep typing.
+  if (lastSpace >= 0) return { inputBuffer: `${base}${matches[0]} ` };
+  return { inputBuffer };
 }
 
 function mcpNames(session) {

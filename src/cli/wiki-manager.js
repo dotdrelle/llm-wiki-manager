@@ -7,6 +7,7 @@ import { handleSlashCommand, printHelp, printVersion } from '../commands/slash.j
 import { runShell } from '../shell/repl.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { parseJsonText, sessionActivities, rememberActivityFromPayload } from '../core/activity.js';
+import { extractHeadlessPlan, matchCompletedToPlan, formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageJsonPath = resolve(__dirname, '../../package.json');
@@ -34,6 +35,7 @@ function createSession() {
     conversations: { __global__: [] },
     activities: {},
     productionActivity: null,
+    headlessPlan: null,
   };
 }
 
@@ -64,12 +66,6 @@ function terminalFailures(activities) {
   );
 }
 
-function formatCompletedActivities(activities) {
-  return activities
-    .filter((a) => a.terminal)
-    .map((a) => `- ${a.source} ${a.id ?? a.kind}: ${a.status}${a.error ? ` (${a.error})` : ''}`)
-    .join('\n');
-}
 
 async function runHeadlessActivityLoop(session, log, { wait, timeoutMs }) {
   if (!wait) return { exitCode: 0, completed: [], timedOut: false };
@@ -143,7 +139,19 @@ async function runHeadlessActivityLoop(session, log, { wait, timeoutMs }) {
 
 async function runHeadlessAgentTurn(agent, session, input, log, messages = []) {
   session.packageJson = packageJson;
-  const result = await agent.invoke({ input, session, messages });
+  let streamedContent = '';
+  session._onStream = (delta) => { streamedContent += delta; };
+  session._onStreamReset = () => { streamedContent = ''; };
+  let result;
+  try {
+    result = await agent.invoke({ input, session, messages });
+  } finally {
+    delete session._onStream;
+    delete session._onStreamReset;
+  }
+  if (result.streamedInline) {
+    return streamedContent.trim() || buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
+  }
   if (result.response != null) return result.response;
   if (result.readyToStream && session.llm?.stream) {
     const { system, messages: streamMessages = [] } = result.streamContext ?? {};
@@ -179,11 +187,36 @@ async function runHeadlessAgenticLoop(agent, session, initialInput, log, { timeo
       { role: 'assistant', content: response },
     );
 
+    // session.headlessPlan is set authoritatively by wiki__plan_set tool call.
+    // Fall back to text extraction only if the agent didn't call the tool.
+    if (turn === 1 && session.headlessPlan === null) {
+      session.headlessPlan = extractHeadlessPlan(response);
+      if (session.headlessPlan) log.push(`agentic-loop: plan extracted from text (${session.headlessPlan.length} steps, fallback)`);
+    } else if (turn === 1 && session.headlessPlan) {
+      log.push(`agentic-loop: plan set via tool (${session.headlessPlan.length} steps)`);
+    }
+
     const newPending = newNonTerminalActivities(snapshot, session);
     if (newPending.length === 0) {
-      log.push('agentic-loop: no new non-terminal activities — plan complete');
-      console.log('[headless] Plan complete.');
-      return { exitCode: 0 };
+      const pendingSteps = (session.headlessPlan ?? []).filter((s) => s.status === 'pending');
+      if (pendingSteps.length === 0) {
+        log.push('agentic-loop: no new non-terminal activities — plan complete');
+        console.log('[headless] Plan complete.');
+        return { exitCode: 0 };
+      }
+      log.push(`agentic-loop: no new async activity, ${pendingSteps.length} pending step(s) remain`);
+      if (session.headlessPlan) log.push(`agentic-loop: plan status:\n${formatPlanStatus(session.headlessPlan)}`);
+      currentInput = [
+        'Original task:',
+        initialInput,
+        '',
+        `Plan status:\n${formatPlanStatus(session.headlessPlan)}`,
+        '',
+        'No new background activity was started in the previous turn.',
+        'Continue the original plan. Start the next pending step only.',
+        'If required information is missing and cannot be inferred, stop with a clear blocker.',
+      ].join('\n');
+      continue;
     }
 
     log.push(`agentic-loop: ${newPending.length} new job(s) started, waiting…`);
@@ -191,15 +224,22 @@ async function runHeadlessAgenticLoop(agent, session, initialInput, log, { timeo
 
     if (timedOut || exitCode !== 0) return { exitCode };
 
+    matchCompletedToPlan(session.headlessPlan, completed);
+
     const summary = formatCompletedActivities(completed);
     log.push(`agentic-loop: completed activities:\n${summary}`);
+    if (session.headlessPlan) log.push(`agentic-loop: plan status:\n${formatPlanStatus(session.headlessPlan)}`);
     currentInput = [
+      'Original task:',
+      initialInput,
+      '',
+      session.headlessPlan ? `Plan status:\n${formatPlanStatus(session.headlessPlan)}\n` : null,
       'Completed activities:',
       summary,
       '',
       'Continue the original plan. Start the next required step only.',
       'If all steps are complete, provide the final summary.',
-    ].join('\n');
+    ].filter(Boolean).join('\n');
   }
 
   log.push(`agentic-loop: max turns (${maxTurns}) reached without completing`);

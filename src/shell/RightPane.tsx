@@ -1,5 +1,7 @@
 import { For, Show } from 'solid-js';
 
+type PlanStep = { step: number; description: string; status: string };
+
 function wrapLine(value: string, width: number) {
   const max = Math.max(8, width);
   const text = String(value);
@@ -52,6 +54,32 @@ function updatedLine(activity: any) {
   return [source, id, `${age}s ago`].filter(Boolean).join(' · ');
 }
 
+function planStepColor(step: PlanStep, firstPendingStep: number | null) {
+  if (step.status === 'done') return '#8BD5CA';
+  if (step.status === 'failed') return '#F38BA8';
+  if (step.step === firstPendingStep) return '#89B4FA';
+  return '#7F8C8D';
+}
+
+export function PlanPanel(props: { plan: PlanStep[]; width: number }) {
+  const lineWidth = () => Math.max(8, props.width - 2);
+  const firstPending = () => props.plan.find((s) => s.status === 'pending')?.step ?? null;
+  const icon = (status: string) =>
+    status === 'done' ? '[✓]' : status === 'failed' ? '[✗]' : '[ ]';
+  return (
+    <box flexShrink={0} flexDirection="column" padding={1}>
+      <text width={lineWidth()} fg="#D6DEE8">Plan</text>
+      <For each={props.plan}>
+        {(step) => (
+          <text width={lineWidth()} fg={planStepColor(step, firstPending())}>
+            {fit(`${icon(step.status)} ${step.step}. ${step.description}`, lineWidth())}
+          </text>
+        )}
+      </For>
+    </box>
+  );
+}
+
 export function ActivityPanel(props: { activities: any[]; width: number }) {
   const lineWidth = () => Math.max(8, props.width - 2);
   const visible = () => props.activities.slice(-6).reverse();
@@ -94,9 +122,12 @@ export function LogPanel(props: { logs: string[]; width: number }) {
   );
 }
 
-export function RightPane(props: { width: number; activities: any[]; logs: string[] }) {
+export function RightPane(props: { width: number; activities: any[]; logs: string[]; plan: PlanStep[] | null }) {
   return (
     <box width={props.width} height="100%" flexDirection="column" gap={1} padding={1} overflow="hidden">
+      <Show when={props.plan && props.plan.length > 0}>
+        <PlanPanel width={props.width} plan={props.plan!} />
+      </Show>
       <ActivityPanel width={props.width} activities={props.activities} />
       <LogPanel width={props.width} logs={props.logs} />
     </box>

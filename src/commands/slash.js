@@ -322,7 +322,7 @@ ${helpPair('/mcp tools [mcp]', 'MCP tools', '/mcp call ...', 'Call MCP tool')}
 ${helpPair('/wiki', 'Run wiki index', '/wiki run <args>', 'Raw wiki CLI')}
 ${helpPair('/chat <message>', 'Direct chat', '/clear', 'Clear screen')}
 ${helpPair('/exit', 'Exit', 'Ctrl+Y', 'Copy last reply')}
-${helpPair('Ctrl+T', 'Toggle mouse scroll', 'Ctrl+C Ctrl+C', 'Exit')}
+${helpPair('PgUp/PgDn', 'Scroll thread', 'Ctrl+C Ctrl+C', 'Exit')}
 
 Agent mode:
   Any input without a leading / is routed to the LangGraph orchestrator.

@@ -132,7 +132,8 @@ The TUI uses a two-pane layout:
 
 - **Left** — scrollable conversation thread with a chat input at the bottom.
   Typing `/` opens a slash-command completion overlay just above the input.
-  PageUp/PageDown and mouse scroll move through the conversation.
+  Mouse wheel scrolls the conversation, and selecting text copies it through the
+  TUI clipboard bridge. PageUp/PageDown remain available for keyboard scrolling.
 - **Right** — active MCP jobs plus a live log/trace panel. MCP connection
   details remain available through `/mcp status`.
 
@@ -196,26 +197,31 @@ conversation for the current shell process.
 
 ## Agent Tooling
 
-The LLM can call MCP tools directly when they are connected.
+The `dot` agent uses a LangGraph ReAct loop (max 80 tool-use iterations). Each
+agent turn makes a single streaming LLM call via Server-Sent Events. Text
+tokens appear in the TUI as they arrive. When the LLM decides to call tools,
+the stream switches to tool-call accumulation; tool results feed back into the
+next LLM call until the agent produces a final text response.
 
-For actionable requests, the orchestrator should not answer with future intent
-only. If a connected MCP tool or safe primitive can perform the action, the
-agent must call it in the same turn. If required arguments are missing, it must
-ask for those exact values. If the tool/server is unavailable, it must name the
-concrete blocker instead of claiming that a pending action has been launched.
+The LLM can call:
+
+- **connected MCP tools** — discovered at `/use` time and re-discovered on
+  `/mcp status`, `/start`, and `/stop`;
+- **`shell__run_command`** — restricted internal tool for safe manager
+  primitives only.
+
+For actionable requests, the orchestrator must not answer with future intent
+only. If a connected MCP tool or safe primitive can perform the action, it must
+call the tool in the same turn. If required arguments are missing, ask for the
+exact missing values. If the tool/server is unavailable, name the concrete
+blocker.
 
 CME setup/configuration is a synchronous MCP action, not a monitored background
-activity. The agent should call `cme_status`/`cme_setup` directly when the CME
-tools are connected and the required credentials are known. The Activity panel
-tracks long-running CME export jobs, not setup calls.
+activity. The agent calls `cme_status`/`cme_setup` directly when CME tools are
+connected and credentials are available. The Activity panel tracks long-running
+jobs that return `_activity.poll` descriptors — not synchronous setup calls.
 
-It can also call an internal restricted tool:
-
-```text
-shell__run_command
-```
-
-This tool can run only safe manager slash commands:
+`shell__run_command` is limited to safe manager primitives:
 
 ```text
 /workspaces
@@ -229,11 +235,35 @@ This tool can run only safe manager slash commands:
 /run-skill <name>
 ```
 
-It is not a general shell. It does not expose arbitrary system commands, `/mcp
-call`, `/wiki run`, `/start`, `/stop`, `/logs`, or `/exit`.
+It does not expose arbitrary system commands, `/mcp call`, `/wiki run`,
+`/start`, `/stop`, `/logs`, or `/exit`.
 
-This keeps the LLM useful for workspace navigation and inspection without giving
-it unrestricted command execution.
+### Activity monitoring
+
+Any MCP tool result that contains `_activity` (or matches the legacy production
+job shape) is registered in the session activity store. The TUI polls
+non-terminal activities in the background using the `poll` descriptor declared
+in `_activity.poll`. The divider below the conversation shows the current
+non-terminal activity; the lower panel shows recent step labels.
+
+### Headless agentic loop
+
+`--skill` runs a multi-turn agentic loop:
+
+1. Turn 1 — agent calls `wiki__plan_set(steps)` to declare an ordered plan,
+   then executes step 1. Production ingest/build/export/polish should usually
+   be one production pipeline step, not four separate async manager steps.
+2. The loop waits for all non-terminal activities to reach a terminal state
+   (polled via `_activity.poll`).
+3. The agent is re-invoked with the original task, current plan status
+   (`[✓]`/`[✗]`/`[ ]`), and the completed activity summary.
+4. The agent executes the next pending step. Repeat until all steps are done
+   or `--max-turns` is reached.
+
+For synchronous steps (no background job), the agent calls
+`wiki__plan_done(step)` immediately after confirming success. If no async job
+was started but the plan still has pending steps, headless mode re-invokes the
+agent instead of treating the run as complete.
 
 ## Non-Interactive Mode
 
@@ -377,12 +407,12 @@ llm-wiki-manager/
 │   ├── agent/              # LangGraph orchestration and LLM client
 │   ├── cli/                # CLI entrypoint
 │   ├── commands/           # slash commands
-│   ├── core/               # compose, env, MCP, skills, workspace registry
+│   ├── core/               # compose, env, MCP, activity, plan, skills, workspace registry
 │   └── shell/
 │       ├── repl.js         # legacy TUI and pipe shell (Node fallback)
 │       ├── tui.tsx         # OpenTUI shell root (Bun)
 │       ├── LeftPane.tsx    # conversation view + chat input
-│       ├── RightPane.tsx   # MCP server list + log panel
+│       ├── RightPane.tsx   # plan, activity, and log panel
 │       ├── SlashDialog.tsx # completion overlay
 │       ├── useSession.ts   # reactive session state
 │       ├── useAgent.ts     # agent call wrapper

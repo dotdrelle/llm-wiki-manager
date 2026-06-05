@@ -96,6 +96,7 @@ export function createSession() {
     llm: null,
     activities: {},
     productionActivity: null,
+    headlessPlan: null,
     conversations: { [GLOBAL_CONVERSATION_KEY]: [] },
   };
 }
@@ -804,15 +805,56 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
   const history = toConversationHistory(messages);
   session._onStep = onStep ?? null;
   session.packageJson = session.packageJson ?? {};
+
+  let dotMessage = null;
+  session._onStream = (delta) => {
+    if (!dotMessage) {
+      dotMessage = { role: 'dot', content: '' };
+      messages.push(dotMessage);
+    }
+    if (delta) {
+      dotMessage.content += delta;
+      onUpdate?.();
+    }
+  };
+  session._onStreamReset = () => {
+    if (dotMessage) {
+      const index = messages.indexOf(dotMessage);
+      if (index !== -1) messages.splice(index, 1);
+      dotMessage = null;
+      onUpdate?.();
+    }
+  };
+
   let agentResult;
   try {
     agentResult = await agent.invoke({ input, session, messages: history });
   } catch (err) {
-    delete session._onStep;
-    if (err.name === 'AbortError') return { aborted: true };
+    if (err.name === 'AbortError') {
+      if (dotMessage) {
+        const idx = messages.indexOf(dotMessage);
+        if (idx !== -1) messages.splice(idx, 1);
+      }
+      return { aborted: true };
+    }
     throw err;
   } finally {
     delete session._onStep;
+    delete session._onStream;
+    delete session._onStreamReset;
+  }
+
+  if (agentResult.streamedInline) {
+    if (dotMessage) {
+      dotMessage.content = stripDsmlArtifacts(dotMessage.content).trimEnd();
+      if (!dotMessage.content.trim()) {
+        dotMessage.content = buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
+      }
+    } else {
+      messages.push({ role: 'dot', content: buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content') });
+    }
+    onUpdate?.();
+    return {};
   }
 
   if (agentResult.response != null) {
@@ -822,8 +864,8 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
   }
 
   if (agentResult.readyToStream && session.llm?.stream) {
-    const dotMessage = { role: 'dot', content: '' };
-    messages.push(dotMessage);
+    const dotMsg = { role: 'dot', content: '' };
+    messages.push(dotMsg);
     onUpdate?.();
     const { system, messages: streamMessages = [] } = agentResult.streamContext ?? {};
     try {
@@ -835,13 +877,13 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
       })) {
         const cleanDelta = stripDsmlArtifacts(delta);
         if (cleanDelta) {
-          dotMessage.content += cleanDelta;
+          dotMsg.content += cleanDelta;
           onUpdate?.();
         }
       }
-      dotMessage.content = stripDsmlArtifacts(dotMessage.content).trimEnd();
-      if (!dotMessage.content.trim()) {
-        dotMessage.content = buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
+      dotMsg.content = stripDsmlArtifacts(dotMsg.content).trimEnd();
+      if (!dotMsg.content.trim()) {
+        dotMsg.content = buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
         onUpdate?.();
       }
     } catch (err) {
@@ -850,7 +892,7 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
         return { aborted: true };
       }
       const message = err instanceof Error ? err.message : String(err);
-      dotMessage.content = buildLimitedAgentResponse({ input, session }, `LLM indisponible: ${message}`);
+      dotMsg.content = buildLimitedAgentResponse({ input, session }, `LLM indisponible: ${message}`);
       onUpdate?.();
     }
     return {};
@@ -992,8 +1034,8 @@ async function runTuiShell({ agent, packageJson, session }) {
   let ctrlCTimer = null;
   let currentAbortController = null;
   let scrollOffset = 0;
-  let mouseScrollEnabled = true;
-  let desiredMouseScrollEnabled = true;
+  let mouseScrollEnabled = false;
+  let desiredMouseScrollEnabled = false;
   let mouseSelectionTimer = null;
   let done = false;
   let processing = Promise.resolve();
@@ -1103,7 +1145,7 @@ async function runTuiShell({ agent, packageJson, session }) {
   });
   input.pipe(mouseFilter);
   emitKeypressEvents(mouseFilter);
-  setMouseScrollEnabled(true);
+  setMouseScrollEnabled(false);
 
   const onResize = () => rerender();
   output.on('resize', onResize);
@@ -1119,7 +1161,7 @@ async function runTuiShell({ agent, packageJson, session }) {
       setMouseScrollEnabled(desiredMouseScrollEnabled);
       spinnerLabel = desiredMouseScrollEnabled
         ? 'Mouse scroll enabled — click temporarily restores native selection'
-        : 'Mouse scroll disabled — native text selection restored';
+        : 'Mouse scroll disabled — native text selection and copy restored';
       busy = true;
       rerender();
       setTimeout(() => { spinnerLabel = prevLabel; busy = prevBusy; rerender(); }, 1800);

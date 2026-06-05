@@ -283,13 +283,11 @@ read_lines_into_array() {
   shift
   [[ "$array_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "invalid array name: $array_name"
 
-  local line assignment
-  assignment="$array_name=("
+  eval "$array_name=()"
+  local line
   while IFS= read -r line; do
-    assignment+=" $(printf '%q' "$line")"
+    eval "$array_name+=(\"\$line\")"
   done < <("$@")
-  assignment+=" )"
-  eval "$assignment"
 }
 
 run_wiki() {

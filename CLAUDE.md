@@ -14,8 +14,8 @@ It must stay a manager. It should not absorb the responsibilities of
 ```text
 wiki-workspace              Operator CLI around Docker Compose
 docker-compose.yml          Shared workspace service stack
-src/cli/wiki-manager.js     Node CLI entrypoint
-src/shell/repl.js           Pipe shell and legacy TUI (Node fallback)
+src/cli/wiki-manager.js     CLI entrypoint: interactive, headless, --once
+src/shell/repl.js           Pipe shell + Node TUI fallback; runLine/runAgentTurn; session._onStream
 src/shell/tui.tsx           OpenTUI shell root (Bun only)
 src/shell/LeftPane.tsx      Conversation view + chat input
 src/shell/RightPane.tsx     Activity panel + log panel
@@ -23,12 +23,13 @@ src/shell/SlashDialog.tsx   Completion overlay
 src/shell/useSession.ts     Reactive session state (SolidJS signals)
 src/shell/useAgent.ts       runLine wrapper with busy/abort
 src/shell/renderer.ts       Markdown stripping and line coloring helpers
-src/agent/graph.js          LangGraph orchestrator
-src/agent/llm.js            OpenAI-compatible chat/tool client
+src/agent/graph.js          LangGraph ReAct orchestrator (MAX_TOOL_ITERATIONS=80)
+src/agent/llm.js            OpenAI-compatible client: complete, completeWithTools, streamWithTools, stream
 src/commands/slash.js       Deterministic slash commands
+src/core/activity.js        Generic activity registry: extractActivity, normalizeActivity, poll contract
 src/core/compose.js         Docker Compose helpers
 src/core/workspaces.js      Workspace registry and creation
-src/core/mcp.js             MCP endpoint discovery and tool calls
+src/core/mcp.js             MCP endpoint discovery, persistent session, tool calls
 src/core/env.js             .env parser
 src/core/wikirc.js          .wikirc.yaml profile loading
 src/core/skills.js          Workspace skill discovery
@@ -48,6 +49,10 @@ The interactive shell is the product surface.
 - Conversation history is scoped by workspace for the current process.
 - The global context is used only before a workspace is loaded.
 - Ctrl+C while busy aborts active LLM/MCP work; Ctrl+C when idle exits.
+- OpenTUI should not require mode switching for normal reading. Mouse wheel
+  scrolls the conversation, and OpenTUI selection copies selected text through
+  OSC52/platform clipboard fallback. PageUp/PageDown remain keyboard scrolling
+  fallbacks.
 
 When changing `/use`, workspace state and conversation state must move together.
 Do not reintroduce a single global message buffer for all workspaces.
@@ -70,10 +75,14 @@ are not a TTY (headless, pipe mode), the shell falls back to `repl.js`.
 The guard in `src/cli/wiki-manager.js`:
 
 ```js
-const canUseOpenTui = process.versions.bun
-  && process.stdin.isTTY && process.stdout.isTTY
-  && !argv.includes('--legacy-tui')
-  && process.env.WIKI_MANAGER_LEGACY_TUI !== '1';
+if (process.stdin.isTTY && process.stdout.isTTY) {
+  if (!process.versions.bun) throw new Error('Interactive TUI requires Bun.');
+  const { runOpenTuiShell } = await import('../shell/tui.tsx');
+  await runOpenTuiShell({ agent, packageJson });
+  return;
+}
+// Non-TTY or Node → repl.js pipe/legacy shell
+await runShell({ agent, packageJson });
 ```
 
 Do not change the layout without understanding the OpenTUI box model
@@ -81,6 +90,54 @@ Do not change the layout without understanding the OpenTUI box model
 through `conversationLines` → `segmentsForLine` → `Segment[]` per line.
 Color is determined on the raw (unwrapped) line and applied to all wrapped
 pieces; do not evaluate `colorForRenderedLine` on wrapped fragments.
+
+### Agent Orchestration
+
+The `dot` LangGraph graph is a ReAct loop compiled from two nodes:
+
+```
+START → orchestratorNode
+          ├── no LLM configured → buildLimitedAgentResponse, END
+          ├── cap reached (MAX_TOOL_ITERATIONS = 80) → cap message, END
+          ├── streamWithTools available (normal path):
+          │     ├── tool_calls in stream → toolExecutorNode → orchestratorNode (loop)
+          │     └── text only → streamed inline via session._onStream, streamedInline=true, END
+          └── completeWithTools fallback (streamWithTools unavailable):
+                ├── tool_calls → toolExecutorNode → orchestratorNode (loop)
+                ├── stream available → readyToStream=true + streamContext, END
+                └── no stream → response=content, END
+
+toolExecutorNode
+  ├── shell__run_command  → handleSlashCommand (safe subset only)
+  ├── wiki__plan_set      → session.headlessPlan + session._onPlanUpdate?.()
+  ├── wiki__plan_done     → mark step done/failed + session._onPlanUpdate?.()
+  └── <server>__<tool>    → callMcpTool → JSON-RPC Streamable HTTP
+```
+
+**Session callbacks:**
+
+- `session._onStep(label)` — set per-turn before `agent.invoke()`, deleted in `finally`; step-level updates (spinner label, activity panel lines)
+- `session._onStream(delta)` — set per-turn before `agent.invoke()`, deleted in `finally`; raw text delta from `streamWithTools`; caller accumulates into a `dotMessage` pushed to conversation
+- `session._onStreamReset()` — set per-turn before `agent.invoke()`, deleted in `finally`; called when a streamed assistant turn resolves to tool calls so partial planning text is removed before tool execution continues
+- `session._onPlanUpdate()` — set once at session mount by `useSession.ts` to SolidJS `refresh`; called mid-turn by `handleWikiTool` after every `wiki__plan_set` / `wiki__plan_done` so the right panel updates immediately without waiting for the agent turn to complete
+
+**Activity surfacing (interactive TUI):**
+
+- `toolExecutorNode` calls `rememberActivityFromPayload` after each MCP result; extracts `_activity` (generic) or legacy production shape.
+- `session.activities` is the canonical registry (keyed by `source:id`).
+- `session.productionActivity` is a legacy mirror for production jobs.
+- A background `setInterval` in `repl.js` polls non-terminal activities using their `poll` descriptor at `intervalMs` (min 1000 ms, default 2500 ms).
+- The divider line shows the first non-terminal activity; lower panel shows recent `_onStep` lines.
+
+**Plan tracking (interactive and headless):**
+
+- The agent must call `wiki__plan_set(steps)` before ANY production action or MCP-driven task — including single-step jobs. The plan is displayed in the right panel and communicated to agents.
+- `wiki__plan_set` / `wiki__plan_done` call `session._onPlanUpdate?.()` to trigger an immediate SolidJS refresh in the TUI. In headless mode `_onPlanUpdate` is undefined and the call is a no-op.
+- In headless: fallback `extractHeadlessPlan` parses a numbered list from the first turn's text response if the agent did not call `wiki__plan_set`.
+- Each turn: agent calls `wiki__plan_done(step, status)` for synchronous steps; async MCP jobs are auto-matched to plan steps by token overlap in `matchCompletedToPlan`.
+- Re-invocation prompt (headless agentic loop): original task + `formatPlanStatus` (`[✓]`/`[✗]`/`[ ]`) + completed activities summary.
+- If a headless turn starts no async activity but the plan still has pending steps, re-invoke the agent with plan status instead of declaring completion. This supports synchronous setup/config/mailer steps.
+- Production ingest/build/export/polish should normally be represented as one plan step backed by one `production_start_job(type="pipeline", steps=[...])`; do not split those internal production phases into separate manager-level async steps unless they will be launched as separate jobs intentionally.
 
 ## Safe LLM Actions
 
@@ -219,9 +276,13 @@ wiki-manager --headless --workspace <workspace-name> --prompt "check production 
 
 Headless mode creates a normal session, calls `/use`, and writes a log file.
 `--prompt` runs one agent turn unless `--wait` is passed. `--skill` uses the
-agentic loop by default: run one agent turn, wait for active MCP activities,
-then re-invoke the agent with a completed-activity summary so it can start the
-next required step.
+agentic loop by default: run one agent turn, wait for active MCP activities
+(polled via `_activity.poll`), then re-invoke the agent with a
+completed-activity summary so it can start the next required step.
+
+`runHeadlessAgentTurn` sets `session._onStream` to accumulate streamed deltas
+before calling `agent.invoke()`, then handles `streamedInline` (primary path),
+`response` (limited/error), or `readyToStream` (fallback) in that order.
 
 Headless controls:
 

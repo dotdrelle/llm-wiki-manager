@@ -1,4 +1,5 @@
-import { render, useKeyboard, useRenderer, useTerminalDimensions } from '@opentui/solid';
+import { execFileSync } from 'node:child_process';
+import { render, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from '@opentui/solid';
 import { createMemo, createSignal, onCleanup } from 'solid-js';
 import { LeftPane } from './LeftPane';
 import { RightPane } from './RightPane';
@@ -7,14 +8,45 @@ import { useSession } from './useSession';
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+function copyToClipboard(text: string, renderer: unknown) {
+  try {
+    if ((renderer as any).copyToClipboardOSC52?.(text)) return true;
+  } catch {
+    // Fall through to platform clipboard tools.
+  }
+  try {
+    if (process.platform === 'darwin') {
+      execFileSync('pbcopy', [], { input: text });
+      return true;
+    }
+    if (process.platform === 'win32') {
+      execFileSync('clip', [], { input: text });
+      return true;
+    }
+    try {
+      execFileSync('wl-copy', [], { input: text });
+      return true;
+    } catch {
+      execFileSync('xclip', ['-selection', 'clipboard'], { input: text });
+      return true;
+    }
+  } catch {
+    return false;
+  }
+}
+
 function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
   const renderer = useRenderer();
   const dimensions = useTerminalDimensions();
   const [spinnerIndex, setSpinnerIndex] = createSignal(0);
   const [exitHint, setExitHint] = createSignal(false);
+  const [copyHint, setCopyHint] = createSignal<string | null>(null);
   let ctrlCTimer: ReturnType<typeof setTimeout> | null = null;
+  let copyHintTimer: ReturnType<typeof setTimeout> | null = null;
+  let selectionCopyTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastCopiedSelection = '';
   const state = useSession(props);
-  const conversationRows = createMemo(() => Math.max(4, dimensions().height - (exitHint() ? 8 : 7)));
+  const conversationRows = createMemo(() => Math.max(4, dimensions().height - (exitHint() || copyHint() ? 8 : 7)));
   const rightColumns = createMemo(() => {
     const width = dimensions().width;
     return Math.max(26, Math.min(44, Math.floor(width * 0.32)));
@@ -32,6 +64,29 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
       if (result?.exit) renderer.destroy();
     });
   };
+
+  const showCopyHint = (message: string) => {
+    setCopyHint(message);
+    if (copyHintTimer) clearTimeout(copyHintTimer);
+    copyHintTimer = setTimeout(() => { setCopyHint(null); copyHintTimer = null; }, 1400);
+  };
+
+  useSelectionHandler((selection: any) => {
+    const text = String(selection?.getSelectedText?.() ?? '').trimEnd();
+    if (!text.trim()) return;
+    if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
+    selectionCopyTimer = setTimeout(() => {
+      selectionCopyTimer = null;
+      if (text === lastCopiedSelection) return;
+      lastCopiedSelection = text;
+      showCopyHint(copyToClipboard(text, renderer) ? 'Selection copied.' : 'Selection ready. Use terminal copy.');
+    }, selection?.isDragging ? 700 : 80);
+  });
+
+  onCleanup(() => {
+    if (copyHintTimer) clearTimeout(copyHintTimer);
+    if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
+  });
 
   const spinnerTimer = setInterval(() => {
     if (state.busy()) setSpinnerIndex((value) => (value + 1) % 10);
@@ -73,13 +128,19 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
     }
   });
 
+  const hintLine = () => {
+    if (copyHint()) return copyHint();
+    if (exitHint()) return 'Press Ctrl+C again to exit.';
+    return null;
+  };
+
   return (
     <box width="100%" height="100%" flexDirection="row">
       <LeftPane
         width={leftColumns()}
         title={state.title()}
         statusLine={state.statusLine()}
-        hintLine={exitHint() ? 'Press Ctrl+C again to exit.' : null}
+        hintLine={hintLine()}
         messages={state.messages()}
         prompt={state.prompt()}
         input={state.input()}
@@ -97,7 +158,7 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
           <text fg="#4B5563">│</text>
         ))}
       </box>
-      <RightPane width={rightColumns()} activities={state.activities()} logs={state.logs()} />
+      <RightPane width={rightColumns()} activities={state.activities()} logs={state.logs()} plan={state.plan()} />
       <SlashDialog context={state.slash()} />
     </box>
   );
@@ -106,6 +167,7 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
 export async function runOpenTuiShell({ agent, packageJson }: { agent: unknown; packageJson: Record<string, unknown> }) {
   await render(() => <App agent={agent} packageJson={packageJson} />, {
     exitOnCtrlC: false,
+    useMouse: true,
     targetFps: 30,
   });
 }

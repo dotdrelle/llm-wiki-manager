@@ -1,6 +1,7 @@
 import { createMemo, createSignal, onCleanup } from 'solid-js';
 import { formatMcpToolResult, callMcpTool } from '../core/mcp.js';
 import { parseJsonText, rememberActivityFromPayload, sessionActivities } from '../core/activity.js';
+import { matchCompletedToPlan, formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
 import {
   completionContext,
   completionDescription,
@@ -9,6 +10,22 @@ import {
   promptFor,
 } from './repl.js';
 import { useAgent } from './useAgent';
+
+function buildContinuationPrompt(session: any, completed: any[]): string {
+  const originalTask = [...conversationMessages(session)]
+    .reverse()
+    .find((message: any) => message.role === 'user'
+      && !String(message.content ?? '').startsWith('Completed activities:')
+      && !String(message.content ?? '').startsWith('Original task:'))?.content;
+  return [
+    originalTask ? `Original task:\n${originalTask}\n` : null,
+    'Completed activities:',
+    formatCompletedActivities(completed) || '(none)',
+    session.headlessPlan ? `\nPlan status:\n${formatPlanStatus(session.headlessPlan)}` : null,
+    '\nContinue the plan. Start the next pending step only.',
+    'If all steps are complete, provide a final summary.',
+  ].filter(Boolean).join('\n');
+}
 
 export function useSession(props: { agent: unknown; packageJson: Record<string, unknown> }) {
   const session = createSession();
@@ -21,6 +38,8 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   const [selectedCompletion, setSelectedCompletion] = createSignal(0);
   const [conversationScroll, setConversationScroll] = createSignal(0);
   const pollBusy = new Set<string>();
+  const matchedActivityKeys = new Set<string>();
+  const lastActivityLines = new Map<string, string>();
 
   conversationMessages(session).push({
     role: 'dot',
@@ -33,6 +52,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   });
 
   const refresh = () => setVersion((value) => value + 1);
+  (session as any)._onPlanUpdate = refresh;
   const addLog = (line: string) => {
     setLogs((items) => [...items, `${new Date().toLocaleTimeString()} ${line}`].slice(-200));
   };
@@ -87,6 +107,11 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     version();
     return sessionActivities(session);
   });
+  const plan = createMemo(() => {
+    version();
+    const p = (session as any).headlessPlan as Array<{ step: number; description: string; status: string }> | null;
+    return p ? p.map((s) => ({ ...s })) : null;
+  });
 
   const activityPollTimer = setInterval(() => {
     for (const activity of sessionActivities(session)) {
@@ -108,6 +133,29 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
             tool: activity.poll.tool,
           })) {
             refresh();
+            const updated = sessionActivities(session).find((a) => a.key === key);
+            if (updated) {
+              const line = `${updated.label ?? key} -> ${updated.status}${updated.error ? ` (${updated.error})` : ''}`;
+              if (lastActivityLines.get(key) !== line) {
+                lastActivityLines.set(key, line);
+                addLog(`activity: ${line}`);
+              }
+            }
+            if (updated?.terminal && !matchedActivityKeys.has(key)) {
+              matchedActivityKeys.add(key);
+              const plan = (session as any).headlessPlan;
+              if (plan) {
+                matchCompletedToPlan(plan, [updated]);
+                (session as any)._onPlanUpdate?.();
+              }
+              const stillRunning = sessionActivities(session).filter((a) => !a.terminal && a.poll);
+              const pendingSteps = (plan ?? []).filter((s: any) => s.status === 'pending');
+              if (stillRunning.length === 0 && pendingSteps.length > 0 && !agent.busy()) {
+                const completedAll = sessionActivities(session).filter((a) => a.terminal);
+                const prompt = buildContinuationPrompt(session, completedAll);
+                void agent.submit(prompt);
+              }
+            }
           }
         })
         .catch((err) => {
@@ -195,6 +243,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     slash,
     mcpServers,
     activities,
+    plan,
     conversationScroll,
     scrollConversation,
     busy: agent.busy,

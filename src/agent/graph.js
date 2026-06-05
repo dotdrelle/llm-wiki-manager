@@ -51,6 +51,58 @@ const SHELL_RUN_COMMAND_TOOL = {
   },
 };
 
+const WIKI_PLAN_SET_TOOL = {
+  type: 'function',
+  function: {
+    name: 'wiki__plan_set',
+    description: [
+      'Declare the ordered list of steps you intend to execute for this multi-step task.',
+      'Call this once at the start, before executing any step.',
+      'The orchestrator will track progress and show step status on each re-invocation.',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        steps: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Ordered step descriptions, e.g. ["CME export", "Production ingest", "Build", "Polish", "Email report"].',
+        },
+      },
+      required: ['steps'],
+    },
+  },
+};
+
+const WIKI_PLAN_DONE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'wiki__plan_done',
+    description: [
+      'Mark a plan step as done or failed.',
+      'Use for steps that complete synchronously (no _activity polling needed).',
+      'For async MCP jobs, the orchestrator marks steps automatically via activity matching.',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        step: {
+          type: 'number',
+          description: 'Step number to update (1-based, matching the order declared in wiki__plan_set).',
+        },
+        status: {
+          type: 'string',
+          enum: ['done', 'failed'],
+          description: 'Step outcome. Defaults to "done".',
+        },
+      },
+      required: ['step'],
+    },
+  },
+};
+
 const AgentState = Annotation.Root({
   input: Annotation(),
   session: Annotation(),
@@ -63,6 +115,7 @@ const AgentState = Annotation.Root({
   pendingToolCalls: Annotation(),
   readyToStream: Annotation(),
   streamContext: Annotation(),
+  streamedInline: Annotation(),
 });
 
 function commandList(session) {
@@ -194,6 +247,29 @@ function rememberProductionProgress(session, payload, label) {
   };
 }
 
+function handleWikiTool(session, tool, args) {
+  if (tool === 'plan_set') {
+    const steps = Array.isArray(args.steps) ? args.steps : [];
+    session.headlessPlan = steps.map((description, i) => ({
+      step: i + 1,
+      description: String(description),
+      status: 'pending',
+    }));
+    session._onPlanUpdate?.();
+    return `Plan registered: ${steps.length} step${steps.length !== 1 ? 's' : ''}.`;
+  }
+  if (tool === 'plan_done') {
+    const plan = session.headlessPlan;
+    if (!plan) return 'No active plan. Call wiki__plan_set first.';
+    const step = plan.find((s) => s.step === Number(args.step));
+    if (!step) return `Step ${args.step} not found (plan has ${plan.length} steps).`;
+    step.status = args.status === 'failed' ? 'failed' : 'done';
+    session._onPlanUpdate?.();
+    return `Step ${args.step} marked as ${step.status}.`;
+  }
+  return `Unknown wiki tool: ${tool}`;
+}
+
 export function buildAgentSystemPrompt(state) {
   const workspace = state.session.workspace ?? 'no workspace selected';
   const wikirc = state.session.wikirc?.profile ?? 'no profile loaded';
@@ -219,7 +295,33 @@ export function buildAgentSystemPrompt(state) {
     'For CME configuration/setup/update requests, if a matching CME tool such as cme_setup is connected and the required arguments are known, call it immediately. If the CME server or tool is not connected, say which CME capability is missing and recommend the exact service/status primitive to inspect it. Do not invent a pending CME action in plain text.',
     'You can call shell__run_command for safe manager slash commands such as /workspaces, /new <name> [path], /use <workspace>, /config, /status, /services, /skills, /show-skill <name>, and /run-skill <name>.',
     'Skills are workflow instructions, not executable code. When a user asks to run a skill, inspect it, propose the concrete primitive/tool plan, and ask for confirmation before costly or mutating actions.',
-    state.session.headless ? 'Headless mode is active: execute the requested skill or task using available safe primitives and MCP tools, do not ask for interactive confirmation unless the request is ambiguous or outside the loaded workspace.' : null,
+    [
+      state.session.headless ? 'HEADLESS MODE ACTIVE. Execute the requested skill or task autonomously using available safe primitives and MCP tools. Do not ask for interactive confirmation unless the request is genuinely ambiguous or outside the loaded workspace.' : null,
+      '',
+      'You have two internal planning tools: wiki__plan_set and wiki__plan_done.',
+      'Call wiki__plan_set before starting ANY production action or MCP-driven task (build, ingest, export, polish, pipeline, CME export, email, etc.). Single-step jobs require a plan too — the plan is displayed in the shell right panel and communicated to agents.',
+      '',
+      'Task startup:',
+      '  1. Call wiki__plan_set(steps=["Step description", ...]) to declare your complete ordered plan.',
+      '     Single step: wiki__plan_set(steps=["Build EAE-REAS-architectures"])',
+      '     Multi-step:  wiki__plan_set(steps=["CME export", "Production pipeline (ingest, build, export, polish)", "Email report"])',
+      '  2. Immediately execute step 1 using the appropriate MCP tool. Do not start step 2 in the same turn.',
+      '  For synchronous steps (result is immediate, no _activity polling), call wiki__plan_done(step=1) after confirming success.',
+      '  For async MCP jobs (returns _activity with poll), the orchestrator tracks completion automatically.',
+      '',
+      state.session.headless ? [
+        'Headless follow-up turns — the orchestrator re-invokes you with:',
+        '  (a) the original task,',
+        '  (b) the current plan status — [✓] done / [✗] failed / [ ] pending,',
+        '  (c) the just-completed activities.',
+        '  Read the plan status. Find the first [ ] pending step. Execute it only.',
+        '  Never re-execute a [✓] or [✗] step. Never skip a [ ] step.',
+        '',
+        'Final turn — when all steps are [✓] or [✗]: respond with a concise summary. Do not start new actions.',
+      ].join('\n') : null,
+      '',
+      'On failure: if a completed activity is failed/error/cancelled, call wiki__plan_done(step=N, status="failed") then stop with a clear error report.',
+    ].filter(Boolean).join('\n'),
     'For service actions, recommend /services, /start, /stop or /logs with the exact service name.',
     'Disambiguate export requests carefully.',
     'Confluence/CME/source export means exporting external Confluence sources into raw/untracked: use cme MCP tools (`cme_export_run`, then `cme_export_status`). Never use production `type=export` for Confluence source export.',
@@ -292,7 +394,12 @@ export function createAgentGraph(options = {}) {
       state.session._onStep?.('Agent: planning next action…');
     }
 
-    const tools = [SHELL_RUN_COMMAND_TOOL, ...buildLlmTools(state.session.mcp)];
+    const tools = [
+      SHELL_RUN_COMMAND_TOOL,
+      WIKI_PLAN_SET_TOOL,
+      WIKI_PLAN_DONE_TOOL,
+      ...buildLlmTools(state.session.mcp),
+    ];
     const system = buildAgentSystemPrompt(state);
 
     // On iteration 0: prior history is in state.messages, user input must be appended.
@@ -303,14 +410,24 @@ export function createAgentGraph(options = {}) {
       : (state.messages ?? []);
 
     try {
-      const result = await llm.completeWithTools({
-        system,
-        tools,
-        messages: conversationMessages,
-        signal: state.session._abortSignal,
-      });
+      const useStreamWithTools = typeof llm.streamWithTools === 'function';
+      const result = useStreamWithTools
+        ? await llm.streamWithTools({
+            system,
+            tools,
+            messages: conversationMessages,
+            onTextDelta: (delta) => state.session._onStream?.(delta),
+            signal: state.session._abortSignal,
+          })
+        : await llm.completeWithTools({
+            system,
+            tools,
+            messages: conversationMessages,
+            signal: state.session._abortSignal,
+          });
 
       if (result.tool_calls?.length > 0) {
+        state.session._onStreamReset?.();
         state.session._onStep?.(`[${iterations + 1}/${MAX_TOOL_ITERATIONS}] ${result.tool_calls.length} MCP action${result.tool_calls.length > 1 ? 's' : ''} queued…`);
         // On iteration 0 persist the user message too so it survives the loop.
         const newMessages = iterations === 0
@@ -324,31 +441,34 @@ export function createAgentGraph(options = {}) {
         };
       }
 
-      if (iterations > 0) {
-        if (typeof llm.stream === 'function') {
-          state.session._onStep?.('Agent: streaming final answer…');
-          return {
-            response: null,
-            pendingToolCalls: null,
-            readyToStream: true,
-            streamContext: { system, messages: conversationMessages },
-          };
-        }
-
+      if (useStreamWithTools) {
+        // Text was streamed inline via session._onStream — no second LLM call needed.
+        const newMessages = iterations === 0
+          ? [{ role: 'user', content: state.input }, result.message]
+          : [result.message];
         return {
-          response: result.content ?? '',
+          response: null,
           pendingToolCalls: null,
           readyToStream: false,
+          streamedInline: true,
+          messages: newMessages,
         };
       }
 
-      // LLM chose text — hand off to runLine for streaming
+      // Fallback path (streamWithTools unavailable): hand off to runLine for streaming.
       state.session._onStep?.('Agent: streaming final answer…');
+      if (typeof llm.stream === 'function') {
+        return {
+          response: null,
+          pendingToolCalls: null,
+          readyToStream: true,
+          streamContext: { system, messages: conversationMessages },
+        };
+      }
       return {
-        response: null,
+        response: result.content ?? '',
         pendingToolCalls: null,
-        readyToStream: true,
-        streamContext: { system, messages: conversationMessages },
+        readyToStream: false,
       };
     } catch (err) {
       if (err.name === 'AbortError') throw err;
@@ -364,14 +484,17 @@ export function createAgentGraph(options = {}) {
     for (const call of toolCalls) {
       const { server, tool } = parseToolCallName(call.function.name);
       const argsSummary = summarizeToolArguments(call.function.arguments);
+      const serverLabel = server === 'shell' ? 'Shell' : server === 'wiki' ? 'Plan' : 'MCP';
       state.session._onStep?.(
-        `[${state.toolIterations}/${MAX_TOOL_ITERATIONS}] ${server === 'shell' ? 'Shell' : 'MCP'} ${server}.${tool}${argsSummary ? ` (${argsSummary})` : ''}`,
+        `[${state.toolIterations}/${MAX_TOOL_ITERATIONS}] ${serverLabel} ${server}.${tool}${argsSummary ? ` (${argsSummary})` : ''}`,
       );
       let resultText;
       try {
         const args = JSON.parse(call.function.arguments ?? '{}');
         if (server === 'shell' && tool === 'run_command') {
           resultText = await runShellCommandTool(state.session, args.command);
+        } else if (server === 'wiki') {
+          resultText = handleWikiTool(state.session, tool, args);
         } else {
           const result = await callMcpTool(state.session.mcp, server, tool, args, state.session._abortSignal);
           resultText = formatMcpToolResult(result);
@@ -383,7 +506,7 @@ export function createAgentGraph(options = {}) {
           if (!rememberActivityFromPayload(state.session, payload, { server, tool })) {
             rememberProductionProgress(state.session, payload, progressLabel);
           }
-        } else {
+        } else if (server !== 'wiki' && server !== 'shell') {
           const payload = parseJsonToolResult(resultText);
           rememberActivityFromPayload(state.session, payload, { server, tool });
           const activityLabel = formatActivitySummary(server, tool, resultText);

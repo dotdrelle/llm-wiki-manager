@@ -18,7 +18,7 @@ src/cli/wiki-manager.js     Node CLI entrypoint
 src/shell/repl.js           Pipe shell and legacy TUI (Node fallback)
 src/shell/tui.tsx           OpenTUI shell root (Bun only)
 src/shell/LeftPane.tsx      Conversation view + chat input
-src/shell/RightPane.tsx     MCP server list + log panel
+src/shell/RightPane.tsx     Activity panel + log panel
 src/shell/SlashDialog.tsx   Completion overlay
 src/shell/useSession.ts     Reactive session state (SolidJS signals)
 src/shell/useAgent.ts       runLine wrapper with busy/abort
@@ -59,8 +59,8 @@ two-pane layout:
 
 - **Left pane**: scrollable conversation thread + chat input at the bottom.
   Slash dialog (`/` completion overlay) opens above the input.
-- **Right pane**: MCP server list (● connected / ◐ configured / ○ missing)
-  and a live log/trace panel.
+- **Right pane**: active MCP jobs and a live log/trace panel. MCP connection
+  status remains available through `/mcp status`.
 
 The OpenTUI TUI requires Bun (`bun start` or `bun ./bin/wiki-manager.js`).
 
@@ -88,6 +88,16 @@ The LLM may use:
 
 - connected MCP tools;
 - the restricted internal `shell__run_command` tool.
+
+For actionable requests, the orchestrator must not answer with future intent
+only. If a connected MCP tool or safe primitive can perform the action, call it
+in the same turn. If required arguments are missing, ask for the exact missing
+values. If the tool/server is unavailable, name the concrete blocker.
+
+CME setup/configuration is synchronous. It should call `cme_status`/`cme_setup`
+directly when CME tools are connected and credentials are available. Do not rely
+on the Activity panel for setup calls; Activity only resumes long-running jobs
+that return `_activity`, such as CME exports or production jobs.
 
 `shell__run_command` is limited to safe manager slash commands:
 
@@ -207,10 +217,59 @@ wiki-manager --headless --workspace <workspace-name> --skill pipeline
 wiki-manager --headless --workspace <workspace-name> --prompt "check production status"
 ```
 
-Headless mode creates a normal session, calls `/use`, executes one skill or
-prompt through the orchestrator, writes a log file, and exits non-zero on
-failure.
+Headless mode creates a normal session, calls `/use`, and writes a log file.
+`--prompt` runs one agent turn unless `--wait` is passed. `--skill` uses the
+agentic loop by default: run one agent turn, wait for active MCP activities,
+then re-invoke the agent with a completed-activity summary so it can start the
+next required step.
+
+Headless controls:
+
+```bash
+wiki-manager --headless --workspace <workspace-name> --skill pipeline --timeout 3600 --max-turns 20
+wiki-manager --headless --workspace <workspace-name> --skill pipeline --no-wait
+wiki-manager --headless --workspace <workspace-name> --prompt "check production status" --wait
+```
+
+`--timeout` is per wave of active jobs, not a global run timeout. `--max-turns`
+limits LLM turns in the agentic loop. Exit non-zero on failed/cancelled
+activities, activity timeout, max-turn exhaustion, setup failure, or missing
+workspace/LLM config.
 
 Use `--log-file <path>` when tests need to assert log creation without touching
 a workspace. Headless mode should keep using the same safe primitives and MCP
 tooling as the interactive orchestrator.
+
+## MCP Activity Contract
+
+The manager must remain MCP-agnostic. Do not hard-code future job tracking
+around specific agents unless it is a temporary legacy adapter. Any MCP can opt
+into manager monitoring by returning additive `_activity` metadata alongside its
+native payload:
+
+```json
+{
+  "_activity": {
+    "id": "job-123",
+    "source": "production",
+    "kind": "pipeline",
+    "label": "Production pipeline",
+    "status": "running",
+    "progress": { "percent": 42, "step": "build" },
+    "poll": {
+      "server": "production",
+      "tool": "production_job_status",
+      "args": { "jobId": "job-123" },
+      "intervalMs": 2500
+    },
+    "startedAt": "2026-06-05T12:00:00Z",
+    "updatedAt": "2026-06-05T12:03:00Z",
+    "error": null,
+    "terminal": false
+  }
+}
+```
+
+Native response shapes must stay backwards compatible. `_activity` is additive.
+If `poll` is present, shell/TUI and headless mode may call that MCP tool until
+the activity becomes terminal.

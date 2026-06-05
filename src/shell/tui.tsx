@@ -14,7 +14,7 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
   const [exitHint, setExitHint] = createSignal(false);
   let ctrlCTimer: ReturnType<typeof setTimeout> | null = null;
   const state = useSession(props);
-  const conversationRows = createMemo(() => Math.max(4, dimensions().height - 7));
+  const conversationRows = createMemo(() => Math.max(4, dimensions().height - (exitHint() ? 8 : 7)));
   const rightColumns = createMemo(() => {
     const width = dimensions().width;
     return Math.max(26, Math.min(44, Math.floor(width * 0.32)));
@@ -78,7 +78,8 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
       <LeftPane
         width={leftColumns()}
         title={state.title()}
-        statusLine={exitHint() ? `${state.statusLine()}  · Ctrl+C again to exit` : state.statusLine()}
+        statusLine={state.statusLine()}
+        hintLine={exitHint() ? 'Press Ctrl+C again to exit.' : null}
         messages={state.messages()}
         prompt={state.prompt()}
         input={state.input()}
@@ -96,7 +97,7 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
           <text fg="#4B5563">│</text>
         ))}
       </box>
-      <RightPane width={rightColumns()} servers={state.mcpServers()} logs={state.logs()} />
+      <RightPane width={rightColumns()} activities={state.activities()} logs={state.logs()} />
       <SlashDialog context={state.slash()} />
     </box>
   );

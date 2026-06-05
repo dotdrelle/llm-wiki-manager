@@ -1,4 +1,6 @@
-import { createMemo, createSignal } from 'solid-js';
+import { createMemo, createSignal, onCleanup } from 'solid-js';
+import { formatMcpToolResult, callMcpTool } from '../core/mcp.js';
+import { parseJsonText, rememberActivityFromPayload, sessionActivities } from '../core/activity.js';
 import {
   completionContext,
   completionDescription,
@@ -18,6 +20,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   const [historyIndex, setHistoryIndex] = createSignal<number | null>(null);
   const [selectedCompletion, setSelectedCompletion] = createSignal(0);
   const [conversationScroll, setConversationScroll] = createSignal(0);
+  const pollBusy = new Set<string>();
 
   conversationMessages(session).push({
     role: 'dot',
@@ -80,6 +83,42 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
       detail: value?.detail ?? '',
     }));
   });
+  const activities = createMemo(() => {
+    version();
+    return sessionActivities(session);
+  });
+
+  const activityPollTimer = setInterval(() => {
+    for (const activity of sessionActivities(session)) {
+      if (activity.terminal || !activity.poll) continue;
+      const key = activity.key ?? `${activity.poll.server}:${activity.id ?? activity.label}`;
+      if (pollBusy.has(key)) continue;
+      const endpoint = (session.mcp as any)?.[activity.poll.server];
+      if (!endpoint || endpoint.status !== 'connected') continue;
+      const intervalMs = activity.poll.intervalMs ?? 2500;
+      const lastPolledAt = Date.parse((activity as any).lastPolledAt ?? '0');
+      if (Date.now() - lastPolledAt < intervalMs) continue;
+      pollBusy.add(key);
+      (activity as any).lastPolledAt = new Date().toISOString();
+      void callMcpTool(session.mcp, activity.poll.server, activity.poll.tool, activity.poll.args ?? {})
+        .then((result) => {
+          const payload = parseJsonText(formatMcpToolResult(result));
+          if (rememberActivityFromPayload(session, payload, {
+            server: activity.poll.server,
+            tool: activity.poll.tool,
+          })) {
+            refresh();
+          }
+        })
+        .catch((err) => {
+          addLog(`activity poll error: ${err instanceof Error ? err.message : String(err)}`);
+        })
+        .finally(() => {
+          pollBusy.delete(key);
+        });
+    }
+  }, 1000);
+  onCleanup(() => clearInterval(activityPollTimer));
 
   async function submitInput(submittedValue?: string) {
     const line = typeof submittedValue === 'string' && submittedValue.trim() ? submittedValue : input();
@@ -155,6 +194,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     prompt,
     slash,
     mcpServers,
+    activities,
     conversationScroll,
     scrollConversation,
     busy: agent.busy,

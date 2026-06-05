@@ -6,10 +6,191 @@ export function parseJsonText(text) {
   }
 }
 
+function basename(value) {
+  return String(value ?? '').split('/').filter(Boolean).pop() ?? '';
+}
+
+function terminalStatus(status) {
+  return ['done', 'failed', 'cancelled', 'canceled', 'complete', 'completed', 'success', 'error'].includes(String(status ?? '').toLowerCase());
+}
+
+function activityKey(activity) {
+  const id = activity?.id ?? activity?.jobId ?? activity?.job_id;
+  const source = activity?.source ?? activity?.agent ?? activity?.poll?.server ?? 'mcp';
+  return `${source}:${id ?? activity?.kind ?? activity?.label ?? 'activity'}`;
+}
+
+function normalizePoll(poll) {
+  if (!poll || typeof poll !== 'object') return null;
+  const server = poll.server ?? poll.source ?? poll.agent;
+  const tool = poll.tool ?? poll.name;
+  if (!server || !tool) return null;
+  return {
+    server: String(server),
+    tool: String(tool),
+    args: poll.args && typeof poll.args === 'object' ? poll.args : {},
+    intervalMs: Number.isFinite(Number(poll.intervalMs)) ? Math.max(1000, Number(poll.intervalMs)) : 2500,
+  };
+}
+
+export function normalizeActivity(activity, fallback = {}) {
+  if (!activity || typeof activity !== 'object') return null;
+  const id = activity.id ?? activity.jobId ?? activity.job_id ?? fallback.id ?? fallback.jobId ?? null;
+  const source = activity.source ?? activity.agent ?? fallback.source ?? activity.poll?.server ?? 'mcp';
+  const kind = activity.kind ?? activity.type ?? fallback.kind ?? 'job';
+  const status = activity.status ?? activity.state ?? fallback.status ?? 'running';
+  const progress = activity.progress && typeof activity.progress === 'object' ? activity.progress : {};
+  const step = progress.step ?? progress.currentStep ?? activity.step ?? activity.currentStep ?? null;
+  const percent = Number.isFinite(Number(progress.percent ?? activity.percent))
+    ? Number(progress.percent ?? activity.percent)
+    : null;
+  const label = activity.label ?? [
+    source,
+    kind,
+    step,
+  ].filter(Boolean).join(' ');
+  const normalized = {
+    key: null,
+    id,
+    source: String(source),
+    kind: String(kind),
+    label: String(label || `${source} ${kind}`),
+    status: String(status),
+    progress: {
+      ...progress,
+      ...(step ? { step: String(step) } : {}),
+      ...(percent !== null ? { percent } : {}),
+    },
+    poll: normalizePoll(activity.poll ?? fallback.poll),
+    startedAt: activity.startedAt ?? fallback.startedAt ?? null,
+    updatedAt: activity.updatedAt ?? new Date().toISOString(),
+    error: activity.error ?? null,
+    terminal: Boolean(activity.terminal ?? terminalStatus(status)),
+  };
+  normalized.key = activityKey(normalized);
+  return normalized;
+}
+
+function productionActivityFromPayload(payload) {
+  const progress = payload?.progress;
+  const job = payload?.job;
+  const jobId = payload?.jobId ?? job?.jobId;
+  if (!progress && !job && !jobId) return null;
+  const status = job?.status ?? payload?.status ?? progress?.status ?? 'running';
+  const percent = Number.isFinite(Number(progress?.percent)) ? Number(progress.percent) : null;
+  const sourceCount = Number(progress?.sourceCount);
+  const sourceIndex = Number(progress?.sourceIndex);
+  const sourceDoneCount = Number(progress?.sourceDoneCount);
+  const fileProgress = Number.isFinite(sourceCount) && sourceCount > 0
+    ? Number.isFinite(sourceIndex)
+      ? `file ${Math.min(sourceCount, sourceIndex + 1)}/${sourceCount}`
+      : Number.isFinite(sourceDoneCount)
+        ? `files ${Math.min(sourceCount, sourceDoneCount)}/${sourceCount}`
+        : null
+    : null;
+  const batchProgress = progress?.batchCount
+    ? `batch ${Number(progress.batchIndex ?? 0) + 1}/${progress.batchCount}`
+    : null;
+  const progressDetail = batchProgress && /^batch\s+\d+\/\d+/i.test(String(progress?.detail ?? ''))
+    ? null
+    : progress?.detail;
+  const step = progress?.currentStep ?? job?.type ?? 'production';
+  const detail = [
+    step,
+    status,
+    percent !== null ? `${Math.round(percent)}%` : null,
+    fileProgress,
+    batchProgress,
+    progress?.source ? basename(progress.source) : null,
+    progress?.template ? basename(progress.template) : null,
+    progress?.deliverable ? basename(progress.deliverable) : null,
+    progressDetail,
+    progress?.lastEvent ? `last ${progress.lastEvent}` : null,
+  ].filter(Boolean).join(' · ');
+  return normalizeActivity({
+    id: jobId,
+    source: 'production',
+    kind: job?.type ?? payload?.type ?? progress?.currentStep ?? 'job',
+    label: detail ? `Production: ${detail}` : `Production: ${status}`,
+    status,
+    progress: {
+      ...(progress ?? {}),
+      ...(percent !== null ? { percent } : {}),
+      step,
+    },
+    poll: jobId ? {
+      server: 'production',
+      tool: 'production_job_status',
+      args: { jobId },
+      intervalMs: 2500,
+    } : null,
+    error: job?.error ?? payload?.error ?? null,
+  });
+}
+
+export function extractActivity(payload, context = {}) {
+  if (!payload || typeof payload !== 'object') return null;
+  if (payload._activity) {
+    return normalizeActivity(payload._activity, { source: context.server });
+  }
+  if (context.server === 'production') {
+    return productionActivityFromPayload(payload);
+  }
+  return null;
+}
+
+export function rememberActivity(session, activity) {
+  const normalized = normalizeActivity(activity);
+  if (!normalized) return false;
+  session.activities ??= {};
+  session.activities[normalized.key] = {
+    ...(session.activities[normalized.key] ?? {}),
+    ...normalized,
+  };
+  if (normalized.source === 'production') {
+    session.productionActivity = {
+      jobId: normalized.id,
+      status: normalized.status,
+      label: normalized.label,
+      terminal: normalized.terminal,
+      updatedAt: normalized.updatedAt,
+    };
+  }
+  return true;
+}
+
+export function rememberActivityFromPayload(session, payload, context = {}) {
+  const activity = extractActivity(payload, context);
+  return rememberActivity(session, activity);
+}
+
+export function sessionActivities(session) {
+  return Object.values(session.activities ?? {})
+    .sort((a, b) => String(a.updatedAt ?? '').localeCompare(String(b.updatedAt ?? '')));
+}
+
+export function formatActivityLine(activity) {
+  if (!activity) return '';
+  const percent = Number.isFinite(Number(activity.progress?.percent))
+    ? `${Math.round(Number(activity.progress.percent))}%`
+    : null;
+  const step = activity.progress?.step ?? activity.progress?.currentStep ?? null;
+  const parts = [
+    activity.label,
+    activity.status,
+    step && !String(activity.label).includes(String(step)) ? step : null,
+    percent && !String(activity.label).includes(percent) ? percent : null,
+    activity.error ? `error ${activity.error}` : null,
+  ].filter(Boolean);
+  return parts.join(' · ');
+}
+
 export function formatActivitySummary(source, action, resultText) {
   const text = String(resultText ?? '').trim();
   if (!text) return null;
   const payload = parseJsonText(text);
+  const activity = extractActivity(payload, { server: source, tool: action });
+  if (activity) return formatActivityLine(activity);
   const jobId = payload?.jobId ?? payload?.job_id ?? payload?.job?.jobId ?? payload?.job?.job_id;
   const status = payload?.status ?? payload?.job?.status ?? payload?.progress?.status;
   const detail = payload?.message ?? payload?.detail ?? payload?.progress?.detail;

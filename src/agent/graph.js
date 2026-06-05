@@ -8,9 +8,9 @@ import {
 } from '../core/mcp.js';
 import { formatSkillsForAgent } from '../core/skills.js';
 import { handleSlashCommand } from '../commands/slash.js';
-import { formatActivitySummary } from '../core/activity.js';
+import { formatActivitySummary, rememberActivityFromPayload } from '../core/activity.js';
 
-const MAX_TOOL_ITERATIONS = 25;
+const MAX_TOOL_ITERATIONS = 80;
 const MAX_SPINNER_ARG_LENGTH = 96;
 const AGENT_SLASH_COMMANDS = new Set([
   'help',
@@ -215,6 +215,8 @@ export function buildAgentSystemPrompt(state) {
     'Available skills:',
     skills,
     'You can call MCP tools directly using the provided tool functions.',
+    'When the user asks for an action that can be performed with connected MCP tools or safe primitives, do not answer with future intent such as "I will call...", "I am going to run...", or "launching..." unless you also call the tool in the same turn. Either call the tool now, ask for the exact missing required arguments, or explain the concrete blocker.',
+    'For CME configuration/setup/update requests, if a matching CME tool such as cme_setup is connected and the required arguments are known, call it immediately. If the CME server or tool is not connected, say which CME capability is missing and recommend the exact service/status primitive to inspect it. Do not invent a pending CME action in plain text.',
     'You can call shell__run_command for safe manager slash commands such as /workspaces, /new <name> [path], /use <workspace>, /config, /status, /services, /skills, /show-skill <name>, and /run-skill <name>.',
     'Skills are workflow instructions, not executable code. When a user asks to run a skill, inspect it, propose the concrete primitive/tool plan, and ask for confirmation before costly or mutating actions.',
     state.session.headless ? 'Headless mode is active: execute the requested skill or task using available safe primitives and MCP tools, do not ask for interactive confirmation unless the request is ambiguous or outside the loaded workspace.' : null,
@@ -223,6 +225,7 @@ export function buildAgentSystemPrompt(state) {
     'Confluence/CME/source export means exporting external Confluence sources into raw/untracked: use cme MCP tools (`cme_export_run`, then `cme_export_status`). Never use production `type=export` for Confluence source export.',
     'Wiki/deliverable/publication export means exporting generated deliverables from the wiki: use production MCP tools (`production_start_job` with `type:"export"` or pipeline steps). Require the deliverable path when exporting deliverables.',
     'For ingest/build/export/polish/pipeline workflows, use production MCP tools. Do not route these through direct /wiki shortcuts. To chain multiple sequential steps (e.g. build then polish), always use a single production_start_job call with type="pipeline" and steps=["build","polish"] — never start them as separate jobs: the first job is asynchronous and the second would run before it completes. Do not ask the user to confirm between steps; start the pipeline call directly.',
+    'Long-running MCP jobs: do not call the same status tool more than once consecutively. When chaining jobs sequentially: (1) start the job, report job/activity id and status; (2) check status once — if done, proceed to the next step immediately; (3) if still running, report status, list the remaining steps, and return control; (4) when re-invoked, check status first, then proceed. Do not spin-poll (status → status → status with no new action between). The shell activity panel monitors non-terminal jobs automatically.',
     'For diagnostics, use /wiki run doctor when the user asks for doctor. Use /new <name> [path] to create/configure a new workspace. Use /wiki for index, or /wiki run index through the explicit backup hatch. Use /wiki run init only for explicit current-workspace llm-wiki init.',
     'If an action requires tools or skills not available yet, explain the limitation and name the expected primitive.',
   ].join('\n');
@@ -377,8 +380,12 @@ export function createAgentGraph(options = {}) {
           const payload = parseJsonToolResult(resultText);
           const progressLabel = formatProductionProgress(payload);
           if (progressLabel) state.session._onStep?.(progressLabel);
-          rememberProductionProgress(state.session, payload, progressLabel);
+          if (!rememberActivityFromPayload(state.session, payload, { server, tool })) {
+            rememberProductionProgress(state.session, payload, progressLabel);
+          }
         } else {
+          const payload = parseJsonToolResult(resultText);
+          rememberActivityFromPayload(state.session, payload, { server, tool });
           const activityLabel = formatActivitySummary(server, tool, resultText);
           if (activityLabel) state.session._onStep?.(activityLabel);
         }

@@ -197,6 +197,7 @@ export function LeftPane(props: {
   width: number;
   title: string;
   statusLine: string;
+  hintLine?: string | null;
   messages: Array<{ role: string; content: string }>;
   prompt: string;
   input: string;
@@ -224,6 +225,11 @@ export function LeftPane(props: {
         spinnerFrame={props.spinnerFrame}
       />
       <ChatInput prompt={props.prompt} value={props.input} busy={props.busy} onInput={props.setInput} onSubmit={props.submit} />
+      {props.hintLine ? (
+        <text width={Math.max(8, props.width - 2)} fg="#FBBF24">
+          {props.hintLine}
+        </text>
+      ) : null}
     </box>
   );
 }

@@ -300,9 +300,13 @@ Options:
   --once <prompt>      Run one agent turn and exit
   --headless           Run a workspace task non-interactively
   --workspace <name>   Workspace for --headless
-  --skill <name>       Skill to run in --headless
+  --skill <name>       Skill to run in --headless (implies --wait)
   --prompt <text>      Task or extra instruction for --headless
   --log-file <path>    Optional headless log path
+  --wait               Wait for active jobs to complete after agent turn (--prompt only)
+  --no-wait            Disable agentic loop for --skill (single turn)
+  --timeout <seconds>  Per-wave job wait timeout in seconds (default: 3600)
+  --max-turns <n>      Max agent turns in agentic loop (default: 20)
 
 Interactive shell:
 ${helpPair('/help', 'Help', '/version', 'Version')}
@@ -554,7 +558,10 @@ export async function handleSlashCommand(line, context) {
       if (!subcommand) {
         try {
           step('Wiki: running index…');
-          const output = await runWikiCli(context.session, ['index'], { timeout: 600_000 });
+          const output = await runWikiCli(context.session, ['index'], {
+            timeout: 600_000,
+            onOutput: (line) => step(`Wiki: ${line}`),
+          });
           const activity = formatActivitySummary('wiki', 'index', output);
           if (activity) step(activity);
           return { output };
@@ -569,7 +576,9 @@ export async function handleSlashCommand(line, context) {
           const wikiArgs = args.slice(2);
           if (wikiArgs.length === 0) return { output: 'Usage: /wiki run <args...>' };
           step(`Wiki: running ${wikiArgs.join(' ')}…`);
-          const output = await runWikiCli(context.session, wikiArgs);
+          const output = await runWikiCli(context.session, wikiArgs, {
+            onOutput: (line) => step(`Wiki: ${line}`),
+          });
           const activity = formatActivitySummary('wiki', wikiArgs[0] ?? 'run', output);
           if (activity) step(activity);
           return { output };

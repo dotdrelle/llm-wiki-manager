@@ -24,29 +24,54 @@ function fit(value: string, width: number) {
   return value.slice(0, max - 1) + '…';
 }
 
-function statusGlyph(status: string) {
-  if (status === 'connected') return '●';
-  if (status === 'configured') return '◐';
-  return '○';
+function activityColor(status: string) {
+  const value = String(status ?? '').toLowerCase();
+  if (['done', 'complete', 'completed', 'success'].includes(value)) return '#8BD5CA';
+  if (['failed', 'error', 'cancelled', 'canceled'].includes(value)) return '#F38BA8';
+  if (['running', 'queued', 'starting', 'cancelling'].includes(value)) return '#89B4FA';
+  return '#AAB7C4';
 }
 
-function statusColor(status: string) {
-  if (status === 'connected') return '#8BD5CA';
-  if (status === 'configured') return '#9CA3AF';
-  return '#7F8C8D';
+function activityLine(activity: any) {
+  const percent = Number.isFinite(Number(activity?.progress?.percent))
+    ? `${Math.round(Number(activity.progress.percent))}%`
+    : null;
+  const step = activity?.progress?.step ?? activity?.progress?.currentStep ?? null;
+  return [
+    activity?.status ?? 'unknown',
+    step,
+    percent,
+  ].filter(Boolean).join(' · ');
 }
 
-export function McpPanel(props: { servers: Array<{ name: string; status: string; detail?: string }>; width: number }) {
+function updatedLine(activity: any) {
+  const source = activity?.source ?? 'mcp';
+  const id = activity?.id ? `#${activity.id}` : null;
+  if (!activity?.updatedAt) return [source, id].filter(Boolean).join(' ');
+  const age = Math.max(0, Math.round((Date.now() - Date.parse(activity.updatedAt)) / 1000));
+  return [source, id, `${age}s ago`].filter(Boolean).join(' · ');
+}
+
+export function ActivityPanel(props: { activities: any[]; width: number }) {
   const lineWidth = () => Math.max(8, props.width - 2);
+  const visible = () => props.activities.slice(-6).reverse();
   return (
     <box flexShrink={0} flexDirection="column" padding={1}>
-      <text width={lineWidth()} fg="#D6DEE8">MCP Servers</text>
-      <Show when={props.servers.length > 0} fallback={<text width={lineWidth()} fg="#7F8C8D">○ no workspace</text>}>
-        <For each={props.servers}>
-          {(server) => (
-            <text width={lineWidth()} fg={statusColor(server.status)}>
-              {fit(`${statusGlyph(server.status)} ${server.name} ${server.detail ?? ''}`, lineWidth())}
-            </text>
+      <text width={lineWidth()} fg="#D6DEE8">Activity</text>
+      <Show when={visible().length > 0} fallback={<text width={lineWidth()} fg="#7F8C8D">no active jobs</text>}>
+        <For each={visible()}>
+          {(activity) => (
+            <box flexDirection="column" marginTop={1}>
+              <text width={lineWidth()} fg={activityColor(activity.status)}>
+                {fit(activity.label ?? `${activity.source ?? 'mcp'} ${activity.kind ?? 'job'}`, lineWidth())}
+              </text>
+              <text width={lineWidth()} fg="#AAB7C4">
+                {fit(activityLine(activity), lineWidth())}
+              </text>
+              <text width={lineWidth()} fg="#7F8C8D">
+                {fit(updatedLine(activity), lineWidth())}
+              </text>
+            </box>
           )}
         </For>
       </Show>
@@ -69,10 +94,10 @@ export function LogPanel(props: { logs: string[]; width: number }) {
   );
 }
 
-export function RightPane(props: { width: number; servers: Array<{ name: string; status: string; detail?: string }>; logs: string[] }) {
+export function RightPane(props: { width: number; activities: any[]; logs: string[] }) {
   return (
     <box width={props.width} height="100%" flexDirection="column" gap={1} padding={1} overflow="hidden">
-      <McpPanel width={props.width} servers={props.servers} />
+      <ActivityPanel width={props.width} activities={props.activities} />
       <LogPanel width={props.width} logs={props.logs} />
     </box>
   );

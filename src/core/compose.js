@@ -1,8 +1,9 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import YAML from 'yaml';
+import { readEnvFile } from './env.js';
 import { managerRoot } from './workspaces.js';
 
 const execFileAsync = promisify(execFile);
@@ -27,6 +28,15 @@ function requireWorkspace(session) {
 
 function composeFile() {
   return join(managerRoot(), 'docker-compose.yml');
+}
+
+function managerEnvFile() {
+  return join(managerRoot(), '.env');
+}
+
+function readManagerEnv() {
+  const envPath = managerEnvFile();
+  return existsSync(envPath) ? readEnvFile(envPath) : {};
 }
 
 function readComposeConfig() {
@@ -89,6 +99,10 @@ function projectName(session) {
 
 function composeBaseArgs(session) {
   const args = ['compose', '-f', composeFile(), '-p', projectName(session)];
+  const managerEnvPath = managerEnvFile();
+  if (existsSync(managerEnvPath)) {
+    args.push('--env-file', managerEnvPath);
+  }
   if (session.workspaceEnvFile && existsSync(session.workspaceEnvFile)) {
     args.push('--env-file', session.workspaceEnvFile);
   }
@@ -98,6 +112,7 @@ function composeBaseArgs(session) {
 function composeEnv(session) {
   return {
     ...process.env,
+    ...readManagerEnv(),
     ...(session.workspaceEnv ?? {}),
     WORKSPACE_NAME: session.workspace,
     WIKI_WORKSPACE_PATH: session.workspacePath,
@@ -106,6 +121,9 @@ function composeEnv(session) {
 
 export async function runCompose(session, args, options = {}) {
   requireWorkspace(session);
+  if (typeof options.onOutput === 'function') {
+    return runComposeStreaming(session, args, options);
+  }
   const { stdout, stderr } = await execFileAsync(
     'docker',
     [...composeBaseArgs(session), ...args],
@@ -117,6 +135,83 @@ export async function runCompose(session, args, options = {}) {
     },
   );
   return [stdout, stderr].filter(Boolean).join('\n').trim();
+}
+
+function emitLines(buffer, chunk, onLine) {
+  const text = buffer + chunk;
+  const lines = text.split(/\r?\n/);
+  const rest = lines.pop() ?? '';
+  for (const line of lines) {
+    if (line.trim()) onLine(line);
+  }
+  return rest;
+}
+
+async function runComposeStreaming(session, args, options = {}) {
+  const composeArgs = [...composeBaseArgs(session), ...args];
+  const chunks = [];
+  const timeout = options.timeout ?? 120_000;
+  const maxBuffer = options.maxBuffer ?? 1024 * 1024 * 4;
+  return new Promise((resolve, reject) => {
+    const child = spawn('docker', composeArgs, {
+      cwd: managerRoot(),
+      env: composeEnv(session),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
+    let settled = false;
+    let outputSize = 0;
+    const timer = setTimeout(() => {
+      settled = true;
+      child.kill('SIGTERM');
+      reject(new Error(`Command timed out after ${timeout}ms: docker ${composeArgs.join(' ')}`));
+    }, timeout);
+
+    const collect = (source) => (chunk) => {
+      const text = chunk.toString();
+      chunks.push(text);
+      outputSize += text.length;
+      if (outputSize > maxBuffer) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        child.kill('SIGTERM');
+        reject(new Error(`Command output exceeded maxBuffer: docker ${composeArgs.join(' ')}`));
+        return;
+      }
+      if (source === 'stderr') {
+        stderrBuffer = emitLines(stderrBuffer, text, options.onOutput);
+      } else {
+        stdoutBuffer = emitLines(stdoutBuffer, text, options.onOutput);
+      }
+    };
+
+    child.stdout.on('data', collect('stdout'));
+    child.stderr.on('data', collect('stderr'));
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      for (const line of [stdoutBuffer, stderrBuffer]) {
+        if (line.trim()) options.onOutput(line);
+      }
+      const output = chunks.join('').trim();
+      if (code === 0) {
+        resolve(output);
+      } else {
+        const err = new Error(`Command failed: docker ${composeArgs.join(' ')}\n${output}`);
+        err.code = code;
+        reject(err);
+      }
+    });
+  });
 }
 
 export async function listServices(session) {
@@ -214,5 +309,6 @@ export async function runWikiCli(session, args, options = {}) {
   return runCompose(session, ['run', '--rm', 'wiki', ...args], {
     timeout: options.timeout ?? 180_000,
     maxBuffer: options.maxBuffer ?? 1024 * 1024 * 8,
+    onOutput: options.onOutput,
   });
 }

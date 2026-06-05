@@ -133,7 +133,8 @@ The TUI uses a two-pane layout:
 - **Left** — scrollable conversation thread with a chat input at the bottom.
   Typing `/` opens a slash-command completion overlay just above the input.
   PageUp/PageDown and mouse scroll move through the conversation.
-- **Right** — connected MCP servers (● / ◐ / ○) and a live log/trace panel.
+- **Right** — active MCP jobs plus a live log/trace panel. MCP connection
+  details remain available through `/mcp status`.
 
 Useful primitives:
 
@@ -197,6 +198,17 @@ conversation for the current shell process.
 
 The LLM can call MCP tools directly when they are connected.
 
+For actionable requests, the orchestrator should not answer with future intent
+only. If a connected MCP tool or safe primitive can perform the action, the
+agent must call it in the same turn. If required arguments are missing, it must
+ask for those exact values. If the tool/server is unavailable, it must name the
+concrete blocker instead of claiming that a pending action has been launched.
+
+CME setup/configuration is a synchronous MCP action, not a monitored background
+activity. The agent should call `cme_status`/`cme_setup` directly when the CME
+tools are connected and the required credentials are known. The Activity panel
+tracks long-running CME export jobs, not setup calls.
+
 It can also call an internal restricted tool:
 
 ```text
@@ -241,13 +253,60 @@ node ./bin/wiki-manager.js --headless --workspace my-project --skill pipeline
 node ./bin/wiki-manager.js --headless --workspace my-project --prompt "check production status"
 ```
 
-Headless mode creates a normal session, runs `/use`, executes one skill or
-prompt through the orchestrator, writes a log under `.wiki/logs/` by default,
-and exits non-zero on failure.
+Headless mode creates a normal session, runs `/use`, and writes a log under
+`.wiki/logs/` by default. `--prompt` runs one agent turn unless `--wait` is
+passed. `--skill` uses the agentic loop by default: agent turn, wait for active
+MCP jobs declared through `_activity.poll`, then re-invoke the agent with the
+completed job summary so it can start the next required step.
+
+Useful headless controls:
+
+```bash
+node ./bin/wiki-manager.js --headless --workspace my-project --skill pipeline --timeout 3600 --max-turns 20
+node ./bin/wiki-manager.js --headless --workspace my-project --skill pipeline --no-wait
+node ./bin/wiki-manager.js --headless --workspace my-project --prompt "check production status" --wait
+```
+
+`--timeout` applies per wave of active jobs, not to the whole run. `--max-turns`
+limits the number of LLM turns in a skill run. The process exits non-zero on
+failed/cancelled activities, activity timeout, max-turn exhaustion, or setup
+failure.
 
 Use `--log-file <path>` to choose a specific log path. When a workspace has
 loaded successfully, failures are still written to the headless log before the
 process exits non-zero.
+
+## MCP Activity Contract
+
+The manager is MCP-agnostic for job tracking. Any MCP response can opt into
+automatic shell/headless monitoring by including `_activity`:
+
+```json
+{
+  "_activity": {
+    "id": "job-123",
+    "source": "production",
+    "kind": "pipeline",
+    "label": "Production pipeline",
+    "status": "running",
+    "progress": { "percent": 42, "step": "build" },
+    "poll": {
+      "server": "production",
+      "tool": "production_job_status",
+      "args": { "jobId": "job-123" },
+      "intervalMs": 2500
+    },
+    "startedAt": "2026-06-05T12:00:00Z",
+    "updatedAt": "2026-06-05T12:03:00Z",
+    "error": null,
+    "terminal": false
+  }
+}
+```
+
+The existing native payload should stay intact. `_activity` is additive metadata
+for the manager. When `poll` is present, the shell/TUI and headless loop call the
+declared MCP tool until the activity becomes terminal.
 
 ## Local Compose Overrides
 

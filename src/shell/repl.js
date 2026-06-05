@@ -7,6 +7,7 @@ import { markedTerminal } from 'marked-terminal';
 import { buildAgentSystemPrompt, buildLimitedAgentResponse } from '../agent/graph.js';
 import { handleSlashCommand } from '../commands/slash.js';
 import { serviceDescription, serviceNames as composeServiceNames } from '../core/compose.js';
+import { rememberActivityFromPayload, sessionActivities } from '../core/activity.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { listSkills } from '../core/skills.js';
 import { listWikircProfiles } from '../core/wikirc.js';
@@ -93,6 +94,7 @@ export function createSession() {
     mcp: null,
     commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'show-skill', 'run-skill', 'clear', 'chat'],
     llm: null,
+    activities: {},
     productionActivity: null,
     conversations: { [GLOBAL_CONVERSATION_KEY]: [] },
   };
@@ -675,12 +677,11 @@ function rememberProductionActivity(session, payload) {
 }
 
 function activityText(session) {
-  const activity = session.productionActivity;
+  const activity = sessionActivities(session).find((item) => !item.terminal)
+    ?? (session.productionActivity?.label ? session.productionActivity : null);
   if (!activity?.label) return '';
   const color = activity.terminal
-    ? activity.status === 'done'
-      ? styles.green
-      : styles.red
+    ? (activity.status === 'done' || activity.status === 'success') ? styles.green : styles.red
     : styles.cyan;
   return `${color}${truncateAnsi(activity.label, 72)}${styles.reset}`;
 }
@@ -917,8 +918,11 @@ export async function runLine(line, { agent, packageJson, session, onUpdate, onS
     const messages = conversationMessages(session);
     if (result.output) {
       const parts = trimmed.split(/\s+/);
-      if (parts[0] === '/mcp' && parts[1] === 'call' && parts[2] === 'production') {
-        rememberProductionActivity(session, parseJsonText(result.output));
+      if (parts[0] === '/mcp' && parts[1] === 'call' && parts[2]) {
+        const payload = parseJsonText(result.output);
+        if (!rememberActivityFromPayload(session, payload, { server: parts[2], tool: parts[3] })) {
+          rememberProductionActivity(session, payload);
+        }
       }
       messages.push({ role: 'command', content: result.output });
       onUpdate?.();
@@ -1023,22 +1027,42 @@ async function runTuiShell({ agent, packageJson, session }) {
     rerender();
   }
 
-  let productionPollBusy = false;
+  const pollBusy = new Set();
   const productionPollInterval = setInterval(async () => {
-    const activity = session.productionActivity;
-    const jobId = activity?.jobId;
-    if (!jobId || activity?.terminal || productionPollBusy || session.mcp?.production?.status !== 'connected') return;
-    productionPollBusy = true;
-    try {
-      const result = await callMcpTool(session.mcp, 'production', 'production_job_status', { jobId });
-      const payload = parseJsonText(formatMcpToolResult(result));
-      if (rememberProductionActivity(session, payload)) rerender();
-    } catch {
-      // Keep the last known status visible; transient MCP errors should not interrupt typing.
-    } finally {
-      productionPollBusy = false;
+    const candidates = sessionActivities(session).filter((item) => item.poll && !item.terminal);
+    // Legacy fallback: if no generic activities tracked yet, fall back to productionActivity.
+    if (candidates.length === 0 && session.productionActivity?.jobId && !session.productionActivity.terminal) {
+      candidates.push({
+        key: `production:${session.productionActivity.jobId}`,
+        poll: { server: 'production', tool: 'production_job_status', args: { jobId: session.productionActivity.jobId }, intervalMs: 2500 },
+        terminal: false,
+        lastPolledAt: null,
+      });
     }
-  }, 2500);
+    for (const activity of candidates) {
+      const key = activity.key ?? `${activity.poll.server}:${activity.id ?? 'activity'}`;
+      if (pollBusy.has(key)) continue;
+      const endpoint = session.mcp?.[activity.poll.server];
+      if (!endpoint || endpoint.status !== 'connected') continue;
+      const intervalMs = activity.poll.intervalMs ?? 2500;
+      const lastPolledAt = Date.parse(activity.lastPolledAt ?? '0');
+      if (Date.now() - lastPolledAt < intervalMs) continue;
+      pollBusy.add(key);
+      activity.lastPolledAt = new Date().toISOString();
+      void callMcpTool(session.mcp, activity.poll.server, activity.poll.tool, activity.poll.args ?? {})
+        .then((result) => {
+          const payload = parseJsonText(formatMcpToolResult(result));
+          if (rememberActivityFromPayload(session, payload, { server: activity.poll.server, tool: activity.poll.tool })
+            || rememberProductionActivity(session, payload)) rerender();
+        })
+        .catch(() => {
+          // Keep the last known status visible; transient MCP errors should not interrupt typing.
+        })
+        .finally(() => {
+          pollBusy.delete(key);
+        });
+    }
+  }, 1000);
 
   const setMouseScrollEnabled = (enabled) => {
     mouseScrollEnabled = enabled;

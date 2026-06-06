@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import YAML from 'yaml';
-import { readEnvFile } from './env.js';
+import { managerEnvFile, readEnvFile } from './env.js';
 import { managerRoot } from './workspaces.js';
 
 const execFileAsync = promisify(execFile);
@@ -28,10 +28,6 @@ function requireWorkspace(session) {
 
 function composeFile() {
   return join(managerRoot(), 'docker-compose.yml');
-}
-
-function managerEnvFile() {
-  return join(managerRoot(), '.env');
 }
 
 function readManagerEnv() {

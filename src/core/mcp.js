@@ -1,10 +1,8 @@
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { readEnvFile } from './env.js';
-import { managerRoot } from './workspaces.js';
+import { managerEnvFile, readEnvFile } from './env.js';
 
 function readManagerEnv() {
-  const envPath = join(managerRoot(), '.env');
+  const envPath = managerEnvFile();
   return existsSync(envPath) ? readEnvFile(envPath) : {};
 }
 
@@ -167,7 +165,7 @@ async function mcpRequest(endpoint, method, params, signal) {
           params: {
             protocolVersion: '2025-06-18',
             capabilities: {},
-            clientInfo: { name: 'wiki-manager', version: '0.5.2' },
+            clientInfo: { name: 'wiki-manager', version: '0.5.4' },
           },
         }),
       });

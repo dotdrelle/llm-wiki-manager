@@ -1,4 +1,16 @@
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+
+export function userManagerDir() {
+  return join(homedir(), 'wiki-manager');
+}
+
+export function managerEnvFile() {
+  return process.env.WIKI_MANAGER_ENV_FILE
+    ? resolve(process.env.WIKI_MANAGER_ENV_FILE)
+    : join(userManagerDir(), '.env');
+}
 
 function parseEnvValue(value) {
   if (value.startsWith('"') && value.endsWith('"')) {

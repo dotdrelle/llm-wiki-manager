@@ -3,7 +3,7 @@ import { existsSync, readdirSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { readEnvFile } from './env.js';
+import { managerEnvFile, readEnvFile, userManagerDir } from './env.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(__dirname, '../..');
@@ -18,7 +18,7 @@ export function managerRoot() {
 export function workspacesDir() {
   return process.env.WIKI_WORKSPACES_DIR
     ? resolve(process.env.WIKI_WORKSPACES_DIR)
-    : join(managerRoot(), 'workspaces');
+    : join(userManagerDir(), 'workspaces');
 }
 
 export function listWorkspaces() {
@@ -71,6 +71,7 @@ export async function createWorkspace(name, targetPath = null, options = {}) {
       env: {
         ...process.env,
         WIKI_WORKSPACES_DIR: workspacesDir(),
+        WIKI_MANAGER_ENV_FILE: managerEnvFile(),
       },
       maxBuffer: options.maxBuffer ?? 1024 * 1024 * 8,
       timeout: options.timeout ?? 600_000,

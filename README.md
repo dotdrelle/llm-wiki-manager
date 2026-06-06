@@ -62,8 +62,18 @@ import mappings.
 ```bash
 corepack enable
 pnpm install
-cp .env.example .env
 ```
+
+When installed through `npm`/`npx`, `wiki-manager` keeps its user state outside
+the package:
+
+```text
+~/wiki-manager/workspaces/   # workspace registry and defaults
+~/wiki-manager/.env          # optional manager-wide MCP settings
+```
+
+`WIKI_WORKSPACES_DIR` and `WIKI_MANAGER_ENV_FILE` remain available for explicit
+local overrides, but they are not required for normal usage.
 
 Create a workspace:
 

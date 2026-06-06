@@ -63,8 +63,6 @@ const COMMAND_COMPLETION_DESCRIPTIONS = {
   '/mcp': 'Inspect or call workspace MCP servers.',
   '/wiki': 'Run llm-wiki commands for the active workspace.',
   '/skills': 'List workspace skills.',
-  '/show-skill': 'Show one skill.',
-  '/run-skill': 'Prepare one skill for guided execution.',
   '/clear': 'Clear the conversation screen.',
   '/chat': 'Stream a direct chat answer without agent tools.',
 };
@@ -73,14 +71,17 @@ const SUBCOMMAND_COMPLETION_DESCRIPTIONS = {
   '/config:list': 'List .wikirc.yaml profiles.',
   '/config:status': 'Show the active wikirc profile.',
   '/config:use': 'Reload session config from a profile.',
+  '/config:edit': 'Edit one .wikirc.yaml profile.',
   '/mcp:call': 'Call one MCP tool with optional JSON.',
   '/mcp:endpoints': 'Show MCP URLs and token presence.',
   '/mcp:status': 'Show MCP connection status.',
   '/mcp:tools': 'Show discovered MCP tools.',
   '/workspace:init': 'Legacy form of /new.',
   '/wiki:run': 'Use the low-level llm-wiki CLI fallback.',
-  '/skill:run': 'Legacy form of /run-skill.',
-  '/skill:show': 'Legacy form of /show-skill.',
+  '/skills:edit': 'Edit one workspace skill file.',
+  '/skills:list': 'List workspace skills.',
+  '/skills:run': 'Prepare one skill for guided execution.',
+  '/skills:show': 'Show one workspace skill.',
 };
 
 export function createSession() {
@@ -92,7 +93,7 @@ export function createSession() {
     wikircConfig: null,
     language: null,
     mcp: null,
-    commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'show-skill', 'run-skill', 'clear', 'chat'],
+    commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'clear', 'chat'],
     llm: null,
     activities: {},
     productionActivity: null,
@@ -110,6 +111,15 @@ export function conversationMessages(session) {
   session.conversations ??= { [GLOBAL_CONVERSATION_KEY]: [] };
   session.conversations[key] ??= [];
   return session.conversations[key];
+}
+
+function initialLegacyWelcomeMessage() {
+  return [
+    'Orchestrator agent ready.',
+    '',
+    'Load a workspace with `/use <workspace>`, then chat or use commands.',
+    'Type `/help` for all commands.',
+  ].join('\n');
 }
 
 export function promptFor(session) {
@@ -175,18 +185,17 @@ function completionValuesFor(parts, inputBuffer, session) {
   if (tokenIndex === 0) return slashCompletions(session);
   if (command === '/new' && tokenIndex === 1) return [];
   if (command === '/use' && tokenIndex === 1) return workspaceNames();
-  if (command === '/config' && tokenIndex === 1) return ['list', 'status', 'use'];
-  if (command === '/config' && previousToken === 'use') return wikircProfileNames(session);
+  if (command === '/config' && tokenIndex === 1) return ['edit', 'list', 'status', 'use'];
+  if (command === '/config' && (previousToken === 'use' || previousToken === 'edit')) return wikircProfileNames(session);
   if (command === '/mcp' && tokenIndex === 1) return ['call', 'endpoints', 'status', 'tools'];
   if (command === '/mcp' && previousToken === 'tools') return mcpNames(session);
   if (command === '/mcp' && previousToken === 'call') return mcpNames(session);
   if (command === '/mcp' && parts[1] === 'call' && tokenIndex === 3) return mcpToolNames(session, parts[2]);
   if (command === '/workspace' && tokenIndex === 1) return ['init'];
   if (command === '/wiki' && tokenIndex === 1) return ['run'];
+  if (command === '/skills' && tokenIndex === 1) return ['edit', 'list', 'run', 'show'];
+  if (command === '/skills' && ['edit', 'run', 'show'].includes(previousToken ?? '')) return skillNames(session);
   if ((command === '/start' || command === '/stop' || command === '/logs') && tokenIndex === 1) return serviceNames();
-  if ((command === '/show-skill' || command === '/run-skill') && tokenIndex === 1) return skillNames(session);
-  if (command === '/skill' && tokenIndex === 1) return ['run', 'show'];
-  if (command === '/skill' && (previousToken === 'run' || previousToken === 'show')) return skillNames(session);
   return [];
 }
 
@@ -251,8 +260,17 @@ export function completionDescription(value, parts) {
   if (command === '/stop') return serviceDescription(value) ?? 'Stop this Docker Compose service.';
   if (command === '/logs') return serviceDescription(value) ?? 'Show logs for this Docker Compose service.';
   if (command === '/mcp') return parts[1] === 'call' ? 'Use this MCP server.' : 'Filter tools to this MCP server.';
-  if (command === '/skill') return ['run', 'show'].includes(parts[1]) ? 'Select this skill.' : 'Choose a skill action.';
-  if (command === '/config') return parts.at(-1) === 'use' ? 'Load this wikirc profile.' : 'Choose a config action.';
+  if (command === '/skills') {
+    if (parts.at(-1) === 'edit') return 'Edit this skill.';
+    if (parts.at(-1) === 'run') return 'Run this skill guide.';
+    if (parts.at(-1) === 'show') return 'Show this skill.';
+    return 'Choose a skills action.';
+  }
+  if (command === '/config') {
+    if (parts.at(-1) === 'use') return 'Load this wikirc profile.';
+    if (parts.at(-1) === 'edit') return 'Edit this wikirc profile.';
+    return 'Choose a config action.';
+  }
   return 'Complete this argument.';
 }
 
@@ -1016,10 +1034,8 @@ async function runTuiShell({ agent, packageJson, session }) {
   messages.push({
     role: 'dot',
     content: [
-      'Orchestrator agent ready.',
-      '',
-      'Load a workspace with `/use <workspace>`, then chat or use commands.',
-      'Type `/help` for all commands — `Ctrl+Y` copies the last response.',
+      initialLegacyWelcomeMessage(),
+      'Tip: Ctrl+Y copies the last response.',
     ].join('\n'),
   });
   let inputBuffer = '';

@@ -157,8 +157,8 @@ Useful primitives:
 /wiki
 /wiki run <args...>
 /skills
-/show-skill <name>
-/run-skill <name>
+/skills show <name>
+/skills run <name>
 /chat <message>
 /clear
 ```
@@ -231,8 +231,8 @@ jobs that return `_activity.poll` descriptors — not synchronous setup calls.
 /status
 /services
 /skills
-/show-skill <name>
-/run-skill <name>
+/skills show <name>
+/skills run <name>
 ```
 
 It does not expose arbitrary system commands, `/mcp call`, `/wiki run`,

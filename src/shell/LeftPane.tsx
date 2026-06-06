@@ -30,6 +30,63 @@ function wrapLine(line: string, width: number) {
 }
 
 type Segment = { text: string; color: string; width?: number };
+type HelpCard = { title: string; text: string; example: string };
+
+const HELP_CARDS: HelpCard[] = [
+  { title: '/new', text: 'Create/configure a workspace.', example: 'Ex: /new <name> [path]' },
+  { title: 'modify wikirc', text: 'Action: edit file.', example: 'File: .wikirc.yaml' },
+  { title: 'configure CME', text: 'Add type, URL, PAT, email.', example: 'Provide source credentials' },
+  { title: 'add MCP', text: 'Inspect and use MCP endpoints.', example: 'Ex: /mcp endpoints' },
+  { title: '/use', text: 'Load one workspace and its tools.', example: 'Ex: /use <workspace>' },
+  { title: 'llm call action', text: 'Ask to LLM.', example: 'Ex: ask to LLM to run an action' },
+];
+
+function HelpCardPanel(props: { card: HelpCard; width: number }) {
+  return (
+    <box
+      width={props.width}
+      height={6}
+      flexDirection="column"
+      border
+      borderStyle="single"
+      borderColor="#5DADE2"
+      backgroundColor="#111318"
+      paddingX={1}
+      overflow="hidden"
+    >
+      <text height={1} fg="#FBBF24">{props.card.title}</text>
+      <text height={1} fg="#D6DEE8">{props.card.text}</text>
+      <text height={1} fg="#7F8C8D">{props.card.example}</text>
+    </box>
+  );
+}
+
+function WelcomeHelpPanels(props: { width: number }) {
+  const cardWidth = Math.max(24, Math.floor((props.width - 6) / 2));
+  const rows = [
+    HELP_CARDS.slice(0, 2),
+    HELP_CARDS.slice(2, 4),
+    HELP_CARDS.slice(4, 6),
+  ];
+
+  return (
+    <box flexGrow={1} flexDirection="column" padding={1} overflow="hidden">
+      <text height={1} fg="#8BD5CA">Orchestrator agent ready.</text>
+      <text height={1} fg="#D6DEE8">Quick help</text>
+      <For each={rows}>
+        {(row) => (
+          <box height={7} flexDirection="row" gap={2} overflow="hidden">
+            <For each={row}>
+              {(card) => <HelpCardPanel card={card} width={cardWidth} />}
+            </For>
+          </box>
+        )}
+      </For>
+      <text height={1} fg="#7F8C8D">Load a workspace with /use &lt;workspace&gt;, then chat or use commands.</text>
+      <text height={1} fg="#7F8C8D">Type /help for all commands.</text>
+    </box>
+  );
+}
 
 function messageHeaderSegments(role: string, columns: number): Segment[] {
   const label = `[${roleLabel(role)}]`;
@@ -167,6 +224,7 @@ export function ChatInput(props: {
   prompt: string;
   value: string;
   busy: boolean;
+  focused: boolean;
   onInput: (value: string) => void;
   onSubmit: (value?: string) => void;
 }) {
@@ -183,7 +241,7 @@ export function ChatInput(props: {
       <text fg="#8BD5CA">{props.busy ? 'working...' : props.prompt}</text>
       <input
         flexGrow={1}
-        focused={!props.busy}
+        focused={props.focused && !props.busy}
         value={props.value}
         placeholder={props.busy ? 'Waiting for command to finish' : 'Type a message or /command'}
         onInput={props.onInput}
@@ -198,10 +256,12 @@ export function LeftPane(props: {
   title: string;
   statusLine: string;
   hintLine?: string | null;
+  showWelcome: boolean;
   messages: Array<{ role: string; content: string }>;
   prompt: string;
   input: string;
   busy: boolean;
+  chatFocused: boolean;
   setInput: (value: string) => void;
   submit: (value?: string) => void;
   conversationRows: number;
@@ -216,15 +276,26 @@ export function LeftPane(props: {
         <text fg="#D6DEE8">{props.title}</text>
         <text fg="#7F8C8D">  {props.statusLine}</text>
       </box>
-      <ConversationView
-        messages={props.messages}
-        rows={props.conversationRows}
-        columns={props.conversationColumns}
-        scroll={props.conversationScroll}
-        onScroll={props.scrollConversation}
-        spinnerFrame={props.spinnerFrame}
+      {props.showWelcome ? (
+        <WelcomeHelpPanels width={props.conversationColumns} />
+      ) : (
+        <ConversationView
+          messages={props.messages}
+          rows={props.conversationRows}
+          columns={props.conversationColumns}
+          scroll={props.conversationScroll}
+          onScroll={props.scrollConversation}
+          spinnerFrame={props.spinnerFrame}
+        />
+      )}
+      <ChatInput
+        prompt={props.prompt}
+        value={props.input}
+        busy={props.busy}
+        focused={props.chatFocused}
+        onInput={props.setInput}
+        onSubmit={props.submit}
       />
-      <ChatInput prompt={props.prompt} value={props.input} busy={props.busy} onInput={props.setInput} onSubmit={props.submit} />
       {props.hintLine ? (
         <text width={Math.max(8, props.width - 2)} fg="#FBBF24">
           {props.hintLine}

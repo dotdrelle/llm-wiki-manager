@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { createLlmClientFromWikiConfig } from '../agent/llm.js';
 import { composeServices, listServices, runWikiCli, serviceLogs, serviceStates, startService, stopService } from '../core/compose.js';
 import {
@@ -18,6 +18,7 @@ import { formatActivityError, formatActivitySummary } from '../core/activity.js'
 import {
   listWikircProfiles,
   loadWikircProfile,
+  resolveWikircProfile,
   summarizeWikircConfig,
 } from '../core/wikirc.js';
 
@@ -165,7 +166,8 @@ function skillActionCommand(session, action, name) {
   if (!name) {
     const available = listSkills(session);
     if (!available.length) return { output: `No skills available. Load a workspace with /use first.` };
-    return { output: `Available skills: ${available.map((s) => s.name).join(', ')}\nUsage: /${action}-skill <name>` };
+    const usage = `/skills ${action} <skill>`;
+    return { output: `Available skills: ${available.map((s) => s.name).join(', ')}\nUsage: ${usage}` };
   }
   const skill = findSkill(session, name);
   if (!skill) {
@@ -179,9 +181,32 @@ function skillActionCommand(session, action, name) {
   return { output: skillDetailText(skill) };
 }
 
-function skillNameFromLine(line, command) {
-  const match = String(line).match(new RegExp(`^/${command}-skill\\s+(.+?)\\s*$`));
-  return match?.[1]?.trim() || null;
+function skillEditCommand(session, name) {
+  if (!name) {
+    const available = listSkills(session);
+    if (!available.length) return { output: 'No skills available. Load a workspace with /use first.' };
+    return { output: `Available skills: ${available.map((s) => s.name).join(', ')}\nUsage: /skills edit <skill>` };
+  }
+  const skill = findSkill(session, name);
+  if (!skill) {
+    const available = listSkills(session);
+    const hint = available.length ? ` Available: ${available.map((s) => s.name).join(', ')}` : '';
+    return { output: `Skill not found: ${name}.${hint}` };
+  }
+  const openEditor = session._onOpenEditor;
+  if (typeof openEditor !== 'function') {
+    return { output: `Edit file: ${skill.path}` };
+  }
+  const content = readFileSync(skill.path, 'utf8');
+  const displayPath = session.workspacePath ? relative(session.workspacePath, skill.path) : skill.path;
+  openEditor({
+    title: `Edit skill: ${skill.name}`,
+    filePath: skill.path,
+    displayPath,
+    content,
+    language: skill.path.endsWith('.yaml') || skill.path.endsWith('.yml') ? 'yaml' : 'markdown',
+  });
+  return { output: `Editing ${displayPath}` };
 }
 
 async function createWorkspaceCommand(context, workspaceName, targetPath) {
@@ -313,10 +338,11 @@ ${helpPair('/help', 'Help', '/version', 'Version')}
 ${helpPair('/workspaces', 'Workspaces', '/new <n> [path]', 'New workspace')}
 ${helpPair('/use <workspace>', 'Use workspace', '/status', 'Session status')}
 ${helpPair('/config list', 'Config profiles', '/config use <n>', 'Use config')}
-${helpPair('/config status', 'Active config', '/services', 'Services')}
-${helpPair('/start [service]', 'Start service(s)', '/stop [service]', 'Stop service(s)')}
-${helpPair('/logs <service>', 'Service logs', '/skills', 'List skills')}
-${helpPair('/show-skill <n>', 'Show skill', '/run-skill <n>', 'Run skill guide')}
+${helpPair('/config edit <n>', 'Edit config', '/config status', 'Active config')}
+${helpPair('/services', 'Services', '/start [service]', 'Start service(s)')}
+${helpPair('/stop [service]', 'Stop service(s)', '/logs <service>', 'Service logs')}
+${helpPair('/skills', 'List skills', '/skills show <n>', 'Show skill')}
+${helpPair('/skills run <n>', 'Run skill guide', '/skills edit <n>', 'Edit skill')}
 ${helpPair('/mcp status', 'MCP status', '/mcp endpoints', 'MCP endpoints')}
 ${helpPair('/mcp tools [mcp]', 'MCP tools', '/mcp call ...', 'Call MCP tool')}
 ${helpPair('/wiki', 'Run wiki index', '/wiki run <args>', 'Raw wiki CLI')}
@@ -435,6 +461,33 @@ export async function handleSlashCommand(line, context) {
           return { output: message };
         }
       }
+      if (subcommand === 'edit') {
+        const profileName = args[2];
+        if (!profileName) {
+          const profiles = listWikircProfiles(context.session.workspacePath);
+          const available = profiles.map((profile) => profile.name).join(', ') || 'none';
+          return { output: `Usage: /config edit <profile>\nAvailable profiles: ${available}` };
+        }
+        try {
+          const profile = resolveWikircProfile(context.session.workspacePath, profileName);
+          const content = readFileSync(profile.path, 'utf8');
+          const openEditor = context.session._onOpenEditor;
+          if (typeof openEditor !== 'function') {
+            return { output: `Edit file: ${profile.path}` };
+          }
+          openEditor({
+            title: `Edit wikirc: ${profile.name}`,
+            filePath: profile.path,
+            displayPath: profile.fileName,
+            content,
+            language: 'yaml',
+          });
+          return { output: `Editing ${profile.fileName}` };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return { output: message };
+        }
+      }
       if (subcommand === 'status') {
         if (!context.session.wikirc || !context.session.wikircConfig) {
           return { output: 'No active wikirc profile.' };
@@ -451,7 +504,7 @@ export async function handleSlashCommand(line, context) {
         };
         return { output: wikircSummaryText(summary) };
       }
-      return { output: 'Usage: /config <list|use|status>' };
+      return { output: 'Usage: /config <list|use|edit|status>' };
     }
     case 'services': {
       try {
@@ -599,21 +652,19 @@ export async function handleSlashCommand(line, context) {
       }
     }
     case 'skills': {
-      return { output: skillsText(context.session) };
-    }
-    case 'show-skill': {
-      return skillActionCommand(context.session, 'show', args[1] ?? skillNameFromLine(line, 'show'));
-    }
-    case 'run-skill': {
-      return skillActionCommand(context.session, 'run', args[1] ?? skillNameFromLine(line, 'run'));
-    }
-    case 'skill': {
-      const subcommand = args[1] ?? 'show';
-      if (subcommand === 'show' || subcommand === 'run') {
-        return skillActionCommand(context.session, subcommand, args[2]);
+      if (args[1] === 'show') {
+        return skillActionCommand(context.session, 'show', args[2]);
       }
-      // /skill <name> — treat as /skill show <name>
-      return skillActionCommand(context.session, 'show', subcommand);
+      if (args[1] === 'run') {
+        return skillActionCommand(context.session, 'run', args[2]);
+      }
+      if (args[1] === 'edit') {
+        return skillEditCommand(context.session, args[2]);
+      }
+      if (args[1] && args[1] !== 'list') {
+        return { output: 'Usage: /skills [list|show|run|edit] [skill]' };
+      }
+      return { output: skillsText(context.session) };
     }
     case 'clear': {
       const key = context.session.workspace || '__global__';

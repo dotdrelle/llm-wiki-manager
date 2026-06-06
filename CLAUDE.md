@@ -166,8 +166,8 @@ that return `_activity`, such as CME exports or production jobs.
 /status
 /services
 /skills
-/skill show <name>
-/skill run <name>
+/skills show <name>
+/skills run <name>
 ```
 
 It must not become arbitrary shell execution. Do not expose `/mcp call`,
@@ -243,7 +243,7 @@ pnpm run check
 ```
 
 For OpenTUI shell changes, launch with Bun and exercise the golden path:
-- Tab completion for `/show-skill`, `/use`, etc.
+- Tab completion for `/skills show`, `/use`, etc.
 - Conversation scroll (mouse wheel or PageUp/PageDown)
 - Slash dialog navigation (up/down, Tab to complete, Esc to dismiss)
 - Ctrl+C interrupts a busy agent; Ctrl+C again exits when idle

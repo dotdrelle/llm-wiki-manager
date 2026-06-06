@@ -12,7 +12,7 @@ import { extractHeadlessPlan, matchCompletedToPlan, formatPlanStatus, formatComp
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageJsonPath = resolve(__dirname, '../../package.json');
 const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
-const SHELL_COMMANDS = ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'show-skill', 'run-skill', 'clear', 'chat'];
+const SHELL_COMMANDS = ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'clear', 'chat'];
 
 function valueAfter(argv, flag) {
   const index = argv.indexOf(flag);
@@ -279,7 +279,7 @@ async function runHeadless(argv, agent) {
 
     let input = prompt;
     if (skillName) {
-      const skillResult = await handleSlashCommand(`/run-skill ${skillName}`, { packageJson, session, onStep: step });
+      const skillResult = await handleSlashCommand(`/skills run ${skillName}`, { packageJson, session, onStep: step });
       if (skillResult.output) log.push(skillResult.output);
       if (String(skillResult.output ?? '').startsWith('Skill not found')) throw new Error(`Skill not found: ${skillName}`);
       input = skillResult.agentTrigger

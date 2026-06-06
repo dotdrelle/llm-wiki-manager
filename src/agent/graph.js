@@ -23,9 +23,6 @@ const AGENT_SLASH_COMMANDS = new Set([
   'status',
   'services',
   'skills',
-  'show-skill',
-  'run-skill',
-  'skill',
 ]);
 
 const SHELL_RUN_COMMAND_TOOL = {
@@ -34,7 +31,7 @@ const SHELL_RUN_COMMAND_TOOL = {
     name: 'shell__run_command',
     description: [
       'Run a deterministic wiki-manager slash command inside the current shell session.',
-      'Allowed commands: /workspaces, /new <name> [path], /use <workspace>, /config, /status, /services, /skills, /show-skill <name>, /run-skill <name>.',
+      'Allowed commands: /workspaces, /new <name> [path], /use <workspace>, /config, /status, /services, /skills, /skills show <name>, /skills run <name>.',
       'Do not use for arbitrary system shell commands, /mcp call, /wiki run, /start, /stop, /logs, or /exit.',
     ].join(' '),
     parameters: {
@@ -213,9 +210,6 @@ function assertAgentSlashCommandAllowed(commandLine) {
   if (command === 'workspace' && parts[1] !== 'init') {
     throw new Error('Only /workspace init is available to the agent.');
   }
-  if (command === 'skill' && !['show', 'run'].includes(parts[1] ?? 'show')) {
-    throw new Error('Use /show-skill <name> or /run-skill <name>. Legacy /skill show|run is also accepted.');
-  }
 }
 
 async function runShellCommandTool(session, commandLine) {
@@ -293,7 +287,7 @@ export function buildAgentSystemPrompt(state) {
     'You can call MCP tools directly using the provided tool functions.',
     'When the user asks for an action that can be performed with connected MCP tools or safe primitives, do not answer with future intent such as "I will call...", "I am going to run...", or "launching..." unless you also call the tool in the same turn. Either call the tool now, ask for the exact missing required arguments, or explain the concrete blocker.',
     'For CME configuration/setup/update requests, if a matching CME tool such as cme_setup is connected and the required arguments are known, call it immediately. If the CME server or tool is not connected, say which CME capability is missing and recommend the exact service/status primitive to inspect it. Do not invent a pending CME action in plain text.',
-    'You can call shell__run_command for safe manager slash commands such as /workspaces, /new <name> [path], /use <workspace>, /config, /status, /services, /skills, /show-skill <name>, and /run-skill <name>.',
+    'You can call shell__run_command for safe manager slash commands such as /workspaces, /new <name> [path], /use <workspace>, /config, /status, /services, /skills, /skills show <name>, and /skills run <name>.',
     'Skills are workflow instructions, not executable code. When a user asks to run a skill, inspect it, propose the concrete primitive/tool plan, and ask for confirmation before costly or mutating actions.',
     [
       state.session.headless ? 'HEADLESS MODE ACTIVE. Execute the requested skill or task autonomously using available safe primitives and MCP tools. Do not ask for interactive confirmation unless the request is genuinely ambiguous or outside the loaded workspace.' : null,

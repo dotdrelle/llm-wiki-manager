@@ -61,14 +61,22 @@ function planStepColor(step: PlanStep, firstPendingStep: number | null) {
   return '#7F8C8D';
 }
 
-export function PlanPanel(props: { plan: PlanStep[]; width: number }) {
+function activityJobName(activity: any) {
+  if (!activity) return '';
+  return activity.label
+    ?? [activity.source, activity.kind, activity.id ? `#${activity.id}` : null].filter(Boolean).join(' ')
+    ?? '';
+}
+
+export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: string }) {
   const lineWidth = () => Math.max(8, props.width - 2);
   const firstPending = () => props.plan.find((s) => s.status === 'pending')?.step ?? null;
   const icon = (status: string) =>
     status === 'done' ? '[✓]' : status === 'failed' ? '[✗]' : '[ ]';
+  const title = () => props.jobName ? `Plan · ${props.jobName}` : 'Plan';
   return (
     <box flexShrink={0} flexDirection="column" padding={1}>
-      <text width={lineWidth()} fg="#D6DEE8">Plan</text>
+      <text width={lineWidth()} fg="#D6DEE8">{fit(title(), lineWidth())}</text>
       <For each={props.plan}>
         {(step) => (
           <text width={lineWidth()} fg={planStepColor(step, firstPending())}>
@@ -123,10 +131,13 @@ export function LogPanel(props: { logs: string[]; width: number }) {
 }
 
 export function RightPane(props: { width: number; activities: any[]; logs: string[]; plan: PlanStep[] | null }) {
+  const planJobName = () => activityJobName(
+    [...props.activities].reverse().find((activity) => !activity.terminal) ?? props.activities.at(-1),
+  );
   return (
     <box width={props.width} height="100%" flexDirection="column" gap={1} padding={1} overflow="hidden">
       <Show when={props.plan && props.plan.length > 0}>
-        <PlanPanel width={props.width} plan={props.plan!} />
+        <PlanPanel width={props.width} plan={props.plan!} jobName={planJobName()} />
       </Show>
       <ActivityPanel width={props.width} activities={props.activities} />
       <LogPanel width={props.width} logs={props.logs} />

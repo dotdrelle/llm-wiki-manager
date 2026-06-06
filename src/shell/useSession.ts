@@ -1,7 +1,10 @@
+import { writeFileSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { createMemo, createSignal, onCleanup } from 'solid-js';
 import { formatMcpToolResult, callMcpTool } from '../core/mcp.js';
 import { parseJsonText, rememberActivityFromPayload, sessionActivities } from '../core/activity.js';
 import { matchCompletedToPlan, formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
+import type { ActiveFileEditor } from './FileEditorDialog';
 import {
   completionContext,
   completionDescription,
@@ -37,22 +40,18 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   const [historyIndex, setHistoryIndex] = createSignal<number | null>(null);
   const [selectedCompletion, setSelectedCompletion] = createSignal(0);
   const [conversationScroll, setConversationScroll] = createSignal(0);
+  const [showWelcome, setShowWelcome] = createSignal(true);
+  const [activeEditor, setActiveEditor] = createSignal<ActiveFileEditor | null>(null);
   const pollBusy = new Set<string>();
   const matchedActivityKeys = new Set<string>();
   const lastActivityLines = new Map<string, string>();
 
-  conversationMessages(session).push({
-    role: 'dot',
-    content: [
-      'Orchestrator agent ready.',
-      '',
-      'Load a workspace with `/use <workspace>`, then chat or use commands.',
-      'Type `/help` for all commands.',
-    ].join('\n'),
-  });
-
   const refresh = () => setVersion((value) => value + 1);
   (session as any)._onPlanUpdate = refresh;
+  (session as any)._onOpenEditor = (editor: ActiveFileEditor) => {
+    setShowWelcome(false);
+    setActiveEditor(editor);
+  };
   const addLog = (line: string) => {
     setLogs((items) => [...items, `${new Date().toLocaleTimeString()} ${line}`].slice(-200));
   };
@@ -173,7 +172,10 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     if (agent.busy()) return { exit: false, busy: true };
     setInput('');
     setConversationScroll(0);
-    if (line.trim()) setHistory((items) => [...items, line].slice(-100));
+    if (line.trim()) {
+      setShowWelcome(false);
+      setHistory((items) => [...items, line].slice(-100));
+    }
     setHistoryIndex(null);
     const result = await agent.submit(line);
     return result;
@@ -231,6 +233,31 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     setConversationScroll((value) => Math.max(0, value + delta));
   }
 
+  function closeEditor() {
+    setActiveEditor(null);
+  }
+
+  function saveEditor(content: string) {
+    const editor = activeEditor();
+    if (!editor) return { ok: false as const, error: 'No active editor.' };
+    if (!session.workspacePath) return { ok: false as const, error: 'No workspace loaded.' };
+    const workspaceRoot = resolve(session.workspacePath);
+    const targetPath = resolve(editor.filePath);
+    const rel = relative(workspaceRoot, targetPath);
+    if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+      return { ok: false as const, error: 'Refusing to save outside the workspace.' };
+    }
+    try {
+      writeFileSync(targetPath, content, 'utf8');
+      conversationMessages(session).push({ role: 'command', content: `Saved file: ${editor.displayPath}` });
+      setActiveEditor(null);
+      refresh();
+      return { ok: true as const };
+    } catch (err) {
+      return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   return {
     session,
     messages,
@@ -239,6 +266,8 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     setInput: updateInput,
     title,
     statusLine,
+    showWelcome,
+    activeEditor,
     prompt,
     slash,
     mcpServers,
@@ -254,5 +283,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     moveCompletion,
     historyUp,
     historyDown,
+    closeEditor,
+    saveEditor,
   };
 }

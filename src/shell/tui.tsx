@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { render, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from '@opentui/solid';
 import { createMemo, createSignal, onCleanup } from 'solid-js';
+import { FileEditorDialog } from './FileEditorDialog';
 import { LeftPane } from './LeftPane';
 import { RightPane } from './RightPane';
 import { SlashDialog } from './SlashDialog';
@@ -97,6 +98,10 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
   });
 
   useKeyboard((key) => {
+    if (state.activeEditor()) {
+      if (key.name === 'escape') state.closeEditor();
+      return;
+    }
     if (key.ctrl && key.name === 'c') {
       if (state.busy()) {
         state.abort();
@@ -141,10 +146,12 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
         title={state.title()}
         statusLine={state.statusLine()}
         hintLine={hintLine()}
+        showWelcome={state.showWelcome()}
         messages={state.messages()}
         prompt={state.prompt()}
         input={state.input()}
         busy={state.busy()}
+        chatFocused={!state.activeEditor()}
         setInput={state.setInput}
         submit={submit}
         conversationRows={conversationRows()}
@@ -159,7 +166,14 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
         ))}
       </box>
       <RightPane width={rightColumns()} activities={state.activities()} logs={state.logs()} plan={state.plan()} />
-      <SlashDialog context={state.slash()} />
+      <SlashDialog context={state.activeEditor() ? null : state.slash()} />
+      <FileEditorDialog
+        editor={state.activeEditor()}
+        width={dimensions().width}
+        height={dimensions().height}
+        onSave={state.saveEditor}
+        onCancel={state.closeEditor}
+      />
     </box>
   );
 }

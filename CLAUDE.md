@@ -185,7 +185,9 @@ heuristics. If a fast path is needed, keep it explicit, as `/chat` is.
 
 ## Workspace Rules
 
-- Workspaces are registered under `workspaces/`, which is gitignored.
+- Workspaces are registered under `./workspaces/` relative to the directory
+  where `wiki-manager` or `wiki-workspace` is launched, unless
+  `WIKI_WORKSPACES_DIR` overrides it. In the repo, `workspaces/` is gitignored.
 - Generated workspace `.env` files, `.cme` state, exports, raw content, wiki
   output, and symlink targets must not be committed.
 - The manager must not contain a root `SKILL.md` or a root `skills/` directory.
@@ -201,8 +203,9 @@ heuristics. If a fast path is needed, keep it explicit, as `/chat` is.
 
 ## Docker Rules
 
-- Prefer `./wiki-workspace` over raw `docker compose` so the correct project
-  name, env file, ports, and volumes are used.
+- Prefer `wiki-workspace` over raw `docker compose` so the correct project
+  name, env file, ports, and volumes are used. Use `./wiki-workspace` only when
+  working directly from the source checkout.
 - Keep the default production pipeline as `ingest`, `build`, `export`, `polish`.
 - The legacy `copy` step is only for deployments that explicitly configure
   import mappings.
@@ -223,15 +226,15 @@ heuristics. If a fast path is needed, keep it explicit, as `/chat` is.
 ## Common Commands
 
 ```bash
-./wiki-workspace config <workspace> [path]
-./wiki-workspace up <workspace>
-./wiki-workspace list
-./wiki-workspace wiki <workspace> doctor
-./wiki-workspace wiki <workspace> ingest
-./wiki-workspace wiki <workspace> build
-./wiki-workspace wiki <workspace> export
-./wiki-workspace cme <workspace> up
-./wiki-workspace mailer status
+wiki-workspace config <workspace> [path]
+wiki-workspace up <workspace>
+wiki-workspace list
+wiki-workspace wiki <workspace> doctor
+wiki-workspace wiki <workspace> ingest
+wiki-workspace wiki <workspace> build
+wiki-workspace wiki <workspace> export
+wiki-workspace cme <workspace> up
+wiki-workspace mailer status
 
 bun start                   # full OpenTUI shell (requires Bun)
 pnpm start                  # alias for bun start

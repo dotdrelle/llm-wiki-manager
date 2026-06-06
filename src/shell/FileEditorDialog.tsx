@@ -1,3 +1,4 @@
+/** @jsxImportSource @opentui/solid */
 import { createEffect, createSignal, Show } from 'solid-js';
 
 export type ActiveFileEditor = {

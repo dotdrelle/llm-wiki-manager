@@ -1,3 +1,4 @@
+/** @jsxImportSource @opentui/solid */
 import { For, Show } from 'solid-js';
 
 export function SlashDialog(props: { context: any }) {

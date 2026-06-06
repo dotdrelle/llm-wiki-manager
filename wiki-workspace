@@ -1,24 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -n "${HOME:-}" ]]; then
-  DEFAULT_MANAGER_DIR="$HOME/wiki-manager"
-else
-  DEFAULT_MANAGER_DIR="$ROOT_DIR"
-fi
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_SOURCE" ]]; do
+  SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+  SCRIPT_TARGET="$(readlink "$SCRIPT_SOURCE")"
+  if [[ "$SCRIPT_TARGET" = /* ]]; then
+    SCRIPT_SOURCE="$SCRIPT_TARGET"
+  else
+    SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_TARGET"
+  fi
+done
+ROOT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+DEFAULT_MANAGER_DIR="$PWD"
 WORKSPACES_DIR="${WIKI_WORKSPACES_DIR:-$DEFAULT_MANAGER_DIR/workspaces}"
 MANAGER_ENV_FILE="${WIKI_MANAGER_ENV_FILE:-$DEFAULT_MANAGER_DIR/.env}"
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./wiki-workspace config <workspace> [path]
-  ./wiki-workspace up <workspace>
-  ./wiki-workspace wiki <workspace> <command> [args...]
-  ./wiki-workspace cme <workspace> <up|down|logs>
-  ./wiki-workspace mailer status
-  ./wiki-workspace list
+  wiki-workspace config <workspace> [path]
+  wiki-workspace up <workspace>
+  wiki-workspace wiki <workspace> <command> [args...]
+  wiki-workspace cme <workspace> <up|down|logs>
+  wiki-workspace mailer status
+  wiki-workspace list
 
 Commands:
   config <workspace> [path]         Create workspace folder, auto-select ports, run wiki init
@@ -81,7 +87,7 @@ need_workspace_env() {
   local workspace="$1"
   local file
   file="$(workspace_env_file "$workspace")"
-  [[ -f "$file" ]] || die "missing workspace env: $file — run: ./wiki-workspace config $workspace"
+  [[ -f "$file" ]] || die "missing workspace env: $file — run: wiki-workspace config $workspace"
 }
 
 env_value() {
@@ -148,6 +154,17 @@ set_env_value() {
   mv "$tmp" "$file"
 }
 
+ensure_manager_env_file() {
+  [[ -f "$MANAGER_ENV_FILE" ]] && return 0
+  mkdir -p "$(dirname "$MANAGER_ENV_FILE")"
+  if [[ -f "$ROOT_DIR/.env.example" ]]; then
+    cp "$ROOT_DIR/.env.example" "$MANAGER_ENV_FILE"
+  else
+    : > "$MANAGER_ENV_FILE"
+  fi
+  printf 'Created %s\n' "$MANAGER_ENV_FILE"
+}
+
 workspace_value() {
   local workspace="$1"
   local key="$2"
@@ -186,9 +203,11 @@ find_free_port() {
   read_lines_into_array used_ports used_workspace_ports
   while true; do
     local taken=0 p
-    for p in "${used_ports[@]}"; do
-      [[ "$p" == "$port" ]] && { taken=1; break; }
-    done
+    if (( ${#used_ports[@]} > 0 )); then
+      for p in "${used_ports[@]}"; do
+        [[ "$p" == "$port" ]] && { taken=1; break; }
+      done
+    fi
     if [[ "$taken" -eq 0 ]] && ! is_port_in_use "$port"; then
       printf '%s\n' "$port"
       return 0
@@ -205,9 +224,11 @@ find_free_workspace_port_base() {
     local taken=0 offset port p
     for offset in 0 1 2 3; do
       port=$((base + offset))
-      for p in "${used_ports[@]}"; do
-        [[ "$p" == "$port" ]] && { taken=1; break; }
-      done
+      if (( ${#used_ports[@]} > 0 )); then
+        for p in "${used_ports[@]}"; do
+          [[ "$p" == "$port" ]] && { taken=1; break; }
+        done
+      fi
       [[ "$taken" -eq 1 ]] && break
       if is_port_in_use "$port"; then
         taken=1
@@ -414,6 +435,7 @@ config_workspace() {
   local workspace="$1"
   local target_path="${2:-$WORKSPACES_DIR/$workspace}"
   target_path="$(absolute_path "$target_path")"
+  ensure_manager_env_file
 
   local env_file="$target_path/.env"
   [[ -f "$env_file" ]] && die "workspace already configured: $env_file"
@@ -454,7 +476,7 @@ config_workspace() {
     docker compose "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" run --rm wiki init
 
   printf 'Workspace ready: %s\n' "$target_path"
-  printf 'Start with:      ./wiki-workspace up %s\n' "$workspace"
+  printf 'Start with:      wiki-workspace up %s\n' "$workspace"
 }
 
 up_workspace() {
@@ -516,7 +538,7 @@ main() {
 
   # cme <workspace> <command>
   if [[ $# -ge 1 && "$1" == "cme" ]]; then
-    [[ $# -ge 3 ]] || die "usage: ./wiki-workspace cme <workspace> <up|down|logs>"
+    [[ $# -ge 3 ]] || die "usage: wiki-workspace cme <workspace> <up|down|logs>"
     local cme_workspace="$2"
     local cme_command="$3"
     shift 3
@@ -604,7 +626,7 @@ main() {
       printf 'Workspace UI: http://localhost:%s\n' "$serve_port"
       printf 'Chat MCP:     http://localhost:%s/chat\n' "$serve_port"
       printf 'Production:   http://localhost:%s/mcp/\n' "$production_port"
-      printf 'Tip: use ./wiki-workspace up %s to also start CME.\n' "$workspace"
+      printf 'Tip: use wiki-workspace up %s to also start CME.\n' "$workspace"
       ;;
     down)
       compose_for_workspace "$workspace" down

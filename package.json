@@ -22,6 +22,8 @@
     "src",
     "wiki-workspace",
     "docker-compose.yml",
+    "tsconfig.json",
+    "bunfig.toml",
     ".env.example",
     "workspaces/.env.example",
     "README.md",

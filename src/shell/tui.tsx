@@ -1,3 +1,4 @@
+/** @jsxImportSource @opentui/solid */
 import { execFileSync } from 'node:child_process';
 import { render, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from '@opentui/solid';
 import { createMemo, createSignal, onCleanup } from 'solid-js';

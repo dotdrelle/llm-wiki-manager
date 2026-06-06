@@ -1,3 +1,4 @@
+/** @jsxImportSource @opentui/solid */
 import { For, createMemo } from 'solid-js';
 import { colorForRenderedLine, helpCommandParts, keyValueParts, renderPlainMarkdown } from './renderer';
 

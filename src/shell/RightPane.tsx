@@ -1,3 +1,4 @@
+/** @jsxImportSource @opentui/solid */
 import { For, Show } from 'solid-js';
 
 type PlanStep = { step: number; description: string; status: string };

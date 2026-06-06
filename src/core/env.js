@@ -1,9 +1,8 @@
 import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 export function userManagerDir() {
-  return join(homedir(), 'wiki-manager');
+  return process.cwd();
 }
 
 export function managerEnvFile() {

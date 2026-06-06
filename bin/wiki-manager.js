@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 
+import '@opentui/solid/preload';
+
 function formatStartupError(err) {
   const message = err instanceof Error ? err.message : String(err);
   const code = err && typeof err === 'object' ? err.code : null;

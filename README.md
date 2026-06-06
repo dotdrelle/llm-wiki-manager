@@ -64,12 +64,12 @@ corepack enable
 pnpm install
 ```
 
-When installed through `npm`/`npx`, `wiki-manager` keeps its user state outside
-the package:
+When installed through `npm`/`npx`/`bun`, `wiki-manager` keeps its state outside
+the package, in the directory where the command is launched:
 
 ```text
-~/wiki-manager/workspaces/   # workspace registry and defaults
-~/wiki-manager/.env          # optional manager-wide MCP settings
+./workspaces/   # workspace registry and defaults
+./.env          # optional manager-wide MCP settings
 ```
 
 `WIKI_WORKSPACES_DIR` and `WIKI_MANAGER_ENV_FILE` remain available for explicit
@@ -78,22 +78,22 @@ local overrides, but they are not required for normal usage.
 Create a workspace:
 
 ```bash
-./wiki-workspace config my-project [path]
+wiki-workspace config my-project [path]
 ```
 
 Start it:
 
 ```bash
-./wiki-workspace up my-project
+wiki-workspace up my-project
 ```
 
 Run wiki commands:
 
 ```bash
-./wiki-workspace wiki my-project doctor
-./wiki-workspace wiki my-project ingest
-./wiki-workspace wiki my-project build --plan
-./wiki-workspace wiki my-project build
+wiki-workspace wiki my-project doctor
+wiki-workspace wiki my-project ingest
+wiki-workspace wiki my-project build --plan
+wiki-workspace wiki my-project build
 ```
 
 ## Services
@@ -111,12 +111,12 @@ Use `wiki-workspace` whenever possible so Compose receives the right project
 name, env file, ports, and volume mounts.
 
 ```bash
-./wiki-workspace list
-./wiki-workspace up my-project
-./wiki-workspace wiki my-project logs
-./wiki-workspace cme my-project up
-./wiki-workspace cme my-project logs
-./wiki-workspace mailer status
+wiki-workspace list
+wiki-workspace up my-project
+wiki-workspace wiki my-project logs
+wiki-workspace cme my-project up
+wiki-workspace cme my-project logs
+wiki-workspace mailer status
 ```
 
 ## The `dot` Shell
@@ -451,7 +451,7 @@ llm-wiki-manager/
 │       └── renderer.ts     # markdown stripping and line coloring
 ├── docker-compose.yml
 ├── wiki-workspace
-├── workspaces/             # gitignored local workspace registry
+├── workspaces/             # gitignored local workspace registry when run from repo root
 ├── .env.example
 └── workspaces/.env.example
 ```

@@ -25,8 +25,7 @@
     ".env.example",
     "workspaces/.env.example",
     "README.md",
-    "LICENSE",
-    "WIKI_MANAGER_AGENT_SHELL.md"
+    "LICENSE"
   ],
   "keywords": [
     "llm",

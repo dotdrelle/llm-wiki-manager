@@ -246,6 +246,28 @@ non-terminal activities in the background using the `poll` descriptor declared
 in `_activity.poll`. The divider below the conversation shows the current
 non-terminal activity; the lower panel shows recent step labels.
 
+When the plan is associated with an activity that exposes an id, the Plan panel
+title uses the id directly, for example `Plan : Job
+prod_20260606_132230_18b50e5a`. Detailed progress such as `Production · ingest
+· done` stays in the Activity/log panels instead of being duplicated in the
+Plan title.
+
+### Tool naming
+
+LLM-facing tool names use `<server>__<tool>`. For the llm-wiki MCP server this
+means remote tools are intentionally named with both the server namespace and
+the canonical llm-wiki tool name:
+
+```text
+wiki__wiki_list_pages
+wiki__wiki_read_page
+wiki__wiki_collect_context
+```
+
+The only internal manager tools under the `wiki__*` namespace are
+`wiki__plan_set` and `wiki__plan_done`. All other `wiki__*` calls are routed to
+the remote `wiki` MCP endpoint.
+
 ### Headless agentic loop
 
 `--skill` runs a multi-turn agentic loop:

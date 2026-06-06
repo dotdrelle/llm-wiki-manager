@@ -478,7 +478,8 @@ export function createAgentGraph(options = {}) {
     for (const call of toolCalls) {
       const { server, tool } = parseToolCallName(call.function.name);
       const argsSummary = summarizeToolArguments(call.function.arguments);
-      const serverLabel = server === 'shell' ? 'Shell' : server === 'wiki' ? 'Plan' : 'MCP';
+      const isInternalWikiTool = server === 'wiki' && (tool === 'plan_set' || tool === 'plan_done');
+      const serverLabel = server === 'shell' ? 'Shell' : isInternalWikiTool ? 'Plan' : 'MCP';
       state.session._onStep?.(
         `[${state.toolIterations}/${MAX_TOOL_ITERATIONS}] ${serverLabel} ${server}.${tool}${argsSummary ? ` (${argsSummary})` : ''}`,
       );
@@ -487,7 +488,7 @@ export function createAgentGraph(options = {}) {
         const args = JSON.parse(call.function.arguments ?? '{}');
         if (server === 'shell' && tool === 'run_command') {
           resultText = await runShellCommandTool(state.session, args.command);
-        } else if (server === 'wiki') {
+        } else if (isInternalWikiTool) {
           resultText = handleWikiTool(state.session, tool, args);
         } else {
           const result = await callMcpTool(state.session.mcp, server, tool, args, state.session._abortSignal);
@@ -500,7 +501,7 @@ export function createAgentGraph(options = {}) {
           if (!rememberActivityFromPayload(state.session, payload, { server, tool })) {
             rememberProductionProgress(state.session, payload, progressLabel);
           }
-        } else if (server !== 'wiki' && server !== 'shell') {
+        } else if (!isInternalWikiTool && server !== 'shell') {
           const payload = parseJsonToolResult(resultText);
           rememberActivityFromPayload(state.session, payload, { server, tool });
           const activityLabel = formatActivitySummary(server, tool, resultText);

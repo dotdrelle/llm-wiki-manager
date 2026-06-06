@@ -114,11 +114,16 @@ toolExecutorNode
   └── <server>__<tool>    → callMcpTool → JSON-RPC Streamable HTTP
 ```
 
+Important: `wiki__plan_set` and `wiki__plan_done` are the only internal
+`wiki__*` tools. Remote llm-wiki MCP tools are still namespaced as
+`wiki__wiki_list_pages`, `wiki__wiki_read_page`, etc. Do not route the whole
+`wiki__*` namespace to `handleWikiTool`; only the two plan tools are internal.
+
 **Session callbacks:**
 
 - `session._onStep(label)` — set per-turn before `agent.invoke()`, deleted in `finally`; step-level updates (spinner label, activity panel lines)
 - `session._onStream(delta)` — set per-turn before `agent.invoke()`, deleted in `finally`; raw text delta from `streamWithTools`; caller accumulates into a `dotMessage` pushed to conversation
-- `session._onStreamReset()` — set per-turn before `agent.invoke()`, deleted in `finally`; called when a streamed assistant turn resolves to tool calls so partial planning text is removed before tool execution continues
+- `session._onStreamReset()` — set per-turn before `agent.invoke()`, deleted in `finally`; called when a streamed assistant turn resolves to tool calls. If the streamed dot bubble already has content, keep it and append a blank separator so intermediate text and the final answer stay in one bubble; remove only empty stream placeholders.
 - `session._onPlanUpdate()` — set once at session mount by `useSession.ts` to SolidJS `refresh`; called mid-turn by `handleWikiTool` after every `wiki__plan_set` / `wiki__plan_done` so the right panel updates immediately without waiting for the agent turn to complete
 
 **Activity surfacing (interactive TUI):**
@@ -128,6 +133,7 @@ toolExecutorNode
 - `session.productionActivity` is a legacy mirror for production jobs.
 - A background `setInterval` in `repl.js` polls non-terminal activities using their `poll` descriptor at `intervalMs` (min 1000 ms, default 2500 ms).
 - The divider line shows the first non-terminal activity; lower panel shows recent `_onStep` lines.
+- When the Plan panel can associate itself with an activity that has an id, its title should prefer `Plan : Job <id>` over repeating the activity label, since progress details already appear in Activity/log panels.
 
 **Plan tracking (interactive and headless):**
 

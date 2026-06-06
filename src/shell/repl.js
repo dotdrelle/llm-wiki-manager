@@ -836,7 +836,10 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
     }
   };
   session._onStreamReset = () => {
-    if (dotMessage) {
+    if (dotMessage?.content.trim()) {
+      dotMessage.content += '\n\n';
+      onUpdate?.();
+    } else if (dotMessage) {
       const index = messages.indexOf(dotMessage);
       if (index !== -1) messages.splice(index, 1);
       dotMessage = null;

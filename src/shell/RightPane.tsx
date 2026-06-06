@@ -63,6 +63,8 @@ function planStepColor(step: PlanStep, firstPendingStep: number | null) {
 
 function activityJobName(activity: any) {
   if (!activity) return '';
+  const id = activity.id ?? activity.jobId ?? activity.job_id;
+  if (id) return `Job ${id}`;
   return activity.label
     ?? [activity.source, activity.kind, activity.id ? `#${activity.id}` : null].filter(Boolean).join(' ')
     ?? '';
@@ -73,7 +75,7 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
   const firstPending = () => props.plan.find((s) => s.status === 'pending')?.step ?? null;
   const icon = (status: string) =>
     status === 'done' ? '[✓]' : status === 'failed' ? '[✗]' : '[ ]';
-  const title = () => props.jobName ? `Plan · ${props.jobName}` : 'Plan';
+  const title = () => props.jobName ? `Plan : ${props.jobName}` : 'Plan';
   return (
     <box flexShrink={0} flexDirection="column" padding={1}>
       <text width={lineWidth()} fg="#D6DEE8">{fit(title(), lineWidth())}</text>

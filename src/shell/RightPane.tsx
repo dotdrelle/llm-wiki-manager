@@ -59,6 +59,7 @@ function updatedLine(activity: any) {
 function planStepColor(step: PlanStep, firstPendingStep: number | null) {
   if (step.status === 'done') return '#8BD5CA';
   if (step.status === 'failed') return '#F38BA8';
+  if (step.status === 'running') return '#89B4FA';
   if (step.step === firstPendingStep) return '#89B4FA';
   return '#7F8C8D';
 }
@@ -76,7 +77,7 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
   const lineWidth = () => Math.max(8, props.width - 2);
   const firstPending = () => props.plan.find((s) => s.status === 'pending')?.step ?? null;
   const icon = (status: string) =>
-    status === 'done' ? '[✓]' : status === 'failed' ? '[✗]' : '[ ]';
+    status === 'done' ? '[✓]' : status === 'failed' ? '[✗]' : status === 'running' ? '[…]' : '[ ]';
   const title = () => props.jobName ? `Plan : ${props.jobName}` : 'Plan';
   return (
     <box flexShrink={0} flexDirection="column" padding={1}>

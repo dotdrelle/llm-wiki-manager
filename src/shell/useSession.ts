@@ -3,7 +3,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { createMemo, createSignal, onCleanup } from 'solid-js';
 import { formatMcpToolResult, callMcpTool } from '../core/mcp.js';
 import { parseJsonText, rememberActivityFromPayload, sessionActivities } from '../core/activity.js';
-import { matchCompletedToPlan, formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
+import { syncActivitiesToPlan, formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
 import type { ActiveFileEditor } from './FileEditorDialog';
 import {
   completionContext,
@@ -131,6 +131,12 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
             server: activity.poll.server,
             tool: activity.poll.tool,
           })) {
+            const plan = (session as any).headlessPlan;
+            const updatedActivities = sessionActivities(session);
+            if (plan) {
+              syncActivitiesToPlan(plan, updatedActivities);
+              (session as any)._onPlanUpdate?.();
+            }
             refresh();
             const updated = sessionActivities(session).find((a) => a.key === key);
             if (updated) {
@@ -143,10 +149,6 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
             if (updated?.terminal && !matchedActivityKeys.has(key)) {
               matchedActivityKeys.add(key);
               const plan = (session as any).headlessPlan;
-              if (plan) {
-                matchCompletedToPlan(plan, [updated]);
-                (session as any)._onPlanUpdate?.();
-              }
               const stillRunning = sessionActivities(session).filter((a) => !a.terminal && a.poll);
               const pendingSteps = (plan ?? []).filter((s: any) => s.status === 'pending');
               if (stillRunning.length === 0 && pendingSteps.length > 0 && !agent.busy()) {

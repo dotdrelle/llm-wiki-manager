@@ -8,6 +8,7 @@ import { buildAgentSystemPrompt, buildLimitedAgentResponse } from '../agent/grap
 import { handleSlashCommand } from '../commands/slash.js';
 import { serviceDescription, serviceNames as composeServiceNames } from '../core/compose.js';
 import { rememberActivityFromPayload, sessionActivities } from '../core/activity.js';
+import { syncActivitiesToPlan } from '../core/plan.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { listSkills } from '../core/skills.js';
 import { listWikircProfiles } from '../core/wikirc.js';
@@ -1114,7 +1115,10 @@ async function runTuiShell({ agent, packageJson, session }) {
         .then((result) => {
           const payload = parseJsonText(formatMcpToolResult(result));
           if (rememberActivityFromPayload(session, payload, { server: activity.poll.server, tool: activity.poll.tool })
-            || rememberProductionActivity(session, payload)) rerender();
+            || rememberProductionActivity(session, payload)) {
+            syncActivitiesToPlan(session.headlessPlan, sessionActivities(session));
+            rerender();
+          }
         })
         .catch(() => {
           // Keep the last known status visible; transient MCP errors should not interrupt typing.

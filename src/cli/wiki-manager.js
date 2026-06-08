@@ -7,7 +7,7 @@ import { handleSlashCommand, printHelp, printVersion } from '../commands/slash.j
 import { runShell } from '../shell/repl.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { parseJsonText, sessionActivities, rememberActivityFromPayload } from '../core/activity.js';
-import { extractHeadlessPlan, matchCompletedToPlan, formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
+import { extractHeadlessPlan, syncActivitiesToPlan, formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageJsonPath = resolve(__dirname, '../../package.json');
@@ -115,6 +115,7 @@ async function runHeadlessActivityLoop(session, log, { wait, timeoutMs }) {
         const result = await callMcpTool(session.mcp, activity.poll.server, activity.poll.tool, activity.poll.args ?? {});
         const payload = parseJsonText(formatMcpToolResult(result));
         rememberActivityFromPayload(session, payload, { server: activity.poll.server, tool: activity.poll.tool });
+        syncActivitiesToPlan(session.headlessPlan, sessionActivities(session));
         const updated = sessionActivities(session).find((a) => a.key === key);
         if (updated) {
           const line = `activity-loop: ${updated.label} → ${updated.status}${updated.error ? ` — ${updated.error}` : ''}`;
@@ -224,7 +225,7 @@ async function runHeadlessAgenticLoop(agent, session, initialInput, log, { timeo
 
     if (timedOut || exitCode !== 0) return { exitCode };
 
-    matchCompletedToPlan(session.headlessPlan, completed);
+    syncActivitiesToPlan(session.headlessPlan, completed);
 
     const summary = formatCompletedActivities(completed);
     log.push(`agentic-loop: completed activities:\n${summary}`);

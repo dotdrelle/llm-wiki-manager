@@ -36,15 +36,16 @@ function activityColor(status: string) {
 }
 
 function activityLine(activity: any) {
-  const percent = Number.isFinite(Number(activity?.progress?.percent))
-    ? `${Math.round(Number(activity.progress.percent))}%`
-    : null;
-  const step = activity?.progress?.step ?? activity?.progress?.currentStep ?? null;
-  return [
-    activity?.status ?? 'unknown',
-    step,
-    percent,
-  ].filter(Boolean).join(' · ');
+  const step = activity?.progress?.step ?? activity?.progress?.phase ?? activity?.progress?.currentStep ?? null;
+  return [activity?.status ?? 'unknown', step].filter(Boolean).join(' · ');
+}
+
+function activityPercentBadge(activity: any): { text: string; bg: string; fg: string } | null {
+  const val = Number(activity?.progress?.percent);
+  if (!Number.isFinite(val)) return null;
+  const pct = Math.round(val);
+  if (pct >= 100) return { text: ` 100% `, bg: '#15803d', fg: '#dcfce7' };
+  return { text: ` ${pct}% `, bg: '#1e3a5f', fg: '#93c5fd' };
 }
 
 function updatedLine(activity: any) {
@@ -104,9 +105,24 @@ export function ActivityPanel(props: { activities: any[]; width: number }) {
               <text width={lineWidth()} fg={activityColor(activity.status)}>
                 {fit(activity.label ?? `${activity.source ?? 'mcp'} ${activity.kind ?? 'job'}`, lineWidth())}
               </text>
-              <text width={lineWidth()} fg="#AAB7C4">
-                {fit(activityLine(activity), lineWidth())}
-              </text>
+              <box height={1} flexDirection="row">
+                {(() => {
+                  const badge = activityPercentBadge(activity);
+                  const badgeLen = badge ? badge.text.length : 0;
+                  return (
+                    <>
+                      <text width={lineWidth() - badgeLen} fg="#AAB7C4">
+                        {fit(activityLine(activity), lineWidth() - badgeLen)}
+                      </text>
+                      {badge && (
+                        <text width={badgeLen} bg={badge.bg} fg={badge.fg}>
+                          {badge.text}
+                        </text>
+                      )}
+                    </>
+                  );
+                })()}
+              </box>
               <text width={lineWidth()} fg="#7F8C8D">
                 {fit(updatedLine(activity), lineWidth())}
               </text>

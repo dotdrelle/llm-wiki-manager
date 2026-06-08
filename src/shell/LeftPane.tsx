@@ -46,10 +46,10 @@ function HelpCardPanel(props: { card: HelpCard; width: number }) {
   return (
     <box
       width={props.width}
-      height={6}
+      height={4}
       flexDirection="column"
-      border
-      borderStyle="single"
+      border={['left']}
+      borderStyle="heavy"
       borderColor="#5DADE2"
       backgroundColor="#111318"
       paddingX={1}
@@ -76,7 +76,7 @@ function WelcomeHelpPanels(props: { width: number }) {
       <text height={1} fg="#D6DEE8">Quick help</text>
       <For each={rows}>
         {(row) => (
-          <box height={7} flexDirection="row" gap={2} overflow="hidden">
+          <box height={5} flexDirection="row" gap={2} overflow="hidden">
             <For each={row}>
               {(card) => <HelpCardPanel card={card} width={cardWidth} />}
             </For>

@@ -258,6 +258,13 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     }
   }
 
+  function abort() {
+    agent.abort();
+    (session as any).headlessPlan = null;
+    matchedActivityKeys.clear();
+    refresh();
+  }
+
   return {
     session,
     messages,
@@ -276,7 +283,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     conversationScroll,
     scrollConversation,
     busy: agent.busy,
-    abort: agent.abort,
+    abort,
     submitInput,
     completeSelected,
     dismissSlash,

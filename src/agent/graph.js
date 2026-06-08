@@ -177,7 +177,7 @@ function formatProductionProgress(payload) {
     ? null
     : progress?.detail;
   const parts = [
-    progress?.currentStep ?? job?.type,
+    progress?.phase ?? progress?.currentStep ?? job?.type,
     job?.status ?? payload?.status,
     percent,
     fileProgress,
@@ -320,7 +320,7 @@ export function buildAgentSystemPrompt(state) {
     'Disambiguate export requests carefully.',
     'Confluence/CME/source export means exporting external Confluence sources into raw/untracked: use cme MCP tools (`cme_export_run`, then `cme_export_status`). Never use production `type=export` for Confluence source export.',
     'Wiki/deliverable/publication export means exporting generated deliverables from the wiki: use production MCP tools (`production_start_job` with `type:"export"` or pipeline steps). Require the deliverable path when exporting deliverables.',
-    'For ingest/build/export/polish/pipeline workflows, use production MCP tools. Do not route these through direct /wiki shortcuts. To chain multiple sequential steps (e.g. build then polish), always use a single production_start_job call with type="pipeline" and steps=["build","polish"] — never start them as separate jobs: the first job is asynchronous and the second would run before it completes. Do not ask the user to confirm between steps; start the pipeline call directly.',
+    'For ingest/build/export/polish/pipeline workflows, use production MCP tools. Do not route these through direct /wiki shortcuts. To chain multiple sequential steps (e.g. build then polish), always use a single production_start_job call with type="pipeline" and steps=["build","polish"] — never start them as separate jobs: the first job is asynchronous and the second would run before it completes. For existing deliverables where content stability matters, pass stabilize:true so the build step preserves unchanged sections; keep polish in the pipeline when publication output is requested. Do not ask the user to confirm between steps; start the pipeline call directly.',
     'Long-running MCP jobs: do not call the same status tool more than once consecutively. When chaining jobs sequentially: (1) start the job, report job/activity id and status; (2) check status once — if done, proceed to the next step immediately; (3) if still running, report status, list the remaining steps, and return control; (4) when re-invoked, check status first, then proceed. Do not spin-poll (status → status → status with no new action between). The shell activity panel monitors non-terminal jobs automatically.',
     'For diagnostics, use /wiki run doctor when the user asks for doctor. Use /new <name> [path] to create/configure a new workspace. Use /wiki for index, or /wiki run index through the explicit backup hatch. Use /wiki run init only for explicit current-workspace llm-wiki init.',
     'If an action requires tools or skills not available yet, explain the limitation and name the expected primitive.',

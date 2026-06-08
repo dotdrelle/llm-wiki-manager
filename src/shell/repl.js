@@ -664,7 +664,7 @@ function productionActivityFromPayload(payload) {
     ? null
     : progress?.detail;
   const detail = [
-    progress?.currentStep ?? job?.type ?? 'production',
+    progress?.phase ?? progress?.currentStep ?? job?.type ?? 'production',
     status,
     percent,
     fileProgress,

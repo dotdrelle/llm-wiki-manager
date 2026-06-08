@@ -207,6 +207,9 @@ heuristics. If a fast path is needed, keep it explicit, as `/chat` is.
   name, env file, ports, and volumes are used. Use `./wiki-workspace` only when
   working directly from the source checkout.
 - Keep the default production pipeline as `ingest`, `build`, `export`, `polish`.
+- For production builds where existing deliverables should remain stable, pass
+  `stabilize: true` to `production_start_job`; this applies only to build steps
+  and preserves unchanged sections from the previous deliverable.
 - The legacy `copy` step is only for deployments that explicitly configure
   import mappings.
 - Do not put machine-specific settings in `docker-compose.yml`.

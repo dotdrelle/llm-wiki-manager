@@ -40,7 +40,7 @@ export function normalizeActivity(activity, fallback = {}) {
   const kind = activity.kind ?? activity.type ?? fallback.kind ?? 'job';
   const status = activity.status ?? activity.state ?? fallback.status ?? 'running';
   const progress = activity.progress && typeof activity.progress === 'object' ? activity.progress : {};
-  const step = progress.step ?? progress.currentStep ?? activity.step ?? activity.currentStep ?? null;
+  const step = progress.step ?? progress.phase ?? progress.currentStep ?? activity.step ?? activity.currentStep ?? null;
   const percent = Number.isFinite(Number(progress.percent ?? activity.percent))
     ? Number(progress.percent ?? activity.percent)
     : null;
@@ -94,7 +94,7 @@ function productionActivityFromPayload(payload) {
   const progressDetail = batchProgress && /^batch\s+\d+\/\d+/i.test(String(progress?.detail ?? ''))
     ? null
     : progress?.detail;
-  const step = progress?.currentStep ?? job?.type ?? 'production';
+  const step = progress?.phase ?? progress?.currentStep ?? job?.type ?? 'production';
   const detail = [
     step,
     status,
@@ -110,7 +110,7 @@ function productionActivityFromPayload(payload) {
   return normalizeActivity({
     id: jobId,
     source: 'production',
-    kind: job?.type ?? payload?.type ?? progress?.currentStep ?? 'job',
+    kind: job?.type ?? payload?.type ?? progress?.phase ?? progress?.currentStep ?? 'job',
     label: detail ? `Production: ${detail}` : `Production: ${status}`,
     status,
     progress: {
@@ -174,7 +174,7 @@ export function formatActivityLine(activity) {
   const percent = Number.isFinite(Number(activity.progress?.percent))
     ? `${Math.round(Number(activity.progress.percent))}%`
     : null;
-  const step = activity.progress?.step ?? activity.progress?.currentStep ?? null;
+  const step = activity.progress?.step ?? activity.progress?.phase ?? activity.progress?.currentStep ?? null;
   const parts = [
     activity.label,
     activity.status,

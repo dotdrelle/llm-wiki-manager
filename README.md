@@ -129,11 +129,12 @@ pnpm start         # alias for bun start
 pnpm run start:node  # fallback: legacy repl.js shell under Node
 ```
 
-The shell is agent-first:
+The interactive shell is chat-first:
 
 - input starting with `/` runs a deterministic shell primitive;
-- any other input goes to the LangGraph orchestrator;
-- `/chat <message>` bypasses agent tools for direct LLM chat;
+- by default, any other input goes directly to the configured LLM without tools;
+- `/agent` switches free text to the LangGraph orchestrator with MCP tools;
+- `/chat` switches free text back to direct LLM chat;
 - the visible agent name is `dot`;
 - conversation history is separated per workspace;
 - Ctrl+C interrupts active LLM/MCP calls; Ctrl+C twice exits when idle.
@@ -169,7 +170,8 @@ Useful primitives:
 /skills
 /skills show <name>
 /skills run <name>
-/chat <message>
+/chat
+/agent
 /clear
 ```
 

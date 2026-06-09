@@ -1,7 +1,7 @@
 import { createSignal } from 'solid-js';
 import { runLine } from './repl.js';
 
-export function useAgent(props: { agent: unknown; packageJson: Record<string, unknown>; session: Record<string, any>; refresh: () => void; addLog: (line: string) => void }) {
+export function useAgent(props: { agent: unknown; packageJson: Record<string, unknown>; session: Record<string, any>; chatMode: () => boolean; refresh: () => void; addLog: (line: string) => void }) {
   const [busy, setBusy] = createSignal(false);
   const [abortController, setAbortController] = createSignal<AbortController | null>(null);
 
@@ -23,6 +23,7 @@ export function useAgent(props: { agent: unknown; packageJson: Record<string, un
         session: props.session,
         onUpdate: props.refresh,
         onStep: props.addLog,
+        chatMode: props.chatMode(),
       });
       props.refresh();
       return result;

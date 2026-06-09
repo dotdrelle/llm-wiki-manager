@@ -8,7 +8,7 @@ import { buildAgentSystemPrompt, buildLimitedAgentResponse } from '../agent/grap
 import { handleSlashCommand } from '../commands/slash.js';
 import { serviceDescription, serviceNames as composeServiceNames } from '../core/compose.js';
 import { rememberActivityFromPayload, sessionActivities } from '../core/activity.js';
-import { syncActivitiesToPlan } from '../core/plan.js';
+import { syncActivitiesToPlan, ensurePlanFromActivity } from '../core/plan.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { listSkills } from '../core/skills.js';
 import { listWikircProfiles } from '../core/wikirc.js';
@@ -65,7 +65,8 @@ const COMMAND_COMPLETION_DESCRIPTIONS = {
   '/wiki': 'Run llm-wiki commands for the active workspace.',
   '/skills': 'List workspace skills.',
   '/clear': 'Clear the conversation screen.',
-  '/chat': 'Stream a direct chat answer without agent tools.',
+  '/chat': 'Switch free text to direct LLM chat without tools.',
+  '/agent': 'Switch free text to the LangGraph agent with tools.',
 };
 
 const SUBCOMMAND_COMPLETION_DESCRIPTIONS = {
@@ -94,7 +95,8 @@ export function createSession() {
     wikircConfig: null,
     language: null,
     mcp: null,
-    commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'clear', 'chat'],
+    commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'clear', 'chat', 'agent'],
+    chatMode: true,
     llm: null,
     activities: {},
     productionActivity: null,
@@ -925,54 +927,54 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
   return {};
 }
 
-export async function runLine(line, { agent, packageJson, session, onUpdate, onStep }) {
+async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
+  if (!session.llm?.stream) {
+    conversationMessages(session).push({ role: 'command', content: 'Direct chat unavailable: no streaming LLM configured.' });
+    return { exit: false };
+  }
+  const messages = conversationMessages(session);
+  const history = toConversationHistory(messages);
+  messages.push({ role: 'user', content: input });
+  onUpdate?.();
+  const dotMessage = { role: 'dot', content: '' };
+  messages.push(dotMessage);
+  onUpdate?.();
+  try {
+    onStep?.('Chat: streaming direct answer…');
+    for await (const delta of session.llm.stream({
+      system: buildDirectChatSystemPrompt(session),
+      messages: [...history, { role: 'user', content: input }],
+      signal: session._abortSignal,
+    })) {
+      const cleanDelta = stripDsmlArtifacts(delta);
+      if (cleanDelta) {
+        dotMessage.content += cleanDelta;
+        onUpdate?.();
+      }
+    }
+    dotMessage.content = stripDsmlArtifacts(dotMessage.content).trimEnd();
+    if (!dotMessage.content.trim()) {
+      dotMessage.content = buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
+      onUpdate?.();
+    }
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      messages.pop();
+      return { exit: false, aborted: true };
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    dotMessage.content = buildLimitedAgentResponse({ input, session }, `LLM indisponible: ${message}`);
+    onUpdate?.();
+  }
+  return { exit: false };
+}
+
+export async function runLine(line, { agent, packageJson, session, onUpdate, onStep, chatMode = session.chatMode ?? true }) {
   const trimmed = stripHtml(line).trim();
   if (!trimmed) return { exit: false };
 
-  if (trimmed.startsWith('/chat')) {
-    const directInput = trimmed.replace(/^\/chat(?:\s+|$)/, '').trim();
-    if (!directInput) {
-      conversationMessages(session).push({ role: 'command', content: 'Usage: /chat <message>' });
-      return { exit: false };
-    }
-    if (!session.llm?.stream) {
-      conversationMessages(session).push({ role: 'command', content: 'Direct chat unavailable: no streaming LLM configured.' });
-      return { exit: false };
-    }
-    const messages = conversationMessages(session);
-    const history = toConversationHistory(messages);
-    messages.push({ role: 'user', content: directInput });
-    onUpdate?.();
-    const dotMessage = { role: 'dot', content: '' };
-    messages.push(dotMessage);
-    onUpdate?.();
-    try {
-      onStep?.('Chat: streaming direct answer…');
-      for await (const delta of session.llm.stream({
-        system: buildDirectChatSystemPrompt(session),
-        messages: [...history, { role: 'user', content: directInput }],
-        signal: session._abortSignal,
-      })) {
-        const cleanDelta = stripDsmlArtifacts(delta);
-        if (cleanDelta) {
-          dotMessage.content += cleanDelta;
-          onUpdate?.();
-        }
-      }
-      dotMessage.content = stripDsmlArtifacts(dotMessage.content).trimEnd();
-      if (!dotMessage.content.trim()) {
-        dotMessage.content = buildLimitedAgentResponse({ input: directInput, session }, 'LLM stream ended without content');
-        onUpdate?.();
-      }
-    } catch (err) {
-      if (err.name === 'AbortError') {
-        messages.pop();
-        return { exit: false, aborted: true };
-      }
-      const message = err instanceof Error ? err.message : String(err);
-      dotMessage.content = buildLimitedAgentResponse({ input: directInput, session }, `LLM indisponible: ${message}`);
-      onUpdate?.();
-    }
+  if (/^\/chat(?:\s|$)/.test(trimmed) && trimmed.replace(/^\/chat(?:\s+|$)/, '').trim()) {
+    conversationMessages(session).push({ role: 'command', content: 'Usage: /chat\nThen type your message in chat mode.' });
     return { exit: false };
   }
 
@@ -984,7 +986,10 @@ export async function runLine(line, { agent, packageJson, session, onUpdate, onS
       const parts = trimmed.split(/\s+/);
       if (parts[0] === '/mcp' && parts[1] === 'call' && parts[2]) {
         const payload = parseJsonText(result.output);
-        if (!rememberActivityFromPayload(session, payload, { server: parts[2], tool: parts[3] })) {
+        const savedActivity = rememberActivityFromPayload(session, payload, { server: parts[2], tool: parts[3] });
+        if (savedActivity) {
+          ensurePlanFromActivity(session, savedActivity);
+        } else {
           rememberProductionActivity(session, payload);
         }
       }
@@ -995,12 +1000,13 @@ export async function runLine(line, { agent, packageJson, session, onUpdate, onS
       const agentResult = await runAgentTurn(result.agentTrigger, { agent, session, onUpdate, onStep });
       if (agentResult.aborted) return { exit: false, aborted: true };
     }
-    return { exit: Boolean(result.exit) };
+    return { exit: Boolean(result.exit), setMode: result.setMode };
   }
 
-  const messages = conversationMessages(session);
-  messages.push({ role: 'user', content: trimmed });
-  onUpdate?.();
+  if (chatMode) {
+    return runDirectChatTurn(trimmed, { session, onUpdate, onStep });
+  }
+
   const agentResult = await runAgentTurn(trimmed, { agent, session, onUpdate, onStep });
   if (agentResult.aborted) return { exit: false, aborted: true };
   return { exit: false };
@@ -1114,8 +1120,9 @@ async function runTuiShell({ agent, packageJson, session }) {
       void callMcpTool(session.mcp, activity.poll.server, activity.poll.tool, activity.poll.args ?? {})
         .then((result) => {
           const payload = parseJsonText(formatMcpToolResult(result));
-          if (rememberActivityFromPayload(session, payload, { server: activity.poll.server, tool: activity.poll.tool })
-            || rememberProductionActivity(session, payload)) {
+          const polledActivity = rememberActivityFromPayload(session, payload, { server: activity.poll.server, tool: activity.poll.tool });
+          if (polledActivity) ensurePlanFromActivity(session, polledActivity);
+          if (polledActivity || rememberProductionActivity(session, payload)) {
             syncActivitiesToPlan(session.headlessPlan, sessionActivities(session));
             rerender();
           }

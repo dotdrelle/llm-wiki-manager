@@ -152,6 +152,7 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
         prompt={state.prompt()}
         input={state.input()}
         busy={state.busy()}
+        chatMode={state.chatMode()}
         chatFocused={!state.activeEditor()}
         setInput={state.setInput}
         submit={submit}

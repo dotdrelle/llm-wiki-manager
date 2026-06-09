@@ -20,6 +20,14 @@ function activityKey(activity) {
   return `${source}:${id ?? activity?.kind ?? activity?.label ?? 'activity'}`;
 }
 
+function normalizePlanSteps(steps) {
+  if (!Array.isArray(steps) || steps.length === 0) return null;
+  return steps.map((s, i) => ({
+    id: s != null && s.id != null ? String(s.id) : String(i + 1),
+    label: s != null ? String(s.label ?? s.description ?? s.name ?? s.id ?? (i + 1)) : String(i + 1),
+  }));
+}
+
 function normalizePoll(poll) {
   if (!poll || typeof poll !== 'object') return null;
   const server = poll.server ?? poll.source ?? poll.agent;
@@ -44,6 +52,11 @@ export function normalizeActivity(activity, fallback = {}) {
   const percent = Number.isFinite(Number(progress.percent ?? activity.percent))
     ? Number(progress.percent ?? activity.percent)
     : null;
+  const stepId = progress.stepId != null ? String(progress.stepId) : null;
+  const stepIndex = Number.isFinite(Number(progress.stepIndex)) ? Number(progress.stepIndex) : null;
+  const stepTotal = Number.isFinite(Number(progress.stepTotal)) ? Number(progress.stepTotal) : null;
+  const rawPlan = activity.plan && typeof activity.plan === 'object' ? activity.plan : null;
+  const planSteps = normalizePlanSteps(rawPlan?.steps);
   const label = activity.label ?? [
     source,
     kind,
@@ -60,7 +73,11 @@ export function normalizeActivity(activity, fallback = {}) {
       ...progress,
       ...(step ? { step: String(step) } : {}),
       ...(percent !== null ? { percent } : {}),
+      ...(stepId !== null ? { stepId } : {}),
+      ...(stepIndex !== null ? { stepIndex } : {}),
+      ...(stepTotal !== null ? { stepTotal } : {}),
     },
+    plan: planSteps ? { steps: planSteps } : null,
     poll: normalizePoll(activity.poll ?? fallback.poll),
     startedAt: activity.startedAt ?? fallback.startedAt ?? null,
     updatedAt: activity.updatedAt ?? new Date().toISOString(),
@@ -141,7 +158,7 @@ export function extractActivity(payload, context = {}) {
 
 export function rememberActivity(session, activity) {
   const normalized = normalizeActivity(activity);
-  if (!normalized) return false;
+  if (!normalized) return null;
   session.activities ??= {};
   session.activities[normalized.key] = {
     ...(session.activities[normalized.key] ?? {}),
@@ -156,7 +173,7 @@ export function rememberActivity(session, activity) {
       updatedAt: normalized.updatedAt,
     };
   }
-  return true;
+  return normalized;
 }
 
 export function rememberActivityFromPayload(session, payload, context = {}) {

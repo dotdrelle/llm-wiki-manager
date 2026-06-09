@@ -225,10 +225,12 @@ export function ChatInput(props: {
   prompt: string;
   value: string;
   busy: boolean;
+  chatMode: boolean;
   focused: boolean;
   onInput: (value: string) => void;
   onSubmit: (value?: string) => void;
 }) {
+  const idleColor = () => props.chatMode ? '#22C55E' : '#06B6D4';
   return (
     <box
       height={3}
@@ -237,9 +239,9 @@ export function ChatInput(props: {
       alignItems="center"
       border
       borderStyle="single"
-      borderColor={props.busy ? '#FBBF24' : '#4B5563'}
+      borderColor={props.busy ? '#FBBF24' : idleColor()}
     >
-      <text fg="#8BD5CA">{props.busy ? 'working...' : props.prompt}</text>
+      <text fg={props.busy ? '#FBBF24' : idleColor()}>{props.busy ? 'working...' : props.prompt}</text>
       <input
         flexGrow={1}
         focused={props.focused && !props.busy}
@@ -262,6 +264,7 @@ export function LeftPane(props: {
   prompt: string;
   input: string;
   busy: boolean;
+  chatMode: boolean;
   chatFocused: boolean;
   setInput: (value: string) => void;
   submit: (value?: string) => void;
@@ -271,11 +274,18 @@ export function LeftPane(props: {
   scrollConversation: (delta: number) => void;
   spinnerFrame: string;
 }) {
+  const modeColor = () => props.chatMode ? '#22C55E' : '#06B6D4';
+  const modeLabel = () => props.chatMode ? 'CHAT MODE  direct LLM, no tools' : 'AGENT MODE  LangGraph + MCP tools';
   return (
     <box width={props.width} height="100%" flexDirection="column" padding={1} overflow="hidden">
-      <box height={2} flexDirection="row">
-        <text fg="#D6DEE8">{props.title}</text>
-        <text fg="#7F8C8D">  {props.statusLine}</text>
+      <box height={2} flexDirection="column">
+        <box height={1} flexDirection="row" backgroundColor={modeColor()} paddingX={1}>
+          <text fg="#0B1020">{modeLabel()}</text>
+        </box>
+        <box height={1} flexDirection="row">
+          <text fg="#D6DEE8">{props.title}</text>
+          <text fg="#7F8C8D">  {props.statusLine}</text>
+        </box>
       </box>
       {props.showWelcome ? (
         <WelcomeHelpPanels width={props.conversationColumns} />
@@ -293,6 +303,7 @@ export function LeftPane(props: {
         prompt={props.prompt}
         value={props.input}
         busy={props.busy}
+        chatMode={props.chatMode}
         focused={props.chatFocused}
         onInput={props.setInput}
         onSubmit={props.submit}

@@ -43,9 +43,12 @@ The interactive shell is the product surface.
 
 - The visible agent is `dot`.
 - Lines beginning with `/` execute deterministic primitives.
-- Other lines go to the LangGraph orchestrator.
-- `/chat <message>` is the explicit direct-chat escape hatch and must not use
-  agent tools.
+- Startup defaults to chat mode: free-text lines go directly to the configured
+  LLM without tools.
+- `/agent` switches free-text lines to the LangGraph orchestrator with MCP
+  tools. `/chat` switches back to direct LLM chat.
+- The active mode is persistent for the current session and is visible in the
+  OpenTUI left-pane header and input prompt.
 - Conversation history is scoped by workspace for the current process.
 - The global context is used only before a workspace is loaded.
 - Ctrl+C while busy aborts active LLM/MCP work; Ctrl+C when idle exits.
@@ -132,15 +135,26 @@ Important: `wiki__plan_set` and `wiki__plan_done` are the only internal
 - `session.activities` is the canonical registry (keyed by `source:id`).
 - `session.productionActivity` is a legacy mirror for production jobs.
 - A background `setInterval` in `repl.js` polls non-terminal activities using their `poll` descriptor at `intervalMs` (min 1000 ms, default 2500 ms).
-- The divider line shows the first non-terminal activity; lower panel shows recent `_onStep` lines.
+- **ActivityPanel rendering** (`RightPane.tsx`):
+  - Line 1 (title): `progress.label` when present (specific, e.g. "Ingest my-doc.md"), falling back to `activity.label`.
+  - Line 2 (status): `status · progress.detail` when present (e.g. "running · Préparation LLM", "running · Source 3/10", "running · LLM en attente quota, reprise dans 45s"), falling back to `status · phase`.
+  - Line 3: source · id · age.
+  - Percent badge on line 2 from `progress.percent`.
+- **LogPanel**: `useSession.ts` records each `progress.detail` change with a timestamp and the `progress.label` as prefix, giving a timestamped trace of what each job was doing (e.g. LLM call timing).
 - When the Plan panel can associate itself with an activity that has an id, its title should prefer `Plan : Job <id>` over repeating the activity label, since progress details already appear in Activity/log panels.
 
 **Plan tracking (interactive and headless):**
 
-- The agent must call `wiki__plan_set(steps)` before ANY production action or MCP-driven task — including single-step jobs. The plan is displayed in the right panel and communicated to agents.
+- Prefer MCP tools that declare their own plan via `_activity.plan.steps`.
+  When such a tool returns `_activity`, the shell creates and tracks the visible
+  plan automatically.
+- The agent should call `wiki__plan_set(steps)` only when the tool cannot
+  declare its own plan or when the task spans multiple independent tools.
 - `wiki__plan_set` / `wiki__plan_done` call `session._onPlanUpdate?.()` to trigger an immediate SolidJS refresh in the TUI. In headless mode `_onPlanUpdate` is undefined and the call is a no-op.
 - In headless: fallback `extractHeadlessPlan` parses a numbered list from the first turn's text response if the agent did not call `wiki__plan_set`.
-- Each turn: agent calls `wiki__plan_done(step, status)` for synchronous steps; async MCP jobs are auto-matched to plan steps by token overlap in `matchCompletedToPlan`.
+- Each turn: agent calls `wiki__plan_done(step, status)` for synchronous steps;
+  async MCP jobs are matched to plan steps first by structured fields
+  (`progress.stepId`, `progress.stepIndex`) and then by legacy token overlap.
 - Re-invocation prompt (headless agentic loop): original task + `formatPlanStatus` (`[✓]`/`[✗]`/`[ ]`) + completed activities summary.
 - If a headless turn starts no async activity but the plan still has pending steps, re-invoke the agent with plan status instead of declaring completion. This supports synchronous setup/config/mailer steps.
 - Production ingest/build/export/polish should normally be represented as one plan step backed by one `production_start_job(type="pipeline", steps=[...])`; do not split those internal production phases into separate manager-level async steps unless they will be launched as separate jobs intentionally.
@@ -180,8 +194,8 @@ It must not become arbitrary shell execution. Do not expose `/mcp call`,
 `/wiki run`, `/start`, `/stop`, `/logs`, `/exit`, or raw system commands through
 this tool without a separate confirmation/allowlist design.
 
-Do not route natural-language input away from the orchestrator by keyword
-heuristics. If a fast path is needed, keep it explicit, as `/chat` is.
+Do not route natural-language input by keyword heuristics. The user controls
+the route explicitly with `/chat` and `/agent`.
 
 ## Workspace Rules
 

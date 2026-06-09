@@ -7,12 +7,12 @@ import { handleSlashCommand, printHelp, printVersion } from '../commands/slash.j
 import { runShell } from '../shell/repl.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { parseJsonText, sessionActivities, rememberActivityFromPayload } from '../core/activity.js';
-import { extractHeadlessPlan, syncActivitiesToPlan, formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
+import { extractHeadlessPlan, syncActivitiesToPlan, formatPlanStatus, formatCompletedActivities, ensurePlanFromActivity } from '../core/plan.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageJsonPath = resolve(__dirname, '../../package.json');
 const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
-const SHELL_COMMANDS = ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'clear', 'chat'];
+const SHELL_COMMANDS = ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'clear', 'chat', 'agent'];
 
 function valueAfter(argv, flag) {
   const index = argv.indexOf(flag);
@@ -30,6 +30,7 @@ function createSession() {
     language: null,
     mcp: null,
     commands: SHELL_COMMANDS,
+    chatMode: true,
     llm: null,
     packageJson,
     conversations: { __global__: [] },
@@ -114,7 +115,8 @@ async function runHeadlessActivityLoop(session, log, { wait, timeoutMs }) {
       try {
         const result = await callMcpTool(session.mcp, activity.poll.server, activity.poll.tool, activity.poll.args ?? {});
         const payload = parseJsonText(formatMcpToolResult(result));
-        rememberActivityFromPayload(session, payload, { server: activity.poll.server, tool: activity.poll.tool });
+        const polledActivity = rememberActivityFromPayload(session, payload, { server: activity.poll.server, tool: activity.poll.tool });
+        if (polledActivity) ensurePlanFromActivity(session, polledActivity);
         syncActivitiesToPlan(session.headlessPlan, sessionActivities(session));
         const updated = sessionActivities(session).find((a) => a.key === key);
         if (updated) {
@@ -267,6 +269,7 @@ async function runHeadless(argv, agent) {
 
   const session = createSession();
   session.headless = true;
+  session.chatMode = false;
   const step = (line) => {
     log.push(line);
     console.log(line);

@@ -35,7 +35,7 @@ export function FileEditorDialog(props: {
   const save = () => {
     const content = String(textareaRef?.plainText ?? draftContent() ?? props.editor?.content ?? '');
     const result = props.onSave(content);
-    if (!result.ok) setError(result.error);
+    if (result.ok === false) setError(result.error);
   };
 
   return (

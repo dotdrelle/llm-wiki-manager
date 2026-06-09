@@ -1,3 +1,26 @@
+export function ensurePlanFromActivity(session, activity) {
+  if (!activity || session.headlessPlan) return;
+  const steps = activity.plan?.steps;
+  if (Array.isArray(steps) && steps.length > 0) {
+    session.headlessPlan = steps.map((s, i) => ({
+      step: i + 1,
+      id: s.id ?? null,
+      description: s.label,
+      status: 'pending',
+      _activityKey: activity.key,
+    }));
+  } else {
+    session.headlessPlan = [{
+      step: 1,
+      id: null,
+      description: activity.label,
+      status: 'pending',
+      _activityKey: activity.key,
+    }];
+  }
+  session._onPlanUpdate?.();
+}
+
 export function extractHeadlessPlan(text) {
   const steps = [];
   for (const line of text.split('\n')) {
@@ -16,16 +39,48 @@ export function matchCompletedToPlan(plan, completed) {
 export function syncActivitiesToPlan(plan, activities) {
   if (!plan) return;
   for (const activity of activities ?? []) {
-    const step = findMatchingPlanStep(plan, activity);
-    if (!step) continue;
     const terminal = Boolean(activity.terminal);
     const failed = ['failed', 'error', 'cancelled', 'canceled'].includes(String(activity.status).toLowerCase());
-    if (terminal) {
-      step.status = failed ? 'failed' : 'done';
+    const actKey = activity.key ?? activity.id ?? activity.jobId ?? null;
+    const matched = findMatchingPlanStepByStructure(plan, activity) ?? findMatchingPlanStep(plan, activity);
+    if (!matched) continue;
+
+    if (terminal && !failed) {
+      // Structured plan: mark all steps owned by this activity as done.
+      // Legacy plan (no _activityKey): mark all steps up to matched as done (sequential assumption).
+      const ownedSteps = actKey ? plan.filter((s) => s._activityKey === actKey) : [];
+      if (ownedSteps.length > 0) {
+        for (const step of ownedSteps) {
+          if (step.status !== 'failed') {
+            step.status = 'done';
+            step.activityKey = actKey;
+          }
+        }
+      } else {
+        for (const step of plan) {
+          if (step.status === 'failed') continue;
+          if (step.step <= matched.step) {
+            step.status = 'done';
+            step.activityKey = actKey;
+          }
+        }
+      }
+    } else if (terminal && failed) {
+      matched.status = 'failed';
+      matched.activityKey = actKey;
     } else if (!failed) {
-      step.status = 'running';
+      // Running: matched step is in progress; preceding pending steps are implicitly done.
+      for (const step of plan) {
+        if (step.status === 'failed') continue;
+        if (step.step < matched.step && step.status === 'pending') {
+          step.status = 'done';
+          step.activityKey = actKey;
+        } else if (step.step === matched.step) {
+          step.status = 'running';
+          step.activityKey = actKey;
+        }
+      }
     }
-    step.activityKey = activity.key ?? activity.id ?? activity.jobId ?? null;
   }
 }
 
@@ -45,7 +100,28 @@ export function formatCompletedActivities(activities) {
     .join('\n');
 }
 
+function findMatchingPlanStepByStructure(plan, activity) {
+  const actKey = activity.key ?? null;
+  const stepId = activity.progress?.stepId ?? null;
+  const stepIndex = activity.progress?.stepIndex ?? null;
+
+  function compatible(step) {
+    return !step._activityKey || !actKey || step._activityKey === actKey;
+  }
+
+  if (stepId !== null) {
+    const found = plan.find((s) => s.id != null && String(s.id) === stepId && compatible(s));
+    if (found) return found;
+  }
+  if (stepIndex !== null && Number.isFinite(Number(stepIndex))) {
+    const found = plan.find((s) => s.step === Number(stepIndex) && compatible(s));
+    if (found) return found;
+  }
+  return null;
+}
+
 function findMatchingPlanStep(plan, activity) {
+  const actKey = activity.key ?? null;
   const activityTokens = tokenize([
     activity?.source,
     activity?.kind,
@@ -59,6 +135,7 @@ function findMatchingPlanStep(plan, activity) {
   if (activityTokens.length === 0) return null;
 
   const candidates = plan
+    .filter((step) => !step._activityKey || !actKey || step._activityKey === actKey)
     .map((step) => ({
       step,
       score: matchScore(tokenize(step.description), activityTokens),

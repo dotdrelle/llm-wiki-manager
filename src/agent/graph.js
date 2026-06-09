@@ -9,6 +9,7 @@ import {
 import { formatSkillsForAgent } from '../core/skills.js';
 import { handleSlashCommand } from '../commands/slash.js';
 import { formatActivitySummary, rememberActivityFromPayload } from '../core/activity.js';
+import { ensurePlanFromActivity } from '../core/plan.js';
 
 const MAX_TOOL_ITERATIONS = 80;
 const MAX_SPINNER_ARG_LENGTH = 96;
@@ -293,13 +294,14 @@ export function buildAgentSystemPrompt(state) {
       state.session.headless ? 'HEADLESS MODE ACTIVE. Execute the requested skill or task autonomously using available safe primitives and MCP tools. Do not ask for interactive confirmation unless the request is genuinely ambiguous or outside the loaded workspace.' : null,
       '',
       'You have two internal planning tools: wiki__plan_set and wiki__plan_done.',
-      'Call wiki__plan_set before starting ANY production action or MCP-driven task (build, ingest, export, polish, pipeline, CME export, email, etc.). Single-step jobs require a plan too — the plan is displayed in the shell right panel and communicated to agents.',
+      'Prefer MCP tools that declare their own plan via _activity.plan.steps — when such a tool returns _activity, the shell creates and tracks the plan automatically without requiring wiki__plan_set.',
+      'Use wiki__plan_set when the MCP tool cannot declare its own plan or when the task spans multiple independent tools (e.g. CME export then email report). For a single self-describing async job, wiki__plan_set is optional.',
       '',
       'Task startup:',
-      '  1. Call wiki__plan_set(steps=["Step description", ...]) to declare your complete ordered plan.',
-      '     Single step: wiki__plan_set(steps=["Build EAE-REAS-architectures"])',
-      '     Multi-step:  wiki__plan_set(steps=["CME export", "Production pipeline (ingest, build, export, polish)", "Email report"])',
-      '  2. Immediately execute step 1 using the appropriate MCP tool. Do not start step 2 in the same turn.',
+      '  1. If the next MCP tool returns _activity.plan.steps, call that tool directly; the shell will create the visible plan from the returned activity.',
+      '  2. If the tool cannot declare its own plan, call wiki__plan_set(steps=["Step description", ...]) before executing the first step.',
+      '     Multi-tool example: wiki__plan_set(steps=["CME export", "Production pipeline", "Email report"])',
+      '  3. Immediately execute the first step using the appropriate MCP tool. Do not start step 2 in the same turn unless one async pipeline tool owns and declares the whole sequence.',
       '  For synchronous steps (result is immediate, no _activity polling), call wiki__plan_done(step=1) after confirming success.',
       '  For async MCP jobs (returns _activity with poll), the orchestrator tracks completion automatically.',
       '',
@@ -338,7 +340,7 @@ export function buildLimitedAgentResponse(state, reason = 'no workspace loaded w
       `dot est active. Workspace courant: ${workspace}.`,
       `Profil wikirc courant: ${wikirc}.`,
       '',
-      "Je suis deja la boucle principale du shell: les entrees sans `/` passent par ce graphe LangGraph.",
+      "Je suis le mode agent du shell: utilise `/agent` pour router les entrees libres vers ce graphe LangGraph, ou `/chat` pour revenir au chat direct.",
       `Connexion LLM: mode limite (${reason}).`,
       `Primitives disponibles maintenant: ${commandList(state.session)}.`,
       '',
@@ -353,7 +355,7 @@ export function buildLimitedAgentResponse(state, reason = 'no workspace loaded w
     `dot is active. Current workspace: ${workspace}.`,
     `Current wikirc profile: ${wikirc}.`,
     '',
-    'I am already the shell main loop: inputs without `/` are routed through this LangGraph graph.',
+    'I am the shell agent mode: use `/agent` to route free text through this LangGraph graph, or `/chat` for direct chat.',
     `LLM connection: limited mode (${reason}).`,
     `Available primitives: ${commandList(state.session)}.`,
     '',
@@ -498,12 +500,16 @@ export function createAgentGraph(options = {}) {
           const payload = parseJsonToolResult(resultText);
           const progressLabel = formatProductionProgress(payload);
           if (progressLabel) state.session._onStep?.(progressLabel);
-          if (!rememberActivityFromPayload(state.session, payload, { server, tool })) {
+          const savedActivity = rememberActivityFromPayload(state.session, payload, { server, tool });
+          if (savedActivity) {
+            ensurePlanFromActivity(state.session, savedActivity);
+          } else {
             rememberProductionProgress(state.session, payload, progressLabel);
           }
         } else if (!isInternalWikiTool && server !== 'shell') {
           const payload = parseJsonToolResult(resultText);
-          rememberActivityFromPayload(state.session, payload, { server, tool });
+          const savedActivity = rememberActivityFromPayload(state.session, payload, { server, tool });
+          if (savedActivity) ensurePlanFromActivity(state.session, savedActivity);
           const activityLabel = formatActivitySummary(server, tool, resultText);
           if (activityLabel) state.session._onStep?.(activityLabel);
         }

@@ -3,14 +3,13 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { createMemo, createSignal, onCleanup } from 'solid-js';
 import { formatMcpToolResult, callMcpTool } from '../core/mcp.js';
 import { parseJsonText, rememberActivityFromPayload, sessionActivities } from '../core/activity.js';
-import { syncActivitiesToPlan, formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
+import { syncActivitiesToPlan, formatPlanStatus, formatCompletedActivities, ensurePlanFromActivity } from '../core/plan.js';
 import type { ActiveFileEditor } from './FileEditorDialog';
 import {
   completionContext,
   completionDescription,
   conversationMessages,
   createSession,
-  promptFor,
 } from './repl.js';
 import { useAgent } from './useAgent';
 
@@ -35,6 +34,8 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   const [version, setVersion] = createSignal(0);
   const [logs, setLogs] = createSignal<string[]>([]);
   const [input, setInput] = createSignal('');
+  const [chatMode, setChatMode] = createSignal(true);
+  (session as any).chatMode = true;
   const [dismissedSlashInput, setDismissedSlashInput] = createSignal<string | null>(null);
   const [history, setHistory] = createSignal<string[]>([]);
   const [historyIndex, setHistoryIndex] = createSignal<number | null>(null);
@@ -45,6 +46,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   const pollBusy = new Set<string>();
   const matchedActivityKeys = new Set<string>();
   const lastActivityLines = new Map<string, string>();
+  const lastActivityDetails = new Map<string, string>();
 
   const refresh = () => setVersion((value) => value + 1);
   (session as any)._onPlanUpdate = refresh;
@@ -55,7 +57,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   const addLog = (line: string) => {
     setLogs((items) => [...items, `${new Date().toLocaleTimeString()} ${line}`].slice(-200));
   };
-  const agent = useAgent({ agent: props.agent, packageJson: props.packageJson, session, refresh, addLog });
+  const agent = useAgent({ agent: props.agent, packageJson: props.packageJson, session, chatMode, refresh, addLog });
 
   const messages = createMemo(() => {
     version();
@@ -63,7 +65,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   });
   const prompt = createMemo(() => {
     version();
-    return promptFor(session);
+    return chatMode() ? '[chat] › ' : '[agent] › ';
   });
   const title = createMemo(() => {
     version();
@@ -127,10 +129,12 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
       void callMcpTool(session.mcp, activity.poll.server, activity.poll.tool, activity.poll.args ?? {})
         .then((result) => {
           const payload = parseJsonText(formatMcpToolResult(result));
-          if (rememberActivityFromPayload(session, payload, {
+          const polledActivity = rememberActivityFromPayload(session, payload, {
             server: activity.poll.server,
             tool: activity.poll.tool,
-          })) {
+          });
+          if (polledActivity) {
+            ensurePlanFromActivity(session, polledActivity);
             const plan = (session as any).headlessPlan;
             const updatedActivities = sessionActivities(session);
             if (plan) {
@@ -144,6 +148,12 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
               if (lastActivityLines.get(key) !== line) {
                 lastActivityLines.set(key, line);
                 addLog(`activity: ${line}`);
+              }
+              const detail = (updated as any).progress?.detail ?? null;
+              if (detail && lastActivityDetails.get(key) !== detail) {
+                lastActivityDetails.set(key, detail);
+                const shortLabel = (updated as any).progress?.label ?? updated.label ?? key;
+                addLog(`${shortLabel}: ${detail}`);
               }
             }
             if (updated?.terminal && !matchedActivityKeys.has(key)) {
@@ -180,6 +190,15 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     }
     setHistoryIndex(null);
     const result = await agent.submit(line);
+    if ((result as any)?.setMode === 'chat') {
+      setChatMode(true);
+      (session as any).chatMode = true;
+      refresh();
+    } else if ((result as any)?.setMode === 'agent') {
+      setChatMode(false);
+      (session as any).chatMode = false;
+      refresh();
+    }
     return result;
   }
 
@@ -275,6 +294,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     setInput: updateInput,
     title,
     statusLine,
+    chatMode,
     showWelcome,
     activeEditor,
     prompt,

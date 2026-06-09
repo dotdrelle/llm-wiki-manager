@@ -36,8 +36,9 @@ function activityColor(status: string) {
 }
 
 function activityLine(activity: any) {
-  const step = activity?.progress?.step ?? activity?.progress?.phase ?? activity?.progress?.currentStep ?? null;
-  return [activity?.status ?? 'unknown', step].filter(Boolean).join(' · ');
+  const detail = activity?.progress?.detail ?? null;
+  const phase = activity?.progress?.step ?? activity?.progress?.phase ?? activity?.progress?.currentStep ?? null;
+  return [activity?.status ?? 'unknown', detail ?? phase].filter(Boolean).join(' · ');
 }
 
 function activityPercentBadge(activity: any): { text: string; bg: string; fg: string } | null {
@@ -104,7 +105,7 @@ export function ActivityPanel(props: { activities: any[]; width: number }) {
           {(activity) => (
             <box flexDirection="column" marginTop={1}>
               <text width={lineWidth()} fg={activityColor(activity.status)}>
-                {fit(activity.label ?? `${activity.source ?? 'mcp'} ${activity.kind ?? 'job'}`, lineWidth())}
+                {fit(activity.progress?.label ?? activity.label ?? `${activity.source ?? 'mcp'} ${activity.kind ?? 'job'}`, lineWidth())}
               </text>
               <box height={1} flexDirection="row">
                 {(() => {

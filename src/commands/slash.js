@@ -346,13 +346,15 @@ ${helpPair('/skills run <n>', 'Run skill guide', '/skills edit <n>', 'Edit skill
 ${helpPair('/mcp status', 'MCP status', '/mcp endpoints', 'MCP endpoints')}
 ${helpPair('/mcp tools [mcp]', 'MCP tools', '/mcp call ...', 'Call MCP tool')}
 ${helpPair('/wiki', 'Run wiki index', '/wiki run <args>', 'Raw wiki CLI')}
-${helpPair('/chat <message>', 'Direct chat', '/clear', 'Clear screen')}
-${helpPair('/exit', 'Exit', 'Ctrl+Y', 'Copy last reply')}
+${helpPair('/chat', 'Chat mode', '/agent', 'Agent mode')}
+${helpPair('/clear', 'Clear screen', '/exit', 'Exit')}
+${helpPair('Ctrl+Y', 'Copy last reply', '', '')}
 ${helpPair('PgUp/PgDn', 'Scroll thread', 'Ctrl+C Ctrl+C', 'Exit')}
 
-Agent mode:
-  Any input without a leading / is routed to the LangGraph orchestrator.
-  Use /chat <message> for direct LLM chat without agent tools.
+Modes:
+  Default startup mode is chat: free text is sent directly to the LLM without tools.
+  Use /agent to route free text to the LangGraph orchestrator with MCP tools.
+  Use /chat to return to direct LLM chat mode.
 
 Status:
   Agent-first shell is installed with workspace services, MCP calls, wiki CLI, skill discovery, and headless runs.
@@ -377,6 +379,12 @@ export async function handleSlashCommand(line, context) {
       return { output: helpText(context.packageJson) };
     case 'version':
       return { output: context.packageJson.version };
+    case 'chat':
+      context.session.chatMode = true;
+      return { setMode: 'chat', output: 'Mode: chat' };
+    case 'agent':
+      context.session.chatMode = false;
+      return { setMode: 'agent', output: 'Mode: agent' };
     case 'workspaces': {
       const workspaces = listWorkspaces();
       if (workspaces.length === 0) {

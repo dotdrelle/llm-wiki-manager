@@ -118,9 +118,12 @@ function mcpEndpointsText(mcpStatus) {
   if (entries.length === 0) return 'No MCP endpoints configured.';
   return entries
     .map(([name, endpoint]) => {
-      const token = endpoint.token ? 'configured' : 'missing';
+      const headerNames = Object.keys(endpoint.headers ?? {});
+      const auth = headerNames.length > 0
+        ? `headers: ${headerNames.join(',')}`
+        : `token: ${endpoint.token ? 'configured' : 'missing'}`;
       const url = endpoint.url ?? '-';
-      return `${name}\t${url}\ttoken: ${token}\tstatus: ${endpoint.status}`;
+      return `${name}\t${url}\t${auth}\tstatus: ${endpoint.status}`;
     })
     .join('\n');
 }

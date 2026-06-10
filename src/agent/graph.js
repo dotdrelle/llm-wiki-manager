@@ -487,7 +487,10 @@ export function createAgentGraph(options = {}) {
       );
       let resultText;
       try {
-        const args = JSON.parse(call.function.arguments ?? '{}');
+        let args = JSON.parse(call.function.arguments ?? '{}');
+        if (server === 'production' && tool === 'production_start_job' && state.session.workspace && !args.callerLabel) {
+          args = { ...args, callerLabel: `${state.session.workspace}/wiki-manager` };
+        }
         if (server === 'shell' && tool === 'run_command') {
           resultText = await runShellCommandTool(state.session, args.command);
         } else if (isInternalWikiTool) {
@@ -515,7 +518,7 @@ export function createAgentGraph(options = {}) {
         }
       } catch (err) {
         if (err.name === 'AbortError' && state.session._abortSignal?.aborted) throw err;
-        resultText = `Error: ${err instanceof Error ? err.message : String(err)}`;
+        resultText = `Error [${server}.${tool}]: ${err instanceof Error ? err.message : String(err)}`;
       }
       toolResultMessages.push({
         role: 'tool',

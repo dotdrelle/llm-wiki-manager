@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "mailer": {
+      "url": "http://host.docker.internal:3335/mcp/",
+      "headers": {}
+    },
+    "documents": {
+      "url": "http://host.docker.internal:3337/mcp/",
+      "headers": {}
+    },
+    "atlassian": {
+      "url": "http://host.docker.internal:9000/mcp",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      }
+    }
+  }
+}

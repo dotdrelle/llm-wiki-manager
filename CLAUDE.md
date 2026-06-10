@@ -115,6 +115,19 @@ toolExecutorNode
   ├── wiki__plan_set      → session.headlessPlan + session._onPlanUpdate?.()
   ├── wiki__plan_done     → mark step done/failed + session._onPlanUpdate?.()
   └── <server>__<tool>    → callMcpTool → JSON-RPC Streamable HTTP
+
+`callMcpTool` (in `src/core/mcp.js`) auto-injects `configPath` from
+`endpoint.activeConfigPath` for `production_start_job` when `args.configPath`
+is absent. `endpoint.activeConfigPath` is kept in sync with
+`session.wikirc.fileName` by `loadSessionWikirc()` in `slash.js`.
+
+`graph.js toolExecutorNode` additionally injects `callerLabel:
+"<workspace>/wiki-manager"` for `production_start_job` calls that lack one,
+so the MCP server can log the originating workspace/agent.
+
+MCP tool errors are surfaced as `Error [<server>.<tool>]: <message>` so log
+readers can identify which MCP container failed without inspecting Docker logs
+directly.
 ```
 
 Important: `wiki__plan_set` and `wiki__plan_done` are the only internal
@@ -213,7 +226,7 @@ the route explicitly with `/chat` and `/agent`.
   alphanumeric at both ends, only letters/digits/underscore/dot/dash inside, and
   no `..`.
 - LLM/vector provider config belongs in each workspace `.wikirc.yaml`.
-- Manager `.env` is only for manager-level and external MCP settings.
+- The only valid `.env` per workspace is `workspaces/<name>/.env`. There is no global manager `.env`. External MCP endpoints go in `mcp.endpoints.json` (gitignored; commit `mcp.endpoints.example.json` as template).
 
 ## Docker Rules
 

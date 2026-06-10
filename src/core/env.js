@@ -11,6 +11,10 @@ export function managerEnvFile() {
     : join(userManagerDir(), '.env');
 }
 
+export function managerMcpEndpointsFile() {
+  return join(userManagerDir(), 'mcp.endpoints.json');
+}
+
 function parseEnvValue(value) {
   if (value.startsWith('"') && value.endsWith('"')) {
     return value

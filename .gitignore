@@ -4,7 +4,6 @@ node_modules/
 *.log
 .env
 .env.*
-!.env.example
 data/
 workspaces/*
 !workspaces/.env.example
@@ -15,6 +14,7 @@ docker-compose*.local.yml
 docker-compose.yml
 
 *.json
+!mcp.endpoints.example.json
 WIKI_MANAGER_AGENT_SHELL.md
 !package.json
 !pnpm-lock.yaml

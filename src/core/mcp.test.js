@@ -1,6 +1,42 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { callMcpTool } from './mcp.js';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { buildMcpStatus, callMcpTool } from './mcp.js';
+
+test('buildMcpStatus reads external MCP endpoints from mcp.endpoints.json', async () => {
+  const originalCwd = process.cwd();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wiki-manager-mcp-endpoints-'));
+  await writeFile(
+    path.join(root, 'mcp.endpoints.json'),
+    JSON.stringify({
+      mcpServers: {
+        external: {
+          url: 'http://127.0.0.1:9999/mcp/',
+          headers: {
+            'x-api-key': 'secret',
+            Authorization: 'Bearer token',
+          },
+        },
+      },
+    }),
+    'utf8',
+  );
+
+  try {
+    process.chdir(root);
+    const status = buildMcpStatus({ workspaceEnv: {} });
+    assert.equal(status.external.url, 'http://127.0.0.1:9999/mcp/');
+    assert.deepEqual(status.external.headers, {
+      'x-api-key': 'secret',
+      authorization: 'Bearer token',
+    });
+    assert.equal(status.external.external, true);
+  } finally {
+    process.chdir(originalCwd);
+  }
+});
 
 test('callMcpTool injects active configPath for production_start_job', async () => {
   const originalFetch = globalThis.fetch;
@@ -70,6 +106,39 @@ test('callMcpTool keeps explicit production configPath', async () => {
     );
 
     assert.equal(requestBody.params.arguments.configPath, '.wikirc.yaml.claude');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('callMcpTool sends configured endpoint headers', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestHeaders = null;
+  globalThis.fetch = async (_url, init) => {
+    requestHeaders = init.headers;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({ result: { content: [{ type: 'text', text: '{"ok":true}' }] } }),
+    };
+  };
+
+  try {
+    await callMcpTool(
+      {
+        external: {
+          status: 'connected',
+          url: 'http://127.0.0.1:9999/mcp/',
+          headers: { 'x-api-key': 'secret' },
+        },
+      },
+      'external',
+      'ping',
+      {},
+    );
+
+    assert.equal(requestHeaders['x-api-key'], 'secret');
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -1,9 +1,34 @@
-import { existsSync } from 'node:fs';
-import { managerEnvFile, readEnvFile } from './env.js';
+import { existsSync, readFileSync } from 'node:fs';
+import { managerMcpEndpointsFile } from './env.js';
 
-function readManagerEnv() {
-  const envPath = managerEnvFile();
-  return existsSync(envPath) ? readEnvFile(envPath) : {};
+function normalizeHeaders(headers) {
+  if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return {};
+  return Object.fromEntries(
+    Object.entries(headers)
+      .filter(([key, value]) => key && typeof value === 'string' && value)
+      .map(([key, value]) => [key.toLowerCase(), value]),
+  );
+}
+
+function readExternalMcpEndpoints() {
+  const filePath = managerMcpEndpointsFile();
+  if (!existsSync(filePath)) return {};
+  const raw = JSON.parse(readFileSync(filePath, 'utf8'));
+  const servers = raw?.mcpServers ?? raw?.servers ?? {};
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) return {};
+  return Object.fromEntries(
+    Object.entries(servers)
+      .filter(([, endpoint]) => endpoint?.url)
+      .map(([name, endpoint]) => [
+        name,
+        {
+          ...endpointStatus(true),
+          url: String(endpoint.url),
+          headers: normalizeHeaders(endpoint.headers),
+          external: true,
+        },
+      ]),
+  );
 }
 
 function endpointStatus(configured, detail = '') {
@@ -21,15 +46,7 @@ const MCP_SERVICE_MAP = {
 
 export function buildMcpStatus(session) {
   const workspaceEnv = session.workspaceEnv ?? {};
-  const managerEnv = readManagerEnv();
-  const external = {};
-
-  for (const [key, url] of Object.entries(managerEnv)) {
-    if (!key.endsWith('_MCP_PROXY_URL') || !url) continue;
-    const name = key.slice(0, -'_MCP_PROXY_URL'.length).toLowerCase();
-    const token = managerEnv[`${name.toUpperCase()}_MCP_AUTH_TOKEN`] || null;
-    external[name] = { ...endpointStatus(!!url), url, token };
-  }
+  const external = readExternalMcpEndpoints();
 
   return {
     wiki: {
@@ -131,6 +148,7 @@ async function mcpRequest(endpoint, method, params, signal) {
     const h = {
       accept: 'application/json, text/event-stream',
       'content-type': 'application/json',
+      ...(endpoint.headers ?? {}),
     };
     if (endpoint.token) h.authorization = `Bearer ${endpoint.token}`;
     if (endpoint._sessionId) h['mcp-session-id'] = endpoint._sessionId;
@@ -166,7 +184,7 @@ async function mcpRequest(endpoint, method, params, signal) {
           params: {
             protocolVersion: '2025-06-18',
             capabilities: {},
-            clientInfo: { name: 'wiki-manager', version: '0.5.13' },
+            clientInfo: { name: 'wiki-manager', version: '0.5.15' },
           },
         }),
       });

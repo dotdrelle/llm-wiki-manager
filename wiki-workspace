@@ -154,15 +154,12 @@ set_env_value() {
   mv "$tmp" "$file"
 }
 
-ensure_manager_env_file() {
-  [[ -f "$MANAGER_ENV_FILE" ]] && return 0
-  mkdir -p "$(dirname "$MANAGER_ENV_FILE")"
-  if [[ -f "$ROOT_DIR/.env.example" ]]; then
-    cp "$ROOT_DIR/.env.example" "$MANAGER_ENV_FILE"
-  else
-    : > "$MANAGER_ENV_FILE"
+ensure_manager_endpoints_file() {
+  local endpoints_file="$ROOT_DIR/mcp.endpoints.json"
+  if [[ ! -f "$endpoints_file" && -f "$ROOT_DIR/mcp.endpoints.example.json" ]]; then
+    cp "$ROOT_DIR/mcp.endpoints.example.json" "$endpoints_file"
+    printf 'Created %s (from mcp.endpoints.example.json — add headers/tokens as needed)\n' "$endpoints_file"
   fi
-  printf 'Created %s\n' "$MANAGER_ENV_FILE"
 }
 
 workspace_value() {
@@ -435,7 +432,7 @@ config_workspace() {
   local workspace="$1"
   local target_path="${2:-$WORKSPACES_DIR/$workspace}"
   target_path="$(absolute_path "$target_path")"
-  ensure_manager_env_file
+  ensure_manager_endpoints_file
 
   local env_file="$target_path/.env"
   [[ -f "$env_file" ]] && die "workspace already configured: $env_file"
@@ -457,7 +454,7 @@ config_workspace() {
   # Needed on WSL2 when the host UID differs from the container UID.
   chmod -R a+rwX "$target_path" 2>/dev/null || true
 
-  printf 'WORKSPACE_NAME=%s\nWIKI_WORKSPACE_PATH=%s\nWIKI_SERVE_PORT=%s\nWIKI_MCP_PORT=%s\nCME_MCP_PORT=%s\nPRODUCTION_MCP_PORT=%s\nWIKI_MCP_AUTH_TOKEN=%s\nCME_MCP_AUTH_TOKEN=%s\nPRODUCTION_MCP_AUTH_TOKEN=%s\n' \
+  printf 'WORKSPACE_NAME=%s\nWIKI_WORKSPACE_PATH=%s\nWIKI_SERVE_PORT=%s\nWIKI_MCP_PORT=%s\nCME_MCP_PORT=%s\nPRODUCTION_MCP_PORT=%s\nPRODUCTION_REQUIRE_CONFIRMATION=false\nWIKI_MCP_AUTH_TOKEN=%s\nCME_MCP_AUTH_TOKEN=%s\nPRODUCTION_MCP_AUTH_TOKEN=%s\n' \
     "$workspace" "$target_path" "$serve_port" "$mcp_port" "$cme_port" "$prod_port" "$wiki_token" "$cme_token" "$prod_token" \
     > "$env_file"
 
@@ -497,8 +494,7 @@ up_workspace() {
   printf 'Chat:         http://localhost:%s/chat\n' "$serve_port"
   printf 'CME MCP:      http://localhost:%s/mcp/\n' "$cme_port"
   printf 'Production:   http://localhost:%s/mcp/\n' "$prod_port"
-  printf 'Mailer:       external (%s)\n' "$(env_value "$MANAGER_ENV_FILE" MAILER_MCP_PROXY_URL "http://host.docker.internal:3335/mcp/")"
-  printf 'Documents:    external (%s)\n' "$(env_value "$MANAGER_ENV_FILE" DOCUMENTS_MCP_PROXY_URL "http://host.docker.internal:3337/mcp/")"
+  printf 'External MCPs: see %s\n' "$ROOT_DIR/mcp.endpoints.json"
 
   if [[ "$open_browser" == "1" ]]; then
     wait_and_open "http://localhost:${serve_port}/chat" &
@@ -576,14 +572,33 @@ main() {
     case "$mailer_command" in
       status)
         [[ $# -eq 0 ]] || die "mailer status does not take arguments"
-        local mailer_url mailer_token
-        mailer_url="$(env_value "$MANAGER_ENV_FILE" MAILER_MCP_PROXY_URL "http://host.docker.internal:3335/mcp/")"
-        mailer_token="$(env_value "$MANAGER_ENV_FILE" MAILER_MCP_AUTH_TOKEN "")"
+        local endpoints_file="$ROOT_DIR/mcp.endpoints.json"
+        local mailer_url mailer_auth
+        if [[ -f "$endpoints_file" ]]; then
+          mailer_url="$(python3 -c "
+import json,sys
+try:
+  d=json.load(open('$endpoints_file'))
+  s=d.get('mcpServers') or d.get('servers') or {}
+  print(s.get('mailer',{}).get('url',''),end='')
+except: pass
+" 2>/dev/null)"
+          mailer_auth="$(python3 -c "
+import json,sys
+try:
+  d=json.load(open('$endpoints_file'))
+  s=d.get('mcpServers') or d.get('servers') or {}
+  h=s.get('mailer',{}).get('headers') or {}
+  print(h.get('authorization') or h.get('Authorization',''),end='')
+except: pass
+" 2>/dev/null)"
+        fi
+        mailer_url="${mailer_url:-http://host.docker.internal:3335/mcp/}"
         printf 'Mailer MCP URL:   %s\n' "$mailer_url"
-        if [[ -n "$mailer_token" ]]; then
+        if [[ -n "$mailer_auth" ]]; then
           printf 'Mailer MCP token: configured\n'
         else
-          printf 'Mailer MCP token: missing (set MAILER_MCP_AUTH_TOKEN in %s)\n' "$MANAGER_ENV_FILE"
+          printf 'Mailer MCP token: missing (set Authorization header in %s)\n' "$endpoints_file"
         fi
         if command -v curl >/dev/null 2>&1; then
           local status_url="${mailer_url/host.docker.internal/localhost}"

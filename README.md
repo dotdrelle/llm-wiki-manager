@@ -68,12 +68,32 @@ When installed through `npm`/`npx`/`bun`, `wiki-manager` keeps its state outside
 the package, in the directory where the command is launched:
 
 ```text
-./workspaces/   # workspace registry and defaults
-./.env          # optional manager-wide MCP settings
+./workspaces/            # workspace registry
+./mcp.endpoints.json     # optional external MCP endpoints (gitignored)
 ```
 
-`WIKI_WORKSPACES_DIR` and `WIKI_MANAGER_ENV_FILE` remain available for explicit
-local overrides, but they are not required for normal usage.
+`WIKI_WORKSPACES_DIR` is available as an explicit override for the workspaces
+directory, but not required for normal usage.
+
+If `./mcp.endpoints.json`
+exists, shell, TUI, headless, and the served chat UI use it for external MCP
+servers:
+
+```json
+{
+  "mcpServers": {
+    "mailer": {
+      "url": "http://host.docker.internal:3335/mcp/",
+      "headers": {
+        "x-api-key": "secret"
+      }
+    }
+  }
+}
+```
+
+Workspace-native MCP servers (`llm-wiki`, `cme`, `production`) stay configured
+through each workspace `.env`.
 
 Create a workspace:
 
@@ -454,7 +474,7 @@ llm-wiki-manager/
 ├── docker-compose.yml
 ├── wiki-workspace
 ├── workspaces/             # gitignored local workspace registry when run from repo root
-├── .env.example
+├── mcp.endpoints.example.json
 └── workspaces/.env.example
 ```
 

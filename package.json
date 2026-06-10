@@ -1,6 +1,6 @@
 {
   "name": "@dot/wiki-manager",
-  "version": "0.5.13",
+  "version": "0.5.15",
   "description": "Agentic shell and orchestration cockpit for llm-wiki workspaces.",
   "license": "PolyForm-Noncommercial-1.0.0",
   "author": "dotrelle",
@@ -23,9 +23,9 @@
     "src",
     "wiki-workspace",
     "docker-compose.yml",
+    "mcp.endpoints.example.json",
     "tsconfig.json",
     "bunfig.toml",
-    ".env.example",
     "workspaces/.env.example",
     "README.md",
     "LICENSE"

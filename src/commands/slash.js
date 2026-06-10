@@ -308,6 +308,9 @@ function loadSessionWikirc(session, profileName = 'default') {
   session.wikircConfig = loaded.config;
   session.language = loaded.config?.language ?? null;
   session.llm = createLlmClientFromWikiConfig(loaded.config);
+  if (session.mcp?.production) {
+    session.mcp.production.activeConfigPath = loaded.profile.fileName;
+  }
   return summarizeWikircConfig(loaded.profile, loaded.config);
 }
 

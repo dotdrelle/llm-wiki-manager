@@ -55,6 +55,7 @@ export function buildMcpStatus(session) {
       ),
       url: workspaceEnv.PRODUCTION_MCP_PORT ? `http://127.0.0.1:${workspaceEnv.PRODUCTION_MCP_PORT}/mcp/` : null,
       token: workspaceEnv.PRODUCTION_MCP_AUTH_TOKEN || null,
+      activeConfigPath: session.wikirc?.fileName || null,
     },
     ...external,
   };
@@ -198,9 +199,18 @@ export async function callMcpTool(mcpStatus, serverName, toolName, args = {}, si
   const endpoint = mcpStatus?.[serverName];
   if (!endpoint) throw new Error(`Unknown MCP: ${serverName}`);
   if (endpoint.status !== 'connected') throw new Error(`MCP is not connected: ${serverName}`);
+  const shouldInjectConfigPath =
+    serverName === 'production' &&
+    toolName === 'production_start_job' &&
+    endpoint.activeConfigPath &&
+    !args.configPath;
+  const toolArgs = {
+    ...args,
+    ...(shouldInjectConfigPath ? { configPath: endpoint.activeConfigPath } : {}),
+  };
   const payload = await mcpRequest(endpoint, 'tools/call', {
     name: toolName,
-    arguments: args,
+    arguments: toolArgs,
   }, signal);
   if (payload?.result?.isError) {
     throw new Error(formatMcpToolResult(payload.result));

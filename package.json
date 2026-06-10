@@ -11,7 +11,7 @@
   },
   "scripts": {
     "start": "bun ./bin/wiki-manager.js",
-    "test": "node --test src/core/activity.test.js src/core/plan.test.js",
+    "test": "node --test src/core/activity.test.js src/core/plan.test.js src/core/mcp.test.js",
     "check": "bun ./bin/wiki-manager.js --version && bun ./bin/wiki-manager.js --help && bun ./bin/wiki-manager.js --once \"verifie le mode agent\""
   },
   "engines": {

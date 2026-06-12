@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@dot/wiki-manager",
+      "name": "@donna/wiki-manager",
       "dependencies": {
         "@langchain/langgraph": "^1.3.2",
         "@opentui/core": "^0.3.2",

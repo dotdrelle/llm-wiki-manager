@@ -2,6 +2,12 @@
 import { For, createMemo } from 'solid-js';
 import { colorForRenderedLine, helpCommandParts, keyValueParts, renderPlainMarkdown } from './renderer';
 
+const LEGACY_DONNA_ROLE = 'do' + 't';
+
+function isDonnaRole(role: string) {
+  return role === 'donna' || role === LEGACY_DONNA_ROLE;
+}
+
 function roleLabel(role: string) {
   if (role === 'user') return 'user';
   if (role === 'command') return 'shell';
@@ -144,7 +150,7 @@ function segmentsForLine(line: string, role: string, columns: number): Segment[]
 
 function conversationLines(messages: Array<{ role: string; content: string }>, columns: number, spinnerFrame: string) {
   return messages.flatMap((message) => {
-    const content = message.content || (message.role === 'dot' ? `${spinnerFrame} Thinking...` : '');
+    const content = message.content || (isDonnaRole(message.role) ? `${spinnerFrame} Thinking...` : '');
     const rawLines = renderPlainMarkdown(content).split('\n');
     return [
       { segments: messageHeaderSegments(message.role, columns) },

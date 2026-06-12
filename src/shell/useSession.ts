@@ -70,7 +70,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   const title = createMemo(() => {
     version();
     const workspace = session.workspace ?? 'myspace';
-    const profile = session.wikirc?.profile ?? 'dot';
+    const profile = session.wikirc?.profile ?? 'donna';
     return `${workspace} > ${profile}`;
   });
   const statusLine = createMemo(() => {

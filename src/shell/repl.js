@@ -42,6 +42,7 @@ marked.use({
 });
 
 const GLOBAL_CONVERSATION_KEY = '__global__';
+const LEGACY_DONNA_ROLE = 'do' + 't';
 const LOWER_DETAIL_ROWS = 8;
 const COMPLETION_PANEL_ROWS = 5;
 const LOWER_PANEL_SEPARATOR_ROWS = 1;
@@ -204,9 +205,13 @@ function completionValuesFor(parts, inputBuffer, session) {
 
 function toConversationHistory(replMessages, maxExchanges = 6) {
   return replMessages
-    .filter((m) => m.role === 'user' || m.role === 'dot')
+    .filter((m) => m.role === 'user' || isDonnaRole(m.role))
     .slice(-(maxExchanges * 2))
-    .map((m) => ({ role: m.role === 'dot' ? 'assistant' : 'user', content: m.content }));
+    .map((m) => ({ role: isDonnaRole(m.role) ? 'assistant' : 'user', content: m.content }));
+}
+
+function isDonnaRole(role) {
+  return role === 'donna' || role === LEGACY_DONNA_ROLE;
 }
 
 function buildDirectChatSystemPrompt(session) {
@@ -767,7 +772,7 @@ function renderScreen({ packageJson, session, messages, inputBuffer, busy = fals
         ...wrapText(colorizeCommand(message.content, columns), columns),
       ]
       : wrapText(
-        `${label}: ${message.role === 'dot' ? colorizeStatus(message.content) : message.content}`,
+        `${label}: ${isDonnaRole(message.role) ? colorizeStatus(message.content) : message.content}`,
         columns,
       );
     return index === 0 ? lines : ['', ...lines];
@@ -831,33 +836,33 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
   messages.push({ role: 'user', content: input });
   onUpdate?.();
 
-  // Create the dot bubble immediately so "Thinking…" is visible during TTFT.
-  let dotMessage = { role: 'dot', content: '' };
-  messages.push(dotMessage);
+  // Create the donna bubble immediately so "Thinking…" is visible during TTFT.
+  let donnaMessage = { role: 'donna', content: '' };
+  messages.push(donnaMessage);
   onUpdate?.();
 
   session._onStream = (delta) => {
-    if (!dotMessage) {
+    if (!donnaMessage) {
       // Re-create after _onStreamReset removed an empty bubble (tool call on first turn).
-      dotMessage = { role: 'dot', content: '' };
-      messages.push(dotMessage);
+      donnaMessage = { role: 'donna', content: '' };
+      messages.push(donnaMessage);
     }
     if (delta) {
-      dotMessage.content += delta;
+      donnaMessage.content += delta;
       onUpdate?.();
     }
   };
   session._onStreamReset = () => {
-    if (!dotMessage) return;
-    if (dotMessage.content.trim()) {
+    if (!donnaMessage) return;
+    if (donnaMessage.content.trim()) {
       // Intermediate streamed text before tool calls: keep it, add separator.
-      dotMessage.content += '\n\n';
+      donnaMessage.content += '\n\n';
       onUpdate?.();
     } else {
       // Still empty ("Thinking…"): remove it cleanly.
-      const index = messages.indexOf(dotMessage);
+      const index = messages.indexOf(donnaMessage);
       if (index !== -1) messages.splice(index, 1);
-      dotMessage = null;
+      donnaMessage = null;
       onUpdate?.();
     }
   };
@@ -867,16 +872,16 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
     agentResult = await agent.invoke({ input, session, messages: history });
   } catch (err) {
     if (err.name === 'AbortError') {
-      if (dotMessage) {
-        const idx = messages.indexOf(dotMessage);
+      if (donnaMessage) {
+        const idx = messages.indexOf(donnaMessage);
         if (idx !== -1) messages.splice(idx, 1);
       }
       return { aborted: true };
     }
     // Non-abort error: surface it in the bubble rather than leaving "Thinking…" stuck.
-    if (dotMessage) {
+    if (donnaMessage) {
       const msg = err instanceof Error ? err.message : String(err);
-      dotMessage.content = buildLimitedAgentResponse({ input, session }, `LLM indisponible: ${msg}`);
+      donnaMessage.content = buildLimitedAgentResponse({ input, session }, `LLM indisponible: ${msg}`);
       onUpdate?.();
     }
     throw err;
@@ -887,13 +892,13 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
   }
 
   if (agentResult.streamedInline) {
-    if (dotMessage) {
-      dotMessage.content = stripDsmlArtifacts(dotMessage.content).trimEnd();
-      if (!dotMessage.content.trim()) {
-        dotMessage.content = buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
+    if (donnaMessage) {
+      donnaMessage.content = stripDsmlArtifacts(donnaMessage.content).trimEnd();
+      if (!donnaMessage.content.trim()) {
+        donnaMessage.content = buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
       }
     } else {
-      messages.push({ role: 'dot', content: buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content') });
+      messages.push({ role: 'donna', content: buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content') });
     }
     onUpdate?.();
     return {};
@@ -901,19 +906,19 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
 
   if (agentResult.response != null) {
     const content = stripDsmlArtifacts(agentResult.response);
-    if (dotMessage) {
-      dotMessage.content = content;
+    if (donnaMessage) {
+      donnaMessage.content = content;
     } else {
-      messages.push({ role: 'dot', content });
+      messages.push({ role: 'donna', content });
     }
     onUpdate?.();
     return {};
   }
 
   if (agentResult.readyToStream && session.llm?.stream) {
-    if (!dotMessage) {
-      dotMessage = { role: 'dot', content: '' };
-      messages.push(dotMessage);
+    if (!donnaMessage) {
+      donnaMessage = { role: 'donna', content: '' };
+      messages.push(donnaMessage);
     }
     onUpdate?.();
     const { system, messages: streamMessages = [] } = agentResult.streamContext ?? {};
@@ -926,32 +931,32 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
       })) {
         const cleanDelta = stripDsmlArtifacts(delta);
         if (cleanDelta) {
-          dotMessage.content += cleanDelta;
+          donnaMessage.content += cleanDelta;
           onUpdate?.();
         }
       }
-      dotMessage.content = stripDsmlArtifacts(dotMessage.content).trimEnd();
-      if (!dotMessage.content.trim()) {
-        dotMessage.content = buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
+      donnaMessage.content = stripDsmlArtifacts(donnaMessage.content).trimEnd();
+      if (!donnaMessage.content.trim()) {
+        donnaMessage.content = buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
         onUpdate?.();
       }
     } catch (err) {
       if (err.name === 'AbortError') {
-        const idx = messages.indexOf(dotMessage);
+        const idx = messages.indexOf(donnaMessage);
         if (idx !== -1) messages.splice(idx, 1);
         return { aborted: true };
       }
       const message = err instanceof Error ? err.message : String(err);
-      dotMessage.content = buildLimitedAgentResponse({ input, session }, `LLM indisponible: ${message}`);
+      donnaMessage.content = buildLimitedAgentResponse({ input, session }, `LLM indisponible: ${message}`);
       onUpdate?.();
     }
     return {};
   }
 
-  if (dotMessage) {
-    dotMessage.content = buildLimitedAgentResponse({ input, session });
+  if (donnaMessage) {
+    donnaMessage.content = buildLimitedAgentResponse({ input, session });
   } else {
-    messages.push({ role: 'dot', content: buildLimitedAgentResponse({ input, session }) });
+    messages.push({ role: 'donna', content: buildLimitedAgentResponse({ input, session }) });
   }
   onUpdate?.();
   return {};
@@ -966,8 +971,8 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
   const history = toConversationHistory(messages);
   messages.push({ role: 'user', content: input });
   onUpdate?.();
-  const dotMessage = { role: 'dot', content: '' };
-  messages.push(dotMessage);
+  const donnaMessage = { role: 'donna', content: '' };
+  messages.push(donnaMessage);
   onUpdate?.();
   try {
     onStep?.('Chat: streaming direct answer…');
@@ -978,13 +983,13 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
     })) {
       const cleanDelta = stripDsmlArtifacts(delta);
       if (cleanDelta) {
-        dotMessage.content += cleanDelta;
+        donnaMessage.content += cleanDelta;
         onUpdate?.();
       }
     }
-    dotMessage.content = stripDsmlArtifacts(dotMessage.content).trimEnd();
-    if (!dotMessage.content.trim()) {
-      dotMessage.content = buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
+    donnaMessage.content = stripDsmlArtifacts(donnaMessage.content).trimEnd();
+    if (!donnaMessage.content.trim()) {
+      donnaMessage.content = buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
       onUpdate?.();
     }
   } catch (err) {
@@ -993,7 +998,7 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
       return { exit: false, aborted: true };
     }
     const message = err instanceof Error ? err.message : String(err);
-    dotMessage.content = buildLimitedAgentResponse({ input, session }, `LLM indisponible: ${message}`);
+    donnaMessage.content = buildLimitedAgentResponse({ input, session }, `LLM indisponible: ${message}`);
     onUpdate?.();
   }
   return { exit: false };
@@ -1044,7 +1049,7 @@ export async function runLine(line, { agent, packageJson, session, onUpdate, onS
 
 async function runPipeShell({ agent, packageJson, session }) {
   const rl = createInterface({ input, output, prompt: promptFor(session) });
-  console.log(`dot  wiki-manager ${packageJson.version}  non-interactive`);
+  console.log(`donna  wiki-manager ${packageJson.version}  non-interactive`);
   console.log('─'.repeat(80));
   console.log('Agent-first shell active. Type /help for commands, /exit to quit.');
   rl.prompt();
@@ -1072,7 +1077,7 @@ let lastMiddleHeight = 5;
 async function runTuiShell({ agent, packageJson, session }) {
   const messages = conversationMessages(session);
   messages.push({
-    role: 'dot',
+    role: 'donna',
     content: [
       initialLegacyWelcomeMessage(),
       'Tip: Ctrl+Y copies the last response.',
@@ -1230,9 +1235,9 @@ async function runTuiShell({ agent, packageJson, session }) {
 
     if (key?.ctrl && key.name === 'y') {
       const messages = conversationMessages(session);
-      const lastdot = [...messages].reverse().find((m) => m.role === 'dot');
-      if (lastdot) {
-        const text = stripAnsi(colorizeStatus(lastdot.content)).replace(/\[[0-9;]*m/g, '');
+      const lastDonna = [...messages].reverse().find((m) => isDonnaRole(m.role));
+      if (lastDonna) {
+        const text = stripAnsi(colorizeStatus(lastDonna.content)).replace(/\[[0-9;]*m/g, '');
         const clipCmd = process.platform === 'darwin'
           ? { command: 'pbcopy', args: [] }
           : { command: 'xclip', args: ['-selection', 'clipboard'] };

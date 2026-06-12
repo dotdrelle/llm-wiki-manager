@@ -4,7 +4,7 @@
 
 `llm-wiki-manager` is the local orchestration layer for multiple `llm-wiki`
 workspaces. It owns workspace registration, Docker Compose wiring, MCP endpoint
-coordination, and the `dot` agent shell.
+coordination, and the `donna` agent shell.
 
 It must stay a manager. It should not absorb the responsibilities of
 `llm-wiki`, `agent-cme`, `agent-wiki-production`, or other external agents.
@@ -41,7 +41,7 @@ tsconfig.json               TSX compilation config (jsxImportSource = @opentui/s
 
 The interactive shell is the product surface.
 
-- The visible agent is `dot`.
+- The visible agent is `donna`.
 - Lines beginning with `/` execute deterministic primitives.
 - Startup defaults to chat mode: free-text lines go directly to the configured
   LLM without tools.
@@ -96,7 +96,7 @@ pieces; do not evaluate `colorForRenderedLine` on wrapped fragments.
 
 ### Agent Orchestration
 
-The `dot` LangGraph graph is a ReAct loop compiled from two nodes:
+The `donna` LangGraph graph is a ReAct loop compiled from two nodes:
 
 ```
 START → orchestratorNode
@@ -138,8 +138,8 @@ Important: `wiki__plan_set` and `wiki__plan_done` are the only internal
 **Session callbacks:**
 
 - `session._onStep(label)` — set per-turn before `agent.invoke()`, deleted in `finally`; step-level updates (spinner label, activity panel lines)
-- `session._onStream(delta)` — set per-turn before `agent.invoke()`, deleted in `finally`; raw text delta from `streamWithTools`; caller accumulates into a `dotMessage` pushed to conversation
-- `session._onStreamReset()` — set per-turn before `agent.invoke()`, deleted in `finally`; called when a streamed assistant turn resolves to tool calls. If the streamed dot bubble already has content, keep it and append a blank separator so intermediate text and the final answer stay in one bubble; remove only empty stream placeholders.
+- `session._onStream(delta)` — set per-turn before `agent.invoke()`, deleted in `finally`; raw text delta from `streamWithTools`; caller accumulates into a `donnaMessage` pushed to conversation
+- `session._onStreamReset()` — set per-turn before `agent.invoke()`, deleted in `finally`; called when a streamed assistant turn resolves to tool calls. If the streamed donna bubble already has content, keep it and append a blank separator so intermediate text and the final answer stay in one bubble; remove only empty stream placeholders.
 - `session._onPlanUpdate()` — set once at session mount by `useSession.ts` to SolidJS `refresh`; called mid-turn by `handleWikiTool` after every `wiki__plan_set` / `wiki__plan_done` so the right panel updates immediately without waiting for the agent turn to complete
 
 **Activity surfacing (interactive TUI):**

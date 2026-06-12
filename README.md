@@ -5,7 +5,7 @@
 `llm-wiki-manager` is the local cockpit for several `llm-wiki` workspaces.
 
 It creates workspace folders, assigns ports, starts Docker services, exposes MCP
-endpoints, and provides the `dot` shell: an agent-first terminal UI that can
+endpoints, and provides the `donna` shell: an agent-first terminal UI that can
 inspect workspaces, run safe manager commands, call MCP tools, guide production
 jobs, and run one-shot headless tasks.
 
@@ -17,7 +17,7 @@ orchestrates them.
 | Repository | Role |
 | --- | --- |
 | [`llm-wiki`](https://github.com/dotdrelle/llm-wiki) | Workspace engine: CLI, web UI, MCP server, retrieval, deliverables, skills |
-| [`llm-wiki-manager`](https://github.com/dotdrelle/llm-wiki-manager) | Multi-workspace cockpit, Docker orchestration, `dot` shell |
+| [`llm-wiki-manager`](https://github.com/dotdrelle/llm-wiki-manager) | Multi-workspace cockpit, Docker orchestration, `donna` shell |
 | [`agent-cme`](https://github.com/dotdrelle/agent-cme) | Workspace-scoped Confluence to Markdown exporter |
 | [`agent-wiki-production`](https://github.com/dotdrelle/agent-wiki-production) | Workspace-scoped production jobs: ingest, build, export, polish, pipeline |
 | [`agent-mailer-api`](https://github.com/dotdrelle/agent-mailer-api) | Optional external mailer MCP endpoint |
@@ -139,7 +139,7 @@ wiki-workspace cme my-project logs
 wiki-workspace mailer status
 ```
 
-## The `dot` Shell
+## The `donna` Shell
 
 Start the agent shell:
 
@@ -155,7 +155,7 @@ The interactive shell is chat-first:
 - by default, any other input goes directly to the configured LLM without tools;
 - `/agent` switches free text to the LangGraph orchestrator with MCP tools;
 - `/chat` switches free text back to direct LLM chat;
-- the visible agent name is `dot`;
+- the visible agent name is `donna`;
 - conversation history is separated per workspace;
 - Ctrl+C interrupts active LLM/MCP calls; Ctrl+C twice exits when idle.
 
@@ -229,7 +229,7 @@ conversation for the current shell process.
 
 ## Agent Tooling
 
-The `dot` agent uses a LangGraph ReAct loop (max 80 tool-use iterations). Each
+The `donna` agent uses a LangGraph ReAct loop (max 80 tool-use iterations). Each
 agent turn makes a single streaming LLM call via Server-Sent Events. Text
 tokens appear in the TUI as they arrive. When the LLM decides to call tools,
 the stream switches to tool-call accumulation; tool results feed back into the

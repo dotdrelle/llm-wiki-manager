@@ -827,6 +827,10 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
   session._onStep = onStep ?? null;
   session.packageJson = session.packageJson ?? {};
 
+  // Show the user's input in the conversation (mirrors runDirectChatTurn).
+  messages.push({ role: 'user', content: input });
+  onUpdate?.();
+
   // Create the dot bubble immediately so "Thinking…" is visible during TTFT.
   let dotMessage = { role: 'dot', content: '' };
   messages.push(dotMessage);

@@ -21,8 +21,11 @@ function formatStartupError(err) {
 }
 
 async function main() {
+  const argv = process.argv.slice(2);
+  const interactive = process.stdout.isTTY && process.stdin.isTTY && !argv.includes('--headless') && !argv.includes('--once') && !argv.includes('--version') && !argv.includes('-v') && !argv.includes('--help') && !argv.includes('-h');
+  if (interactive) process.stdout.write('Starting wiki-manager…\r');
   const { runCli } = await import('../src/cli/wiki-manager.js');
-  await runCli(process.argv.slice(2));
+  await runCli(argv);
 }
 
 main().catch((err) => {

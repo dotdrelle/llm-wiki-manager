@@ -1,7 +1,10 @@
 /** @jsxImportSource @opentui/solid */
-import { For, Show } from 'solid-js';
+import { Index, Show } from 'solid-js';
 
 type PlanStep = { step: number; description: string; status: string };
+
+const ACTIVITY_SLOTS = Array.from({ length: 6 }, (_, index) => index);
+const LOG_SLOTS = Array.from({ length: 24 }, (_, index) => index);
 
 function wrapLine(value: string, width: number) {
   const max = Math.max(8, width);
@@ -82,14 +85,16 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
   const title = () => props.jobName ? `Plan : ${props.jobName}` : 'Plan';
   return (
     <box flexShrink={0} flexDirection="column" padding={1}>
-      <text width={lineWidth()} fg="#D6DEE8">{fit(title(), lineWidth())}</text>
-      <For each={props.plan}>
+      <text width={lineWidth()} fg="#D6DEE8" content={fit(title(), lineWidth())} />
+      <Index each={props.plan}>
         {(step) => (
-          <text width={lineWidth()} fg={planStepColor(step, firstPending())}>
-            {fit(`${icon(step.status)} ${step.step}. ${step.description}`, lineWidth())}
-          </text>
+          <text
+            width={lineWidth()}
+            fg={planStepColor(step(), firstPending())}
+            content={fit(`${icon(step().status)} ${step().step}. ${step().description}`, lineWidth())}
+          />
         )}
-      </For>
+      </Index>
     </box>
   );
 }
@@ -97,40 +102,42 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
 export function ActivityPanel(props: { activities: any[]; width: number }) {
   const lineWidth = () => Math.max(8, props.width - 2);
   const visible = () => props.activities.slice(-6).reverse();
+  const activityAt = (index: number) => visible()[index] ?? null;
   return (
     <box flexShrink={0} flexDirection="column" padding={1}>
-      <text width={lineWidth()} fg="#D6DEE8">Activity</text>
-      <Show when={visible().length > 0} fallback={<text width={lineWidth()} fg="#7F8C8D">no active jobs</text>}>
-        <For each={visible()}>
-          {(activity) => (
-            <box flexDirection="column" marginTop={1}>
-              <text width={lineWidth()} fg={activityColor(activity.status)}>
-                {fit(activity.progress?.label ?? activity.label ?? `${activity.source ?? 'mcp'} ${activity.kind ?? 'job'}`, lineWidth())}
-              </text>
-              <box height={1} flexDirection="row">
-                {(() => {
-                  const badge = activityPercentBadge(activity);
-                  const badgeLen = badge ? badge.text.length : 0;
-                  return (
-                    <>
-                      <text width={lineWidth() - badgeLen} fg="#AAB7C4">
-                        {fit(activityLine(activity), lineWidth() - badgeLen)}
-                      </text>
-                      {badge && (
-                        <text width={badgeLen} bg={badge.bg} fg={badge.fg}>
-                          {badge.text}
-                        </text>
-                      )}
-                    </>
-                  );
-                })()}
+      <text width={lineWidth()} fg="#D6DEE8" content="Activity" />
+      <Show when={visible().length > 0} fallback={<text width={lineWidth()} fg="#7F8C8D" content="no active jobs" />}>
+        <Index each={ACTIVITY_SLOTS}>
+          {(slot) => {
+            const activity = () => activityAt(slot());
+            const label = () => {
+              const item = activity();
+              if (!item) return '';
+              return fit(item.progress?.label ?? item.label ?? `${item.source ?? 'mcp'} ${item.kind ?? 'job'}`, lineWidth());
+            };
+            const badge = () => activityPercentBadge(activity());
+            const badgeLen = () => badge()?.text.length ?? 0;
+            return (
+              <box flexDirection="column" marginTop={slot() === 0 ? 1 : 0}>
+                <text width={lineWidth()} fg={activityColor(activity()?.status)} content={label()} />
+                <box height={1} flexDirection="row">
+                  <text
+                    width={lineWidth() - badgeLen()}
+                    fg="#AAB7C4"
+                    content={activity() ? fit(activityLine(activity()), lineWidth() - badgeLen()) : ''}
+                  />
+                  <text
+                    width={badgeLen()}
+                    bg={badge()?.bg ?? '#111827'}
+                    fg={badge()?.fg ?? '#111827'}
+                    content={badge()?.text ?? ''}
+                  />
+                </box>
+                <text width={lineWidth()} fg="#7F8C8D" content={activity() ? fit(updatedLine(activity()), lineWidth()) : ''} />
               </box>
-              <text width={lineWidth()} fg="#7F8C8D">
-                {fit(updatedLine(activity), lineWidth())}
-              </text>
-            </box>
-          )}
-        </For>
+            );
+          }}
+        </Index>
       </Show>
     </box>
   );
@@ -138,14 +145,15 @@ export function ActivityPanel(props: { activities: any[]; width: number }) {
 
 export function LogPanel(props: { logs: string[]; width: number }) {
   const lineWidth = () => Math.max(8, props.width - 2);
-  const visibleLines = () => props.logs.slice(-12).flatMap((line) => wrapLine(line, lineWidth()));
+  const visibleLines = () => props.logs.slice(-12).flatMap((line) => wrapLine(line, lineWidth())).slice(-24);
+  const logLineAt = (index: number) => visibleLines()[index] ?? '';
   return (
     <box flexGrow={1} flexDirection="column" padding={1}>
-      <text width={lineWidth()} fg="#D6DEE8">Logs / Trace</text>
+      <text width={lineWidth()} fg="#D6DEE8" content="Logs / Trace" />
       <box flexGrow={1} flexDirection="column" overflow="hidden">
-        <For each={visibleLines().slice(-24)}>
-          {(line) => <text width={lineWidth()} fg="#AAB7C4">{line}</text>}
-        </For>
+        <Index each={LOG_SLOTS}>
+          {(slot) => <text width={lineWidth()} fg="#AAB7C4" content={logLineAt(slot())} />}
+        </Index>
       </box>
     </box>
   );

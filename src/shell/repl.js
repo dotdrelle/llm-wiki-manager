@@ -7,9 +7,10 @@ import { markedTerminal } from 'marked-terminal';
 import { buildAgentSystemPrompt, buildLimitedAgentResponse } from '../agent/graph.js';
 import { handleSlashCommand } from '../commands/slash.js';
 import { serviceDescription, serviceNames as composeServiceNames } from '../core/compose.js';
-import { rememberActivityFromPayload, sessionActivities } from '../core/activity.js';
-import { syncActivitiesToPlan, ensurePlanFromActivity } from '../core/plan.js';
+import { extractActivity, sessionActivities } from '../core/activity.js';
+import { syncActivitiesToPlan } from '../core/plan.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
+import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { listSkills } from '../core/skills.js';
 import { listWikircProfiles } from '../core/wikirc.js';
 import { listWorkspaces } from '../core/workspaces.js';
@@ -831,6 +832,14 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
   const history = toConversationHistory(messages);
   session._onStep = onStep ?? null;
   session.packageJson = session.packageJson ?? {};
+  dispatchAgentEvent(session, createAgentEvent('run_started', {
+    origin: 'user',
+    payload: { input },
+  }));
+  dispatchAgentEvent(session, createAgentEvent('user_message', {
+    origin: 'user',
+    payload: { content: input },
+  }));
 
   // Show the user's input in the conversation (mirrors runDirectChatTurn).
   messages.push({ role: 'user', content: input });
@@ -1021,9 +1030,12 @@ export async function runLine(line, { agent, packageJson, session, onUpdate, onS
       const parts = trimmed.split(/\s+/);
       if (parts[0] === '/mcp' && parts[1] === 'call' && parts[2]) {
         const payload = parseJsonText(result.output);
-        const savedActivity = rememberActivityFromPayload(session, payload, { server: parts[2], tool: parts[3] });
-        if (savedActivity) {
-          ensurePlanFromActivity(session, savedActivity);
+        const activity = extractActivity(payload, { server: parts[2], tool: parts[3] });
+        if (activity) {
+          dispatchAgentEvent(session, createAgentEvent('activity_upserted', {
+            origin: 'tool',
+            payload: { activity },
+          }));
         } else {
           rememberProductionActivity(session, payload);
         }
@@ -1155,12 +1167,17 @@ async function runTuiShell({ agent, packageJson, session }) {
       void callMcpTool(session.mcp, activity.poll.server, activity.poll.tool, activity.poll.args ?? {})
         .then((result) => {
           const payload = parseJsonText(formatMcpToolResult(result));
-          const polledActivity = rememberActivityFromPayload(session, payload, { server: activity.poll.server, tool: activity.poll.tool });
-          if (polledActivity) ensurePlanFromActivity(session, polledActivity);
-          if (polledActivity || rememberProductionActivity(session, payload)) {
-            syncActivitiesToPlan(session.headlessPlan, sessionActivities(session));
-            rerender();
+          const polledActivity = extractActivity(payload, { server: activity.poll.server, tool: activity.poll.tool });
+          if (polledActivity) {
+            dispatchAgentEvent(session, createAgentEvent('activity_upserted', {
+              origin: 'poll',
+              payload: { activity: polledActivity },
+            }));
           }
+          if (!polledActivity && rememberProductionActivity(session, payload)) {
+            syncActivitiesToPlan(session.headlessPlan, sessionActivities(session));
+          }
+          if (polledActivity || session.productionActivity) rerender();
         })
         .catch(() => {
           // Keep the last known status visible; transient MCP errors should not interrupt typing.

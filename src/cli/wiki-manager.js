@@ -6,8 +6,9 @@ import { createAgentGraph, buildAgentSystemPrompt, buildLimitedAgentResponse } f
 import { handleSlashCommand, printHelp, printVersion } from '../commands/slash.js';
 import { runShell } from '../shell/repl.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
-import { parseJsonText, sessionActivities, rememberActivityFromPayload } from '../core/activity.js';
-import { extractHeadlessPlan, syncActivitiesToPlan, formatPlanStatus, formatCompletedActivities, ensurePlanFromActivity } from '../core/plan.js';
+import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
+import { extractHeadlessPlan, syncActivitiesToPlan, formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
+import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageJsonPath = resolve(__dirname, '../../package.json');
@@ -115,9 +116,15 @@ async function runHeadlessActivityLoop(session, log, { wait, timeoutMs }) {
       try {
         const result = await callMcpTool(session.mcp, activity.poll.server, activity.poll.tool, activity.poll.args ?? {});
         const payload = parseJsonText(formatMcpToolResult(result));
-        const polledActivity = rememberActivityFromPayload(session, payload, { server: activity.poll.server, tool: activity.poll.tool });
-        if (polledActivity) ensurePlanFromActivity(session, polledActivity);
-        syncActivitiesToPlan(session.headlessPlan, sessionActivities(session));
+        const polledActivity = extractActivity(payload, { server: activity.poll.server, tool: activity.poll.tool });
+        if (polledActivity) {
+          dispatchAgentEvent(session, createAgentEvent('activity_upserted', {
+            origin: 'poll',
+            payload: { activity: polledActivity },
+          }));
+        } else {
+          syncActivitiesToPlan(session.headlessPlan, sessionActivities(session));
+        }
         const updated = sessionActivities(session).find((a) => a.key === key);
         if (updated) {
           const line = `activity-loop: ${updated.label} → ${updated.status}${updated.error ? ` — ${updated.error}` : ''}`;
@@ -193,8 +200,14 @@ async function runHeadlessAgenticLoop(agent, session, initialInput, log, { timeo
     // session.headlessPlan is set authoritatively by wiki__plan_set tool call.
     // Fall back to text extraction only if the agent didn't call the tool.
     if (turn === 1 && session.headlessPlan === null) {
-      session.headlessPlan = extractHeadlessPlan(response);
-      if (session.headlessPlan) log.push(`agentic-loop: plan extracted from text (${session.headlessPlan.length} steps, fallback)`);
+      const extractedPlan = extractHeadlessPlan(response);
+      if (extractedPlan) {
+        dispatchAgentEvent(session, createAgentEvent('plan_set', {
+          origin: 'llm',
+          payload: { steps: extractedPlan },
+        }));
+        log.push(`agentic-loop: plan extracted from text (${session.headlessPlan.length} steps, fallback)`);
+      }
     } else if (turn === 1 && session.headlessPlan) {
       log.push(`agentic-loop: plan set via tool (${session.headlessPlan.length} steps)`);
     }
@@ -226,8 +239,6 @@ async function runHeadlessAgenticLoop(agent, session, initialInput, log, { timeo
     const { exitCode, completed, timedOut } = await runHeadlessActivityLoop(session, log, { wait: true, timeoutMs });
 
     if (timedOut || exitCode !== 0) return { exitCode };
-
-    syncActivitiesToPlan(session.headlessPlan, completed);
 
     const summary = formatCompletedActivities(completed);
     log.push(`agentic-loop: completed activities:\n${summary}`);
@@ -300,6 +311,14 @@ async function runHeadless(argv, agent) {
     }
 
     log.push(`input=${input}`);
+    dispatchAgentEvent(session, createAgentEvent('run_started', {
+      origin: 'user',
+      payload: { input },
+    }));
+    dispatchAgentEvent(session, createAgentEvent('user_message', {
+      origin: 'user',
+      payload: { content: input },
+    }));
     let exitCode = 0;
     if (useAgenticLoop) {
       ({ exitCode } = await runHeadlessAgenticLoop(agent, session, input, log, { timeoutMs, maxTurns }));

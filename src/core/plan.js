@@ -1,5 +1,8 @@
 export function ensurePlanFromActivity(session, activity) {
-  if (!activity || session.headlessPlan) return;
+  if (!activity) return;
+  const actKey = activity.key ?? null;
+  // Same activity still being tracked — preserve current plan state (polling update).
+  if (session.headlessPlan && actKey !== null && session.headlessPlan[0]?._activityKey === actKey) return;
   const steps = activity.plan?.steps;
   if (Array.isArray(steps) && steps.length > 0) {
     session.headlessPlan = steps.map((s, i) => ({

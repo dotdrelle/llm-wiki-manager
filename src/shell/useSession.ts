@@ -2,8 +2,9 @@ import { writeFileSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { createMemo, createSignal, onCleanup } from 'solid-js';
 import { formatMcpToolResult, callMcpTool } from '../core/mcp.js';
-import { parseJsonText, rememberActivityFromPayload, sessionActivities } from '../core/activity.js';
-import { syncActivitiesToPlan, formatPlanStatus, formatCompletedActivities, ensurePlanFromActivity } from '../core/plan.js';
+import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
+import { formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
+import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import type { ActiveFileEditor } from './FileEditorDialog';
 import {
   completionContext,
@@ -129,18 +130,15 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
       void callMcpTool(session.mcp, activity.poll.server, activity.poll.tool, activity.poll.args ?? {})
         .then((result) => {
           const payload = parseJsonText(formatMcpToolResult(result));
-          const polledActivity = rememberActivityFromPayload(session, payload, {
+          const polledActivity = extractActivity(payload, {
             server: activity.poll.server,
             tool: activity.poll.tool,
           });
           if (polledActivity) {
-            ensurePlanFromActivity(session, polledActivity);
-            const plan = (session as any).headlessPlan;
-            const updatedActivities = sessionActivities(session);
-            if (plan) {
-              syncActivitiesToPlan(plan, updatedActivities);
-              (session as any)._onPlanUpdate?.();
-            }
+            dispatchAgentEvent(session, createAgentEvent('activity_upserted', {
+              origin: 'poll',
+              payload: { activity: polledActivity },
+            }));
             refresh();
             const updated = sessionActivities(session).find((a) => a.key === key);
             if (updated) {
@@ -189,6 +187,9 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
       setHistory((items) => [...items, line].slice(-100));
     }
     setHistoryIndex(null);
+    matchedActivityKeys.clear();
+    lastActivityLines.clear();
+    lastActivityDetails.clear();
     const result = await agent.submit(line);
     if ((result as any)?.setMode === 'chat') {
       setChatMode(true);
@@ -281,7 +282,10 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
 
   function abort() {
     agent.abort();
-    (session as any).headlessPlan = null;
+    dispatchAgentEvent(session, createAgentEvent('plan_set', {
+      origin: 'system',
+      payload: { steps: null },
+    }));
     matchedActivityKeys.clear();
     refresh();
   }

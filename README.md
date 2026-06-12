@@ -270,13 +270,27 @@ jobs that return `_activity.poll` descriptors — not synchronous setup calls.
 It does not expose arbitrary system commands, `/mcp call`, `/wiki run`,
 `/start`, `/stop`, `/logs`, or `/exit`.
 
+### Event system
+
+All plan and activity state flows through a typed event bus in
+`src/core/agentEvents.js`. Events (`run_started`, `tool_call_started`,
+`tool_call_result`, `activity_upserted`, `plan_set`, `plan_step_updated`,
+`run_done`, `run_error`) are dispatched by `graph.js`, `repl.js`, and
+`wiki-manager.js`. A pure reducer (`reduceAgentEvents`) derives `plan`,
+`activities`, `chain`, and `status` from the event log. The compat shim
+`applyAgentProjectionToSession` writes `session.headlessPlan` and
+`session.activities` for existing consumers.
+
+`run_started` clears `plan` and `activities` so a new agent turn always starts
+from a clean slate and cannot inherit the plan of a previous turn.
+
 ### Activity monitoring
 
-Any MCP tool result that contains `_activity` (or matches the legacy production
-job shape) is registered in the session activity store. The TUI polls
-non-terminal activities in the background using the `poll` descriptor declared
-in `_activity.poll`. The divider below the conversation shows the current
-non-terminal activity; the lower panel shows recent step labels.
+Any MCP tool result that contains `_activity` triggers an `activity_upserted`
+event. The reducer upserts the activity and syncs plan step statuses. The TUI and
+headless loop poll non-terminal activities in the background using the `poll`
+descriptor declared in `_activity.poll`. The divider below the conversation shows
+the current non-terminal activity; the lower panel shows recent step labels.
 
 When the plan is associated with an activity that exposes an id, the Plan panel
 title uses the id directly, for example `Plan : Job
@@ -461,7 +475,7 @@ llm-wiki-manager/
 │   ├── agent/              # LangGraph orchestration and LLM client
 │   ├── cli/                # CLI entrypoint
 │   ├── commands/           # slash commands
-│   ├── core/               # compose, env, MCP, activity, plan, skills, workspace registry
+│   ├── core/               # compose, env, MCP, activity, agentEvents, plan, skills, workspace registry
 │   └── shell/
 │       ├── repl.js         # legacy TUI and pipe shell (Node fallback)
 │       ├── tui.tsx         # OpenTUI shell root (Bun)

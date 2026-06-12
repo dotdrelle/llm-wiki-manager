@@ -29,12 +29,33 @@ test('ensurePlanFromActivity: creates mono-step plan when no plan.steps', () => 
   assert.equal(session.headlessPlan[0]._activityKey, 'prod:job-1');
 });
 
-test('ensurePlanFromActivity: does not overwrite existing plan', () => {
-  const existing = [{ step: 1, description: 'Existing', status: 'pending' }];
+test('ensurePlanFromActivity: does not overwrite plan for same activity key', () => {
+  const existing = [{ step: 1, description: 'Existing', status: 'running', _activityKey: 'prod:job-1' }];
   const session = { headlessPlan: existing };
-  const activity = { key: 'prod:job-2', label: 'New', plan: null, progress: {} };
+  const activity = { key: 'prod:job-1', label: 'Updated', plan: null, progress: {} };
   ensurePlanFromActivity(session, activity);
   assert.strictEqual(session.headlessPlan, existing);
+});
+
+test('ensurePlanFromActivity: replaces plan for different activity key', () => {
+  const existing = [{ step: 1, description: 'Old', status: 'done', _activityKey: 'prod:job-1' }];
+  const session = { headlessPlan: existing };
+  const activity = { key: 'prod:job-2', label: 'New Job', plan: null, progress: {} };
+  ensurePlanFromActivity(session, activity);
+  assert.notStrictEqual(session.headlessPlan, existing);
+  assert.equal(session.headlessPlan.length, 1);
+  assert.equal(session.headlessPlan[0].description, 'New Job');
+  assert.equal(session.headlessPlan[0]._activityKey, 'prod:job-2');
+});
+
+test('ensurePlanFromActivity: replaces null-key minimal plan for real activity', () => {
+  const minimal = [{ step: 1, description: 'cme.cme_export_run', status: 'running', _activityKey: null }];
+  const session = { headlessPlan: minimal };
+  const activity = { key: 'cme:export-1', label: 'CME Export', plan: null, progress: {} };
+  ensurePlanFromActivity(session, activity);
+  assert.notStrictEqual(session.headlessPlan, minimal);
+  assert.equal(session.headlessPlan[0].description, 'CME Export');
+  assert.equal(session.headlessPlan[0]._activityKey, 'cme:export-1');
 });
 
 test('ensurePlanFromActivity: no-op on null activity', () => {

@@ -8,8 +8,8 @@ import {
 } from '../core/mcp.js';
 import { formatSkillsForAgent } from '../core/skills.js';
 import { handleSlashCommand } from '../commands/slash.js';
-import { formatActivitySummary, rememberActivityFromPayload } from '../core/activity.js';
-import { ensurePlanFromActivity } from '../core/plan.js';
+import { extractActivity, formatActivitySummary } from '../core/activity.js';
+import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 
 const MAX_TOOL_ITERATIONS = 80;
 const MAX_SPINNER_ARG_LENGTH = 96;
@@ -242,15 +242,20 @@ function rememberProductionProgress(session, payload, label) {
   };
 }
 
+function emitAgentEvent(session, type, origin, payload = {}) {
+  dispatchAgentEvent(session, createAgentEvent(type, { origin, payload }));
+}
+
 function handleWikiTool(session, tool, args) {
   if (tool === 'plan_set') {
     const steps = Array.isArray(args.steps) ? args.steps : [];
-    session.headlessPlan = steps.map((description, i) => ({
-      step: i + 1,
-      description: String(description),
-      status: 'pending',
-    }));
-    session._onPlanUpdate?.();
+    emitAgentEvent(session, 'plan_set', 'tool', {
+      steps: steps.map((description, i) => ({
+        step: i + 1,
+        description: String(description),
+        status: 'pending',
+      })),
+    });
     return `Plan registered: ${steps.length} step${steps.length !== 1 ? 's' : ''}.`;
   }
   if (tool === 'plan_done') {
@@ -258,9 +263,9 @@ function handleWikiTool(session, tool, args) {
     if (!plan) return 'No active plan. Call wiki__plan_set first.';
     const step = plan.find((s) => s.step === Number(args.step));
     if (!step) return `Step ${args.step} not found (plan has ${plan.length} steps).`;
-    step.status = args.status === 'failed' ? 'failed' : 'done';
-    session._onPlanUpdate?.();
-    return `Step ${args.step} marked as ${step.status}.`;
+    const status = args.status === 'failed' ? 'failed' : 'done';
+    emitAgentEvent(session, 'plan_step_updated', 'tool', { step: Number(args.step), status });
+    return `Step ${args.step} marked as ${status}.`;
   }
   return `Unknown wiki tool: ${tool}`;
 }
@@ -412,7 +417,10 @@ export function createAgentGraph(options = {}) {
             system,
             tools,
             messages: conversationMessages,
-            onTextDelta: (delta) => state.session._onStream?.(delta),
+            onTextDelta: (delta) => {
+              emitAgentEvent(state.session, 'assistant_delta', 'llm', { delta });
+              state.session._onStream?.(delta);
+            },
             signal: state.session._abortSignal,
           })
         : await llm.completeWithTools({
@@ -438,6 +446,7 @@ export function createAgentGraph(options = {}) {
       }
 
       if (useStreamWithTools) {
+        emitAgentEvent(state.session, 'assistant_message', 'llm', { content: result.content ?? '' });
         // Text was streamed inline via session._onStream — no second LLM call needed.
         const newMessages = iterations === 0
           ? [{ role: 'user', content: state.input }, result.message]
@@ -461,6 +470,7 @@ export function createAgentGraph(options = {}) {
           streamContext: { system, messages: conversationMessages },
         };
       }
+      emitAgentEvent(state.session, 'assistant_message', 'llm', { content: result.content ?? '' });
       return {
         response: result.content ?? '',
         pendingToolCalls: null,
@@ -482,10 +492,26 @@ export function createAgentGraph(options = {}) {
       const argsSummary = summarizeToolArguments(call.function.arguments);
       const isInternalWikiTool = server === 'wiki' && (tool === 'plan_set' || tool === 'plan_done');
       const serverLabel = server === 'shell' ? 'Shell' : isInternalWikiTool ? 'Plan' : 'MCP';
+      const toolName = `${server}.${tool}`;
       state.session._onStep?.(
-        `[${state.toolIterations}/${MAX_TOOL_ITERATIONS}] ${serverLabel} ${server}.${tool}${argsSummary ? ` (${argsSummary})` : ''}`,
+        `[${state.toolIterations}/${MAX_TOOL_ITERATIONS}] ${serverLabel} ${toolName}${argsSummary ? ` (${argsSummary})` : ''}`,
       );
+      emitAgentEvent(state.session, 'tool_call_started', 'tool', {
+        callId: call.id,
+        name: toolName,
+        args: call.function.arguments ?? '{}',
+        summary: argsSummary || 'calling...',
+      });
+      // Immediate visible plan for any MCP call that doesn't yet have an _activity plan.
+      let minimalPlanActive = false;
+      if (!isInternalWikiTool && server !== 'shell' && !state.session.headlessPlan) {
+        minimalPlanActive = true;
+        emitAgentEvent(state.session, 'plan_set', 'tool', {
+          steps: [{ step: 1, id: null, description: toolName, status: 'running', _activityKey: null }],
+        });
+      }
       let resultText;
+      let ok = true;
       try {
         let args = JSON.parse(call.function.arguments ?? '{}');
         if (server === 'production' && tool === 'production_start_job' && state.session.workspace && !args.callerLabel) {
@@ -503,23 +529,38 @@ export function createAgentGraph(options = {}) {
           const payload = parseJsonToolResult(resultText);
           const progressLabel = formatProductionProgress(payload);
           if (progressLabel) state.session._onStep?.(progressLabel);
-          const savedActivity = rememberActivityFromPayload(state.session, payload, { server, tool });
-          if (savedActivity) {
-            ensurePlanFromActivity(state.session, savedActivity);
+          const activity = extractActivity(payload, { server, tool });
+          if (activity) {
+            emitAgentEvent(state.session, 'activity_upserted', 'tool', { activity });
           } else {
             rememberProductionProgress(state.session, payload, progressLabel);
           }
         } else if (!isInternalWikiTool && server !== 'shell') {
           const payload = parseJsonToolResult(resultText);
-          const savedActivity = rememberActivityFromPayload(state.session, payload, { server, tool });
-          if (savedActivity) ensurePlanFromActivity(state.session, savedActivity);
+          const activity = extractActivity(payload, { server, tool });
+          if (activity) emitAgentEvent(state.session, 'activity_upserted', 'tool', { activity });
           const activityLabel = formatActivitySummary(server, tool, resultText);
           if (activityLabel) state.session._onStep?.(activityLabel);
         }
+        // Minimal plan was not replaced by a real _activity plan — mark done.
+        if (minimalPlanActive && state.session.headlessPlan?.[0]?._activityKey === null) {
+          emitAgentEvent(state.session, 'plan_step_updated', 'tool', { step: 1, status: 'done' });
+        }
       } catch (err) {
         if (err.name === 'AbortError' && state.session._abortSignal?.aborted) throw err;
+        ok = false;
         resultText = `Error [${server}.${tool}]: ${err instanceof Error ? err.message : String(err)}`;
+        if (minimalPlanActive && state.session.headlessPlan?.[0]?._activityKey === null) {
+          emitAgentEvent(state.session, 'plan_step_updated', 'tool', { step: 1, status: 'failed' });
+        }
       }
+      emitAgentEvent(state.session, 'tool_call_result', 'tool', {
+        callId: call.id,
+        name: toolName,
+        ok,
+        result: resultText,
+        summary: ok ? 'done' : 'failed',
+      });
       toolResultMessages.push({
         role: 'tool',
         tool_call_id: call.id,

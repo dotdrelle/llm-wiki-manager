@@ -26,6 +26,7 @@ src/shell/renderer.ts       Markdown stripping and line coloring helpers
 src/agent/graph.js          LangGraph ReAct orchestrator (MAX_TOOL_ITERATIONS=80)
 src/agent/llm.js            OpenAI-compatible client: complete, completeWithTools, streamWithTools, stream
 src/commands/slash.js       Deterministic slash commands
+src/core/agentEvents.js     Event system: createAgentEvent, dispatchAgentEvent, reduceAgentEvents; typed AgentRunEvent projection
 src/core/activity.js        Generic activity registry: extractActivity, normalizeActivity, poll contract
 src/core/compose.js         Docker Compose helpers
 src/core/workspaces.js      Workspace registry and creation
@@ -112,9 +113,12 @@ START → orchestratorNode
 
 toolExecutorNode
   ├── shell__run_command  → handleSlashCommand (safe subset only)
-  ├── wiki__plan_set      → session.headlessPlan + session._onPlanUpdate?.()
-  ├── wiki__plan_done     → mark step done/failed + session._onPlanUpdate?.()
+  ├── wiki__plan_set      → dispatchAgentEvent('plan_set') → applyAgentProjectionToSession → session.headlessPlan
+  ├── wiki__plan_done     → dispatchAgentEvent('plan_step_updated') → applyAgentProjectionToSession
   └── <server>__<tool>    → callMcpTool → JSON-RPC Streamable HTTP
+                            emits: tool_call_started · tool_call_result
+                            if _activity in result: activity_upserted
+                            if no plan exists yet: plan_set (minimal 1-step, _activityKey:null)
 
 `callMcpTool` (in `src/core/mcp.js`) auto-injects `configPath` from
 `endpoint.activeConfigPath` for `production_start_job` when `args.configPath`
@@ -140,14 +144,13 @@ Important: `wiki__plan_set` and `wiki__plan_done` are the only internal
 - `session._onStep(label)` — set per-turn before `agent.invoke()`, deleted in `finally`; step-level updates (spinner label, activity panel lines)
 - `session._onStream(delta)` — set per-turn before `agent.invoke()`, deleted in `finally`; raw text delta from `streamWithTools`; caller accumulates into a `donnaMessage` pushed to conversation
 - `session._onStreamReset()` — set per-turn before `agent.invoke()`, deleted in `finally`; called when a streamed assistant turn resolves to tool calls. If the streamed donna bubble already has content, keep it and append a blank separator so intermediate text and the final answer stay in one bubble; remove only empty stream placeholders.
-- `session._onPlanUpdate()` — set once at session mount by `useSession.ts` to SolidJS `refresh`; called mid-turn by `handleWikiTool` after every `wiki__plan_set` / `wiki__plan_done` so the right panel updates immediately without waiting for the agent turn to complete
+- `session._onPlanUpdate()` — set once at session mount by `useSession.ts` to SolidJS `refresh`; called by `dispatchAgentEvent` whenever `session.headlessPlan` changes (JSON diff guard). Only events in `SESSION_PROJECTION_EVENTS` (`run_started`, `plan_set`, `plan_step_updated`, `activity_upserted`, `run_error`) trigger `applyAgentProjectionToSession`; `assistant_delta` does not.
 
 **Activity surfacing (interactive TUI):**
 
-- `toolExecutorNode` calls `rememberActivityFromPayload` after each MCP result; extracts `_activity` (generic) or legacy production shape.
-- `session.activities` is the canonical registry (keyed by `source:id`).
-- `session.productionActivity` is a legacy mirror for production jobs.
-- A background `setInterval` in `repl.js` polls non-terminal activities using their `poll` descriptor at `intervalMs` (min 1000 ms, default 2500 ms).
+- `toolExecutorNode` dispatches `activity_upserted` for each MCP result that carries `_activity`. The `agentEvents.js` reducer upserts into `state.activities` and syncs the plan.
+- `session.activities` is a projection copy derived by `applyAgentProjectionToSession`; `session.productionActivity` is a compat mirror for the latest production job.
+- Background `setInterval` in `useSession.ts` (OpenTUI) and `wiki-manager.js` (headless) polls non-terminal activities. Each poll result that carries `_activity` dispatches `activity_upserted` through `dispatchAgentEvent`; the reducer handles plan synchronization.
 - **ActivityPanel rendering** (`RightPane.tsx`):
   - Line 1 (title): `progress.label` when present (specific, e.g. "Ingest my-doc.md"), falling back to `activity.label`.
   - Line 2 (status): `status · progress.detail` when present (e.g. "running · Préparation LLM", "running · Source 3/10", "running · LLM en attente quota, reprise dans 45s"), falling back to `status · phase`.
@@ -158,12 +161,18 @@ Important: `wiki__plan_set` and `wiki__plan_done` are the only internal
 
 **Plan tracking (interactive and headless):**
 
-- Prefer MCP tools that declare their own plan via `_activity.plan.steps`.
-  When such a tool returns `_activity`, the shell creates and tracks the visible
-  plan automatically.
-- The agent should call `wiki__plan_set(steps)` only when the tool cannot
-  declare its own plan or when the task spans multiple independent tools.
-- `wiki__plan_set` / `wiki__plan_done` call `session._onPlanUpdate?.()` to trigger an immediate SolidJS refresh in the TUI. In headless mode `_onPlanUpdate` is undefined and the call is a no-op.
+All plan mutations go through `dispatchAgentEvent` in `src/core/agentEvents.js`. The reducer (`applyEvent`) is the single source of truth:
+
+- `run_started` clears `state.plan` and `state.activities` — prevents stale plan from a previous turn bleeding into the new one.
+- `plan_set` (from `wiki__plan_set` or minimal MCP plan) replaces the current plan.
+- `activity_upserted` calls `ensurePlanFromActivityProjection` (key-based guard): same `_activityKey` = polling update, skip; different key or `null` key = new job, replace.
+- `plan_step_updated` (from `wiki__plan_done`) patches a single step status.
+- `session.headlessPlan` is a compat projection copy written by `applyAgentProjectionToSession`.
+
+Usage rules:
+- Prefer MCP tools that declare `_activity.plan.steps`; the shell creates the plan automatically from the `activity_upserted` event.
+- Call `wiki__plan_set(steps)` only when the tool has no `_activity` or the task spans multiple independent tools.
+- For MCP tools that don't return `_activity`, a minimal 1-step plan (`_activityKey: null`) is automatically emitted before the call so the Plan panel shows immediate feedback. A real `activity_upserted` with a non-null key replaces it.
 - In headless: fallback `extractHeadlessPlan` parses a numbered list from the first turn's text response if the agent did not call `wiki__plan_set`.
 - Each turn: agent calls `wiki__plan_done(step, status)` for synchronous steps;
   async MCP jobs are matched to plan steps first by structured fields

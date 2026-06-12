@@ -48,7 +48,7 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
   let selectionCopyTimer: ReturnType<typeof setTimeout> | null = null;
   let lastCopiedSelection = '';
   const state = useSession(props);
-  const conversationRows = createMemo(() => Math.max(4, dimensions().height - (exitHint() || copyHint() ? 8 : 7)));
+  const conversationRows = createMemo(() => Math.max(4, dimensions().height - 8));
   const rightColumns = createMemo(() => {
     const width = dimensions().width;
     return Math.max(26, Math.min(44, Math.floor(width * 0.32)));

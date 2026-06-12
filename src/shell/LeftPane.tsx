@@ -36,7 +36,7 @@ function wrapLine(line: string, width: number) {
   return out;
 }
 
-type Segment = { text: string; color: string; width?: number };
+type Segment = { text: string; color: string; width?: number; bg?: string };
 type HelpCard = { title: string; text: string; example: string };
 
 const HELP_CARDS: HelpCard[] = [
@@ -79,7 +79,9 @@ function WelcomeHelpPanels(props: { width: number }) {
   return (
     <box flexGrow={1} flexDirection="column" padding={1} overflow="hidden">
       <text height={1} fg="#8BD5CA">Orchestrator agent ready.</text>
-      <text height={1} fg="#D6DEE8">Quick help</text>
+      <text height={1} />
+      <text height={1} fg="#7F8C8D">Quick help</text>
+      <text height={1} />
       <For each={rows}>
         {(row) => (
           <box height={5} flexDirection="row" gap={2} overflow="hidden">
@@ -148,18 +150,29 @@ function segmentsForLine(line: string, role: string, columns: number): Segment[]
   return [{ text: line || ' ', color: colorForRenderedLine(line, role) }];
 }
 
-function conversationLines(messages: Array<{ role: string; content: string }>, columns: number, spinnerFrame: string) {
+function conversationLines(messages: Array<{ role: string; content: string }>, columns: number) {
   return messages.flatMap((message) => {
-    const content = message.content || (isDonnaRole(message.role) ? `${spinnerFrame} Thinking...` : '');
-    const rawLines = renderPlainMarkdown(content).split('\n');
+    const raw = String(message.content || '');
+    let inFence = false;
+    const lines: Array<{ text: string; isCode: boolean }> = [];
+    for (const line of raw.split('\n')) {
+      if (/^(`{2,3}|~{2,3})/.test(line)) { inFence = !inFence; continue; }
+      lines.push({ text: line, isCode: inFence });
+    }
     return [
       { segments: messageHeaderSegments(message.role, columns) },
-      ...rawLines.flatMap((rawLine) => {
-        const help = message.role === 'command' ? helpSegments(rawLine, columns) : null;
+      ...lines.flatMap(({ text, isCode }) => {
+        if (isCode) {
+          return wrapLine(text || ' ', columns).map((piece) => ({
+            segments: [{ text: piece || ' ', color: '#D6DEE8', bg: '#1A2235' }],
+          }));
+        }
+        const rendered = renderPlainMarkdown(text);
+        const help = message.role === 'command' ? helpSegments(rendered, columns) : null;
         if (help) return [{ segments: help }];
-        const isCmdDesc = splitCmdDesc(rawLine) !== null;
-        const fallback = isCmdDesc ? '#FFFFFF' : colorForRenderedLine(rawLine, message.role);
-        return wrapLine(rawLine, columns).map((piece, idx) => ({
+        const isCmdDesc = splitCmdDesc(rendered) !== null;
+        const fallback = isCmdDesc ? '#FFFFFF' : colorForRenderedLine(rendered, message.role);
+        return wrapLine(rendered, columns).map((piece, idx) => ({
           segments: idx === 0
             ? segmentsForLine(piece, message.role, columns)
             : [{ text: piece || ' ', color: fallback }],
@@ -178,7 +191,7 @@ export function ConversationView(props: {
   onScroll: (delta: number) => void;
   spinnerFrame: string;
 }) {
-  const allLines = createMemo(() => conversationLines(props.messages, props.columns, props.spinnerFrame));
+  const allLines = createMemo(() => conversationLines(props.messages, props.columns));
   const visibleLines = () => {
     const lines = allLines();
     const rows = Math.max(1, props.rows - 1);
@@ -218,7 +231,7 @@ export function ConversationView(props: {
         {(line) => (
           <box height={1} flexDirection="row" overflow="hidden">
             <For each={line.segments}>
-              {(seg: Segment) => <text width={seg.width} fg={seg.color}>{seg.text}</text>}
+              {(seg: Segment) => <text width={seg.width} fg={seg.color} bg={seg.bg}>{seg.text}</text>}
             </For>
           </box>
         )}
@@ -248,7 +261,7 @@ export function ChatInput(props: {
       borderStyle="single"
       borderColor={props.busy ? '#FBBF24' : idleColor()}
     >
-      <text fg={props.busy ? '#FBBF24' : idleColor()}>{props.busy ? props.spinnerFrame : props.prompt}</text>
+      <text fg={props.busy ? '#FBBF24' : idleColor()}>{props.busy ? `${props.spinnerFrame} ` : props.prompt}</text>
       <input
         flexGrow={1}
         focused={props.focused && !props.busy}
@@ -285,13 +298,16 @@ export function LeftPane(props: {
   const modeLabel = () => props.chatMode ? 'CHAT MODE  direct LLM, no tools' : 'AGENT MODE  LangGraph + MCP tools';
   return (
     <box width={props.width} height="100%" flexDirection="column" padding={1} overflow="hidden">
-      <box height={2} flexDirection="column">
+      <box height={3} flexDirection="column">
         <box height={1} flexDirection="row" backgroundColor={modeColor()} paddingX={1}>
           <text fg="#0B1020">{modeLabel()}</text>
         </box>
         <box height={1} flexDirection="row">
           <text fg="#D6DEE8">{props.title}</text>
           <text fg="#7F8C8D">  {props.statusLine}</text>
+        </box>
+        <box height={1} flexDirection="row">
+          {props.hintLine ? <text fg="#FBBF24">[ {props.hintLine} ]</text> : null}
         </box>
       </box>
       {props.showWelcome ? (
@@ -316,11 +332,6 @@ export function LeftPane(props: {
         onInput={props.setInput}
         onSubmit={props.submit}
       />
-      {props.hintLine ? (
-        <text width={Math.max(8, props.width - 2)} fg="#FBBF24">
-          {props.hintLine}
-        </text>
-      ) : null}
     </box>
   );
 }

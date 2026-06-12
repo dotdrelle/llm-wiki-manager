@@ -227,6 +227,7 @@ export function ChatInput(props: {
   busy: boolean;
   chatMode: boolean;
   focused: boolean;
+  spinnerFrame: string;
   onInput: (value: string) => void;
   onSubmit: (value?: string) => void;
 }) {
@@ -241,7 +242,7 @@ export function ChatInput(props: {
       borderStyle="single"
       borderColor={props.busy ? '#FBBF24' : idleColor()}
     >
-      <text fg={props.busy ? '#FBBF24' : idleColor()}>{props.busy ? 'working...' : props.prompt}</text>
+      <text fg={props.busy ? '#FBBF24' : idleColor()}>{props.busy ? props.spinnerFrame : props.prompt}</text>
       <input
         flexGrow={1}
         focused={props.focused && !props.busy}
@@ -305,6 +306,7 @@ export function LeftPane(props: {
         busy={props.busy}
         chatMode={props.chatMode}
         focused={props.chatFocused}
+        spinnerFrame={props.spinnerFrame}
         onInput={props.setInput}
         onSubmit={props.submit}
       />

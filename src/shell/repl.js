@@ -827,9 +827,14 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
   session._onStep = onStep ?? null;
   session.packageJson = session.packageJson ?? {};
 
-  let dotMessage = null;
+  // Create the dot bubble immediately so "Thinking…" is visible during TTFT.
+  let dotMessage = { role: 'dot', content: '' };
+  messages.push(dotMessage);
+  onUpdate?.();
+
   session._onStream = (delta) => {
     if (!dotMessage) {
+      // Re-create after _onStreamReset removed an empty bubble (tool call on first turn).
       dotMessage = { role: 'dot', content: '' };
       messages.push(dotMessage);
     }
@@ -839,10 +844,13 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
     }
   };
   session._onStreamReset = () => {
-    if (dotMessage?.content.trim()) {
+    if (!dotMessage) return;
+    if (dotMessage.content.trim()) {
+      // Intermediate streamed text before tool calls: keep it, add separator.
       dotMessage.content += '\n\n';
       onUpdate?.();
-    } else if (dotMessage) {
+    } else {
+      // Still empty ("Thinking…"): remove it cleanly.
       const index = messages.indexOf(dotMessage);
       if (index !== -1) messages.splice(index, 1);
       dotMessage = null;
@@ -860,6 +868,12 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
         if (idx !== -1) messages.splice(idx, 1);
       }
       return { aborted: true };
+    }
+    // Non-abort error: surface it in the bubble rather than leaving "Thinking…" stuck.
+    if (dotMessage) {
+      const msg = err instanceof Error ? err.message : String(err);
+      dotMessage.content = buildLimitedAgentResponse({ input, session }, `LLM indisponible: ${msg}`);
+      onUpdate?.();
     }
     throw err;
   } finally {
@@ -882,14 +896,21 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
   }
 
   if (agentResult.response != null) {
-    messages.push({ role: 'dot', content: stripDsmlArtifacts(agentResult.response) });
+    const content = stripDsmlArtifacts(agentResult.response);
+    if (dotMessage) {
+      dotMessage.content = content;
+    } else {
+      messages.push({ role: 'dot', content });
+    }
     onUpdate?.();
     return {};
   }
 
   if (agentResult.readyToStream && session.llm?.stream) {
-    const dotMsg = { role: 'dot', content: '' };
-    messages.push(dotMsg);
+    if (!dotMessage) {
+      dotMessage = { role: 'dot', content: '' };
+      messages.push(dotMessage);
+    }
     onUpdate?.();
     const { system, messages: streamMessages = [] } = agentResult.streamContext ?? {};
     try {
@@ -901,28 +922,33 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
       })) {
         const cleanDelta = stripDsmlArtifacts(delta);
         if (cleanDelta) {
-          dotMsg.content += cleanDelta;
+          dotMessage.content += cleanDelta;
           onUpdate?.();
         }
       }
-      dotMsg.content = stripDsmlArtifacts(dotMsg.content).trimEnd();
-      if (!dotMsg.content.trim()) {
-        dotMsg.content = buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
+      dotMessage.content = stripDsmlArtifacts(dotMessage.content).trimEnd();
+      if (!dotMessage.content.trim()) {
+        dotMessage.content = buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
         onUpdate?.();
       }
     } catch (err) {
       if (err.name === 'AbortError') {
-        messages.pop();
+        const idx = messages.indexOf(dotMessage);
+        if (idx !== -1) messages.splice(idx, 1);
         return { aborted: true };
       }
       const message = err instanceof Error ? err.message : String(err);
-      dotMsg.content = buildLimitedAgentResponse({ input, session }, `LLM indisponible: ${message}`);
+      dotMessage.content = buildLimitedAgentResponse({ input, session }, `LLM indisponible: ${message}`);
       onUpdate?.();
     }
     return {};
   }
 
-  messages.push({ role: 'dot', content: buildLimitedAgentResponse({ input, session }) });
+  if (dotMessage) {
+    dotMessage.content = buildLimitedAgentResponse({ input, session });
+  } else {
+    messages.push({ role: 'dot', content: buildLimitedAgentResponse({ input, session }) });
+  }
   onUpdate?.();
   return {};
 }

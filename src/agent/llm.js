@@ -2,6 +2,19 @@ function trimTrailingSlash(value) {
   return value.replace(/\/+$/, '');
 }
 
+function createStreamYieldController() {
+  let eventsSinceYield = 0;
+  let lastYieldAt = Date.now();
+  return async function yieldIfNeeded(force = false) {
+    eventsSinceYield += 1;
+    const now = Date.now();
+    if (!force && eventsSinceYield < 4 && now - lastYieldAt < 12) return;
+    eventsSinceYield = 0;
+    lastYieldAt = now;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+}
+
 export function createLlmClientFromWikiConfig(config) {
   const llmConfig = config?.llm;
   const apiKey = llmConfig?.apiKey;
@@ -114,10 +127,12 @@ export function createLlmClientFromWikiConfig(config) {
       let textContent = '';
       const decoder = new TextDecoder();
       let buffer = '';
+      const yieldForRender = createStreamYieldController();
       for await (const chunk of response.body) {
         buffer += decoder.decode(chunk, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
+        let chunkHadContent = false;
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed.startsWith('data:')) continue;
@@ -130,6 +145,8 @@ export function createLlmClientFromWikiConfig(config) {
           if (typeof delta.content === 'string' && delta.content) {
             textContent += delta.content;
             onTextDelta?.(delta.content);
+            chunkHadContent = true;
+            await yieldForRender();
           }
           if (delta.tool_calls) {
             for (const tc of delta.tool_calls) {
@@ -144,6 +161,9 @@ export function createLlmClientFromWikiConfig(config) {
             }
           }
         }
+        // Yield to the macro-task queue after each chunk that produced text so
+        // OpenTUI's render loop (setInterval at 30 fps) can fire between bursts.
+        if (chunkHadContent) await yieldForRender(true);
       }
       const toolCalls = Object.keys(toolCallsMap)
         .sort((a, b) => Number(a) - Number(b))
@@ -192,20 +212,27 @@ export function createLlmClientFromWikiConfig(config) {
 
       const decoder = new TextDecoder();
       let buffer = '';
+      const yieldForRender = createStreamYieldController();
       for await (const chunk of response.body) {
         buffer += decoder.decode(chunk, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
-
+        let chunkHadContent = false;
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed.startsWith('data:')) continue;
           const data = trimmed.slice('data:'.length).trim();
           if (!data || data === '[DONE]') continue;
-          const parsed = JSON.parse(data);
+          let parsed;
+          try { parsed = JSON.parse(data); } catch { continue; }
           const delta = parsed?.choices?.[0]?.delta?.content;
-          if (typeof delta === 'string' && delta) yield delta;
+          if (typeof delta === 'string' && delta) {
+            yield delta;
+            chunkHadContent = true;
+            await yieldForRender();
+          }
         }
+        if (chunkHadContent) await yieldForRender(true);
       }
     },
   };

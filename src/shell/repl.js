@@ -126,7 +126,7 @@ function initialLegacyWelcomeMessage() {
 }
 
 export function promptFor(session) {
-  return session.workspace ? `${session.workspace}> ` : 'dot > ';
+  return session.workspace ? `${session.workspace}> ` : 'donna > ';
 }
 
 function slashCompletions(session) {
@@ -214,7 +214,7 @@ function buildDirectChatSystemPrompt(session) {
   const wikirc = session.wikirc?.profile ?? 'no profile loaded';
   const language = session.language ?? 'en-US';
   return [
-    'You are dot, the llm-wiki-manager chat assistant.',
+    'You are Donna, the llm-wiki-manager chat assistant.',
     'Answer directly and concisely. Do not claim to have called tools or changed files.',
     'If the user asks for an action that needs workspace commands, MCP tools, services, files, or mutations, say to ask as an agent action instead of pretending to execute it.',
     `Reply language: ${language}.`,
@@ -572,7 +572,7 @@ function wrapText(text, width) {
 }
 
 function dotBanner(columns) {
-  const compact = ['> dot'];
+  const compact = ['> donna'];
   const full = [
     '  ██╗   ██████╗  ██████╗ ████████╗',
     '  ╚██╗  ██╔══██╗██╔═══██╗╚══██╔══╝',
@@ -760,7 +760,7 @@ function renderScreen({ packageJson, session, messages, inputBuffer, busy = fals
         ? `${styles.cyan}You${styles.reset}`
         : message.role === 'command'
           ? `${styles.gray}Shell${styles.reset}`
-          : `${styles.green}dot${styles.reset}`;
+          : `${styles.green}donna${styles.reset}`;
     const lines = message.role === 'command'
       ? [
         `${label}:`,

@@ -5,7 +5,7 @@ import { colorForRenderedLine, helpCommandParts, keyValueParts, renderPlainMarkd
 function roleLabel(role: string) {
   if (role === 'user') return 'user';
   if (role === 'command') return 'shell';
-  return 'dot';
+  return 'donna';
 }
 
 function roleColor(role: string) {

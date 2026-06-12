@@ -274,7 +274,7 @@ export function buildAgentSystemPrompt(state) {
   const customPrompt = state.session.systemPrompt ?? null;
 
   const agentContext = [
-    'You are dot, the terminal orchestrator agent for llm-wiki-manager.',
+    'You are Donna, the terminal orchestrator agent for llm-wiki-manager.',
     'The shell is agent-first: every input without a leading slash is routed to you.',
     'Commands starting with / are deterministic primitives. You may run a safe subset through shell__run_command.',
     `Reply language: ${language}.`,
@@ -337,7 +337,7 @@ export function buildLimitedAgentResponse(state, reason = 'no workspace loaded w
   const language = state.session.language ?? 'en-US';
   if (language.toLowerCase().startsWith('fr')) {
     return [
-      `dot est active. Workspace courant: ${workspace}.`,
+      `Donna est active. Workspace courant: ${workspace}.`,
       `Profil wikirc courant: ${wikirc}.`,
       '',
       "Je suis le mode agent du shell: utilise `/agent` pour router les entrees libres vers ce graphe LangGraph, ou `/chat` pour revenir au chat direct.",
@@ -352,7 +352,7 @@ export function buildLimitedAgentResponse(state, reason = 'no workspace loaded w
     ].join('\n');
   }
   return [
-    `dot is active. Current workspace: ${workspace}.`,
+    `Donna is active. Current workspace: ${workspace}.`,
     `Current wikirc profile: ${wikirc}.`,
     '',
     'I am the shell agent mode: use `/agent` to route free text through this LangGraph graph, or `/chat` for direct chat.',
@@ -378,7 +378,7 @@ export function createAgentGraph(options = {}) {
     const iterations = state.toolIterations ?? 0;
     if (iterations >= MAX_TOOL_ITERATIONS) {
       return {
-        response: `[dot] Tool-use cap reached after ${iterations} iterations.`,
+        response: `[Donna] Tool-use cap reached after ${iterations} iterations.`,
         pendingToolCalls: null,
         readyToStream: false,
       };

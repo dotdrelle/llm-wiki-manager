@@ -184,7 +184,7 @@ async function mcpRequest(endpoint, method, params, signal) {
           params: {
             protocolVersion: '2025-06-18',
             capabilities: {},
-            clientInfo: { name: 'wiki-manager', version: '0.5.17' },
+            clientInfo: { name: 'wiki-manager', version: '0.5.21' },
           },
         }),
       });

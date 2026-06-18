@@ -452,6 +452,11 @@ pnpm start
 pnpm run check
 ```
 
+When bumping the package version, update both `package.json` and the
+Streamable HTTP MCP `clientInfo.version` in `src/core/mcp.js`. They are kept
+explicit so remote MCP server logs show the manager build that initiated the
+handshake.
+
 `pnpm run check` verifies:
 
 - CLI version;

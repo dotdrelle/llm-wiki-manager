@@ -9,8 +9,8 @@ workspaces/*
 !workspaces/.env.example
 *.yaml
 *.yml
-!docker-compose.yml
 
+!docker-compose.yml
 docker-compose*.local.yml
 
 *.json

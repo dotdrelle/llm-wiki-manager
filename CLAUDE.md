@@ -125,6 +125,10 @@ toolExecutorNode
 is absent. `endpoint.activeConfigPath` is kept in sync with
 `session.wikirc.fileName` by `loadSessionWikirc()` in `slash.js`.
 
+The MCP Streamable HTTP initialize payload includes a `clientInfo.version`.
+When bumping `package.json`, keep that version in `src/core/mcp.js` in sync so
+MCP server logs and client handshakes report the published manager version.
+
 `graph.js toolExecutorNode` additionally injects `callerLabel:
 "<workspace>/wiki-manager"` for `production_start_job` calls that lack one,
 so the MCP server can log the originating workspace/agent.

@@ -497,7 +497,7 @@ export function LeftPane(props: {
   onInputHeightChange: (height: number) => void;
 }) {
   const modeColor = () => props.chatMode ? '#22C55E' : '#06B6D4';
-  const modeLabel = () => props.chatMode ? 'CHAT MODE  direct LLM, no tools' : 'AGENT MODE  LangGraph + MCP tools';
+  const modeLabel = () => props.chatMode ? 'CHAT MODE  direct LLM, no tools' : 'AGENTIC MODE  LangGraph + MCP tools';
   return (
     <box width={props.width} height="100%" flexDirection="column" padding={1} overflow="hidden">
       <box height={3} flexDirection="column">

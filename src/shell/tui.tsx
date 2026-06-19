@@ -43,12 +43,13 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
   const [spinnerIndex, setSpinnerIndex] = createSignal(0);
   const [exitHint, setExitHint] = createSignal(false);
   const [copyHint, setCopyHint] = createSignal<string | null>(null);
+  const [chatInputHeight, setChatInputHeight] = createSignal(3);
   let ctrlCTimer: ReturnType<typeof setTimeout> | null = null;
   let copyHintTimer: ReturnType<typeof setTimeout> | null = null;
   let selectionCopyTimer: ReturnType<typeof setTimeout> | null = null;
   let lastCopiedSelection = '';
   const state = useSession(props);
-  const conversationRows = createMemo(() => Math.max(4, dimensions().height - 8));
+  const conversationRows = createMemo(() => Math.max(4, dimensions().height - 5 - chatInputHeight()));
   const rightColumns = createMemo(() => {
     const width = dimensions().width;
     return Math.max(26, Math.min(44, Math.floor(width * 0.32)));
@@ -126,8 +127,8 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
     else if (key.name === 'pagedown') state.scrollConversation(-conversationRows());
     if (key.name === 'up' && state.slash()) state.moveCompletion(-1);
     else if (key.name === 'down' && state.slash()) state.moveCompletion(1);
-    else if (key.name === 'up') state.historyUp();
-    else if (key.name === 'down') state.historyDown();
+    else if (key.name === 'up' && !state.input().includes('\n')) state.historyUp();
+    else if (key.name === 'down' && !state.input().includes('\n')) state.historyDown();
     else if (key.name === 'escape') {
       if (state.slash()) state.dismissSlash();
       else state.setInput('');
@@ -161,6 +162,7 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
         conversationScroll={state.conversationScroll()}
         scrollConversation={state.scrollConversation}
         spinnerFrame={SPINNER_FRAMES[spinnerIndex()] ?? SPINNER_FRAMES[0]}
+        onInputHeightChange={setChatInputHeight}
       />
       <box width={1} height="100%" flexDirection="column">
         {Array.from({ length: dimensions().height }, () => (

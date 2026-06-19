@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { createLlmClientFromWikiConfig } from '../agent/llm.js';
 import { composeServices, listServices, runWikiCli, serviceLogs, serviceStates, startService, stopService } from '../core/compose.js';
@@ -41,6 +41,23 @@ function padVisible(value, width) {
   return `${text}${' '.repeat(Math.max(0, width - stripAnsi(text).length))}`;
 }
 
+function sectionBlock(title, lines = []) {
+  return [title, ...lines.map((line) => `  ${line}`)].join('\n');
+}
+
+function twoColumns(left, right) {
+  const leftLines = String(left || '').split('\n');
+  const rightLines = String(right || '').split('\n');
+  const rows = Math.max(leftLines.length, rightLines.length);
+  const out = [];
+  for (let i = 0; i < rows; i += 1) {
+    const l = leftLines[i] ?? '';
+    const r = rightLines[i] ?? '';
+    out.push(r ? `${l}\t${r}` : l);
+  }
+  return out.join('\n');
+}
+
 function commandLabel(value) {
   return `${styles.bold}${styles.cyan}${value}${styles.reset}`;
 }
@@ -62,6 +79,187 @@ function wikircSummaryText(summary) {
     `apiKey=${summary.hasApiKey ? 'configured' : 'missing'}`,
     `vector=${summary.vectorEnabled ? 'enabled' : 'disabled'}`,
     `embedding=${summary.embeddingModel ?? '-'}`,
+  ].join('\n');
+}
+
+function toPosixPath(value) {
+  return String(value).replace(/\\/g, '/');
+}
+
+function walkFiles(rootPath) {
+  const files = [];
+  if (!rootPath || !existsSync(rootPath)) return files;
+  const visit = (dir) => {
+    let entries = [];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const absolutePath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(absolutePath);
+      } else if (entry.isFile()) {
+        try {
+          const stat = statSync(absolutePath);
+          files.push({ absolutePath, size: stat.size, mtimeMs: stat.mtimeMs });
+        } catch {
+          // Ignore files that disappear or cannot be read while status is collected.
+        }
+      }
+    }
+  };
+  visit(rootPath);
+  return files;
+}
+
+function markdownFiles(workspacePath, relativeDir) {
+  const rootPath = join(workspacePath, relativeDir);
+  return walkFiles(rootPath)
+    .filter((file) => file.absolutePath.endsWith('.md'))
+    .map((file) => ({
+      ...file,
+      relativePath: toPosixPath(relative(workspacePath, file.absolutePath)),
+    }));
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function formatDate(value) {
+  if (!Number.isFinite(value) || value <= 0) return '-';
+  return new Date(value).toLocaleString();
+}
+
+function compactPath(value) {
+  const text = String(value ?? '');
+  if (!text || text === '-') return '-';
+  const normalized = toPosixPath(text).replace(/\/+$/g, '');
+  const parts = normalized.split('/').filter(Boolean);
+  if (parts.length <= 2) return normalized;
+  const prefix = normalized.startsWith('/') ? '/…' : '…';
+  return `${prefix}/${parts.slice(-2).join('/')}`;
+}
+
+function countIndexLinks(workspacePath) {
+  const indexPath = join(workspacePath, 'wiki', 'index.md');
+  if (!existsSync(indexPath)) return { exists: false, links: 0 };
+  try {
+    const raw = readFileSync(indexPath, 'utf8');
+    const markdownLinks = raw.match(/\[[^\]]+\]\(([^)]+\.md(?:#[^)]+)?)\)/g) ?? [];
+    const wikiLinks = raw.match(/\[\[[^\]]+\]\]/g) ?? [];
+    return { exists: true, links: markdownLinks.length + wikiLinks.length };
+  } catch {
+    return { exists: true, links: 0 };
+  }
+}
+
+function folderStats(files) {
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+  const latest = files.reduce((best, file) => (file.mtimeMs > (best?.mtimeMs ?? 0) ? file : best), null);
+  const largest = files.reduce((best, file) => (file.size > (best?.size ?? 0) ? file : best), null);
+  return { count: files.length, totalBytes, latest, largest };
+}
+
+function formatRecentFiles(files, limit = 3) {
+  const recent = [...files].sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, limit);
+  if (recent.length === 0) return '  recent: -';
+  return [
+    '  recent:',
+    ...recent.map((file) => `    - ${file.relativePath} (${formatBytes(file.size)})`),
+  ].join('\n');
+}
+
+function collectWorkspaceStats(session) {
+  if (!session.workspacePath) return null;
+  const workspacePath = session.workspacePath;
+  const wiki = markdownFiles(workspacePath, 'wiki');
+  const concepts = markdownFiles(workspacePath, join('wiki', 'concepts'));
+  const sourceNotes = markdownFiles(workspacePath, join('wiki', 'sources'));
+  const answers = markdownFiles(workspacePath, join('wiki', 'answers'));
+  const untracked = markdownFiles(workspacePath, join('raw', 'untracked'));
+  const ingested = markdownFiles(workspacePath, join('raw', 'ingested'));
+  const templates = markdownFiles(workspacePath, 'templates');
+  const deliverables = markdownFiles(workspacePath, 'deliverables');
+  const logs = walkFiles(join(workspacePath, '.wiki', 'logs'));
+  const index = countIndexLinks(workspacePath);
+  return {
+    wiki: folderStats(wiki),
+    concepts: folderStats(concepts),
+    sourceNotes: folderStats(sourceNotes),
+    answers: folderStats(answers),
+    untracked: folderStats(untracked),
+    ingested: folderStats(ingested),
+    templates: folderStats(templates),
+    deliverables: folderStats(deliverables),
+    logs: folderStats(logs),
+    index,
+    untrackedFiles: untracked,
+  };
+}
+
+function statLine(label, stat) {
+  return `${label}: ${stat.count} (${formatBytes(stat.totalBytes)})`;
+}
+
+function workspaceStatsText(stats) {
+  if (!stats) return 'No workspace loaded.';
+  const hints = [];
+  if (stats.untracked.count > 0) {
+    hints.push(`${stats.untracked.count} raw/untracked document(s) are waiting for ingest.`);
+  }
+  if (!stats.index.exists) {
+    hints.push('wiki/index.md is missing.');
+  } else if (stats.index.links === 0) {
+    hints.push('wiki/index.md exists but has no markdown/wiki links.');
+  }
+  if (stats.wiki.count === 0) {
+    hints.push('The wiki has no markdown pages yet.');
+  }
+
+  const wikiLatest = formatDate(Math.max(
+      stats.wiki.latest?.mtimeMs ?? 0,
+      stats.concepts.latest?.mtimeMs ?? 0,
+      stats.sourceNotes.latest?.mtimeMs ?? 0,
+      stats.answers.latest?.mtimeMs ?? 0,
+  ));
+  const deliverablesLatest = formatDate(Math.max(
+      stats.templates.latest?.mtimeMs ?? 0,
+      stats.deliverables.latest?.mtimeMs ?? 0,
+  ));
+
+  const wikiColumn = sectionBlock(`Wiki content: ${wikiLatest}`, [
+    statLine('wiki pages', stats.wiki),
+    statLine('concepts', stats.concepts),
+    statLine('source notes', stats.sourceNotes),
+    statLine('answers', stats.answers),
+    `index: ${stats.index.exists ? 'ok' : 'missing'} (${stats.index.links} links)`,
+  ]);
+  const rawColumn = sectionBlock('Raw sources', [
+    statLine('untracked', stats.untracked),
+    statLine('ingested', stats.ingested),
+    stats.untracked.largest ? `largest: ${stats.untracked.largest.relativePath} (${formatBytes(stats.untracked.largest.size)})` : 'largest: -',
+    ...formatRecentFiles(stats.untrackedFiles).split('\n'),
+  ]);
+  const deliveryColumn = sectionBlock(`Deliverables: ${deliverablesLatest}`, [
+    statLine('templates', stats.templates),
+    statLine('deliverables', stats.deliverables),
+  ]);
+  const internalColumn = sectionBlock('Internal', [
+    `logs: ${stats.logs.count} (${formatBytes(stats.logs.totalBytes)})`,
+  ]);
+  const hintsColumn = sectionBlock('Hints', hints.length > 0 ? hints : ['No immediate content action detected.']);
+
+  return [
+    twoColumns(wikiColumn, rawColumn),
+    '',
+    twoColumns(deliveryColumn, `${internalColumn}\n\n${hintsColumn}`),
   ].join('\n');
 }
 
@@ -265,31 +463,35 @@ async function statusText(session) {
   const services = session.workspacePath
     ? await composeServices(session).catch(() => [])
     : [];
-  return [
-    'Session',
+  const workspaceStats = collectWorkspaceStats(session);
+  const workspaceColumn = sectionBlock('Workspace', [
     `workspace: ${session.workspace ?? '-'}`,
-    `workspacePath: ${session.workspacePath ?? '-'}`,
-    `workspaceEnv: ${session.workspaceEnvFile ?? '-'}`,
-    '',
-    'Config',
+    `path: ${compactPath(session.workspacePath ?? '-')}`,
+    `env: ${compactPath(session.workspaceEnvFile ?? '-')}`,
+  ]);
+  const configColumn = sectionBlock('Config', [
     `wikirc: ${session.wikirc?.profile ?? '-'}${session.wikirc?.fileName ? ` (${session.wikirc.fileName})` : ''}`,
     `language: ${session.language ?? '-'}`,
     `llm: ${session.llm ? 'configured' : 'missing'}`,
     `provider: ${session.wikircConfig?.llm?.provider ?? '-'}`,
     `model: ${session.wikircConfig?.llm?.model ?? '-'}`,
     `baseUrl: ${session.wikircConfig?.llm?.baseUrl ?? '-'}`,
+  ]);
+  const servicesColumn = sectionBlock('Services', services.length > 0
+    ? services.map((service) => `- ${service}`)
+    : ['No workspace loaded.']);
+  const runtimeColumn = sectionBlock('Runtime', (states ? serviceStatesText(states) : 'Docker runtime not available or no workspace loaded.').split('\n'));
+  const mcpColumn = sectionBlock('MCP', formatMcpStatus(session.mcp).split('\n'));
+  const mcpToolsColumn = sectionBlock('MCP tool summary', formatMcpToolSummary(session.mcp).split('\n'));
+
+  return [
+    twoColumns(workspaceColumn, configColumn),
     '',
-    'Services',
-    services.length > 0 ? services.map((service) => `- ${service}`).join('\n') : 'No workspace loaded.',
+    workspaceStatsText(workspaceStats),
     '',
-    'Runtime',
-    states ? serviceStatesText(states) : 'Docker runtime not available or no workspace loaded.',
+    twoColumns(servicesColumn, runtimeColumn),
     '',
-    'MCP',
-    formatMcpStatus(session.mcp),
-    '',
-    'MCP tool summary',
-    formatMcpToolSummary(session.mcp),
+    twoColumns(mcpColumn, mcpToolsColumn),
   ].join('\n');
 }
 

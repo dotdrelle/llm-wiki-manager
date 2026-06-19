@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { For, createMemo } from 'solid-js';
+import { For, createEffect, createMemo, createSignal } from 'solid-js';
 import { colorForRenderedLine, helpCommandParts, keyValueParts, renderPlainMarkdown } from './renderer';
 
 const LEGACY_DONNA_ROLE = 'do' + 't';
@@ -37,6 +37,13 @@ function wrapLine(line: string, width: number) {
 }
 
 type Segment = { text: string; color: string; width?: number; bg?: string };
+type RenderedLine = {
+  segments: Segment[];
+  status?: boolean;
+  statusLeft?: string;
+  statusRight?: string;
+};
+const STATUS_COLUMN_GAP = 2;
 type HelpCard = { title: string; text: string; example: string };
 
 const HELP_CARDS: HelpCard[] = [
@@ -150,9 +157,75 @@ function segmentsForLine(line: string, role: string, columns: number): Segment[]
   return [{ text: line || ' ', color: colorForRenderedLine(line, role) }];
 }
 
-function conversationLines(messages: Array<{ role: string; content: string }>, columns: number) {
+function isStatusOutput(message: { role: string; content: string }) {
+  const content = String(message.content ?? '');
+  return message.role === 'command'
+    && content.startsWith('Workspace')
+    && content.includes('Config')
+    && content.includes('MCP');
+}
+
+function statusTextColor(value: string) {
+  return /^[A-Za-z].*$/.test(value.trimStart()) && !/^\s/.test(value) ? '#D6DEE8' : '#AAB7C4';
+}
+
+function statusValueColor(value: string) {
+  const text = String(value ?? '').toLowerCase();
+  if (/\b(running|connected|configured|ok)\b/.test(text)) return '#8BD5CA';
+  if (/\b(missing|failed|error|cancelled|canceled)\b/.test(text)) return '#F38BA8';
+  return '#FFFFFF';
+}
+
+function statusSegments(value: string): Segment[] {
+  const text = value || ' ';
+  const trimmed = text.trim();
+  if (trimmed && !text.startsWith(' ') && !trimmed.includes(':') && !/^[●◐○-]/.test(trimmed)) {
+    return [{ text, color: '#FBBF24' }];
+  }
+  if (trimmed && !text.startsWith(' ') && /^[A-Za-z].*:\s+/.test(trimmed)) {
+    const index = text.indexOf(':');
+    return [
+      { text: text.slice(0, index + 1), color: '#FBBF24' },
+      { text: text.slice(index + 1), color: '#AAB7C4' },
+    ];
+  }
+  if (/^[●◐○]/.test(trimmed)) {
+    return [{ text, color: colorForRenderedLine(trimmed, 'command') }];
+  }
+  const keyValue = keyValueParts(text);
+  if (keyValue) {
+    const segs: Segment[] = [];
+    if (keyValue.prefix) segs.push({ text: keyValue.prefix, color: '#AAB7C4' });
+    segs.push({ text: keyValue.key, color: '#8BD5CA' });
+    segs.push({ text: keyValue.value, color: statusValueColor(keyValue.value) });
+    return segs;
+  }
+  return [{ text, color: statusTextColor(text) }];
+}
+
+function statusColumns(line: string): { left: string; right: string } {
+  if (line.includes('\t')) {
+    const [left, ...rest] = line.split('\t');
+    return { left: left || ' ', right: rest.join('\t') };
+  }
+  const left = line.trimEnd();
+  const right = '';
+  return { left: left || ' ', right };
+}
+
+function conversationLines(messages: Array<{ role: string; content: string }>, columns: number): RenderedLine[] {
   return messages.flatMap((message) => {
     const raw = String(message.content || '');
+    if (isStatusOutput(message)) {
+      return [
+        { segments: messageHeaderSegments(message.role, columns) },
+        ...raw.split('\n').map((line) => {
+          const { left, right } = statusColumns(line || ' ');
+          return { status: true, statusLeft: left, statusRight: right, segments: [] };
+        }),
+        { segments: [{ text: ' ', color: '#D6DEE8' }] },
+      ];
+    }
     let inFence = false;
     const lines: Array<{ text: string; isCode: boolean }> = [];
     for (const line of raw.split('\n')) {
@@ -229,11 +302,48 @@ export function ConversationView(props: {
       <text height={1} fg="#7F8C8D">{scrollHint()}</text>
       <For each={visibleLines()}>
         {(line) => (
-          <box height={1} flexDirection="row" overflow="hidden">
-            <For each={line.segments}>
-              {(seg: Segment) => <text width={seg.width} fg={seg.color} bg={seg.bg}>{seg.text}</text>}
-            </For>
-          </box>
+          line.status ? (
+            <box height={1} flexDirection="row" gap={2} overflow="hidden">
+              <box
+                height={1}
+                width={Math.max(18, Math.floor((props.columns - STATUS_COLUMN_GAP) / 2))}
+                flexDirection="row"
+                border={['left']}
+                borderStyle="heavy"
+                borderColor="#5DADE2"
+                backgroundColor="#111318"
+                paddingX={1}
+                overflow="hidden"
+              >
+                <For each={statusSegments(line.statusLeft ?? '')}>
+                  {(seg) => <text width={seg.width} fg={seg.color} bg="#111318">{seg.text}</text>}
+                </For>
+              </box>
+              {line.statusRight ? (
+                <box
+                  height={1}
+                  width={Math.max(18, Math.floor((props.columns - STATUS_COLUMN_GAP) / 2))}
+                  flexDirection="row"
+                  border={['left']}
+                  borderStyle="heavy"
+                  borderColor="#5DADE2"
+                  backgroundColor="#111318"
+                  paddingX={1}
+                  overflow="hidden"
+                >
+                  <For each={statusSegments(line.statusRight)}>
+                    {(seg) => <text width={seg.width} fg={seg.color} bg="#111318">{seg.text}</text>}
+                  </For>
+                </box>
+              ) : null}
+            </box>
+          ) : (
+            <box height={1} flexDirection="row" overflow="hidden">
+              <For each={line.segments}>
+                {(seg: Segment) => <text width={seg.width} fg={seg.color} bg={seg.bg}>{seg.text}</text>}
+              </For>
+            </box>
+          )
         )}
       </For>
     </box>
@@ -241,6 +351,7 @@ export function ConversationView(props: {
 }
 
 export function ChatInput(props: {
+  width: number;
   prompt: string;
   value: string;
   busy: boolean;
@@ -249,27 +360,117 @@ export function ChatInput(props: {
   spinnerFrame: string;
   onInput: (value: string) => void;
   onSubmit: (value?: string) => void;
+  onHeightChange: (height: number) => void;
 }) {
+  let containerRef: any;
+  let textareaRef: any;
+  const minRows = 1;
+  const maxRows = 5;
+  const [textareaRows, setTextareaRows] = createSignal(minRows);
   const idleColor = () => props.chatMode ? '#22C55E' : '#06B6D4';
+  const promptText = () => props.busy ? `${props.spinnerFrame} ` : props.prompt;
+  const boxHeight = () => textareaRows() + 2;
+  const textareaColumns = () => {
+    const measured = Number(textareaRef?.width ?? 0);
+    if (Number.isFinite(measured) && measured > 0) return Math.max(8, measured - 1);
+    return Math.max(8, props.width - promptText().length - 7);
+  };
+  const estimatedVisualRows = (value: string) => {
+    const columns = textareaColumns();
+    return Math.max(1, value.split('\n').reduce((rows, line) => rows + Math.max(1, Math.ceil(line.length / columns)), 0));
+  };
+  const measuredVisualRows = (value: string) => {
+    const virtualRows = Number(textareaRef?.virtualLineCount ?? 0);
+    const logicalRows = Number(textareaRef?.lineCount ?? 0);
+    const scrollRows = Number(textareaRef?.scrollHeight ?? 0);
+    return Math.max(
+      estimatedVisualRows(value),
+      Number.isFinite(virtualRows) ? virtualRows : 0,
+      Number.isFinite(logicalRows) ? logicalRows : 0,
+      Number.isFinite(scrollRows) ? scrollRows : 0,
+    );
+  };
+  const applyHeight = (rows: number) => {
+    const height = rows + 2;
+    if (textareaRef) textareaRef.height = rows;
+    if (containerRef) containerRef.height = height;
+    props.onHeightChange(height);
+  };
+  const updateRows = (value = String(textareaRef?.plainText ?? props.value ?? '')) => {
+    const rows = Math.min(maxRows, Math.max(minRows, measuredVisualRows(value)));
+    setTextareaRows(rows);
+    applyHeight(rows);
+  };
+  const syncTextareaValue = (value: string) => {
+    const current = String(textareaRef?.plainText ?? '');
+    if (!textareaRef || current === value) return;
+    if (value === '') textareaRef.clear?.();
+    else textareaRef.setText?.(value);
+    try {
+      textareaRef.cursorOffset = value.length;
+    } catch {
+      // Some renderable states reject cursor movement while layout is settling.
+    }
+    updateRows(value);
+    queueMicrotask(() => updateRows(value));
+  };
+  const handleContentChange = () => {
+    const value = String(textareaRef?.plainText ?? '');
+    props.onInput(value);
+    updateRows(value);
+    queueMicrotask(() => updateRows(value));
+  };
+  const submitCurrentValue = () => {
+    props.onSubmit(String(textareaRef?.plainText ?? props.value ?? ''));
+  };
+
+  createEffect(() => {
+    props.onHeightChange(boxHeight());
+  });
+
+  createEffect(() => {
+    syncTextareaValue(props.value);
+  });
+
+  createEffect(() => {
+    props.width;
+    props.prompt;
+    props.spinnerFrame;
+    queueMicrotask(() => updateRows());
+  });
+
   return (
     <box
-      height={3}
+      ref={containerRef}
+      height={boxHeight()}
       paddingX={1}
       flexDirection="row"
-      alignItems="center"
+      alignItems="flex-start"
       border
       borderStyle="single"
       borderColor={props.busy ? '#FBBF24' : idleColor()}
     >
-      <text fg={props.busy ? '#FBBF24' : idleColor()}>{props.busy ? `${props.spinnerFrame} ` : props.prompt}</text>
-      <input
+      <text height={1} fg={props.busy ? '#FBBF24' : idleColor()}>{promptText()}</text>
+      <textarea
+        ref={textareaRef}
         flexGrow={1}
+        height={textareaRows()}
         focused={props.focused && !props.busy}
-        value={props.value}
-        placeholder={props.busy ? 'Waiting for command to finish' : 'Type a message or /command'}
-        onInput={props.onInput}
-        onSubmit={(_value: string) => props.onSubmit(props.value)}
+        initialValue={props.value}
+        wrapMode="word"
+        placeholder={props.busy ? 'Thinking' : 'Type a message or /command'}
+        keyBindings={[
+          { name: 'return', action: 'submit' },
+          { name: 'kpenter', action: 'submit' },
+          { name: 'linefeed', action: 'newline' },
+          { name: 'return', shift: true, action: 'newline' },
+          { name: 'kpenter', shift: true, action: 'newline' },
+          { name: 'linefeed', shift: true, action: 'newline' },
+        ]}
+        onSubmit={submitCurrentValue}
+        onContentChange={handleContentChange}
       />
+      <text width={1}> </text>
     </box>
   );
 }
@@ -293,6 +494,7 @@ export function LeftPane(props: {
   conversationScroll: number;
   scrollConversation: (delta: number) => void;
   spinnerFrame: string;
+  onInputHeightChange: (height: number) => void;
 }) {
   const modeColor = () => props.chatMode ? '#22C55E' : '#06B6D4';
   const modeLabel = () => props.chatMode ? 'CHAT MODE  direct LLM, no tools' : 'AGENT MODE  LangGraph + MCP tools';
@@ -323,6 +525,7 @@ export function LeftPane(props: {
         />
       )}
       <ChatInput
+        width={props.width}
         prompt={props.prompt}
         value={props.input}
         busy={props.busy}
@@ -331,6 +534,7 @@ export function LeftPane(props: {
         spinnerFrame={props.spinnerFrame}
         onInput={props.setInput}
         onSubmit={props.submit}
+        onHeightChange={props.onInputHeightChange}
       />
     </box>
   );

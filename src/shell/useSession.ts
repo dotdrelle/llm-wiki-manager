@@ -105,14 +105,30 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
       detail: value?.detail ?? '',
     }));
   });
+  let lastVisibleActivities: any[] = [];
+  let lastVisiblePlan: Array<{ step: number; description: string; status: string }> | null = null;
   const activities = createMemo(() => {
     version();
-    return sessionActivities(session);
+    const current = sessionActivities(session);
+    if (current.length > 0) {
+      lastVisibleActivities = current.map((activity) => ({ ...activity }));
+      return current;
+    }
+    return agent.busy() && lastVisibleActivities.length > 0
+      ? lastVisibleActivities.map((activity) => ({ ...activity }))
+      : current;
   });
   const plan = createMemo(() => {
     version();
     const p = (session as any).headlessPlan as Array<{ step: number; description: string; status: string }> | null;
-    return p ? p.map((s) => ({ ...s })) : null;
+    const current = p ? p.map((s) => ({ ...s })) : null;
+    if (current && current.length > 0) {
+      lastVisiblePlan = current.map((step) => ({ ...step }));
+      return current;
+    }
+    return agent.busy() && lastVisiblePlan && lastVisiblePlan.length > 0
+      ? lastVisiblePlan.map((step) => ({ ...step }))
+      : current;
   });
 
   const activityPollTimer = setInterval(() => {

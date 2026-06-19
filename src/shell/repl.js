@@ -69,6 +69,7 @@ const COMMAND_COMPLETION_DESCRIPTIONS = {
   '/clear': 'Clear the conversation screen.',
   '/chat': 'Switch free text to direct LLM chat without tools.',
   '/agent': 'Switch free text to the LangGraph agent with tools.',
+  '/openui': 'Open the workspace web UI in the browser.',
 };
 
 const SUBCOMMAND_COMPLETION_DESCRIPTIONS = {
@@ -97,7 +98,7 @@ export function createSession() {
     wikircConfig: null,
     language: null,
     mcp: null,
-    commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'clear', 'chat', 'agent'],
+    commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'clear', 'chat', 'agent', 'openui'],
     chatMode: true,
     llm: null,
     activities: {},

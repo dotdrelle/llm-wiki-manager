@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { createLlmClientFromWikiConfig } from '../agent/llm.js';
@@ -555,6 +556,7 @@ ${helpPair('/mcp status', 'MCP status', '/mcp endpoints', 'MCP endpoints')}
 ${helpPair('/mcp tools [mcp]', 'MCP tools', '/mcp call ...', 'Call MCP tool')}
 ${helpPair('/wiki', 'Run wiki index', '/wiki run <args>', 'Raw wiki CLI')}
 ${helpPair('/chat', 'Chat mode', '/agent', 'Agent mode')}
+${helpPair('/openui', 'Open web UI in browser', '', '')}
 ${helpPair('/clear', 'Clear screen', '/exit', 'Exit')}
 ${helpPair('Ctrl+Y', 'Copy last reply', '', '')}
 ${helpPair('PgUp/PgDn', 'Scroll thread', 'Ctrl+C Ctrl+C', 'Exit')}
@@ -881,6 +883,17 @@ export async function handleSlashCommand(line, context) {
         return { output: 'Usage: /skills [list|show|run|edit] [skill]' };
       }
       return { output: skillsText(context.session) };
+    }
+    case 'openui': {
+      const port = context.session.workspaceEnv?.WIKI_SERVE_PORT ?? '3100';
+      const url = `http://localhost:${port}`;
+      const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
+      try {
+        execFileSync(opener, [url], { stdio: 'ignore' });
+        return { output: `Opening web UI: ${url}` };
+      } catch {
+        return { output: `Web UI: ${url}` };
+      }
     }
     case 'clear': {
       const key = context.session.workspace || '__global__';

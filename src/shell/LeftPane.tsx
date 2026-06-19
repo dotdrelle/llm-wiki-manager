@@ -157,6 +157,137 @@ function segmentsForLine(line: string, role: string, columns: number): Segment[]
   return [{ text: line || ' ', color: colorForRenderedLine(line, role) }];
 }
 
+function isMarkdownTableRow(line: string) {
+  const trimmed = line.trim();
+  return trimmed.includes('|') && !/^(`{2,3}|~{2,3})/.test(trimmed);
+}
+
+function isMarkdownTableSeparator(line: string) {
+  return /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
+}
+
+function parseMarkdownTableRow(line: string) {
+  let text = line.trim();
+  if (text.startsWith('|')) text = text.slice(1);
+  if (text.endsWith('|')) text = text.slice(0, -1);
+  return text.split('|').map((cell) => renderPlainMarkdown(cell.trim()));
+}
+
+function wrapCellText(text: string, width: number) {
+  return wrapLine(text || ' ', Math.max(4, width));
+}
+
+function tableCellColor(text: string, header: boolean) {
+  if (header) return '#FBBF24';
+  if (/[❌✗]/.test(text)) return '#F38BA8';
+  if (/[⚠!]/.test(text)) return '#FBBF24';
+  if (/[✅✓]/.test(text)) return '#8BD5CA';
+  return '#D6DEE8';
+}
+
+function tableColumnWidths(rows: string[][], columns: number) {
+  // rows is already normalized (uniform length) by the caller
+  const columnCount = rows[0]?.length ?? 1;
+  const separatorWidth = Math.max(0, columnCount - 1) * 3;
+  const available = Math.max(columnCount * 5, columns - separatorWidth);
+  const natural = Array.from({ length: columnCount }, (_, i) =>
+    rows.reduce((m, row) => Math.max(m, row[i].length), 4),
+  );
+  const totalNatural = natural.reduce((sum, width) => sum + width, 0);
+  if (totalNatural <= available) return natural;
+
+  const minWidth = columnCount >= 5 ? 6 : 8;
+  let remaining = Math.max(columnCount * minWidth, available);
+  const widths = Array.from({ length: columnCount }, () => minWidth);
+  remaining -= widths.reduce((sum, width) => sum + width, 0);
+  const extraNatural = natural.map((width) => Math.max(0, width - minWidth));
+  let extraTotal = extraNatural.reduce((sum, width) => sum + width, 0);
+  for (let i = 0; i < columnCount && remaining > 0 && extraTotal > 0; i += 1) {
+    const add = Math.min(extraNatural[i], Math.floor((extraNatural[i] / extraTotal) * remaining));
+    widths[i] += add;
+    remaining -= add;
+  }
+  for (let i = 0; remaining > 0; i = (i + 1) % columnCount) {
+    widths[i] += 1;
+    remaining -= 1;
+  }
+  return widths;
+}
+
+function renderMarkdownTable(tableLines: string[], columns: number): RenderedLine[] {
+  const rows = tableLines
+    .filter((line) => !isMarkdownTableSeparator(line))
+    .map(parseMarkdownTableRow)
+    .filter((row) => row.length > 0);
+  if (rows.length === 0) return [];
+
+  const columnCount = rows.reduce((m, row) => Math.max(m, row.length), 1);
+  const normalized = rows.map((row) => Array.from({ length: columnCount }, (_, i) => row[i] ?? ''));
+  const widths = tableColumnWidths(normalized, columns);
+  const output: RenderedLine[] = [];
+
+  normalized.forEach((row, rowIndex) => {
+    const wrapped = row.map((cell, index) => wrapCellText(cell, widths[index]));
+    const height = wrapped.reduce((m, cell) => Math.max(m, cell.length), 1);
+    for (let lineIndex = 0; lineIndex < height; lineIndex += 1) {
+      const segments: Segment[] = [];
+      row.forEach((cell, cellIndex) => {
+        if (cellIndex > 0) segments.push({ text: ' │ ', color: '#4B5563' });
+        const piece = wrapped[cellIndex][lineIndex] ?? '';
+        segments.push({
+          text: piece.slice(0, widths[cellIndex]).padEnd(widths[cellIndex]),
+          color: tableCellColor(cell, rowIndex === 0),
+        });
+      });
+      output.push({ segments });
+    }
+    if (rowIndex === 0 && normalized.length > 1) {
+      output.push({
+        segments: widths.flatMap((width, index) => [
+          ...(index > 0 ? [{ text: '─┼─', color: '#4B5563' }] : []),
+          { text: '─'.repeat(width), color: '#4B5563' },
+        ]),
+      });
+    }
+  });
+  return output;
+}
+
+function renderMarkdownLines(lines: Array<{ text: string; isCode: boolean }>, role: string, columns: number): RenderedLine[] {
+  const output: RenderedLine[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const { text, isCode } = lines[index];
+    if (isCode) {
+      output.push(...wrapLine(text || ' ', columns).map((piece) => ({
+        segments: [{ text: piece || ' ', color: '#D6DEE8', bg: '#1A2235' }],
+      })));
+      continue;
+    }
+
+    if (isMarkdownTableRow(text) && isMarkdownTableSeparator(lines[index + 1]?.text ?? '')) {
+      const tableLines = [text, lines[index + 1].text];
+      let next = index + 2;
+      while (next < lines.length && !lines[next].isCode && isMarkdownTableRow(lines[next].text)) {
+        tableLines.push(lines[next].text);
+        next += 1;
+      }
+      index = next - 1;
+      output.push(...renderMarkdownTable(tableLines, columns));
+      continue;
+    }
+
+    const rendered = renderPlainMarkdown(text);
+    const isCmdDesc = splitCmdDesc(rendered) !== null;
+    const fallback = isCmdDesc ? '#FFFFFF' : colorForRenderedLine(rendered, role);
+    output.push(...wrapLine(rendered, columns).map((piece, idx) => ({
+      segments: idx === 0
+        ? segmentsForLine(piece, role, columns)
+        : [{ text: piece || ' ', color: fallback }],
+    })));
+  }
+  return output;
+}
+
 function isStatusOutput(message: { role: string; content: string }) {
   const content = String(message.content ?? '');
   return message.role === 'command'
@@ -234,23 +365,7 @@ function conversationLines(messages: Array<{ role: string; content: string }>, c
     }
     return [
       { segments: messageHeaderSegments(message.role, columns) },
-      ...lines.flatMap(({ text, isCode }) => {
-        if (isCode) {
-          return wrapLine(text || ' ', columns).map((piece) => ({
-            segments: [{ text: piece || ' ', color: '#D6DEE8', bg: '#1A2235' }],
-          }));
-        }
-        const rendered = renderPlainMarkdown(text);
-        const help = message.role === 'command' ? helpSegments(rendered, columns) : null;
-        if (help) return [{ segments: help }];
-        const isCmdDesc = splitCmdDesc(rendered) !== null;
-        const fallback = isCmdDesc ? '#FFFFFF' : colorForRenderedLine(rendered, message.role);
-        return wrapLine(rendered, columns).map((piece, idx) => ({
-          segments: idx === 0
-            ? segmentsForLine(piece, message.role, columns)
-            : [{ text: piece || ' ', color: fallback }],
-        }));
-      }),
+      ...renderMarkdownLines(lines, message.role, columns),
       { segments: [{ text: ' ', color: '#D6DEE8' }] },
     ];
   });

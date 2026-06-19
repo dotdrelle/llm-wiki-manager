@@ -887,12 +887,13 @@ export async function handleSlashCommand(line, context) {
     case 'openui': {
       const port = context.session.workspaceEnv?.WIKI_SERVE_PORT ?? '3100';
       const url = `http://localhost:${port}`;
+      const note = context.session.workspaceEnv ? '' : ' (no workspace loaded — using default port)';
       const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
       try {
         execFileSync(opener, [url], { stdio: 'ignore' });
-        return { output: `Opening web UI: ${url}` };
+        return { output: `Opening web UI: ${url}${note}` };
       } catch {
-        return { output: `Web UI: ${url}` };
+        return { output: `Web UI: ${url}${note}` };
       }
     }
     case 'clear': {

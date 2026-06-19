@@ -149,24 +149,30 @@ pnpm start         # alias for bun start
 pnpm run start:node  # fallback: legacy repl.js shell under Node
 ```
 
-The interactive shell is chat-first:
+The interactive shell is agentic by default:
 
 - input starting with `/` runs a deterministic shell primitive;
-- by default, any other input goes directly to the configured LLM without tools;
-- `/agent` switches free text to the LangGraph orchestrator with MCP tools;
-- `/chat` switches free text back to direct LLM chat;
+- by default, any other input goes to the LangGraph orchestrator with MCP tools;
+- `/chat` switches free text to direct LLM chat without tools;
+- `/agent` switches free text back to the LangGraph orchestrator;
 - the visible agent name is `donna`;
 - conversation history is separated per workspace;
 - Ctrl+C interrupts active LLM/MCP calls; Ctrl+C twice exits when idle.
+
+Direct chat requires an active workspace config with `llm.apiKey`, `llm.model`,
+and `llm.baseUrl`. If those are missing, the shell reports the missing fields
+and points to `/use`, `/config list`, `/config use`, or `/config edit`.
 
 The TUI uses a two-pane layout:
 
 - **Left** — scrollable conversation thread with a chat input at the bottom.
   Typing `/` opens a slash-command completion overlay just above the input.
   Mouse wheel scrolls the conversation, and selecting text copies it through the
-  TUI clipboard bridge. PageUp/PageDown remain available for keyboard scrolling.
-- **Right** — active MCP jobs plus a live log/trace panel. MCP connection
-  details remain available through `/mcp status`.
+  TUI clipboard bridge. Message headers also expose a `[ copy ]` target for
+  copying one message. PageUp/PageDown remain available for keyboard scrolling.
+- **Right** — Plan/Queue tabs, active MCP jobs, plus a live log/trace panel.
+  `Ctrl+Q` toggles the tabs; clicking `Plan` or `Queue (N)` selects that tab
+  directly. MCP connection details remain available through `/mcp status`.
 
 Useful primitives:
 
@@ -185,6 +191,9 @@ Useful primitives:
 /mcp status
 /mcp tools [mcp]
 /mcp call <mcp> <tool> [json]
+/queue
+/queue cancel <id>
+/queue clear
 /wiki
 /wiki run <args...>
 /skills
@@ -297,6 +306,35 @@ title uses the id directly, for example `Plan : Job
 prod_20260606_132230_18b50e5a`. Detailed progress such as `Production · ingest
 · done` stays in the Activity/log panels instead of being duplicated in the
 Plan title.
+
+### Production job queue
+
+`production_start_job` remains protected by the production MCP workspace lock.
+When a production job is already active, or when the production MCP returns
+`workspace_busy`, the manager stores the new request in an in-memory local
+queue instead of dropping it.
+
+The queue is intentionally narrow in this version:
+
+- only `production_start_job` is queueable;
+- the production MCP lock remains the source of truth;
+- queue items are scoped to the workspace that created them;
+- switching workspaces freezes queued items from the previous workspace until
+  you switch back;
+- the scheduler starts the next waiting item when the existing activity poll
+  observes a terminal production job, with a light 10s fallback when waiting
+  items exist.
+
+Use the Queue tab in the right pane, or:
+
+```text
+/queue
+/queue cancel <id>
+/queue clear
+```
+
+`/queue cancel <id>` removes waiting/starting items locally. For a running
+production queue item, it calls `production_cancel_job(jobId)`.
 
 ### Tool naming
 

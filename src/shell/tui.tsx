@@ -167,6 +167,7 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
         scrollConversation={state.scrollConversation}
         spinnerFrame={SPINNER_FRAMES[spinnerIndex()] ?? SPINNER_FRAMES[0]}
         onInputHeightChange={setChatInputHeight}
+        onCopy={(content) => showCopyHint(copyToClipboard(content, renderer) ? 'Copied.' : 'Copy failed.')}
       />
       <box width={1} height="100%" flexDirection="column">
         {Array.from({ length: dimensions().height }, () => (
@@ -181,6 +182,7 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
         queueItems={state.queueItems()}
         queueInfo={state.queueInfo()}
         activeTab={state.rightTab()}
+        onTabClick={state.selectRightTab}
       />
       <SlashDialog context={state.activeEditor() ? null : state.slash()} />
       <FileEditorDialog

@@ -36,8 +36,8 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   const [version, setVersion] = createSignal(0);
   const [logs, setLogs] = createSignal<string[]>([]);
   const [input, setInput] = createSignal('');
-  const [chatMode, setChatMode] = createSignal(true);
-  (session as any).chatMode = true;
+  const [chatMode, setChatMode] = createSignal(false);
+  (session as any).chatMode = false;
   const [dismissedSlashInput, setDismissedSlashInput] = createSignal<string | null>(null);
   const [history, setHistory] = createSignal<string[]>([]);
   const [historyIndex, setHistoryIndex] = createSignal<number | null>(null);
@@ -294,6 +294,10 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     setRightTab((value) => value === 'plan' ? 'queue' : 'plan');
   }
 
+  function selectRightTab(tab: 'plan' | 'queue') {
+    setRightTab(tab);
+  }
+
   function closeEditor() {
     setActiveEditor(null);
   }
@@ -348,6 +352,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     queueInfo,
     rightTab,
     toggleRightTab,
+    selectRightTab,
     plan,
     conversationScroll,
     scrollConversation,

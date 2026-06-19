@@ -225,14 +225,24 @@ export function QueuePanel(props: { items: QueueItem[]; info: QueueInfo; width: 
   );
 }
 
-function TabHeader(props: { active: 'plan' | 'queue'; queueCount: number; width: number }) {
+function TabHeader(props: { active: 'plan' | 'queue'; queueCount: number; width: number; onTabClick: (tab: 'plan' | 'queue') => void }) {
   const lineWidth = () => Math.max(8, props.width - 2);
   const planActive = () => props.active === 'plan';
   return (
     <box height={1} flexDirection="row" paddingX={1}>
-      <text fg={planActive() ? '#0B1020' : '#D6DEE8'} bg={planActive() ? '#89B4FA' : undefined} content=" Plan " />
+      <text
+        fg={planActive() ? '#0B1020' : '#D6DEE8'}
+        bg={planActive() ? '#89B4FA' : undefined}
+        content=" Plan "
+        onMouseUp={() => props.onTabClick('plan')}
+      />
       <text fg="#4B5563" content=" " />
-      <text fg={!planActive() ? '#0B1020' : '#D6DEE8'} bg={!planActive() ? '#FBBF24' : undefined} content={` Queue (${props.queueCount}) `} />
+      <text
+        fg={!planActive() ? '#0B1020' : '#D6DEE8'}
+        bg={!planActive() ? '#FBBF24' : undefined}
+        content={` Queue (${props.queueCount}) `}
+        onMouseUp={() => props.onTabClick('queue')}
+      />
       <text fg="#7F8C8D" content={fit('  Ctrl+Q', Math.max(0, lineWidth() - 24))} />
     </box>
   );
@@ -246,13 +256,14 @@ export function RightPane(props: {
   queueItems: QueueItem[];
   queueInfo: QueueInfo;
   activeTab: 'plan' | 'queue';
+  onTabClick: (tab: 'plan' | 'queue') => void;
 }) {
   const planJobName = () => activityJobName(
     [...props.activities].reverse().find((activity) => !activity.terminal) ?? props.activities.at(-1),
   );
   return (
     <box width={props.width} height="100%" flexDirection="column" gap={1} padding={1} overflow="hidden">
-      <TabHeader active={props.activeTab} queueCount={props.queueInfo.active} width={props.width} />
+      <TabHeader active={props.activeTab} queueCount={props.queueInfo.active} width={props.width} onTabClick={props.onTabClick} />
       <Show when={props.activeTab === 'queue'} fallback={(
         <>
           <Show when={props.plan && props.plan.length > 0}>

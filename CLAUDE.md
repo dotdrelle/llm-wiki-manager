@@ -28,6 +28,7 @@ src/agent/llm.js            OpenAI-compatible client: complete, completeWithTool
 src/commands/slash.js       Deterministic slash commands
 src/core/agentEvents.js     Event system: createAgentEvent, dispatchAgentEvent, reduceAgentEvents; typed AgentRunEvent projection
 src/core/activity.js        Generic activity registry: extractActivity, normalizeActivity, poll contract
+src/core/jobQueue.js        In-memory production_start_job queue and scheduler helpers
 src/core/compose.js         Docker Compose helpers
 src/core/workspaces.js      Workspace registry and creation
 src/core/mcp.js             MCP endpoint discovery, persistent session, tool calls
@@ -44,10 +45,14 @@ The interactive shell is the product surface.
 
 - The visible agent is `donna`.
 - Lines beginning with `/` execute deterministic primitives.
-- Startup defaults to chat mode: free-text lines go directly to the configured
-  LLM without tools.
-- `/agent` switches free-text lines to the LangGraph orchestrator with MCP
-  tools. `/chat` switches back to direct LLM chat.
+- Startup defaults to agentic mode: free-text lines go to the LangGraph
+  orchestrator with MCP tools.
+- `/chat` switches free text to direct LLM chat without tools. Direct chat
+  requires an active workspace `.wikirc` profile with `llm.apiKey`,
+  `llm.model`, and `llm.baseUrl`; otherwise the shell should explain the
+  missing setup and point to `/use`, `/config list`, `/config use`, or
+  `/config edit`.
+- `/agent` switches free-text lines back to the LangGraph orchestrator.
 - The active mode is persistent for the current session and is visible in the
   OpenTUI left-pane header and input prompt.
 - Conversation history is scoped by workspace for the current process.
@@ -55,8 +60,9 @@ The interactive shell is the product surface.
 - Ctrl+C while busy aborts active LLM/MCP work; Ctrl+C when idle exits.
 - OpenTUI should not require mode switching for normal reading. Mouse wheel
   scrolls the conversation, and OpenTUI selection copies selected text through
-  OSC52/platform clipboard fallback. PageUp/PageDown remain keyboard scrolling
-  fallbacks.
+  OSC52/platform clipboard fallback. Message headers also expose a small
+  `[ copy ]` mouse target that copies that message content. PageUp/PageDown
+  remain keyboard scrolling fallbacks.
 
 When changing `/use`, workspace state and conversation state must move together.
 Do not reintroduce a single global message buffer for all workspaces.
@@ -68,8 +74,9 @@ two-pane layout:
 
 - **Left pane**: scrollable conversation thread + chat input at the bottom.
   Slash dialog (`/` completion overlay) opens above the input.
-- **Right pane**: active MCP jobs and a live log/trace panel. MCP connection
-  status remains available through `/mcp status`.
+- **Right pane**: Plan/Queue tabs, active MCP jobs, and a live log/trace panel.
+  `Ctrl+Q` toggles Plan/Queue, and clicking the tab labels selects a specific
+  tab. MCP connection status remains available through `/mcp status`.
 
 The OpenTUI TUI requires Bun (`bun start` or `bun ./bin/wiki-manager.js`).
 
@@ -162,6 +169,29 @@ Important: `wiki__plan_set` and `wiki__plan_done` are the only internal
   - Percent badge on line 2 from `progress.percent`.
 - **LogPanel**: `useSession.ts` records each `progress.detail` change with a timestamp and the `progress.label` as prefix, giving a timestamped trace of what each job was doing (e.g. LLM call timing).
 - When the Plan panel can associate itself with an activity that has an id, its title should prefer `Plan : Job <id>` over repeating the activity label, since progress details already appear in Activity/log panels.
+
+**Production job queue (interactive TUI):**
+
+- `src/core/jobQueue.js` owns an in-memory, workspace-scoped queue for
+  `production_start_job` only.
+- The MCP server lock remains the source of truth. The manager queues only when
+  a production job is already active locally or when `production_start_job`
+  returns `workspace_busy`.
+- Queue item states are `waiting`, `starting`, `running`, `done`, `failed`, and
+  `cancelled`.
+- Scheduler trigger: when existing activity polling observes a production
+  activity transition to a terminal state, call `startNextQueuedJob()`. A light
+  10s fallback in `useSession.ts` runs only when at least one item is waiting.
+- Workspace scope is strict. Items from other workspaces are frozen until the
+  user switches back to that workspace.
+- `/queue` lists queue items, `/queue cancel <id>` removes waiting/starting
+  items or calls `production_cancel_job` for running production jobs, and
+  `/queue clear` removes finished items for the current workspace.
+- The RightPane Queue tab shows the short queue id, status, compact production
+  args, workspace/job id, and frozen warning. It is an operator view, not a
+  replacement for MCP locks.
+- Do not add `/queue retry` in V1; stale arguments should be resubmitted
+  manually.
 
 **Plan tracking (interactive and headless):**
 

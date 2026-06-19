@@ -102,7 +102,7 @@ export function createSession() {
     language: null,
     mcp: null,
     commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'clear', 'chat', 'agent', 'openui', 'queue'],
-    chatMode: true,
+    chatMode: false,
     llm: null,
     activities: {},
     jobQueue: [],
@@ -984,7 +984,7 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
 
 async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
   if (!session.llm?.stream) {
-    conversationMessages(session).push({ role: 'command', content: 'Direct chat unavailable: no streaming LLM configured.' });
+    conversationMessages(session).push({ role: 'command', content: directChatUnavailableText(session) });
     return { exit: false };
   }
   const messages = conversationMessages(session);
@@ -1022,6 +1022,28 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
     onUpdate?.();
   }
   return { exit: false };
+}
+
+function directChatUnavailableText(session) {
+  if (!session.workspacePath) {
+    return 'Direct chat unavailable: no workspace loaded. Use /use <workspace>.';
+  }
+  if (!session.wikircConfig) {
+    return 'Direct chat unavailable: no active wikirc profile. Use /config list then /config use <profile>.';
+  }
+  const llm = session.wikircConfig?.llm ?? {};
+  const missing = [
+    !llm.apiKey ? 'llm.apiKey' : null,
+    !llm.model ? 'llm.model' : null,
+    !llm.baseUrl ? 'llm.baseUrl' : null,
+  ].filter(Boolean);
+  if (missing.length > 0) {
+    return [
+      `Direct chat unavailable: missing ${missing.join(', ')} in ${session.wikirc?.fileName ?? 'active wikirc'}.`,
+      'Use /config list, /config use <profile>, or /config edit <profile>.',
+    ].join('\n');
+  }
+  return 'Direct chat unavailable: no streaming LLM configured.';
 }
 
 export async function runLine(line, { agent, packageJson, session, onUpdate, onStep, chatMode = session.chatMode ?? true }) {

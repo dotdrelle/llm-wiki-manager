@@ -42,6 +42,7 @@ type RenderedLine = {
   status?: boolean;
   statusLeft?: string;
   statusRight?: string;
+  copyContent?: string;
 };
 const STATUS_COLUMN_GAP = 2;
 type HelpCard = { title: string; text: string; example: string };
@@ -104,10 +105,12 @@ function WelcomeHelpPanels(props: { width: number }) {
   );
 }
 
+const COPY_BTN = ' [ copy ]';
+
 function messageHeaderSegments(role: string, columns: number): Segment[] {
   const label = `[${roleLabel(role)}]`;
   const left = '── ';
-  const rightLength = Math.max(2, columns - left.length - label.length - 1);
+  const rightLength = Math.max(2, columns - left.length - label.length - 1 - COPY_BTN.length);
   return [
     { text: left, color: '#4B5563' },
     { text: label, color: roleColor(role) },
@@ -349,7 +352,7 @@ function conversationLines(messages: Array<{ role: string; content: string }>, c
     const raw = String(message.content || '');
     if (isStatusOutput(message)) {
       return [
-        { segments: messageHeaderSegments(message.role, columns) },
+        { segments: messageHeaderSegments(message.role, columns), copyContent: raw },
         ...raw.split('\n').map((line) => {
           const { left, right } = statusColumns(line || ' ');
           return { status: true, statusLeft: left, statusRight: right, segments: [] };
@@ -364,7 +367,7 @@ function conversationLines(messages: Array<{ role: string; content: string }>, c
       lines.push({ text: line, isCode: inFence });
     }
     return [
-      { segments: messageHeaderSegments(message.role, columns) },
+      { segments: messageHeaderSegments(message.role, columns), copyContent: raw },
       ...renderMarkdownLines(lines, message.role, columns),
       { segments: [{ text: ' ', color: '#D6DEE8' }] },
     ];
@@ -378,6 +381,7 @@ export function ConversationView(props: {
   scroll: number;
   onScroll: (delta: number) => void;
   spinnerFrame: string;
+  onCopy?: (content: string) => void;
 }) {
   const allLines = createMemo(() => conversationLines(props.messages, props.columns));
   const visibleLines = () => {
@@ -417,7 +421,14 @@ export function ConversationView(props: {
       <text height={1} fg="#7F8C8D">{scrollHint()}</text>
       <For each={visibleLines()}>
         {(line) => (
-          line.status ? (
+          line.copyContent !== undefined ? (
+            <box height={1} flexDirection="row" overflow="hidden">
+              <For each={line.segments}>
+                {(seg: Segment) => <text width={seg.width} fg={seg.color} bg={seg.bg}>{seg.text}</text>}
+              </For>
+              <text fg="#4B5563" content={COPY_BTN} onMouseUp={() => props.onCopy?.(line.copyContent!)} />
+            </box>
+          ) : line.status ? (
             <box height={1} flexDirection="row" gap={2} overflow="hidden">
               <box
                 height={1}
@@ -610,6 +621,7 @@ export function LeftPane(props: {
   scrollConversation: (delta: number) => void;
   spinnerFrame: string;
   onInputHeightChange: (height: number) => void;
+  onCopy?: (content: string) => void;
 }) {
   const modeColor = () => props.chatMode ? '#22C55E' : '#06B6D4';
   const modeLabel = () => props.chatMode ? 'CHAT MODE  direct LLM, no tools' : 'AGENTIC MODE  LangGraph + MCP tools';
@@ -637,6 +649,7 @@ export function LeftPane(props: {
           scroll={props.conversationScroll}
           onScroll={props.scrollConversation}
           spinnerFrame={props.spinnerFrame}
+          onCopy={props.onCopy}
         />
       )}
       <ChatInput

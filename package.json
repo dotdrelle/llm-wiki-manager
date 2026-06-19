@@ -48,5 +48,8 @@
     "openai": "^6.42.0",
     "solid-js": "1.9.12",
     "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0"
   }
 }

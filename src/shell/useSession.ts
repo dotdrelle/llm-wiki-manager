@@ -5,6 +5,7 @@ import { formatMcpToolResult, callMcpTool } from '../core/mcp.js';
 import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
+import { queueCounts, startNextQueuedJob, syncQueueWithActivity } from '../core/jobQueue.js';
 import type { ActiveFileEditor } from './FileEditorDialog';
 import {
   completionContext,
@@ -44,6 +45,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   const [conversationScroll, setConversationScroll] = createSignal(0);
   const [showWelcome, setShowWelcome] = createSignal(true);
   const [activeEditor, setActiveEditor] = createSignal<ActiveFileEditor | null>(null);
+  const [rightTab, setRightTab] = createSignal<'plan' | 'queue'>('plan');
   const pollBusy = new Set<string>();
   const matchedActivityKeys = new Set<string>();
   const lastActivityLines = new Map<string, string>();
@@ -118,6 +120,14 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
       ? lastVisibleActivities.map((activity) => ({ ...activity }))
       : current;
   });
+  const queueItems = createMemo(() => {
+    version();
+    return ((session as any).jobQueue ?? []).map((item: any) => ({ ...item }));
+  });
+  const queueInfo = createMemo(() => {
+    version();
+    return queueCounts(session);
+  });
   const plan = createMemo(() => {
     version();
     const p = (session as any).headlessPlan as Array<{ step: number; description: string; status: string }> | null;
@@ -155,6 +165,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
               origin: 'poll',
               payload: { activity: polledActivity },
             }));
+            syncQueueWithActivity(session, polledActivity);
             refresh();
             const updated = sessionActivities(session).find((a) => a.key === key);
             if (updated) {
@@ -172,6 +183,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
             }
             if (updated?.terminal && !matchedActivityKeys.has(key)) {
               matchedActivityKeys.add(key);
+              void startNextQueuedJob(session, { addLog, refresh });
               const plan = (session as any).headlessPlan;
               const stillRunning = sessionActivities(session).filter((a) => !a.terminal && a.poll);
               const pendingSteps = (plan ?? []).filter((s: any) => s.status === 'pending');
@@ -192,6 +204,13 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     }
   }, 1000);
   onCleanup(() => clearInterval(activityPollTimer));
+
+  const queueFallbackTimer = setInterval(() => {
+    if ((session as any).jobQueue?.some((item: any) => item.status === 'waiting')) {
+      void startNextQueuedJob(session, { addLog, refresh });
+    }
+  }, 10000);
+  onCleanup(() => clearInterval(queueFallbackTimer));
 
   async function submitInput(submittedValue?: string) {
     const line = typeof submittedValue === 'string' && submittedValue.trim() ? submittedValue : input();
@@ -271,6 +290,10 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     setConversationScroll((value) => Math.max(0, value + delta));
   }
 
+  function toggleRightTab() {
+    setRightTab((value) => value === 'plan' ? 'queue' : 'plan');
+  }
+
   function closeEditor() {
     setActiveEditor(null);
   }
@@ -321,6 +344,10 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     slash,
     mcpServers,
     activities,
+    queueItems,
+    queueInfo,
+    rightTab,
+    toggleRightTab,
     plan,
     conversationScroll,
     scrollConversation,

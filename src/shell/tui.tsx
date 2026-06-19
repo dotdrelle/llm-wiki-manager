@@ -121,6 +121,10 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
       }, 1600);
       return;
     }
+    if (key.ctrl && key.name === 'q') {
+      state.toggleRightTab();
+      return;
+    }
     if (state.busy()) return;
     if (key.name === 'tab') state.completeSelected();
     if (key.name === 'pageup') state.scrollConversation(conversationRows());
@@ -169,7 +173,15 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
           <text fg="#4B5563">│</text>
         ))}
       </box>
-      <RightPane width={rightColumns()} activities={state.activities()} logs={state.logs()} plan={state.plan()} />
+      <RightPane
+        width={rightColumns()}
+        activities={state.activities()}
+        logs={state.logs()}
+        plan={state.plan()}
+        queueItems={state.queueItems()}
+        queueInfo={state.queueInfo()}
+        activeTab={state.rightTab()}
+      />
       <SlashDialog context={state.activeEditor() ? null : state.slash()} />
       <FileEditorDialog
         editor={state.activeEditor()}

@@ -15,7 +15,14 @@ import {
 } from '../core/mcp.js';
 import { createWorkspace, findWorkspace, listWorkspaces } from '../core/workspaces.js';
 import { findSkill, listSkills } from '../core/skills.js';
-import { formatActivityError, formatActivitySummary } from '../core/activity.js';
+import { formatActivityError, formatActivitySummary, parseJsonText } from '../core/activity.js';
+import {
+  cancelQueueItem,
+  clearFinishedQueueItems,
+  enqueueProductionJob,
+  formatQueue,
+  productionLockBusy,
+} from '../core/jobQueue.js';
 import {
   listWikircProfiles,
   loadWikircProfile,
@@ -557,6 +564,8 @@ ${helpPair('/mcp tools [mcp]', 'MCP tools', '/mcp call ...', 'Call MCP tool')}
 ${helpPair('/wiki', 'Run wiki index', '/wiki run <args>', 'Raw wiki CLI')}
 ${helpPair('/chat', 'Chat mode', '/agent', 'Agent mode')}
 ${helpPair('/openui', 'Open web UI in browser', '', '')}
+${helpPair('/queue', 'MCP job queue', '/queue clear', 'Clear finished')}
+${helpPair('/queue cancel <id>', 'Cancel queued/running', '', '')}
 ${helpPair('/clear', 'Clear screen', '/exit', 'Exit')}
 ${helpPair('Ctrl+Y', 'Copy last reply', '', '')}
 ${helpPair('PgUp/PgDn', 'Scroll thread', 'Ctrl+C Ctrl+C', 'Exit')}
@@ -799,10 +808,22 @@ export async function handleSlashCommand(line, context) {
         }
         try {
           const rawArgs = args.slice(4).join(' ');
-          const toolArgs = rawArgs ? JSON.parse(rawArgs) : {};
+          let toolArgs = rawArgs ? JSON.parse(rawArgs) : {};
+          if (serverName === 'production' && toolName === 'production_start_job' && context.session.workspace && !toolArgs.callerLabel) {
+            toolArgs = { ...toolArgs, callerLabel: `${context.session.workspace}/wiki-manager` };
+          }
+          if (serverName === 'production' && toolName === 'production_start_job' && productionLockBusy(context.session)) {
+            const item = enqueueProductionJob(context.session, toolArgs, 'production lock busy');
+            return { output: `Queued ${item.id}: waiting ${item.workspace ?? 'no-workspace'} ${item.tool}` };
+          }
           step(`MCP: calling ${serverName}.${toolName}…`);
           const result = await callMcpTool(context.session.mcp, serverName, toolName, toolArgs);
           const output = formatMcpToolResult(result);
+          const payload = parseJsonText(output);
+          if (serverName === 'production' && toolName === 'production_start_job' && payload?.ok === false && payload?.error === 'workspace_busy') {
+            const item = enqueueProductionJob(context.session, toolArgs, 'workspace_busy');
+            return { output: `Queued ${item.id}: waiting for production lock (${payload.activeJobId ?? 'active job'})` };
+          }
           const activity = formatMcpCallActivity(serverName, toolName, output);
           if (activity) step(activity);
           return { output };
@@ -813,6 +834,21 @@ export async function handleSlashCommand(line, context) {
         }
       }
       return { output: 'Usage: /mcp <status|endpoints|tools|call> [mcp]' };
+    }
+    case 'queue': {
+      const subcommand = args[1] ?? 'list';
+      if (subcommand === 'list') return { output: formatQueue(context.session) };
+      if (subcommand === 'clear') {
+        const count = clearFinishedQueueItems(context.session);
+        return { output: `Cleared ${count} finished queue item${count === 1 ? '' : 's'}.` };
+      }
+      if (subcommand === 'cancel') {
+        const id = args[2];
+        if (!id) return { output: 'Usage: /queue cancel <id>' };
+        const result = await cancelQueueItem(context.session, id);
+        return { output: result.message };
+      }
+      return { output: 'Usage: /queue [list|clear|cancel <id>]' };
     }
     case 'new': {
       return createWorkspaceCommand(context, args[1], args[2] ?? null);

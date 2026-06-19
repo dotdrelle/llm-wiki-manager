@@ -8,8 +8,9 @@ import {
 } from '../core/mcp.js';
 import { formatSkillsForAgent } from '../core/skills.js';
 import { handleSlashCommand } from '../commands/slash.js';
-import { extractActivity, formatActivitySummary } from '../core/activity.js';
+import { extractActivity, formatActivitySummary, parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
+import { enqueueProductionJob, formatQueue, productionLockBusy } from '../core/jobQueue.js';
 
 const MAX_TOOL_ITERATIONS = 80;
 const MAX_SPINNER_ARG_LENGTH = 96;
@@ -24,6 +25,7 @@ const AGENT_SLASH_COMMANDS = new Set([
   'status',
   'services',
   'skills',
+  'queue',
 ]);
 
 const SHELL_RUN_COMMAND_TOOL = {
@@ -141,12 +143,20 @@ function summarizeToolArguments(rawArguments) {
   }
 }
 
-function parseJsonToolResult(text) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
+function buildQueuedResult(session, item, activeJobId = null) {
+  const message = activeJobId != null
+    ? `Production job queued as ${item.id}; waiting for ${activeJobId}.`
+    : `Production job queued as ${item.id}; waiting for the current production lock.`;
+  session._onStep?.(`Queue: ${item.id} waiting for production lock`);
+  return JSON.stringify({
+    ok: false,
+    queued: true,
+    queueId: item.id,
+    status: item.status,
+    workspace: item.workspace,
+    ...(activeJobId != null ? { activeJobId } : {}),
+    message,
+  }, null, 2);
 }
 
 function basename(value) {
@@ -288,6 +298,8 @@ export function buildAgentSystemPrompt(state) {
     `Available primitives: ${commandList(state.session)}.`,
     'Connected MCP tools (use the server__tool naming convention for tool calls):',
     mcpTools,
+    'Current local MCP job queue:',
+    formatQueue(state.session),
     'Available skills:',
     skills,
     'You can call MCP tools directly using the provided tool functions.',
@@ -329,6 +341,7 @@ export function buildAgentSystemPrompt(state) {
     'Wiki/deliverable/publication export means exporting generated deliverables from the wiki: use production MCP tools (`production_start_job` with `type:"export"` or pipeline steps). Require the deliverable path when exporting deliverables.',
     'For ingest/build/export/polish/pipeline workflows, use production MCP tools. Do not route these through direct /wiki shortcuts. To chain multiple sequential steps (e.g. build then polish), always use a single production_start_job call with type="pipeline" and steps=["build","polish"] — never start them as separate jobs: the first job is asynchronous and the second would run before it completes. For existing deliverables where content stability matters, pass stabilize:true so the build step preserves unchanged sections; keep polish in the pipeline when publication output is requested. Do not ask the user to confirm between steps; start the pipeline call directly.',
     'Long-running MCP jobs: do not call the same status tool more than once consecutively. When chaining jobs sequentially: (1) start the job, report job/activity id and status; (2) check status once — if done, proceed to the next step immediately; (3) if still running, report status, list the remaining steps, and return control; (4) when re-invoked, check status first, then proceed. Do not spin-poll (status → status → status with no new action between). The shell activity panel monitors non-terminal jobs automatically.',
+    'If production_start_job is returned as queued/waiting by the manager, report that it is waiting in the local queue and return control. Do not continue as if the production job has started.',
     'For diagnostics, use /wiki run doctor when the user asks for doctor. Use /new <name> [path] to create/configure a new workspace. Use /wiki for index, or /wiki run index through the explicit backup hatch. Use /wiki run init only for explicit current-workspace llm-wiki init.',
     'If an action requires tools or skills not available yet, explain the limitation and name the expected primitive.',
   ].join('\n');
@@ -521,12 +534,28 @@ export function createAgentGraph(options = {}) {
           resultText = await runShellCommandTool(state.session, args.command);
         } else if (isInternalWikiTool) {
           resultText = handleWikiTool(state.session, tool, args);
+        } else if (server === 'production' && tool === 'production_start_job' && productionLockBusy(state.session)) {
+          const item = enqueueProductionJob(state.session, args, 'production lock busy');
+          resultText = buildQueuedResult(state.session, item);
+          if (minimalPlanActive) {
+            minimalPlanActive = false;
+            emitAgentEvent(state.session, 'plan_step_updated', 'tool', { step: 1, status: 'pending' });
+          }
         } else {
           const result = await callMcpTool(state.session.mcp, server, tool, args, state.session._abortSignal);
           resultText = formatMcpToolResult(result);
         }
         if (server === 'production') {
-          const payload = parseJsonToolResult(resultText);
+          let payload = parseJsonText(resultText);
+          if (tool === 'production_start_job' && payload?.ok === false && payload?.error === 'workspace_busy') {
+            const item = enqueueProductionJob(state.session, args, 'workspace_busy');
+            resultText = buildQueuedResult(state.session, item, payload.activeJobId ?? null);
+            payload = parseJsonText(resultText);
+            if (minimalPlanActive) {
+              minimalPlanActive = false;
+              emitAgentEvent(state.session, 'plan_step_updated', 'tool', { step: 1, status: 'pending' });
+            }
+          }
           const progressLabel = formatProductionProgress(payload);
           if (progressLabel) state.session._onStep?.(progressLabel);
           const activity = extractActivity(payload, { server, tool });
@@ -536,7 +565,7 @@ export function createAgentGraph(options = {}) {
             rememberProductionProgress(state.session, payload, progressLabel);
           }
         } else if (!isInternalWikiTool && server !== 'shell') {
-          const payload = parseJsonToolResult(resultText);
+          const payload = parseJsonText(resultText);
           const activity = extractActivity(payload, { server, tool });
           if (activity) emitAgentEvent(state.session, 'activity_upserted', 'tool', { activity });
           const activityLabel = formatActivitySummary(server, tool, resultText);

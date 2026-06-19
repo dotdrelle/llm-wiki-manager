@@ -1,0 +1,197 @@
+import { extractActivity, parseJsonText, sessionActivities } from './activity.js';
+import { createAgentEvent, dispatchAgentEvent } from './agentEvents.js';
+import { callMcpTool, formatMcpToolResult } from './mcp.js';
+
+const TERMINAL = new Set(['done', 'failed', 'cancelled', 'canceled', 'complete', 'completed', 'success', 'error']);
+
+function now() {
+  return new Date().toISOString();
+}
+
+function shortId() {
+  return `q-${Math.random().toString(16).slice(2, 6)}`;
+}
+
+function terminalStatus(status) {
+  return TERMINAL.has(String(status ?? '').toLowerCase());
+}
+
+export function ensureJobQueue(session) {
+  session.jobQueue ??= [];
+  return session.jobQueue;
+}
+
+export function productionLockBusy(session) {
+  return sessionActivities(session).some((activity) =>
+    activity.source === 'production' && !activity.terminal && activity.poll,
+  );
+}
+
+export function enqueueProductionJob(session, args = {}, reason = 'waiting') {
+  const workspace = session.workspace ?? null;
+  const item = {
+    id: shortId(),
+    workspace,
+    server: 'production',
+    tool: 'production_start_job',
+    args: { ...args },
+    lockKey: workspace ? `production:${workspace}` : 'production',
+    status: 'waiting',
+    reason,
+    createdAt: now(),
+  };
+  ensureJobQueue(session).push(item);
+  return item;
+}
+
+export function queueSummary(args = {}) {
+  const parts = [
+    args.type,
+    Array.isArray(args.steps) && args.steps.length ? `steps=${args.steps.join(',')}` : null,
+    Array.isArray(args.templates) && args.templates.length ? `templates=${args.templates.length}` : null,
+    Array.isArray(args.deliverables) && args.deliverables.length ? `deliverables=${args.deliverables.length}` : null,
+    args.configPath ? `config=${args.configPath}` : null,
+  ].filter(Boolean);
+  return parts.join(' ') || 'production job';
+}
+
+export function queueCounts(session) {
+  let active = 0;
+  let current = 0;
+  let frozen = 0;
+  for (const item of ensureJobQueue(session)) {
+    if (['waiting', 'starting', 'running'].includes(item.status)) {
+      active += 1;
+      if (item.workspace === session.workspace) current += 1;
+      else frozen += 1;
+    }
+  }
+  return { active, current, frozen };
+}
+
+export function formatQueue(session) {
+  const queue = ensureJobQueue(session);
+  if (queue.length === 0) return 'Queue is empty.';
+  return queue.map((item) => {
+    const frozen = item.workspace !== session.workspace && ['waiting', 'starting', 'running'].includes(item.status)
+      ? ' frozen'
+      : '';
+    const job = item.jobId ? ` job=${item.jobId}` : '';
+    const error = item.error ? ` error=${item.error}` : '';
+    return `${item.id} ${item.status}${frozen} ${item.workspace ?? 'no-workspace'} ${queueSummary(item.args)}${job}${error}`;
+  }).join('\n');
+}
+
+export function clearFinishedQueueItems(session) {
+  const queue = ensureJobQueue(session);
+  const before = queue.length;
+  session.jobQueue = queue.filter((item) =>
+    item.workspace !== session.workspace || !terminalStatus(item.status),
+  );
+  return before - session.jobQueue.length;
+}
+
+function findQueueItem(session, id) {
+  return ensureJobQueue(session).find((item) => item.id === id) ?? null;
+}
+
+export async function cancelQueueItem(session, id) {
+  const item = findQueueItem(session, id);
+  if (!item) return { ok: false, message: `Unknown queue item: ${id}` };
+  if (item.status === 'waiting' || item.status === 'starting') {
+    const label = item.status === 'starting' ? 'starting' : 'queued';
+    item.status = 'cancelled';
+    item.finishedAt = now();
+    return { ok: true, message: `Cancelled ${label} job ${id}.` };
+  }
+  if (item.status === 'running') {
+    if (item.server === 'production' && item.jobId) {
+      await callMcpTool(session.mcp, 'production', 'production_cancel_job', { jobId: item.jobId });
+      item.status = 'cancelled';
+      item.finishedAt = now();
+      return { ok: true, message: `Cancellation requested for ${id} (${item.jobId}).` };
+    }
+    return { ok: false, message: `No cancel tool available for ${id}.` };
+  }
+  return { ok: false, message: `Queue item ${id} is already ${item.status}.` };
+}
+
+function activeCurrentWorkspaceProductionJob(session) {
+  return productionLockBusy(session)
+    || ensureJobQueue(session).some((item) =>
+      item.workspace === session.workspace && ['starting', 'running'].includes(item.status),
+    );
+}
+
+function nextWaitingProductionItem(session) {
+  return ensureJobQueue(session).find((item) =>
+    item.workspace === session.workspace
+    && item.server === 'production'
+    && item.tool === 'production_start_job'
+    && item.status === 'waiting',
+  ) ?? null;
+}
+
+export async function startNextQueuedJob(session, hooks = {}) {
+  if (!session.workspace) return null;
+  if (activeCurrentWorkspaceProductionJob(session)) return null;
+  const item = nextWaitingProductionItem(session);
+  if (!item) return null;
+
+  item.status = 'starting';
+  item.startedAt = now();
+  hooks.refresh?.();
+  hooks.addLog?.(`queue: starting ${item.id} ${queueSummary(item.args)}`);
+
+  try {
+    const args = session.workspace && !item.args.callerLabel
+      ? { ...item.args, callerLabel: `${session.workspace}/wiki-manager` }
+      : item.args;
+    item.args = args;
+    const result = await callMcpTool(session.mcp, 'production', 'production_start_job', args);
+    const resultText = formatMcpToolResult(result);
+    const payload = parseJsonText(resultText);
+    if (payload?.ok === false && payload?.error === 'workspace_busy') {
+      item.status = 'waiting';
+      item.reason = 'workspace_busy';
+      hooks.addLog?.(`queue: ${item.id} still waiting, production lock busy`);
+      hooks.refresh?.();
+      return item;
+    }
+    const activity = extractActivity(payload, { server: 'production', tool: 'production_start_job' });
+    if (activity) {
+      item.status = activity.terminal ? activity.status : 'running';
+      item.jobId = activity.id;
+      item.activityKey = activity.key;
+      item.finishedAt = activity.terminal ? now() : undefined;
+      dispatchAgentEvent(session, createAgentEvent('activity_upserted', {
+        origin: 'queue',
+        payload: { activity },
+      }));
+    } else {
+      item.status = 'done';
+      item.finishedAt = now();
+    }
+    hooks.addLog?.(`queue: ${item.id} ${item.status}${item.jobId ? ` job=${item.jobId}` : ''}`);
+    hooks.refresh?.();
+    return item;
+  } catch (err) {
+    item.status = 'failed';
+    item.error = err instanceof Error ? err.message : String(err);
+    item.finishedAt = now();
+    hooks.addLog?.(`queue: ${item.id} failed · ${item.error}`);
+    hooks.refresh?.();
+    return item;
+  }
+}
+
+export function syncQueueWithActivity(session, activity) {
+  if (!activity?.id || activity.source !== 'production') return null;
+  const item = ensureJobQueue(session).find((entry) => entry.jobId === activity.id);
+  if (!item) return null;
+  item.status = activity.terminal ? activity.status : 'running';
+  item.activityKey = activity.key;
+  item.finishedAt = activity.terminal ? now() : item.finishedAt;
+  item.error = activity.error ?? item.error;
+  return item;
+}

@@ -81,6 +81,9 @@ const SUBCOMMAND_COMPLETION_DESCRIPTIONS = {
   '/mcp:endpoints': 'Show MCP URLs and token presence.',
   '/mcp:status': 'Show MCP connection status.',
   '/mcp:tools': 'Show discovered MCP tools.',
+  '/queue': 'Inspect or cancel queued MCP jobs.',
+  '/queue:cancel': 'Cancel a queued or running queue item.',
+  '/queue:clear': 'Clear finished queue items.',
   '/workspace:init': 'Legacy form of /new.',
   '/wiki:run': 'Use the low-level llm-wiki CLI fallback.',
   '/skills:edit': 'Edit one workspace skill file.',
@@ -98,10 +101,11 @@ export function createSession() {
     wikircConfig: null,
     language: null,
     mcp: null,
-    commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'clear', 'chat', 'agent', 'openui'],
+    commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'clear', 'chat', 'agent', 'openui', 'queue'],
     chatMode: true,
     llm: null,
     activities: {},
+    jobQueue: [],
     productionActivity: null,
     headlessPlan: null,
     conversations: { [GLOBAL_CONVERSATION_KEY]: [] },
@@ -197,6 +201,12 @@ function completionValuesFor(parts, inputBuffer, session) {
   if (command === '/mcp' && previousToken === 'tools') return mcpNames(session);
   if (command === '/mcp' && previousToken === 'call') return mcpNames(session);
   if (command === '/mcp' && parts[1] === 'call' && tokenIndex === 3) return mcpToolNames(session, parts[2]);
+  if (command === '/queue' && tokenIndex === 1) return ['cancel', 'clear'];
+  if (command === '/queue' && previousToken === 'cancel') {
+    return (session.jobQueue ?? [])
+      .filter((item) => ['waiting', 'starting', 'running'].includes(item.status))
+      .map((item) => item.id);
+  }
   if (command === '/workspace' && tokenIndex === 1) return ['init'];
   if (command === '/wiki' && tokenIndex === 1) return ['run'];
   if (command === '/skills' && tokenIndex === 1) return ['edit', 'list', 'run', 'show'];

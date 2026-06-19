@@ -2,6 +2,16 @@
 import { Index, Show } from 'solid-js';
 
 type PlanStep = { step: number; description: string; status: string };
+type QueueItem = {
+  id: string;
+  workspace?: string | null;
+  status: string;
+  args?: Record<string, any>;
+  jobId?: string;
+  error?: string;
+  reason?: string;
+};
+type QueueInfo = { active: number; current: number; frozen: number };
 
 const ACTIVITY_SLOTS = Array.from({ length: 6 }, (_, index) => index);
 const LOG_SLOTS = Array.from({ length: 24 }, (_, index) => index);
@@ -36,6 +46,12 @@ function activityColor(status: string) {
   if (['failed', 'error', 'cancelled', 'canceled'].includes(value)) return '#F38BA8';
   if (['running', 'queued', 'starting', 'cancelling'].includes(value)) return '#89B4FA';
   return '#AAB7C4';
+}
+
+function queueColor(status: string) {
+  const value = String(status ?? '').toLowerCase();
+  if (value === 'waiting') return '#FBBF24';
+  return activityColor(status);
 }
 
 function activityLine(activity: any) {
@@ -75,6 +91,17 @@ function activityJobName(activity: any) {
   return activity.label
     ?? [activity.source, activity.kind, activity.id ? `#${activity.id}` : null].filter(Boolean).join(' ')
     ?? '';
+}
+
+function queueSummary(item: QueueItem) {
+  const args = item.args ?? {};
+  const parts = [
+    args.type ?? 'production',
+    Array.isArray(args.steps) && args.steps.length ? args.steps.join('+') : null,
+    Array.isArray(args.templates) && args.templates.length ? `tpl:${args.templates.length}` : null,
+    Array.isArray(args.deliverables) && args.deliverables.length ? `del:${args.deliverables.length}` : null,
+  ].filter(Boolean);
+  return parts.join(' ');
 }
 
 export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: string }) {
@@ -159,16 +186,83 @@ export function LogPanel(props: { logs: string[]; width: number }) {
   );
 }
 
-export function RightPane(props: { width: number; activities: any[]; logs: string[]; plan: PlanStep[] | null }) {
+export function QueuePanel(props: { items: QueueItem[]; info: QueueInfo; width: number }) {
+  const lineWidth = () => Math.max(8, props.width - 2);
+  const visible = () => props.items.slice(-6).reverse();
+  return (
+    <box flexShrink={0} flexDirection="column" padding={1}>
+      <text width={lineWidth()} fg="#D6DEE8" content="Queue" />
+      <Show when={props.info.frozen > 0}>
+        <text width={lineWidth()} fg="#FBBF24" content={fit(`Queue frozen: ${props.info.frozen} item(s) in another workspace`, lineWidth())} />
+      </Show>
+      <Show when={visible().length > 0} fallback={<text width={lineWidth()} fg="#7F8C8D" content="no queued jobs" />}>
+        <Index each={ACTIVITY_SLOTS}>
+          {(slot) => {
+            const item = () => visible()[slot()] ?? null;
+            return (
+              <box flexDirection="column" marginTop={slot() === 0 ? 1 : 0}>
+                <text
+                  width={lineWidth()}
+                  fg={queueColor(item()?.status)}
+                  content={item() ? fit(`${item()!.id} ${item()!.status} ${queueSummary(item()!)}`, lineWidth()) : ''}
+                />
+                <text
+                  width={lineWidth()}
+                  fg="#AAB7C4"
+                  content={item() ? fit([item()!.workspace, item()!.jobId ? `job ${item()!.jobId}` : item()!.reason].filter(Boolean).join(' · '), lineWidth()) : ''}
+                />
+                <text
+                  width={lineWidth()}
+                  fg="#7F8C8D"
+                  content={item()?.error ? fit(item()!.error!, lineWidth()) : ''}
+                />
+              </box>
+            );
+          }}
+        </Index>
+      </Show>
+    </box>
+  );
+}
+
+function TabHeader(props: { active: 'plan' | 'queue'; queueCount: number; width: number }) {
+  const lineWidth = () => Math.max(8, props.width - 2);
+  const planActive = () => props.active === 'plan';
+  return (
+    <box height={1} flexDirection="row" paddingX={1}>
+      <text fg={planActive() ? '#0B1020' : '#D6DEE8'} bg={planActive() ? '#89B4FA' : undefined} content=" Plan " />
+      <text fg="#4B5563" content=" " />
+      <text fg={!planActive() ? '#0B1020' : '#D6DEE8'} bg={!planActive() ? '#FBBF24' : undefined} content={` Queue (${props.queueCount}) `} />
+      <text fg="#7F8C8D" content={fit('  Ctrl+Q', Math.max(0, lineWidth() - 24))} />
+    </box>
+  );
+}
+
+export function RightPane(props: {
+  width: number;
+  activities: any[];
+  logs: string[];
+  plan: PlanStep[] | null;
+  queueItems: QueueItem[];
+  queueInfo: QueueInfo;
+  activeTab: 'plan' | 'queue';
+}) {
   const planJobName = () => activityJobName(
     [...props.activities].reverse().find((activity) => !activity.terminal) ?? props.activities.at(-1),
   );
   return (
     <box width={props.width} height="100%" flexDirection="column" gap={1} padding={1} overflow="hidden">
-      <Show when={props.plan && props.plan.length > 0}>
-        <PlanPanel width={props.width} plan={props.plan!} jobName={planJobName()} />
+      <TabHeader active={props.activeTab} queueCount={props.queueInfo.active} width={props.width} />
+      <Show when={props.activeTab === 'queue'} fallback={(
+        <>
+          <Show when={props.plan && props.plan.length > 0}>
+            <PlanPanel width={props.width} plan={props.plan!} jobName={planJobName()} />
+          </Show>
+          <ActivityPanel width={props.width} activities={props.activities} />
+        </>
+      )}>
+        <QueuePanel width={props.width} items={props.queueItems} info={props.queueInfo} />
       </Show>
-      <ActivityPanel width={props.width} activities={props.activities} />
       <LogPanel width={props.width} logs={props.logs} />
     </box>
   );

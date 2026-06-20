@@ -18,7 +18,7 @@ orchestrates them.
 | --- | --- |
 | [`llm-wiki`](https://github.com/dotdrelle/llm-wiki) | Workspace engine: CLI, web UI, MCP server, retrieval, deliverables, skills |
 | [`llm-wiki-manager`](https://github.com/dotdrelle/llm-wiki-manager) | Multi-workspace cockpit, Docker orchestration, `donna` shell |
-| [`agent-cme`](https://github.com/dotdrelle/agent-cme) | Workspace-scoped Confluence to Markdown exporter |
+| [`agent-cme`](https://github.com/dotdrelle/agent-cme) | Global Confluence to Markdown MCP exporter; workspace injected automatically by Donna |
 | [`agent-wiki-production`](https://github.com/dotdrelle/agent-wiki-production) | Workspace-scoped production jobs: ingest, build, export, polish, pipeline |
 | [`agent-mailer-api`](https://github.com/dotdrelle/agent-mailer-api) | Optional external mailer MCP endpoint |
 
@@ -29,7 +29,6 @@ Each managed workspace is a normal `llm-wiki` workspace plus manager metadata:
 ```text
 workspaces/<name>/
   .env                 # ports, tokens, workspace path
-  .cme/                # Confluence exporter state
   .wikirc.yaml         # LLM/vector config for this workspace
   raw/
   wiki/
@@ -69,31 +68,73 @@ the package, in the directory where the command is launched:
 
 ```text
 ./workspaces/            # workspace registry
-./mcp.endpoints.json     # optional external MCP endpoints (gitignored)
+./.env                   # local configuration (gitignored; copy from .env.example)
+./mcp.endpoints.json     # external MCP endpoints (gitignored; copy from .env.example)
 ```
 
 `WIKI_WORKSPACES_DIR` is available as an explicit override for the workspaces
 directory, but not required for normal usage.
 
-If `./mcp.endpoints.json`
-exists, shell, TUI, headless, and the served chat UI use it for external MCP
-servers:
+### Local `.env`
+
+Copy `.env.example` to `.env` and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+The `.env` file is loaded automatically by both `wiki-manager` (Node/Bun process)
+and `wiki-workspace` (Docker Compose). It sets `WORKSPACES_ROOT`, per-agent auth
+tokens, mailer credentials, and optional port overrides.
+
+### External MCP endpoints
+
+`mcp.endpoints.json` declares external agents for the shell, TUI, headless, and
+the served chat UI. Values support `${VAR}` interpolation resolved from the
+process environment (including the `.env` loaded at startup):
 
 ```json
 {
   "mcpServers": {
-    "mailer": {
-      "url": "http://host.docker.internal:3335/mcp/",
-      "headers": {
-        "x-api-key": "secret"
-      }
+    "cme": {
+      "url": "http://host.docker.internal:${CME_MCP_PORT:-3336}/mcp/",
+      "headers": { "Authorization": "Bearer ${CME_MCP_AUTH_TOKEN}" }
+    },
+    "documents": {
+      "url": "http://host.docker.internal:${DOCUMENTS_MCP_PORT:-3337}/mcp/",
+      "headers": { "Authorization": "Bearer ${DOCUMENTS_MCP_AUTH_TOKEN}" }
     }
   }
 }
 ```
 
-Workspace-native MCP servers (`llm-wiki`, `cme`, `production`) stay configured
-through each workspace `.env`.
+Copy `mcp.endpoints.example.json` to `mcp.endpoints.json` and set the matching
+token variables in `.env`.
+
+### Starting external agents
+
+Start CME, documents, and mailer once for all workspaces:
+
+```bash
+wiki-workspace agents up
+```
+
+This uses the packaged `agents.docker-compose.yml`. `WORKSPACES_ROOT` is resolved
+automatically from the manager workspaces directory. Agent state is stored under
+`./.agents-data/` unless `AGENTS_DATA_DIR` is set.
+
+Workspace-native MCP servers (`llm-wiki`, `production`) stay configured through
+each workspace `.env`. External agents are workspace-agnostic: the active
+`/use <workspace>` is injected automatically on every CME and documents tool
+call — no need to pass `workspace` explicitly.
+
+CME data is isolated per workspace:
+
+```text
+.agents-data/cme/<workspace>/cme/app_data.json     # Confluence credentials
+.agents-data/cme/<workspace>/sources-manifest.yaml # export sources
+workspaces/<workspace>/raw/untracked/               # exported Markdown
+```
 
 Create a workspace:
 
@@ -124,7 +165,6 @@ The shared `docker-compose.yml` starts one workspace stack:
 | --- | --- | --- |
 | `serve` | Wiki web UI and browser chat | `WIKI_SERVE_PORT` |
 | `mcp-http` | llm-wiki MCP endpoint | `WIKI_MCP_PORT` |
-| `cme-mcp` | Confluence exporter MCP endpoint | `CME_MCP_PORT` |
 | `production-mcp` | Production job MCP endpoint | `PRODUCTION_MCP_PORT` |
 
 Use `wiki-workspace` whenever possible so Compose receives the right project
@@ -132,11 +172,10 @@ name, env file, ports, and volume mounts.
 
 ```bash
 wiki-workspace list
+wiki-workspace agents up
+wiki-workspace agents status
 wiki-workspace up my-project
 wiki-workspace wiki my-project logs
-wiki-workspace cme my-project up
-wiki-workspace cme my-project logs
-wiki-workspace mailer status
 ```
 
 ## The `donna` Shell
@@ -257,10 +296,11 @@ call the tool in the same turn. If required arguments are missing, ask for the
 exact missing values. If the tool/server is unavailable, name the concrete
 blocker.
 
-CME setup/configuration is a synchronous MCP action, not a monitored background
-activity. The agent calls `cme_status`/`cme_setup` directly when CME tools are
-connected and credentials are available. The Activity panel tracks long-running
-jobs that return `_activity.poll` descriptors — not synchronous setup calls.
+CME setup/configuration is a synchronous, workspace-scoped MCP action, not a
+monitored background activity. The agent calls `cme_status`/`cme_setup` directly
+for the active workspace when CME tools are connected and credentials are
+available. The Activity panel tracks long-running jobs that return
+`_activity.poll` descriptors — not synchronous setup calls.
 
 `shell__run_command` is limited to safe manager primitives:
 
@@ -528,9 +568,10 @@ llm-wiki-manager/
 │       ├── useSession.ts   # reactive session state
 │       ├── useAgent.ts     # agent call wrapper
 │       └── renderer.ts     # markdown stripping and line coloring
-├── docker-compose.yml
+├── docker-compose.yml      # workspace-scoped stack (serve, mcp-http, production-mcp)
+├── agents.docker-compose.yml  # global external agents (cme, documents, mailer)
 ├── wiki-workspace
-├── workspaces/             # gitignored local workspace registry when run from repo root
+├── .env.example            # template for local .env (WORKSPACES_ROOT, agent tokens, …)
 ├── mcp.endpoints.example.json
 └── workspaces/.env.example
 ```

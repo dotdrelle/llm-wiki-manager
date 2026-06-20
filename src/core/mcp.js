@@ -1,13 +1,42 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { managerMcpEndpointsFile } from './env.js';
+import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
+
+function envValue(key) {
+  if (key in process.env) return process.env[key];
+  const filePath = managerEnvFile();
+  if (!existsSync(filePath)) return undefined;
+  return readEnvFile(filePath)[key];
+}
+
+function interpolateEnv(value) {
+  return value.replace(/\$\{([^}]+)\}/g, (_, expr) => {
+    const sep = expr.indexOf(':-');
+    if (sep !== -1) return envValue(expr.slice(0, sep)) ?? expr.slice(sep + 2);
+    return envValue(expr) ?? '';
+  });
+}
 
 function normalizeHeaders(headers) {
   if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return {};
   return Object.fromEntries(
     Object.entries(headers)
       .filter(([key, value]) => key && typeof value === 'string' && value)
-      .map(([key, value]) => [key.toLowerCase(), value]),
+      .map(([key, value]) => [key.toLowerCase(), interpolateEnv(value)]),
   );
+}
+
+function normalizeExternalUrlForRuntime(url) {
+  if (process.env.WIKI_MANAGER_KEEP_DOCKER_HOST === '1') return url;
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === 'host.docker.internal') {
+      parsed.hostname = 'localhost';
+      return parsed.toString();
+    }
+  } catch {
+    return url;
+  }
+  return url;
 }
 
 function readExternalMcpEndpoints() {
@@ -23,7 +52,8 @@ function readExternalMcpEndpoints() {
         name,
         {
           ...endpointStatus(true),
-          url: String(endpoint.url),
+          url: normalizeExternalUrlForRuntime(interpolateEnv(String(endpoint.url))),
+          configuredUrl: interpolateEnv(String(endpoint.url)),
           headers: normalizeHeaders(endpoint.headers),
           external: true,
         },
@@ -40,7 +70,6 @@ function endpointStatus(configured, detail = '') {
 
 const MCP_SERVICE_MAP = {
   wiki: 'mcp-http',
-  cme: 'cme-mcp',
   production: 'production-mcp',
 };
 
@@ -56,14 +85,6 @@ export function buildMcpStatus(session) {
       ),
       url: workspaceEnv.WIKI_MCP_PORT ? `http://127.0.0.1:${workspaceEnv.WIKI_MCP_PORT}/mcp` : null,
       token: workspaceEnv.WIKI_MCP_AUTH_TOKEN || null,
-    },
-    cme: {
-      ...endpointStatus(
-        workspaceEnv.CME_MCP_PORT && workspaceEnv.CME_MCP_AUTH_TOKEN,
-        workspaceEnv.CME_MCP_PORT ? `:${workspaceEnv.CME_MCP_PORT}` : '',
-      ),
-      url: workspaceEnv.CME_MCP_PORT ? `http://127.0.0.1:${workspaceEnv.CME_MCP_PORT}/mcp/` : null,
-      token: workspaceEnv.CME_MCP_AUTH_TOKEN || null,
     },
     production: {
       ...endpointStatus(
@@ -184,7 +205,7 @@ async function mcpRequest(endpoint, method, params, signal) {
           params: {
             protocolVersion: '2025-06-18',
             capabilities: {},
-            clientInfo: { name: 'wiki-manager', version: '0.5.21' },
+            clientInfo: { name: 'wiki-manager', version: '0.6.8' },
           },
         }),
       });

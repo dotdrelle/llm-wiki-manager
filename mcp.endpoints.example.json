@@ -1,17 +1,27 @@
 {
   "mcpServers": {
-    "mailer": {
-      "url": "http://host.docker.internal:3335/mcp/",
-      "headers": {}
+    "cme": {
+      "url": "http://host.docker.internal:${CME_MCP_PORT:-3336}/mcp/",
+      "headers": {
+        "Authorization": "Bearer ${CME_MCP_AUTH_TOKEN}"
+      }
     },
     "documents": {
-      "url": "http://host.docker.internal:3337/mcp/",
-      "headers": {}
+      "url": "http://host.docker.internal:${DOCUMENTS_MCP_PORT:-3337}/mcp/",
+      "headers": {
+        "Authorization": "Bearer ${DOCUMENTS_MCP_AUTH_TOKEN}"
+      }
+    },
+    "mailer": {
+      "url": "http://host.docker.internal:${MAILER_MCP_PORT:-3335}/mcp/",
+      "headers": {
+        "Authorization": "Bearer ${MAILER_MCP_AUTH_TOKEN}"
+      }
     },
     "atlassian": {
       "url": "http://host.docker.internal:9000/mcp",
       "headers": {
-        "Authorization": "Bearer <token>"
+        "Authorization": "Bearer ${ATLASSIAN_MCP_AUTH_TOKEN}"
       }
     }
   }

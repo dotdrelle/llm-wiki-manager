@@ -223,6 +223,22 @@ function assertAgentSlashCommandAllowed(commandLine) {
   }
 }
 
+function withActiveWorkspaceForExternalTool(session, server, tool, args) {
+  const needsWorkspace =
+    (server === 'documents' && tool.startsWith('documents_') && tool !== 'documents_status') ||
+    (server === 'cme' && tool.startsWith('cme_') && tool !== 'cme_export_cancel' && !(tool === 'cme_export_status' && args.job_id));
+  if (!needsWorkspace) return args;
+  if (!session.workspace) {
+    throw new Error(`No active workspace available for ${server}.${tool}. Use /use <workspace> first.`);
+  }
+  if (args.workspace && args.workspace !== session.workspace) {
+    throw new Error(
+      `${server}.${tool} targets workspace "${args.workspace}" but the active workspace is "${session.workspace}". Use /use ${args.workspace} first.`,
+    );
+  }
+  return { ...args, workspace: session.workspace };
+}
+
 async function runShellCommandTool(session, commandLine) {
   const command = normalizeShellCommand(commandLine);
   assertAgentSlashCommandAllowed(command);
@@ -305,6 +321,7 @@ export function buildAgentSystemPrompt(state) {
     'You can call MCP tools directly using the provided tool functions.',
     'When the user asks for an action that can be performed with connected MCP tools or safe primitives, do not answer with future intent such as "I will call...", "I am going to run...", or "launching..." unless you also call the tool in the same turn. Either call the tool now, ask for the exact missing required arguments, or explain the concrete blocker.',
     'For CME configuration/setup/update requests, if a matching CME tool such as cme_setup is connected and the required arguments are known, call it immediately. If the CME server or tool is not connected, say which CME capability is missing and recommend the exact service/status primitive to inspect it. Do not invent a pending CME action in plain text.',
+    'For workspace-scoped external MCP tools, the orchestrator enforces workspace injection. When calling documents_* conversion tools or cme_* configuration/source/export tools, use the active workspace only. cme_export_status(job_id=...) and cme_export_cancel(job_id=...) can be used from any active workspace.',
     'You can call shell__run_command for safe manager slash commands such as /workspaces, /new <name> [path], /use <workspace>, /config, /status, /services, /skills, /skills show <name>, and /skills run <name>.',
     'Skills are workflow instructions, not executable code. When a user asks to run a skill, inspect it, propose the concrete primitive/tool plan, and ask for confirmation before costly or mutating actions.',
     [
@@ -542,6 +559,7 @@ export function createAgentGraph(options = {}) {
             emitAgentEvent(state.session, 'plan_step_updated', 'tool', { step: 1, status: 'pending' });
           }
         } else {
+          args = withActiveWorkspaceForExternalTool(state.session, server, tool, args);
           const result = await callMcpTool(state.session.mcp, server, tool, args, state.session._abortSignal);
           resultText = formatMcpToolResult(result);
         }

@@ -4,6 +4,7 @@ node_modules/
 *.log
 .env
 .env.*
+!.env.example
 data/
 workspaces/*
 !workspaces/.env.example

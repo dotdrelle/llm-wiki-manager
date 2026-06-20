@@ -33,8 +33,57 @@ test('buildMcpStatus reads external MCP endpoints from mcp.endpoints.json', asyn
       authorization: 'Bearer token',
     });
     assert.equal(status.external.external, true);
+    assert.equal(status.cme, undefined);
   } finally {
     process.chdir(originalCwd);
+  }
+});
+
+test('buildMcpStatus interpolates external endpoints from manager .env', async () => {
+  const originalCwd = process.cwd();
+  const originalToken = process.env.TEST_EXTERNAL_TOKEN;
+  const originalPort = process.env.TEST_EXTERNAL_PORT;
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wiki-manager-mcp-env-'));
+  await writeFile(
+    path.join(root, '.env'),
+    [
+      'TEST_EXTERNAL_TOKEN=from-env-file',
+      'TEST_EXTERNAL_PORT=4567',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  await writeFile(
+    path.join(root, 'mcp.endpoints.json'),
+    JSON.stringify({
+      mcpServers: {
+        external: {
+          url: 'http://host.docker.internal:${TEST_EXTERNAL_PORT:-9999}/mcp/',
+          headers: {
+            Authorization: 'Bearer ${TEST_EXTERNAL_TOKEN}',
+          },
+        },
+      },
+    }),
+    'utf8',
+  );
+  delete process.env.TEST_EXTERNAL_TOKEN;
+  delete process.env.TEST_EXTERNAL_PORT;
+
+  try {
+    process.chdir(root);
+    const status = buildMcpStatus({ workspaceEnv: {} });
+    assert.equal(status.external.url, 'http://localhost:4567/mcp/');
+    assert.equal(status.external.configuredUrl, 'http://host.docker.internal:4567/mcp/');
+    assert.deepEqual(status.external.headers, {
+      authorization: 'Bearer from-env-file',
+    });
+  } finally {
+    process.chdir(originalCwd);
+    if (originalToken === undefined) delete process.env.TEST_EXTERNAL_TOKEN;
+    else process.env.TEST_EXTERNAL_TOKEN = originalToken;
+    if (originalPort === undefined) delete process.env.TEST_EXTERNAL_PORT;
+    else process.env.TEST_EXTERNAL_PORT = originalPort;
   }
 });
 

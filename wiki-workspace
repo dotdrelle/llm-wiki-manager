@@ -22,20 +22,18 @@ Usage:
   wiki-workspace config <workspace> [path]
   wiki-workspace up <workspace>
   wiki-workspace wiki <workspace> <command> [args...]
-  wiki-workspace cme <workspace> <up|down|logs>
-  wiki-workspace mailer status
   wiki-workspace list
 
 Commands:
   config <workspace> [path]         Create workspace folder, auto-select ports, run wiki init
-  up <workspace> [--open]           Start workspace stack: wiki + cme + production
+  up <workspace> [--open]           Start workspace stack: wiki + production
   list                              List configured workspaces
 
-  cme <workspace> up                Start workspace-scoped agent-cme MCP server
-  cme <workspace> down              Stop workspace-scoped agent-cme MCP server
-  cme <workspace> logs [args...]    Follow workspace-scoped agent-cme logs (tail 100 by default)
-
-  mailer status                     Check external agent-mailer-api URL/token configuration
+  agents up [--pull]                Start all external agents (cme, documents, mailer)
+  agents down                       Stop all external agents
+  agents logs [args...]             Follow external agent logs
+  agents pull                       Pull latest external agent images
+  agents status                     Check reachability of configured MCP endpoints
 
   wiki <workspace> init             Initialize the workspace with wiki init
   wiki <workspace> up               Start llm-wiki serve + mcp-http + production-mcp
@@ -70,11 +68,12 @@ normalize_path() {
 
 absolute_path() {
   local value="$1"
+  local base="${2:-$ROOT_DIR}"
   value="$(normalize_path "$value")"
   if [[ "$value" = /* ]]; then
     printf '%s\n' "$value"
   else
-    printf '%s\n' "$ROOT_DIR/$value"
+    printf '%s\n' "$base/$value"
   fi
 }
 
@@ -154,6 +153,169 @@ set_env_value() {
   mv "$tmp" "$file"
 }
 
+agents_compose() {
+  local subcommand="$1"
+  shift
+  ensure_manager_endpoints_file
+  local agents_compose_file="$ROOT_DIR/agents.docker-compose.yml"
+  [[ -f "$agents_compose_file" ]] || die "agents compose file not found: $agents_compose_file"
+
+  local agents_data_dir workspaces_root
+  agents_data_dir="$(absolute_path "${AGENTS_DATA_DIR:-.agents-data}" "$DEFAULT_MANAGER_DIR")"
+  workspaces_root="$(absolute_path "$WORKSPACES_DIR" "$DEFAULT_MANAGER_DIR")"
+
+  local compose_env_args=()
+  [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
+
+  _agents_dc() {
+    WORKSPACES_ROOT="$workspaces_root" AGENTS_DATA_DIR="$agents_data_dir" \
+      docker compose "${compose_env_args[@]}" -f "$agents_compose_file" -p wiki-agents "$@"
+  }
+
+  case "$subcommand" in
+    up)
+      local do_pull=false
+      if [[ "${1:-}" == "--pull" ]]; then
+        do_pull=true
+        shift
+      fi
+      [[ $# -eq 0 ]] || die "agents up accepts only --pull"
+      mkdir -p "$agents_data_dir/cme" "$agents_data_dir/documents/input" "$agents_data_dir/documents/output"
+      mkdir -p "$workspaces_root"
+      $do_pull && _agents_dc pull
+      _agents_dc up -d
+      printf 'Workspaces root: %s\n' "$workspaces_root"
+      printf 'Agents data:     %s\n' "$agents_data_dir"
+      printf 'Agents: cme=:%s  documents=:%s  mailer=:%s\n' \
+        "${CME_MCP_PORT:-3336}" "${DOCUMENTS_MCP_PORT:-3337}" "${MAILER_MCP_PORT:-3335}"
+      ;;
+    down)
+      [[ $# -eq 0 ]] || die "agents down does not take arguments"
+      _agents_dc down
+      ;;
+    logs)
+      local log_args=()
+      read_lines_into_array log_args logs_args "$@"
+      _agents_dc logs "${log_args[@]}"
+      ;;
+    pull)
+      [[ $# -eq 0 ]] || die "agents pull does not take arguments"
+      _agents_dc pull
+      ;;
+    status)
+      [[ $# -eq 0 ]] || die "agents status does not take arguments"
+      local endpoints_file="$ROOT_DIR/mcp.endpoints.json"
+      if [[ ! -f "$endpoints_file" ]]; then
+        printf 'No mcp.endpoints.json found at %s\n' "$endpoints_file" >&2
+        exit 1
+      fi
+      command -v node >/dev/null 2>&1 || die "agents status requires node"
+      node - "$endpoints_file" "$MANAGER_ENV_FILE" <<'NODE'
+import fs from 'node:fs';
+
+const [, , endpointsFile, envFile] = process.argv;
+
+function parseEnvValue(value) {
+  const trimmed = value.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) return trimmed.slice(1, -1);
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) return trimmed.slice(1, -1);
+  return trimmed;
+}
+
+function loadEnv(filePath) {
+  const values = { ...process.env };
+  try {
+    for (const raw of fs.readFileSync(filePath, 'utf8').split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const index = line.indexOf('=');
+      if (index === -1) continue;
+      const key = line.slice(0, index).trim();
+      if (!(key in values)) values[key] = parseEnvValue(line.slice(index + 1));
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  return values;
+}
+
+function interpolate(value, env) {
+  return String(value).replace(/\$\{([^}]+)\}/g, (_match, expr) => {
+    const sep = expr.indexOf(':-');
+    if (sep !== -1) return env[expr.slice(0, sep)] ?? expr.slice(sep + 2);
+    return env[expr] ?? '';
+  });
+}
+
+function runtimeUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === 'host.docker.internal') parsed.hostname = 'localhost';
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function normalizeHeaders(headers, env) {
+  if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return {};
+  return Object.fromEntries(
+    Object.entries(headers)
+      .filter(([key, value]) => key && typeof value === 'string' && value)
+      .map(([key, value]) => [key.toLowerCase(), interpolate(value, env)]),
+  );
+}
+
+async function check(url, headers) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3000);
+  try {
+    const response = await fetch(runtimeUrl(url), {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+        ...headers,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'wiki-workspace', version: 'status' },
+        },
+      }),
+    });
+    await response.text();
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+const env = loadEnv(envFile);
+const config = JSON.parse(fs.readFileSync(endpointsFile, 'utf8'));
+const servers = config.mcpServers ?? config.servers ?? {};
+
+for (const [name, endpoint] of Object.entries(servers)) {
+  const url = interpolate(endpoint?.url ?? '', env);
+  if (!url) continue;
+  const ok = await check(url, normalizeHeaders(endpoint.headers, env));
+  console.log(`${name.padEnd(14)} ${url}  ${ok ? 'ok' : 'unreachable'}`);
+}
+NODE
+      ;;
+    *)
+      die "unknown agents command: $subcommand (expected: up, down, logs, pull, status)"
+      ;;
+  esac
+}
+
 ensure_manager_endpoints_file() {
   local endpoints_file="$ROOT_DIR/mcp.endpoints.json"
   if [[ ! -f "$endpoints_file" && -f "$ROOT_DIR/mcp.endpoints.example.json" ]]; then
@@ -175,7 +337,7 @@ used_workspace_ports() {
     [[ -d "$entry" ]] || continue
     file="$entry/.env"
     [[ -f "$file" ]] || continue
-    for key in WIKI_SERVE_PORT WIKI_MCP_PORT CME_MCP_PORT PRODUCTION_MCP_PORT; do
+    for key in WIKI_SERVE_PORT WIKI_MCP_PORT PRODUCTION_MCP_PORT; do
       val="$(env_value "$file" "$key" "")"
       [[ "$val" =~ ^[0-9]+$ ]] && printf '%s\n' "$val"
     done
@@ -219,7 +381,7 @@ find_free_workspace_port_base() {
   read_lines_into_array used_ports used_workspace_ports
   while true; do
     local taken=0 offset port p
-    for offset in 0 1 2 3; do
+    for offset in 0 1 2; do
       port=$((base + offset))
       if (( ${#used_ports[@]} > 0 )); then
         for p in "${used_ports[@]}"; do
@@ -242,7 +404,7 @@ find_free_workspace_port_base() {
 
 list_workspaces() {
   mkdir -p "$WORKSPACES_DIR"
-  local found=0 entry file name path serve mcp cme prod
+  local found=0 entry file name path serve mcp prod
 
   for entry in "$WORKSPACES_DIR"/*; do
     [[ -d "$entry" ]] || continue
@@ -253,10 +415,9 @@ list_workspaces() {
     path="$(env_value "$file" WIKI_WORKSPACE_PATH "-")"
     serve="$(env_value "$file" WIKI_SERVE_PORT "-")"
     mcp="$(env_value "$file" WIKI_MCP_PORT "-")"
-    cme="$(env_value "$file" CME_MCP_PORT "-")"
     prod="$(env_value "$file" PRODUCTION_MCP_PORT "-")"
-    printf '%s\tpath=%s\tserve=%s\tmcp=%s\tcme=%s\tprod=%s\n' \
-      "$name" "$path" "$serve" "$mcp" "$cme" "$prod"
+    printf '%s\tpath=%s\tserve=%s\tmcp=%s\tprod=%s\n' \
+      "$name" "$path" "$serve" "$mcp" "$prod"
   done
 
   [[ "$found" -eq 1 ]] || printf 'No workspaces configured in %s\n' "$WORKSPACES_DIR"
@@ -271,13 +432,12 @@ compose_for_workspace() {
   local workspace="$1"
   shift
   need_workspace_env "$workspace"
-  local workspace_env ws_path serve_port mcp_port cme_port prod_port project
+  local workspace_env ws_path serve_port mcp_port prod_port project
   workspace_env="$(workspace_env_file "$workspace")"
   ws_path="$(normalize_path "$(workspace_value "$workspace" WIKI_WORKSPACE_PATH)")"
   serve_port="$(workspace_value "$workspace" WIKI_SERVE_PORT 3100)"
   mcp_port="$(workspace_value "$workspace" WIKI_MCP_PORT 3101)"
-  cme_port="$(workspace_value "$workspace" CME_MCP_PORT 3102)"
-  prod_port="$(workspace_value "$workspace" PRODUCTION_MCP_PORT 3103)"
+  prod_port="$(workspace_value "$workspace" PRODUCTION_MCP_PORT 3102)"
   project="$(compose_project "$workspace")"
 
   local compose_env_args=()
@@ -287,7 +447,6 @@ compose_for_workspace() {
   WIKI_WORKSPACE_PATH="$ws_path" \
   WIKI_SERVE_PORT="$serve_port" \
   WIKI_MCP_PORT="$mcp_port" \
-  CME_MCP_PORT="$cme_port" \
   PRODUCTION_MCP_PORT="$prod_port" \
   docker compose "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" -p "$project" "$@"
 }
@@ -402,13 +561,12 @@ wait_and_open() {
 
 ensure_workspace_dirs() {
   local ws_path="$1"
-  mkdir -p "$ws_path/.cme"
   mkdir -p "$ws_path/.wiki/vector-index"
   mkdir -p "$ws_path/raw/untracked"
   # The llm-wiki container runs as the unprivileged `node` user. On WSL2,
   # Rancher Desktop, and bind mounts created by the host, runtime folders can
   # end up owned by a different UID and become read-only from the container.
-  chmod -R a+rwX "$ws_path/.wiki" "$ws_path/.cme" "$ws_path/raw" 2>/dev/null || true
+  chmod -R a+rwX "$ws_path/.wiki" "$ws_path/raw" 2>/dev/null || true
 }
 
 register_workspace_path() {
@@ -437,14 +595,12 @@ config_workspace() {
   local env_file="$target_path/.env"
   [[ -f "$env_file" ]] && die "workspace already configured: $env_file"
 
-  local port_base serve_port mcp_port cme_port prod_port wiki_token cme_token prod_token
+  local port_base serve_port mcp_port prod_port wiki_token prod_token
   port_base="$(find_free_workspace_port_base 3100)"
   serve_port="$port_base"
   mcp_port=$((port_base + 1))
-  cme_port=$((port_base + 2))
-  prod_port=$((port_base + 3))
+  prod_port=$((port_base + 2))
   wiki_token="$(generate_token)"
-  cme_token="$(generate_token)"
   prod_token="$(generate_token)"
 
   mkdir -p "$target_path"
@@ -454,13 +610,13 @@ config_workspace() {
   # Needed on WSL2 when the host UID differs from the container UID.
   chmod -R a+rwX "$target_path" 2>/dev/null || true
 
-  printf 'WORKSPACE_NAME=%s\nWIKI_WORKSPACE_PATH=%s\nWIKI_SERVE_PORT=%s\nWIKI_MCP_PORT=%s\nCME_MCP_PORT=%s\nPRODUCTION_MCP_PORT=%s\nPRODUCTION_REQUIRE_CONFIRMATION=false\nWIKI_MCP_AUTH_TOKEN=%s\nCME_MCP_AUTH_TOKEN=%s\nPRODUCTION_MCP_AUTH_TOKEN=%s\n' \
-    "$workspace" "$target_path" "$serve_port" "$mcp_port" "$cme_port" "$prod_port" "$wiki_token" "$cme_token" "$prod_token" \
+  printf 'WORKSPACE_NAME=%s\nWIKI_WORKSPACE_PATH=%s\nWIKI_SERVE_PORT=%s\nWIKI_MCP_PORT=%s\nPRODUCTION_MCP_PORT=%s\nPRODUCTION_REQUIRE_CONFIRMATION=false\nWIKI_MCP_AUTH_TOKEN=%s\nPRODUCTION_MCP_AUTH_TOKEN=%s\n' \
+    "$workspace" "$target_path" "$serve_port" "$mcp_port" "$prod_port" "$wiki_token" "$prod_token" \
     > "$env_file"
 
   printf 'Created %s\n' "$env_file"
-  printf 'Ports  serve=%s  mcp=%s  cme=%s  production=%s\n' \
-    "$serve_port" "$mcp_port" "$cme_port" "$prod_port"
+  printf 'Ports  serve=%s  mcp=%s  production=%s\n' \
+    "$serve_port" "$mcp_port" "$prod_port"
 
   local compose_env_args=()
   [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
@@ -469,7 +625,6 @@ config_workspace() {
   WIKI_WORKSPACE_PATH="$target_path" \
   WIKI_SERVE_PORT="$serve_port" \
   WIKI_MCP_PORT="$mcp_port" \
-  CME_MCP_PORT="$cme_port" \
     docker compose "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" run --rm wiki init
 
   printf 'Workspace ready: %s\n' "$target_path"
@@ -484,15 +639,13 @@ up_workspace() {
   ws_path="$(normalize_path "$(workspace_value "$workspace" WIKI_WORKSPACE_PATH)")"
   ensure_workspace_dirs "$ws_path"
 
-  compose_for_workspace "$workspace" up -d serve mcp-http production-mcp cme-mcp
+  compose_for_workspace "$workspace" up -d serve mcp-http production-mcp
 
-  local serve_port cme_port prod_port
+  local serve_port prod_port
   serve_port="$(workspace_value "$workspace" WIKI_SERVE_PORT 3100)"
-  cme_port="$(workspace_value "$workspace" CME_MCP_PORT 3102)"
-  prod_port="$(workspace_value "$workspace" PRODUCTION_MCP_PORT 3103)"
+  prod_port="$(workspace_value "$workspace" PRODUCTION_MCP_PORT 3102)"
   printf 'Workspace UI: http://localhost:%s\n' "$serve_port"
   printf 'Chat:         http://localhost:%s/chat\n' "$serve_port"
-  printf 'CME MCP:      http://localhost:%s/mcp/\n' "$cme_port"
   printf 'Production:   http://localhost:%s/mcp/\n' "$prod_port"
   printf 'External MCPs: see %s\n' "$ROOT_DIR/mcp.endpoints.json"
 
@@ -532,96 +685,22 @@ main() {
     exit 0
   fi
 
-  # cme <workspace> <command>
-  if [[ $# -ge 1 && "$1" == "cme" ]]; then
-    [[ $# -ge 3 ]] || die "usage: wiki-workspace cme <workspace> <up|down|logs>"
-    local cme_workspace="$2"
-    local cme_command="$3"
-    shift 3
-    case "$cme_command" in
-      up)
-        [[ $# -eq 0 ]] || die "cme up does not take arguments"
-        local ws_path
-        ws_path="$(normalize_path "$(workspace_value "$cme_workspace" WIKI_WORKSPACE_PATH)")"
-        ensure_workspace_dirs "$ws_path"
-        compose_for_workspace "$cme_workspace" up -d cme-mcp
-        local cme_port
-        cme_port="$(workspace_value "$cme_workspace" CME_MCP_PORT 3102)"
-        printf 'CME MCP: http://localhost:%s/mcp/\n' "$cme_port"
-        ;;
-      down)
-        [[ $# -eq 0 ]] || die "cme down does not take arguments"
-        compose_for_workspace "$cme_workspace" stop cme-mcp
-        ;;
-      logs)
-        local log_args=()
-        read_lines_into_array log_args logs_args "$@"
-        compose_for_workspace "$cme_workspace" logs "${log_args[@]}" cme-mcp
-        ;;
-      *)
-        die "unknown cme command: $cme_command (expected: up, down, logs)"
-        ;;
-    esac
-    exit 0
-  fi
-
-  # mailer <command>
-  if [[ $# -ge 2 && "$1" == "mailer" ]]; then
-    local mailer_command="$2"
-    shift 2
-    case "$mailer_command" in
-      status)
-        [[ $# -eq 0 ]] || die "mailer status does not take arguments"
-        local endpoints_file="$ROOT_DIR/mcp.endpoints.json"
-        local mailer_url mailer_auth
-        if [[ -f "$endpoints_file" ]]; then
-          mailer_url="$(python3 -c "
-import json,sys
-try:
-  d=json.load(open('$endpoints_file'))
-  s=d.get('mcpServers') or d.get('servers') or {}
-  print(s.get('mailer',{}).get('url',''),end='')
-except: pass
-" 2>/dev/null)"
-          mailer_auth="$(python3 -c "
-import json,sys
-try:
-  d=json.load(open('$endpoints_file'))
-  s=d.get('mcpServers') or d.get('servers') or {}
-  h=s.get('mailer',{}).get('headers') or {}
-  print(h.get('authorization') or h.get('Authorization',''),end='')
-except: pass
-" 2>/dev/null)"
-        fi
-        mailer_url="${mailer_url:-http://host.docker.internal:3335/mcp/}"
-        printf 'Mailer MCP URL:   %s\n' "$mailer_url"
-        if [[ -n "$mailer_auth" ]]; then
-          printf 'Mailer MCP token: configured\n'
-        else
-          printf 'Mailer MCP token: missing (set Authorization header in %s)\n' "$endpoints_file"
-        fi
-        if command -v curl >/dev/null 2>&1; then
-          local status_url="${mailer_url/host.docker.internal/localhost}"
-          if curl -fs -H 'Accept: text/html' "$status_url" >/dev/null; then
-            printf 'Reachability:     ok\n'
-          else
-            printf 'Reachability:     failed\n'
-          fi
-        else
-          printf 'Reachability:     skipped (curl not installed)\n'
-        fi
-        ;;
-      *)
-        die "unknown mailer command: $mailer_command (expected: status)"
-        ;;
-    esac
+  # agents <subcommand> [args...]
+  if [[ $# -ge 1 && "$1" == "agents" ]]; then
+    local agents_sub="${2:-up}"
+    if [[ $# -ge 2 ]]; then
+      shift 2
+    else
+      shift 1
+    fi
+    agents_compose "$agents_sub" "$@"
     exit 0
   fi
 
   [[ $# -ge 2 ]] || { usage; exit 2; }
 
   local scope="$1"
-  [[ "$scope" == "wiki" ]] || die "unknown scope: $scope (expected: wiki, cme, mailer, up, config, or list)"
+  [[ "$scope" == "wiki" ]] || die "unknown scope: $scope (expected: wiki, agents, up, config, or list)"
   shift
   [[ $# -ge 2 ]] || die "wiki requires a workspace and a command"
 
@@ -637,11 +716,10 @@ except: pass
       compose_for_workspace "$workspace" up -d serve mcp-http production-mcp
       local serve_port production_port
       serve_port="$(workspace_value "$workspace" WIKI_SERVE_PORT 3100)"
-      production_port="$(workspace_value "$workspace" PRODUCTION_MCP_PORT 3103)"
+      production_port="$(workspace_value "$workspace" PRODUCTION_MCP_PORT 3102)"
       printf 'Workspace UI: http://localhost:%s\n' "$serve_port"
       printf 'Chat MCP:     http://localhost:%s/chat\n' "$serve_port"
       printf 'Production:   http://localhost:%s/mcp/\n' "$production_port"
-      printf 'Tip: use wiki-workspace up %s to also start CME.\n' "$workspace"
       ;;
     down)
       compose_for_workspace "$workspace" down
@@ -665,7 +743,7 @@ except: pass
       compose_for_workspace "$workspace" up -d production-mcp
       local serve_port production_port
       serve_port="$(workspace_value "$workspace" WIKI_SERVE_PORT 3100)"
-      production_port="$(workspace_value "$workspace" PRODUCTION_MCP_PORT 3103)"
+      production_port="$(workspace_value "$workspace" PRODUCTION_MCP_PORT 3102)"
       printf 'Workspace UI: http://localhost:%s\n' "$serve_port"
       printf 'Chat MCP:     http://localhost:%s/chat\n' "$serve_port"
       printf 'Production:   http://localhost:%s/mcp/\n' "$production_port"

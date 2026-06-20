@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 export function userManagerDir() {
@@ -30,6 +30,15 @@ function parseEnvValue(value) {
     return value.slice(1, -1);
   }
   return value;
+}
+
+export function loadManagerEnv() {
+  const filePath = managerEnvFile();
+  if (!existsSync(filePath)) return;
+  const values = readEnvFile(filePath);
+  for (const [key, value] of Object.entries(values)) {
+    if (!(key in process.env)) process.env[key] = value;
+  }
 }
 
 export function readEnvFile(filePath) {

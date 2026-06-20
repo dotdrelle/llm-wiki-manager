@@ -1,7 +1,6 @@
 # docker-compose.yml — llm-wiki-manager cockpit stack
 #
 # This compose file is driven by ./wiki-workspace. It can run:
-#   - one workspace-scoped agent-cme MCP server per workspace
 #   - one llm-wiki serve + mcp-http + production MCP set per configured workspace
 #
 # Typical usage:
@@ -9,10 +8,8 @@
 #   ./wiki-workspace up <workspace>
 #   ./wiki-workspace wiki <workspace> doctor
 #   ./wiki-workspace wiki <workspace> ingest
-#   ./wiki-workspace cme <workspace> up
 #
 # Workspace UI / MCP endpoints use the ports declared in workspaces/<name>/.env.
-# agent-cme port is per-workspace (CME_MCP_PORT in workspace .env)
 # External MCP endpoints are declared in ./mcp.endpoints.json.
 
 services:
@@ -24,7 +21,7 @@ services:
     profiles: [cli]
     volumes:
       # Compose interpolates all services before applying profiles, so this
-      # cannot be a required variable without breaking cme-cli-only commands.
+      # cannot be a required variable without breaking cli-only commands.
       - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}:/workspace
     environment:
       - WIKI_WORKSPACE_PATH=/workspace
@@ -41,19 +38,29 @@ services:
     volumes:
       - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}:/workspace
       - ./mcp.endpoints.json:/mcp.endpoints.json:ro
+      # TLS certificates — uncomment if WIKI_SERVE_TLS_CERT_PATH is set
+      #- ${WIKI_SERVE_CERTS_DIR:-./certs}:/certs:ro
     environment:
       - WIKI_WORKSPACE_PATH=/workspace
       - WIKI_CONFIG_PATH
       - WIKI_MCP_HTTP_PORT=${WIKI_MCP_PORT:-3101}
       - WIKI_MCP_AUTH_TOKEN
-      - CME_MCP_AUTH_TOKEN
       - PRODUCTION_MCP_AUTH_TOKEN
-      - CME_MCP_PORT
       - PRODUCTION_MCP_PORT
+      - CME_MCP_PORT
+      - DOCUMENTS_MCP_PORT
+      - MAILER_MCP_PORT
+      - CME_MCP_AUTH_TOKEN
+      - DOCUMENTS_MCP_AUTH_TOKEN
+      - MAILER_MCP_AUTH_TOKEN
+      - ATLASSIAN_MCP_AUTH_TOKEN
       - WORKSPACE_NAME
       - WIKI_MCP_PROXY_URL=http://host.docker.internal:${WIKI_MCP_PORT:-3101}/mcp
-      - CME_MCP_PROXY_URL=http://host.docker.internal:${CME_MCP_PORT:-3000}/mcp/
-      - PRODUCTION_MCP_PROXY_URL=http://host.docker.internal:${PRODUCTION_MCP_PORT:-3336}/mcp/
+      - PRODUCTION_MCP_PROXY_URL=http://host.docker.internal:${PRODUCTION_MCP_PORT:-3102}/mcp/
+      # HTTPS — set paths inside the container (e.g. /certs/server.crt) and uncomment the volume above
+      #- WIKI_SERVE_TLS_CERT_PATH=/certs/server.crt
+      #- WIKI_SERVE_TLS_KEY_PATH=/certs/server.key
+      #- WIKI_SERVE_TLS_CA_PATH=/certs/ca.crt
     ports:
       - '${WIKI_SERVE_PORT:-3100}:3000'
     extra_hosts:
@@ -67,10 +74,13 @@ services:
     command: mcp-http --host 0.0.0.0 --port 3333 --path /mcp
     volumes:
       - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}:/workspace
+      # TLS certificates — uncomment if WIKI_MCP_TLS_CERT_PATH is set
+      #- ${WIKI_MCP_CERTS_DIR:-./certs}:/certs:ro
     environment:
       - WIKI_WORKSPACE_PATH=/workspace
       - WIKI_CONFIG_PATH
       - WIKI_MCP_AUTH_TOKEN
+      # HTTPS — set paths inside the container (e.g. /certs/server.crt) and uncomment the volume above
       - WIKI_MCP_TLS_CERT_PATH
       - WIKI_MCP_TLS_KEY_PATH
       - WIKI_MCP_TLS_CA_PATH
@@ -79,36 +89,6 @@ services:
     extra_hosts:
       - host.docker.internal:host-gateway
     restart: unless-stopped
-
-  # ── agent-cme ──────────────────────────────────────────────────────────────
-  #
-  # CME is workspace-scoped: each workspace carries its own credentials and
-  # export state under <workspace>/.cme/. Exports land directly in
-  # <workspace>/raw/untracked/ — no copy step needed.
-
-  cme-mcp:
-    image: dotdrelle/agent-cme:latest
-    labels:
-      wiki-manager.description: "CME agent MCP server for external source export."
-    environment:
-      - MCP_AUTH_TOKEN=${CME_MCP_AUTH_TOKEN:-}
-      - CME_EXPORT__OUTPUT_PATH=/data/exports
-    volumes:
-      - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}/.cme:/data
-      - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}/raw/untracked:/data/exports
-    ports:
-      - '${CME_MCP_PORT:-3000}:8080'
-    restart: unless-stopped
-
-  cme-cli:
-    image: dotdrelle/agent-cme:latest
-    profiles: [cli]
-    entrypoint: cme
-    environment:
-      - CME_EXPORT__OUTPUT_PATH=/data/exports
-    volumes:
-      - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}/.cme:/data
-      - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}/raw/untracked:/data/exports
 
   # ── agent-wiki-production ─────────────────────────────────────────────────
 
@@ -128,13 +108,13 @@ services:
       - PRODUCTION_JOBS_DIR=${PRODUCTION_JOBS_DIR:-/workspace/.wiki/production-jobs}
       - PRODUCTION_LOCKS_DIR=${PRODUCTION_LOCKS_DIR:-/workspace/.wiki/production-jobs/locks}
     ports:
-      - '${PRODUCTION_MCP_PORT:-3336}:8080'
+      - '${PRODUCTION_MCP_PORT:-3102}:8080'
     restart: unless-stopped
 
 x-wiki-manager:
   service-aliases:
     all:
-      targets: [serve, mcp-http, cme-mcp, production-mcp]
+      targets: [serve, mcp-http, production-mcp]
       description: "Full workspace service set."
     ui:
       targets: [serve]
@@ -145,9 +125,6 @@ x-wiki-manager:
     mcp:
       targets: [mcp-http]
       description: "Alias for mcp-http: wiki MCP server."
-    cme:
-      targets: [cme-mcp]
-      description: "Alias for cme-mcp: CME source agent."
     production:
       targets: [production-mcp]
       description: "Alias for production-mcp: production jobs."

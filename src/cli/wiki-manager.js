@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadManagerEnv } from '../core/env.js';
+loadManagerEnv();
 import { createAgentGraph, buildAgentSystemPrompt, buildLimitedAgentResponse } from '../agent/graph.js';
 import { handleSlashCommand, printHelp, printVersion } from '../commands/slash.js';
 import { runShell } from '../shell/repl.js';

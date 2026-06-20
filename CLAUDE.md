@@ -227,10 +227,11 @@ only. If a connected MCP tool or safe primitive can perform the action, call it
 in the same turn. If required arguments are missing, ask for the exact missing
 values. If the tool/server is unavailable, name the concrete blocker.
 
-CME setup/configuration is synchronous. It should call `cme_status`/`cme_setup`
-directly when CME tools are connected and credentials are available. Do not rely
-on the Activity panel for setup calls; Activity only resumes long-running jobs
-that return `_activity`, such as CME exports or production jobs.
+CME setup/configuration is synchronous and workspace-scoped. It should call
+`cme_status`/`cme_setup` directly for the active workspace when CME tools are
+connected and credentials are available. Do not rely on the Activity panel for
+setup calls; Activity only resumes long-running jobs that return `_activity`,
+such as CME exports or production jobs.
 
 `shell__run_command` is limited to safe manager slash commands:
 
@@ -258,8 +259,9 @@ the route explicitly with `/chat` and `/agent`.
 - Workspaces are registered under `./workspaces/` relative to the directory
   where `wiki-manager` or `wiki-workspace` is launched, unless
   `WIKI_WORKSPACES_DIR` overrides it. In the repo, `workspaces/` is gitignored.
-- Generated workspace `.env` files, `.cme` state, exports, raw content, wiki
-  output, and symlink targets must not be committed.
+- Generated workspace `.env` files, exports, raw content, wiki output, and
+  symlink targets must not be committed. External agent runtime data under
+  `.agents-data/` must also stay uncommitted.
 - The manager must not contain a root `SKILL.md` or a root `skills/` directory.
 - Workspace skills must follow the `depot-skills` layout: `skill.yaml`,
   `CLAUDE.md`, `templates/`, `build-context/`, `.wiki/system-prompt.md`, and
@@ -269,7 +271,7 @@ the route explicitly with `/chat` and `/agent`.
   alphanumeric at both ends, only letters/digits/underscore/dot/dash inside, and
   no `..`.
 - LLM/vector provider config belongs in each workspace `.wikirc.yaml`.
-- The only valid `.env` per workspace is `workspaces/<name>/.env`. There is no global manager `.env`. External MCP endpoints go in `mcp.endpoints.json` (gitignored; commit `mcp.endpoints.example.json` as template).
+- Each workspace has its own `.env` at `workspaces/<name>/.env`. The manager root also accepts a `.env` for global settings (auth tokens, `WORKSPACES_ROOT`, `MAILERSEND_*`); copy `.env.example` as a template. External MCP endpoints go in `mcp.endpoints.json` (gitignored; commit `mcp.endpoints.example.json` as template).
 
 ## Docker Rules
 
@@ -306,8 +308,7 @@ wiki-workspace wiki <workspace> doctor
 wiki-workspace wiki <workspace> ingest
 wiki-workspace wiki <workspace> build
 wiki-workspace wiki <workspace> export
-wiki-workspace cme <workspace> up
-wiki-workspace mailer status
+wiki-workspace agents status
 
 bun start                   # full OpenTUI shell (requires Bun)
 pnpm start                  # alias for bun start

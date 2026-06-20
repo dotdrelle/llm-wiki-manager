@@ -38,6 +38,8 @@ services:
     volumes:
       - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}:/workspace
       - ./mcp.endpoints.json:/mcp.endpoints.json:ro
+      - ${AGENTS_DATA_DIR:-./.agents-data}/documents/input:/documents/input
+      - ${AGENTS_DATA_DIR:-./.agents-data}/documents/uploads:/documents/uploads
       # TLS certificates — uncomment if WIKI_SERVE_TLS_CERT_PATH is set
       #- ${WIKI_SERVE_CERTS_DIR:-./certs}:/certs:ro
     environment:
@@ -55,6 +57,9 @@ services:
       - MAILER_MCP_AUTH_TOKEN
       - ATLASSIAN_MCP_AUTH_TOKEN
       - WORKSPACE_NAME
+      - DOCUMENT_INPUT_DIR=/documents/input
+      - DOCUMENT_UPLOADS_DIR=/documents/uploads
+      - DOCUMENT_MAX_UPLOAD_BYTES=${DOCUMENT_MAX_UPLOAD_BYTES:-52428800}
       - WIKI_MCP_PROXY_URL=http://host.docker.internal:${WIKI_MCP_PORT:-3101}/mcp
       - PRODUCTION_MCP_PROXY_URL=http://host.docker.internal:${PRODUCTION_MCP_PORT:-3102}/mcp/
       # HTTPS — set paths inside the container (e.g. /certs/server.crt) and uncomment the volume above

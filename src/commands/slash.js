@@ -29,6 +29,14 @@ import {
   resolveWikircProfile,
   summarizeWikircConfig,
 } from '../core/wikirc.js';
+import {
+  cleanDocumentUploads,
+  convertPendingDocumentUploads,
+  convertStoredDocument,
+  formatUploadRecord,
+  listDocumentUploads,
+  storeAndMaybeConvertDocument,
+} from '../core/documentIntake.js';
 
 export function printVersion(packageJson) {
   console.log(packageJson.version);
@@ -561,6 +569,8 @@ ${helpPair('/skills', 'List skills', '/skills show <n>', 'Show skill')}
 ${helpPair('/skills run <n>', 'Run skill guide', '/skills edit <n>', 'Edit skill')}
 ${helpPair('/mcp status', 'MCP status', '/mcp endpoints', 'MCP endpoints')}
 ${helpPair('/mcp tools [mcp]', 'MCP tools', '/mcp call ...', 'Call MCP tool')}
+${helpPair('/upload <path>', 'Upload document', '/uploads', 'Uploaded docs')}
+${helpPair('/upload convert pending', 'Convert pending', '/uploads clean', 'Clean uploads')}
 ${helpPair('/wiki', 'Run wiki index', '/wiki run <args>', 'Raw wiki CLI')}
 ${helpPair('/chat', 'Chat mode', '/agent', 'Agent mode')}
 ${helpPair('/openui', 'Open web UI in browser', '', '')}
@@ -849,6 +859,65 @@ export async function handleSlashCommand(line, context) {
         return { output: result.message };
       }
       return { output: 'Usage: /queue [list|clear|cancel <id>]' };
+    }
+    case 'upload': {
+      const rest = line.replace(/^\/upload(?:\s+|$)/, '').trim();
+      if (!rest) return { output: 'Usage: /upload <path>\n       /upload convert <id|pending>' };
+      if (rest.startsWith('convert ')) {
+        try {
+          const target = rest.replace(/^convert\s+/, '').trim();
+          if (!target) return { output: 'Usage: /upload convert <id|pending>' };
+          step('Documents: refreshing MCP status…');
+          await refreshMcpRuntimeStatus(context.session);
+          if (target === 'pending') {
+            step('Documents: converting pending uploads…');
+            const results = await convertPendingDocumentUploads(context.session);
+            if (results.length === 0) return { output: 'No pending document upload.' };
+            return {
+              output: results.map(({ record }) => formatUploadRecord(record)).join('\n\n'),
+            };
+          }
+          step(`Documents: converting upload ${target}…`);
+          const { record } = await convertStoredDocument(context.session, target);
+          return { output: formatUploadRecord(record) };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          step(formatActivityError('documents', 'convert', err));
+          return { output: message };
+        }
+      }
+      try {
+        step('Documents: storing upload…');
+        await refreshMcpRuntimeStatus(context.session);
+        step('Documents: converting with documents MCP when available…');
+        const { record } = await storeAndMaybeConvertDocument(context.session, rest);
+        return { output: formatUploadRecord(record) };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        step(formatActivityError('documents', 'upload', err));
+        return { output: message };
+      }
+    }
+    case 'uploads': {
+      try {
+        if (args[1] === 'clean') {
+          const flagIndex = args.indexOf('--older-than');
+          const olderThan = flagIndex !== -1 ? args[flagIndex + 1] : '30d';
+          const result = await cleanDocumentUploads(context.session, olderThan);
+          return {
+            output: `Removed ${result.removed.length} upload record${result.removed.length === 1 ? '' : 's'} older than ${olderThan}.`,
+          };
+        }
+        if (args[1] && args[1] !== 'list') {
+          return { output: 'Usage: /uploads [list]\n       /uploads clean [--older-than 30d]' };
+        }
+        const uploads = await listDocumentUploads(context.session);
+        if (uploads.length === 0) return { output: 'No document uploads for this workspace.' };
+        return { output: uploads.map(formatUploadRecord).join('\n\n') };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { output: message };
+      }
     }
     case 'new': {
       return createWorkspaceCommand(context, args[1], args[2] ?? null);

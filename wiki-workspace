@@ -180,7 +180,7 @@ agents_compose() {
         shift
       fi
       [[ $# -eq 0 ]] || die "agents up accepts only --pull"
-      mkdir -p "$agents_data_dir/cme" "$agents_data_dir/documents/input" "$agents_data_dir/documents/output"
+      mkdir -p "$agents_data_dir/cme" "$agents_data_dir/documents/input" "$agents_data_dir/documents/output" "$agents_data_dir/documents/uploads"
       mkdir -p "$workspaces_root"
       $do_pull && _agents_dc pull
       _agents_dc up -d

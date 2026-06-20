@@ -268,11 +268,11 @@ defaulting to `CLAUDE.md`.
 Workspace switching is isolated. When you run:
 
 ```text
-/use juno
+/use my-project
 ```
 
 the shell switches both the displayed conversation and the LLM history to
-`juno`. Returning to another workspace restores that workspace's in-memory
+`my-project`. Returning to another workspace restores that workspace's in-memory
 conversation for the current shell process.
 
 ## Agent Tooling

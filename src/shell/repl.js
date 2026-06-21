@@ -66,6 +66,8 @@ const COMMAND_COMPLETION_DESCRIPTIONS = {
   '/mcp': 'Inspect or call workspace MCP servers.',
   '/wiki': 'Run llm-wiki commands for the active workspace.',
   '/skills': 'List workspace skills.',
+  '/upload': 'Store and convert a local document.',
+  '/uploads': 'List or clean uploaded documents.',
   '/clear': 'Clear the conversation screen.',
   '/chat': 'Switch free text to direct LLM chat without tools.',
   '/agent': 'Switch free text to the LangGraph agent with tools.',
@@ -81,6 +83,9 @@ const SUBCOMMAND_COMPLETION_DESCRIPTIONS = {
   '/mcp:endpoints': 'Show MCP URLs and token presence.',
   '/mcp:status': 'Show MCP connection status.',
   '/mcp:tools': 'Show discovered MCP tools.',
+  '/upload:convert': 'Convert one stored upload or all pending uploads.',
+  '/uploads:clean': 'Clean old stored document uploads.',
+  '/uploads:list': 'List uploaded documents.',
   '/queue': 'Inspect or cancel queued MCP jobs.',
   '/queue:cancel': 'Cancel a queued or running queue item.',
   '/queue:clear': 'Clear finished queue items.',
@@ -101,7 +106,7 @@ export function createSession() {
     wikircConfig: null,
     language: null,
     mcp: null,
-    commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'clear', 'chat', 'agent', 'openui', 'queue'],
+    commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'upload', 'uploads', 'clear', 'chat', 'agent', 'openui', 'queue'],
     chatMode: false,
     llm: null,
     activities: {},
@@ -201,6 +206,12 @@ function completionValuesFor(parts, inputBuffer, session) {
   if (command === '/mcp' && previousToken === 'tools') return mcpNames(session);
   if (command === '/mcp' && previousToken === 'call') return mcpNames(session);
   if (command === '/mcp' && parts[1] === 'call' && tokenIndex === 3) return mcpToolNames(session, parts[2]);
+  if (command === '/upload' && tokenIndex === 1) return ['convert'];
+  if (command === '/upload' && parts[1] === 'convert' && tokenIndex === 2) return ['pending'];
+  if (command === '/upload' && parts[1] === 'convert' && tokenIndex >= 3 && !parts.includes('--forceOcr')) return ['--forceOcr'];
+  if (command === '/upload' && parts[1] !== 'convert' && tokenIndex >= 2 && !parts.includes('--forceOcr')) return ['--forceOcr'];
+  if (command === '/uploads' && tokenIndex === 1) return ['clean', 'list'];
+  if (command === '/uploads' && previousToken === 'clean') return ['--older-than'];
   if (command === '/queue' && tokenIndex === 1) return ['cancel', 'clear'];
   if (command === '/queue' && previousToken === 'cancel') {
     return (session.jobQueue ?? [])

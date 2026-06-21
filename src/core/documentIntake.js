@@ -96,6 +96,21 @@ async function upsertUpload(record) {
   return record;
 }
 
+async function removeExistingUploadsForFilename(workspace, filename) {
+  const records = await readManifest(workspace);
+  const removed = records.filter((item) => item.filename === filename);
+  if (removed.length === 0) return [];
+
+  const keep = records.filter((item) => item.filename !== filename);
+  for (const record of removed) {
+    for (const file of [record.storedPath, record.outputPath]) {
+      if (file) await rm(file, { force: true }).catch(() => {});
+    }
+  }
+  await writeManifest(workspace, keep);
+  return removed;
+}
+
 function documentsConverter(session) {
   const endpoint = session?.mcp?.documents;
   if (endpoint?.status !== 'connected') return null;
@@ -128,6 +143,8 @@ export async function storeDocumentUpload(session, sourcePath) {
   const filename = sanitizeFilename(absolutePath);
   assertSupportedFile(filename, info.size);
 
+  await removeExistingUploadsForFilename(workspace, filename);
+
   const id = randomUUID().slice(0, 8);
   const storedFilename = `${id}-${filename}`;
   const workspaceInput = join(documentInputRoot(), workspace);
@@ -155,7 +172,7 @@ export async function storeDocumentUpload(session, sourcePath) {
   return record;
 }
 
-export async function convertStoredDocument(session, id) {
+export async function convertStoredDocument(session, id, options = {}) {
   const workspace = requireWorkspace(session);
   const records = await readManifest(workspace);
   const record = records.find((item) => item.id === id);
@@ -177,11 +194,13 @@ export async function convertStoredDocument(session, id) {
   await upsertUpload(record);
 
   try {
-    const result = await callMcpTool(session.mcp, 'documents', 'documents_convert_to_markdown', {
+    const toolArgs = {
       workspace,
       filePath: record.agentPath,
       outputFilename: `${record.id}-${record.filename.replace(/\.[^.]+$/, '')}.md`,
-    });
+    };
+    if (options.forceOcr) toolArgs.forceOcr = true;
+    const result = await callMcpTool(session.mcp, 'documents', 'documents_convert_to_markdown', toolArgs);
     const payload = parseJsonText(formatMcpToolResult(result)) ?? {};
     if (payload.ok === false) throw new Error(payload.error || 'documents conversion failed');
     record.status = 'converted';
@@ -200,14 +219,14 @@ export async function convertStoredDocument(session, id) {
   }
 }
 
-export async function storeAndMaybeConvertDocument(session, sourcePath) {
+export async function storeAndMaybeConvertDocument(session, sourcePath, options = {}) {
   const record = await storeDocumentUpload(session, sourcePath);
   if (!documentsConverter(session)) {
     record.error = 'documents MCP is not connected';
     await upsertUpload(record);
     return { record, converted: false };
   }
-  return convertStoredDocument(session, record.id);
+  return convertStoredDocument(session, record.id, options);
 }
 
 export async function listDocumentUploads(session) {
@@ -215,13 +234,13 @@ export async function listDocumentUploads(session) {
   return (await readManifest(workspace)).map(publicRecord);
 }
 
-export async function convertPendingDocumentUploads(session) {
+export async function convertPendingDocumentUploads(session, options = {}) {
   const workspace = requireWorkspace(session);
   const records = await readManifest(workspace);
   const pending = records.filter((record) => ['stored', 'failed'].includes(record.status));
   const results = [];
   for (const record of pending) {
-    results.push(await convertStoredDocument(session, record.id));
+    results.push(await convertStoredDocument(session, record.id, options));
   }
   return results;
 }

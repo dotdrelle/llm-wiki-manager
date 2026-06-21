@@ -84,6 +84,12 @@ function helpPair(leftCommand, leftText, rightCommand, rightText) {
   return `  ${padVisible(left, 38)}${right}`;
 }
 
+function parseForceOcrOption(value) {
+  const forceOcr = /(?:^|\s)--force-?ocr(?:\s|$)/i.test(value);
+  const rest = value.replace(/(?:^|\s)--force-?ocr(?=\s|$)/gi, ' ').trim();
+  return { rest, forceOcr };
+}
+
 function wikircSummaryText(summary) {
   return [
     `profile=${summary.profile}`,
@@ -569,8 +575,8 @@ ${helpPair('/skills', 'List skills', '/skills show <n>', 'Show skill')}
 ${helpPair('/skills run <n>', 'Run skill guide', '/skills edit <n>', 'Edit skill')}
 ${helpPair('/mcp status', 'MCP status', '/mcp endpoints', 'MCP endpoints')}
 ${helpPair('/mcp tools [mcp]', 'MCP tools', '/mcp call ...', 'Call MCP tool')}
-${helpPair('/upload <path>', 'Upload document', '/uploads', 'Uploaded docs')}
-${helpPair('/upload convert pending', 'Convert pending', '/uploads clean', 'Clean uploads')}
+${helpPair('/upload <path> [--forceOcr]', 'Upload document', '/uploads', 'Uploaded docs')}
+${helpPair('/upload convert pending [--forceOcr]', 'Convert pending', '/uploads clean', 'Clean uploads')}
 ${helpPair('/wiki', 'Run wiki index', '/wiki run <args>', 'Raw wiki CLI')}
 ${helpPair('/chat', 'Chat mode', '/agent', 'Agent mode')}
 ${helpPair('/openui', 'Open web UI in browser', '', '')}
@@ -861,24 +867,24 @@ export async function handleSlashCommand(line, context) {
       return { output: 'Usage: /queue [list|clear|cancel <id>]' };
     }
     case 'upload': {
-      const rest = line.replace(/^\/upload(?:\s+|$)/, '').trim();
-      if (!rest) return { output: 'Usage: /upload <path>\n       /upload convert <id|pending>' };
+      const { rest, forceOcr } = parseForceOcrOption(line.replace(/^\/upload(?:\s+|$)/, '').trim());
+      if (!rest) return { output: 'Usage: /upload <path> [--forceOcr]\n       /upload convert <id|pending> [--forceOcr]' };
       if (rest.startsWith('convert ')) {
         try {
           const target = rest.replace(/^convert\s+/, '').trim();
-          if (!target) return { output: 'Usage: /upload convert <id|pending>' };
+          if (!target) return { output: 'Usage: /upload convert <id|pending> [--forceOcr]' };
           step('Documents: refreshing MCP status…');
           await refreshMcpRuntimeStatus(context.session);
           if (target === 'pending') {
-            step('Documents: converting pending uploads…');
-            const results = await convertPendingDocumentUploads(context.session);
+            step(`Documents: converting pending uploads${forceOcr ? ' with forced OCR' : ''}…`);
+            const results = await convertPendingDocumentUploads(context.session, { forceOcr });
             if (results.length === 0) return { output: 'No pending document upload.' };
             return {
               output: results.map(({ record }) => formatUploadRecord(record)).join('\n\n'),
             };
           }
-          step(`Documents: converting upload ${target}…`);
-          const { record } = await convertStoredDocument(context.session, target);
+          step(`Documents: converting upload ${target}${forceOcr ? ' with forced OCR' : ''}…`);
+          const { record } = await convertStoredDocument(context.session, target, { forceOcr });
           return { output: formatUploadRecord(record) };
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -889,8 +895,8 @@ export async function handleSlashCommand(line, context) {
       try {
         step('Documents: storing upload…');
         await refreshMcpRuntimeStatus(context.session);
-        step('Documents: converting with documents MCP when available…');
-        const { record } = await storeAndMaybeConvertDocument(context.session, rest);
+        step(`Documents: converting with documents MCP when available${forceOcr ? ' with forced OCR' : ''}…`);
+        const { record } = await storeAndMaybeConvertDocument(context.session, rest, { forceOcr });
         return { output: formatUploadRecord(record) };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

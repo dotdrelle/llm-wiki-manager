@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -31,6 +32,46 @@ test('document intake stores uploads without requiring documents MCP', async () 
     assert.equal(uploads.length, 1);
     assert.equal(uploads[0].id, record.id);
     assert.equal(uploads[0].error, 'documents MCP is not connected');
+  } finally {
+    if (originalAgentsDataDir === undefined) delete process.env.AGENTS_DATA_DIR;
+    else process.env.AGENTS_DATA_DIR = originalAgentsDataDir;
+  }
+});
+
+test('document intake replaces an existing upload with the same original filename', async () => {
+  const originalAgentsDataDir = process.env.AGENTS_DATA_DIR;
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wiki-manager-doc-intake-'));
+  const agentsDataDir = path.join(root, '.agents-data');
+  process.env.AGENTS_DATA_DIR = agentsDataDir;
+  const source = path.join(root, 'rapport.pdf');
+  const session = {
+    workspace: 'juno',
+    mcp: {},
+  };
+
+  try {
+    await writeFile(source, 'first pdf content');
+    const first = (await storeAndMaybeConvertDocument(session, source)).record;
+    const outputPath = path.join(root, 'workspace', 'raw', 'untracked', `${first.id}-rapport.md`);
+    await mkdir(path.dirname(outputPath), { recursive: true });
+    await writeFile(outputPath, 'old markdown');
+
+    const manifest = path.join(agentsDataDir, 'documents', 'uploads', 'juno.jsonl');
+    const firstRecord = JSON.parse(await readFile(manifest, 'utf8'));
+    await writeFile(manifest, `${JSON.stringify({ ...firstRecord, outputPath })}\n`, 'utf8');
+
+    await writeFile(source, 'second pdf content');
+    const second = (await storeAndMaybeConvertDocument(session, source)).record;
+
+    assert.notEqual(second.id, first.id);
+    assert.equal(existsSync(first.storedPath), false);
+    assert.equal(existsSync(outputPath), false);
+    assert.equal(await readFile(second.storedPath, 'utf8'), 'second pdf content');
+
+    const uploads = await listDocumentUploads(session);
+    assert.equal(uploads.length, 1);
+    assert.equal(uploads[0].id, second.id);
+    assert.equal(uploads[0].filename, 'rapport.pdf');
   } finally {
     if (originalAgentsDataDir === undefined) delete process.env.AGENTS_DATA_DIR;
     else process.env.AGENTS_DATA_DIR = originalAgentsDataDir;

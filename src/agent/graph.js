@@ -25,6 +25,8 @@ const AGENT_SLASH_COMMANDS = new Set([
   'status',
   'services',
   'skills',
+  'upload',
+  'uploads',
   'queue',
 ]);
 
@@ -34,7 +36,7 @@ const SHELL_RUN_COMMAND_TOOL = {
     name: 'shell__run_command',
     description: [
       'Run a deterministic wiki-manager slash command inside the current shell session.',
-      'Allowed commands: /workspaces, /new <name> [path], /use <workspace>, /config, /status, /services, /skills, /skills show <name>, /skills run <name>.',
+      'Allowed commands: /workspaces, /new <name> [path], /use <workspace>, /config, /status, /services, /skills, /skills show <name>, /skills run <name>, /upload <path> [--forceOcr], /upload convert <id|pending> [--forceOcr], /uploads.',
       'Do not use for arbitrary system shell commands, /mcp call, /wiki run, /start, /stop, /logs, or /exit.',
     ].join(' '),
     parameters: {

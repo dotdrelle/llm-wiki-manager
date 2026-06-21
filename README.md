@@ -397,8 +397,9 @@ convert them when the `documents` MCP endpoint is connected:
 
 ```bash
 /upload /path/to/rapport.pdf
+/upload /path/to/scan.pdf --forceOcr
 /uploads
-/upload convert pending
+/upload convert pending --forceOcr
 /uploads clean --older-than 30d
 ```
 
@@ -406,6 +407,7 @@ Original files are stored under
 `.agents-data/documents/input/<workspace>/`. Converted Markdown is written by
 the documents agent to `<workspace>/raw/untracked/`. If the documents agent is
 down, the upload remains stored and can be converted later.
+Use `--forceOcr` to OCR a PDF even when direct text extraction would succeed.
 
 ## The `donna` Shell
 

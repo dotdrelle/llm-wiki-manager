@@ -27,8 +27,19 @@ function wrapLine(line: string, width: number) {
   let rest = line;
   while (rest.length > max) {
     const slice = rest.slice(0, max + 1);
-    const breakAt = Math.max(slice.lastIndexOf(' '), slice.lastIndexOf('\t'));
-    const index = breakAt > Math.floor(max * 0.45) ? breakAt : max;
+    const spaceAt = Math.max(slice.lastIndexOf(' '), slice.lastIndexOf('\t'));
+    const slashAt = slice.lastIndexOf('/');
+    const threshold = Math.floor(max * 0.45);
+    let index: number;
+    if (spaceAt > threshold && (slashAt < 0 || spaceAt <= slashAt)) {
+      index = spaceAt;
+    } else if (slashAt > threshold) {
+      index = slashAt + 1;
+    } else if (spaceAt > threshold) {
+      index = spaceAt;
+    } else {
+      index = max;
+    }
     out.push(rest.slice(0, index).trimEnd());
     rest = rest.slice(index).trimStart();
   }

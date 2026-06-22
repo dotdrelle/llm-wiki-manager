@@ -73,6 +73,32 @@ test('extractActivity: extracts _activity.plan.steps from payload', () => {
   assert.equal(a.progress.stepTotal, 1);
 });
 
+test('extractActivity: documents conversion activity carries plan and percent', () => {
+  const payload = {
+    _activity: {
+      id: 'documents:schema.png',
+      source: 'documents',
+      kind: 'conversion',
+      label: 'Documents: conversion schema.png',
+      status: 'done',
+      progress: { percent: 100, stepId: 'write', stepIndex: 3, stepTotal: 3 },
+      plan: {
+        steps: [
+          { id: 'resolve', label: 'Résoudre le fichier source' },
+          { id: 'convert', label: 'Convertir en Markdown' },
+          { id: 'write', label: 'Écrire le Markdown converti' },
+        ],
+      },
+      terminal: true,
+    },
+  };
+  const activity = extractActivity(payload, { server: 'documents' });
+  assert.equal(activity.source, 'documents');
+  assert.equal(activity.progress.percent, 100);
+  assert.equal(activity.terminal, true);
+  assert.deepEqual(activity.plan.steps.map((step) => step.id), ['resolve', 'convert', 'write']);
+});
+
 test('rememberActivity: returns normalized activity on success', () => {
   const session = {};
   const result = rememberActivity(session, { id: '1', status: 'running', source: 'x', kind: 'job' });

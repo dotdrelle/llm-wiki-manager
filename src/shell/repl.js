@@ -66,7 +66,7 @@ const COMMAND_COMPLETION_DESCRIPTIONS = {
   '/mcp': 'Inspect or call workspace MCP servers.',
   '/wiki': 'Run llm-wiki commands for the active workspace.',
   '/skills': 'List workspace skills.',
-  '/upload': 'Store and convert a local document.',
+  '/upload': 'Upload a document — /upload <path>',
   '/uploads': 'List or clean uploaded documents.',
   '/clear': 'Clear the conversation screen.',
   '/chat': 'Switch free text to direct LLM chat without tools.',
@@ -208,8 +208,6 @@ function completionValuesFor(parts, inputBuffer, session) {
   if (command === '/mcp' && parts[1] === 'call' && tokenIndex === 3) return mcpToolNames(session, parts[2]);
   if (command === '/upload' && tokenIndex === 1) return ['convert'];
   if (command === '/upload' && parts[1] === 'convert' && tokenIndex === 2) return ['pending'];
-  if (command === '/upload' && parts[1] === 'convert' && tokenIndex >= 3 && !parts.includes('--forceOcr')) return ['--forceOcr'];
-  if (command === '/upload' && parts[1] !== 'convert' && tokenIndex >= 2 && !parts.includes('--forceOcr')) return ['--forceOcr'];
   if (command === '/uploads' && tokenIndex === 1) return ['clean', 'list'];
   if (command === '/uploads' && previousToken === 'clean') return ['--older-than'];
   if (command === '/queue' && tokenIndex === 1) return ['cancel', 'clear'];
@@ -278,6 +276,7 @@ export function completionContext(inputBuffer, session) {
   const lastSpace = inputBuffer.lastIndexOf(' ');
   const prefix = inputBuffer.endsWith(' ') ? '' : inputBuffer.slice(lastSpace + 1);
   const matches = values.filter((value) => value.startsWith(prefix));
+  if (matches.length === 0) return null;
   return { parts, matches, prefix };
 }
 

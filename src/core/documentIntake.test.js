@@ -38,6 +38,48 @@ test('document intake stores uploads without requiring documents MCP', async () 
   }
 });
 
+test('document intake accepts quoted absolute paths with spaces', async () => {
+  const originalAgentsDataDir = process.env.AGENTS_DATA_DIR;
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wiki-manager-doc-intake-'));
+  process.env.AGENTS_DATA_DIR = path.join(root, '.agents-data');
+  const source = path.join(root, 'Screenshot 2026-06-21 at 10.03.36.png');
+  await writeFile(source, 'fake png content');
+  const session = {
+    workspace: 'juno',
+    mcp: {},
+  };
+
+  try {
+    const { record } = await storeAndMaybeConvertDocument(session, `'${source}'`);
+    assert.equal(record.filename, 'Screenshot_2026-06-21_at_10.03.36.png');
+    assert.equal(await readFile(record.storedPath, 'utf8'), 'fake png content');
+  } finally {
+    if (originalAgentsDataDir === undefined) delete process.env.AGENTS_DATA_DIR;
+    else process.env.AGENTS_DATA_DIR = originalAgentsDataDir;
+  }
+});
+
+test('document intake accepts double-quoted absolute paths with spaces', async () => {
+  const originalAgentsDataDir = process.env.AGENTS_DATA_DIR;
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wiki-manager-doc-intake-'));
+  process.env.AGENTS_DATA_DIR = path.join(root, '.agents-data');
+  const source = path.join(root, 'scan avec espace.pdf');
+  await writeFile(source, 'fake pdf content');
+  const session = {
+    workspace: 'juno',
+    mcp: {},
+  };
+
+  try {
+    const { record } = await storeAndMaybeConvertDocument(session, `"${source}"`);
+    assert.equal(record.filename, 'scan_avec_espace.pdf');
+    assert.equal(await readFile(record.storedPath, 'utf8'), 'fake pdf content');
+  } finally {
+    if (originalAgentsDataDir === undefined) delete process.env.AGENTS_DATA_DIR;
+    else process.env.AGENTS_DATA_DIR = originalAgentsDataDir;
+  }
+});
+
 test('document intake replaces an existing upload with the same original filename', async () => {
   const originalAgentsDataDir = process.env.AGENTS_DATA_DIR;
   const root = await mkdtemp(path.join(os.tmpdir(), 'wiki-manager-doc-intake-'));

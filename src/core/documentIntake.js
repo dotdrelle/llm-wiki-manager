@@ -47,6 +47,18 @@ function sanitizeFilename(filename) {
   return name || 'upload.bin';
 }
 
+function unquotePath(value) {
+  const text = String(value ?? '').trim();
+  if (text.length >= 2) {
+    const first = text[0];
+    const last = text.at(-1);
+    if ((first === "'" && last === "'") || (first === '"' && last === '"')) {
+      return text.slice(1, -1);
+    }
+  }
+  return text;
+}
+
 function assertSupportedFile(filename, size) {
   const ext = extname(filename).toLowerCase();
   if (!SUPPORTED_EXTENSIONS.has(ext)) {
@@ -135,9 +147,13 @@ function publicRecord(record) {
   };
 }
 
+function activityFromPayload(payload) {
+  return payload?._activity && typeof payload._activity === 'object' ? payload._activity : null;
+}
+
 export async function storeDocumentUpload(session, sourcePath) {
   const workspace = requireWorkspace(session);
-  const absolutePath = resolve(sourcePath);
+  const absolutePath = resolve(unquotePath(sourcePath));
   const info = await stat(absolutePath);
   if (!info.isFile()) throw new Error(`Not a file: ${sourcePath}`);
   const filename = sanitizeFilename(absolutePath);
@@ -199,17 +215,25 @@ export async function convertStoredDocument(session, id, options = {}) {
       filePath: record.agentPath,
       outputFilename: `${record.id}-${record.filename.replace(/\.[^.]+$/, '')}.md`,
     };
-    if (options.forceOcr) toolArgs.forceOcr = true;
     const result = await callMcpTool(session.mcp, 'documents', 'documents_convert_to_markdown', toolArgs);
     const payload = parseJsonText(formatMcpToolResult(result)) ?? {};
     if (payload.ok === false) throw new Error(payload.error || 'documents conversion failed');
+
+    const activity = activityFromPayload(payload);
+    if (activity && !activity.terminal) {
+      record.jobId = payload.jobId ?? null;
+      record.updatedAt = new Date().toISOString();
+      await upsertUpload(record);
+      return { record, converted: false, activity };
+    }
+
     record.status = 'converted';
     record.outputPath = payload.outputPath ?? null;
     record.method = payload.method ?? null;
     record.error = null;
     record.updatedAt = new Date().toISOString();
     await upsertUpload(record);
-    return { record, converted: true, payload };
+    return { record, converted: true, payload, activity };
   } catch (err) {
     record.status = 'failed';
     record.error = err instanceof Error ? err.message : String(err);
@@ -277,7 +301,7 @@ export async function cleanDocumentUploads(session, olderThan = '30d') {
 
 export function formatUploadRecord(record) {
   const lines = [
-    `${record.id}\t${record.status}\t${record.filename}`,
+    `${record.id}  ${record.status}  ${record.filename}`,
     `agentPath: ${record.agentPath}`,
   ];
   if (record.outputPath) lines.push(`outputPath: ${record.outputPath}`);

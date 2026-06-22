@@ -192,3 +192,37 @@ test('callMcpTool sends configured endpoint headers', async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test('callMcpTool parses SSE responses after keepalive comments', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    text: async () => [
+      ': keepalive',
+      '',
+      'event: message',
+      'data: {"result":{"content":[{"type":"text","text":"{\\"ok\\":true}"}]}}',
+      '',
+    ].join('\n'),
+  });
+
+  try {
+    const result = await callMcpTool(
+      {
+        documents: {
+          status: 'connected',
+          url: 'http://127.0.0.1:3337/mcp/',
+        },
+      },
+      'documents',
+      'documents_convert_to_markdown',
+      { filePath: '/documents/input/example.pdf' },
+    );
+
+    assert.equal(result.content[0].text, '{"ok":true}');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

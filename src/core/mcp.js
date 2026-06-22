@@ -120,12 +120,12 @@ export function applyMcpRuntimeStatus(mcpStatus, serviceStates = {}) {
 function parseMcpResponse(text) {
   const trimmed = text.trim();
   if (!trimmed) return null;
-  if (trimmed.startsWith('event:') || trimmed.startsWith('data:')) {
-    const data = trimmed
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith('data:'))
-      .map((line) => line.slice('data:'.length).trim())
-      .join('\n');
+  const dataLines = trimmed
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice('data:'.length).trim());
+  if (dataLines.length > 0) {
+    const data = dataLines.join('\n');
     return data ? JSON.parse(data) : null;
   }
   return JSON.parse(trimmed);
@@ -159,10 +159,10 @@ async function listMcpTools(endpoint) {
   return payload?.result?.tools ?? [];
 }
 
-async function mcpRequest(endpoint, method, params, signal) {
+async function mcpRequest(endpoint, method, params, signal, options = {}) {
   if (!endpoint.url) throw new Error('missing endpoint URL');
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 8000);
   const requestSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
 
   const buildHeaders = () => {
@@ -205,7 +205,7 @@ async function mcpRequest(endpoint, method, params, signal) {
           params: {
             protocolVersion: '2025-06-18',
             capabilities: {},
-            clientInfo: { name: 'wiki-manager', version: '0.6.11' },
+            clientInfo: { name: 'wiki-manager', version: '0.6.17' },
           },
         }),
       });
@@ -247,10 +247,11 @@ export async function callMcpTool(mcpStatus, serverName, toolName, args = {}, si
     ...args,
     ...(shouldInjectConfigPath ? { configPath: endpoint.activeConfigPath } : {}),
   };
+  const timeoutMs = serverName === 'documents' && toolName === 'documents_convert_to_markdown' ? 600_000 : 8000;
   const payload = await mcpRequest(endpoint, 'tools/call', {
     name: toolName,
     arguments: toolArgs,
-  }, signal);
+  }, signal, { timeoutMs });
   if (payload?.result?.isError) {
     throw new Error(formatMcpToolResult(payload.result));
   }

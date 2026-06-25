@@ -107,7 +107,7 @@ export function createSession() {
     language: null,
     mcp: null,
     commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'upload', 'uploads', 'clear', 'chat', 'agent', 'openui', 'queue'],
-    chatMode: false,
+    chatMode: true,
     llm: null,
     activities: {},
     jobQueue: [],

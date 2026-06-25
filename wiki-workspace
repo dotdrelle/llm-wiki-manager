@@ -15,6 +15,7 @@ ROOT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
 DEFAULT_MANAGER_DIR="$PWD"
 WORKSPACES_DIR="${WIKI_WORKSPACES_DIR:-$DEFAULT_MANAGER_DIR/workspaces}"
 MANAGER_ENV_FILE="${WIKI_MANAGER_ENV_FILE:-$DEFAULT_MANAGER_DIR/.env}"
+MANAGER_ENDPOINTS_FILE="${WIKI_MANAGER_ENDPOINTS_FILE:-$DEFAULT_MANAGER_DIR/mcp.endpoints.json}"
 
 usage() {
   cat <<'EOF'
@@ -169,7 +170,8 @@ agents_compose() {
 
   _agents_dc() {
     WORKSPACES_ROOT="$workspaces_root" AGENTS_DATA_DIR="$agents_data_dir" \
-      docker compose "${compose_env_args[@]}" -f "$agents_compose_file" -p wiki-agents "$@"
+      docker compose --project-directory "$DEFAULT_MANAGER_DIR" \
+        "${compose_env_args[@]}" -f "$agents_compose_file" -p wiki-agents "$@"
   }
 
   case "$subcommand" in
@@ -204,13 +206,12 @@ agents_compose() {
       ;;
     status)
       [[ $# -eq 0 ]] || die "agents status does not take arguments"
-      local endpoints_file="$ROOT_DIR/mcp.endpoints.json"
-      if [[ ! -f "$endpoints_file" ]]; then
-        printf 'No mcp.endpoints.json found at %s\n' "$endpoints_file" >&2
+      if [[ ! -f "$MANAGER_ENDPOINTS_FILE" ]]; then
+        printf 'No mcp.endpoints.json found at %s\n' "$MANAGER_ENDPOINTS_FILE" >&2
         exit 1
       fi
       command -v node >/dev/null 2>&1 || die "agents status requires node"
-      node - "$endpoints_file" "$MANAGER_ENV_FILE" <<'NODE'
+      node - "$MANAGER_ENDPOINTS_FILE" "$MANAGER_ENV_FILE" <<'NODE'
 import fs from 'node:fs';
 
 const [, , endpointsFile, envFile] = process.argv;
@@ -317,10 +318,10 @@ NODE
 }
 
 ensure_manager_endpoints_file() {
-  local endpoints_file="$ROOT_DIR/mcp.endpoints.json"
-  if [[ ! -f "$endpoints_file" && -f "$ROOT_DIR/mcp.endpoints.example.json" ]]; then
-    cp "$ROOT_DIR/mcp.endpoints.example.json" "$endpoints_file"
-    printf 'Created %s (from mcp.endpoints.example.json — add headers/tokens as needed)\n' "$endpoints_file"
+  if [[ ! -f "$MANAGER_ENDPOINTS_FILE" && -f "$ROOT_DIR/mcp.endpoints.example.json" ]]; then
+    mkdir -p "$(dirname "$MANAGER_ENDPOINTS_FILE")"
+    cp "$ROOT_DIR/mcp.endpoints.example.json" "$MANAGER_ENDPOINTS_FILE"
+    printf 'Created %s (from mcp.endpoints.example.json — add headers/tokens as needed)\n' "$MANAGER_ENDPOINTS_FILE"
   fi
 }
 
@@ -448,7 +449,8 @@ compose_for_workspace() {
   WIKI_SERVE_PORT="$serve_port" \
   WIKI_MCP_PORT="$mcp_port" \
   PRODUCTION_MCP_PORT="$prod_port" \
-  docker compose "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" -p "$project" "$@"
+  docker compose --project-directory "$DEFAULT_MANAGER_DIR" \
+    "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" -p "$project" "$@"
 }
 
 logs_args() {
@@ -625,7 +627,8 @@ config_workspace() {
   WIKI_WORKSPACE_PATH="$target_path" \
   WIKI_SERVE_PORT="$serve_port" \
   WIKI_MCP_PORT="$mcp_port" \
-    docker compose "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" run --rm wiki init
+    docker compose --project-directory "$DEFAULT_MANAGER_DIR" \
+      "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" run --rm wiki init
 
   printf 'Workspace ready: %s\n' "$target_path"
   printf 'Start with:      wiki-workspace up %s\n' "$workspace"
@@ -647,7 +650,7 @@ up_workspace() {
   printf 'Workspace UI: http://localhost:%s\n' "$serve_port"
   printf 'Chat:         http://localhost:%s/chat\n' "$serve_port"
   printf 'Production:   http://localhost:%s/mcp/\n' "$prod_port"
-  printf 'External MCPs: see %s\n' "$ROOT_DIR/mcp.endpoints.json"
+  printf 'External MCPs: see %s\n' "$MANAGER_ENDPOINTS_FILE"
 
   if [[ "$open_browser" == "1" ]]; then
     wait_and_open "http://localhost:${serve_port}/chat" &

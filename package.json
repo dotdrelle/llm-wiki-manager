@@ -6,7 +6,7 @@
   "author": "dotrelle",
   "type": "module",
   "bin": {
-    "wiki-manager": "bin/wiki-manager.js",
+    "wiki-manager": "bin/wiki-manager",
     "wiki-workspace": "wiki-workspace"
   },
   "scripts": {

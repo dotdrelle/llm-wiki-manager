@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BUN_BIN="$(command -v bun 2>/dev/null || true)"
+if [[ -z "$BUN_BIN" && -n "${BUN_INSTALL:-}" && -x "$BUN_INSTALL/bin/bun" ]]; then
+  BUN_BIN="$BUN_INSTALL/bin/bun"
+fi
+if [[ -z "$BUN_BIN" && -x "${HOME:-}/.bun/bin/bun" ]]; then
+  BUN_BIN="$HOME/.bun/bin/bun"
+fi
+if [[ -z "$BUN_BIN" ]]; then
+  printf '%s\n' \
+    'wiki-manager requires Bun >= 1.2.' \
+    'Install Bun from https://bun.sh/docs/installation or add it to PATH.' >&2
+  exit 127
+fi
+
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_SOURCE" ]]; do
+  SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+  SCRIPT_TARGET="$(readlink "$SCRIPT_SOURCE")"
+  if [[ "$SCRIPT_TARGET" = /* ]]; then
+    SCRIPT_SOURCE="$SCRIPT_TARGET"
+  else
+    SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_TARGET"
+  fi
+done
+BIN_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+
+exec "$BUN_BIN" "$BIN_DIR/wiki-manager.js" "$@"

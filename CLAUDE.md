@@ -271,7 +271,7 @@ the route explicitly with `/chat` and `/agent`.
   alphanumeric at both ends, only letters/digits/underscore/dot/dash inside, and
   no `..`.
 - LLM/vector provider config belongs in each workspace `.wikirc.yaml`.
-- Each workspace has its own `.env` at `workspaces/<name>/.env`. The manager root also accepts a `.env` for global settings (auth tokens, `WORKSPACES_ROOT`, `MAILERSEND_*`); copy `.env.example` as a template. External MCP endpoints go in `mcp.endpoints.json` (gitignored; commit `mcp.endpoints.example.json` as template).
+- Each workspace has its own `.env` at `workspaces/<name>/.env`. The manager root also accepts a `.env` for global settings (auth tokens, `WORKSPACES_ROOT`, `MAILERSEND_*`); copy `.env.example` as a template. External MCP endpoints go in `mcp.endpoints.json` (gitignored; commit `mcp.endpoints.example.json` as template). `WIKI_MANAGER_ENDPOINTS_FILE` overrides the default location when `mcp.endpoints.json` is not in `$PWD`.
 
 ## Docker Rules
 

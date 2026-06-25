@@ -287,6 +287,11 @@ the package, in the directory where the command is launched:
 `WIKI_WORKSPACES_DIR` is available as an explicit override for the workspaces
 directory, but not required for normal usage.
 
+`WIKI_MANAGER_ENDPOINTS_FILE` can override the default
+`./mcp.endpoints.json`. Compose templates remain in the installed package, while
+relative volumes and runtime state are resolved from the directory where
+`wiki-workspace` is launched.
+
 ### Local `.env`
 
 Copy `.env.example` to `.env` and fill in your values:

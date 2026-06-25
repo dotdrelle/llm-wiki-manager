@@ -1,0 +1,10 @@
+mcp.endpoints.json
+.env
+.env.*
+!.env.example
+data/
+.agents-data/
+workspaces/*
+!workspaces/.env.example
+*.log
+.DS_Store

@@ -1,0 +1,147 @@
+<svg viewBox="0 0 1000 780" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" role="img">
+<title>wikiLLM functional diagram</title>
+<desc>Inputs split into external sources (Confluence, docs/files/mails, notes) and structural template/build-context/skills from a marketplace. Orchestrator is agentic (LangGraph), multi-model / multi-API. MCP calls split into internal MCP (production engine per workspace) and external MCP (shared, replaceable toolbox: cme, documents, atlassian, google-workspace, mailer, exa) plus a generic future slot. Outputs: core wiki and graph, deliverables kept up to date in Markdown, and email. Over a workspaces foundation.</desc>
+
+<style>
+.box { fill: #ffffff; stroke: #e2e2dd; stroke-width: 1.5; }
+.t   { fill: #0e0e10; font-weight: 600; }
+.s   { fill: #5f6066; font-weight: 400; }
+.hdr { fill: #5f6066; font-weight: 700; letter-spacing: 1px; }
+.sub { fill: #5f6066; font-weight: 700; letter-spacing: .5px; }
+.flow { stroke: #9a9a96; stroke-width: 2; fill: none; }
+.pill { fill: none; stroke: #d9d9d4; }
+</style>
+<defs>
+<marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+<path d="M0,0 L8,4 L0,8 Z" fill="#9a9a96"/>
+</marker>
+</defs>
+
+<rect x="0" y="0" width="1000" height="780" rx="18" fill="#f7f7f4"/>
+
+<!-- TITLE -->
+<text x="30" y="32" class="t" font-size="19">wikiLLM — functional diagram</text>
+<text x="30" y="51" class="s" font-size="12.5">From scattered documents → a clean wiki → regenerated deliverables</text>
+
+<!-- DRIVE -->
+<text x="30" y="84" class="hdr" font-size="10.5">DRIVE</text>
+<rect x="30"  y="92" width="185" height="48" rx="9" class="box"/><rect x="30"  y="92" width="5" height="48" rx="2.5" fill="#8a8a8a"/>
+<text x="46" y="115" class="t" font-size="12.5">Web interface</text><text x="46" y="131" class="s" font-size="10.5">serve · browser · graph</text>
+<rect x="235" y="92" width="185" height="48" rx="9" class="box"/><rect x="235" y="92" width="5" height="48" rx="2.5" fill="#8a8a8a"/>
+<text x="251" y="115" class="t" font-size="12.5">Script</text><text x="251" y="131" class="s" font-size="10.5">headless · scheduled</text>
+<rect x="440" y="92" width="185" height="48" rx="9" class="box"/><rect x="440" y="92" width="5" height="48" rx="2.5" fill="#8a8a8a"/>
+<text x="456" y="115" class="t" font-size="12.5">donna shell</text><text x="456" y="131" class="s" font-size="10.5">natural language · agent</text>
+<path d="M122,140 L122,166" class="flow" marker-end="url(#ar)"/>
+<path d="M327,140 L327,166" class="flow" marker-end="url(#ar)"/>
+<path d="M532,140 L532,166" class="flow" marker-end="url(#ar)"/>
+
+<!-- MANAGER / ORCHESTRATOR -->
+<rect x="30" y="168" width="940" height="52" rx="9" class="box"/><rect x="30" y="168" width="5" height="52" rx="2.5" fill="#8a8a8a"/>
+<text x="46" y="190" class="t" font-size="14">llm-wiki-manager — orchestrator</text>
+<text x="46" y="207" class="s" font-size="10.5">assigns ports · starts services · routes MCP calls · isolates each workspace</text>
+<text x="956" y="189" class="t" font-size="11" text-anchor="end">Agentic · LangGraph</text>
+<text x="956" y="206" class="s" font-size="10.5" text-anchor="end">multi-model / multi-API</text>
+<path d="M500,220 L500,242" class="flow" marker-end="url(#ar)"/>
+
+<!-- FLOW headers -->
+<text x="30"  y="262" class="hdr" font-size="10.5">INPUTS</text>
+<text x="400" y="262" class="hdr" font-size="10.5">MCP CALLS</text>
+<text x="812" y="262" class="hdr" font-size="10.5">OUTPUTS</text>
+
+<!-- LEFT : INPUTS -->
+<text x="30" y="282" class="sub" font-size="9.5">SOURCES · EXTERNAL</text>
+<rect x="30" y="288" width="180" height="32" rx="8" class="box"/><rect x="30" y="288" width="5" height="32" rx="2.5" fill="#1a73e8"/>
+<text x="46" y="304" class="t" font-size="11.5">Confluence</text><text x="46" y="316" class="s" font-size="9.5">spaces · pages</text>
+<rect x="30" y="324" width="180" height="32" rx="8" class="box"/><rect x="30" y="324" width="5" height="32" rx="2.5" fill="#1a73e8"/>
+<text x="46" y="340" class="t" font-size="11.5">Docs / files / Mails</text><text x="46" y="352" class="s" font-size="9.5">pdf · office · images · mail · md</text>
+<rect x="30" y="360" width="180" height="32" rx="8" class="box"/><rect x="30" y="360" width="5" height="32" rx="2.5" fill="#1a73e8"/>
+<text x="46" y="376" class="t" font-size="11.5">Notes</text><text x="46" y="388" class="s" font-size="9.5">free content</text>
+
+<text x="30" y="418" class="sub" font-size="9.5">STRUCTURAL · CORE WIKI</text>
+<rect x="30" y="424" width="180" height="32" rx="8" class="box"/><rect x="30" y="424" width="5" height="32" rx="2.5" fill="#e8710a"/>
+<text x="46" y="440" class="t" font-size="11.5">Template</text><text x="46" y="452" class="s" font-size="9.5">deliverable shape</text>
+<rect x="30" y="460" width="180" height="32" rx="8" class="box"/><rect x="30" y="460" width="5" height="32" rx="2.5" fill="#e8710a"/>
+<text x="46" y="476" class="t" font-size="11.5">Build-context</text><text x="46" y="488" class="s" font-size="9.5">generation rules</text>
+<rect x="30" y="496" width="180" height="32" rx="8" class="box"/><rect x="30" y="496" width="5" height="32" rx="2.5" fill="#e8710a"/>
+<text x="46" y="512" class="t" font-size="11.5">Skills</text><text x="46" y="524" class="s" font-size="9.5">reusable capabilities</text>
+
+<rect x="30" y="554" width="180" height="40" rx="8" class="box"/><rect x="30" y="554" width="5" height="40" rx="2.5" fill="#1a73e8"/>
+<text x="46" y="571" class="t" font-size="11.5">Marketplace</text><text x="46" y="585" class="s" font-size="9.5">ready-made templates · context · skills</text>
+<path d="M120,554 L120,530" class="flow" marker-end="url(#ar)"/>
+<text x="128" y="546" class="s" font-size="9">supplies</text>
+
+<!-- CENTER : MCP -->
+<rect x="232" y="278" width="510" height="356" rx="12" fill="none" stroke="#d9d9d4" stroke-width="1.5" stroke-dasharray="5 4"/>
+<text x="244" y="295" class="s" font-size="9.5">each server: init · read · action — async (jobId + polling)</text>
+
+<!-- internal -->
+<text x="244" y="313" class="sub" font-size="9.5" fill="#9334e6">INTERNAL MCP · engine, per workspace</text>
+<rect x="244" y="319" width="486" height="62" rx="9" class="box"/><rect x="244" y="319" width="5" height="62" rx="2.5" fill="#9334e6"/>
+<text x="261" y="340" class="t" font-size="12.5">agent-wiki-production — llm-wiki jobs</text>
+<text x="261" y="356" class="s" font-size="10">consumes sources + template + build-context → produces the wiki</text>
+<g font-size="9.5" class="s">
+<rect x="261" y="362" width="54" height="14" rx="7" class="pill"/><text x="270" y="372">ingest</text>
+<rect x="320" y="362" width="50" height="14" rx="7" class="pill"/><text x="329" y="372">build</text>
+<rect x="375" y="362" width="56" height="14" rx="7" class="pill"/><text x="384" y="372">export</text>
+<rect x="436" y="362" width="54" height="14" rx="7" class="pill"/><text x="445" y="372">polish</text>
+<rect x="495" y="362" width="56" height="14" rx="7" class="pill"/><text x="504" y="372">doctor</text>
+</g>
+
+<!-- external -->
+<text x="244" y="403" class="sub" font-size="9.5" fill="#0f9d8f">EXTERNAL MCP · shared toolbox — sample / replaceable</text>
+<rect x="244" y="409" width="486" height="27" rx="7" class="box"/><rect x="244" y="409" width="5" height="27" rx="2.5" fill="#0f9d8f"/>
+<text x="261" y="426" class="t" font-size="11">agent-cme<tspan class="s" font-size="10"> — Confluence → Markdown</tspan></text>
+<rect x="244" y="439" width="486" height="27" rx="7" class="box"/><rect x="244" y="439" width="5" height="27" rx="2.5" fill="#0f9d8f"/>
+<text x="261" y="456" class="t" font-size="11">agent-wiki-documents<tspan class="s" font-size="10"> — pdf / office / images → Markdown</tspan></text>
+<rect x="244" y="469" width="486" height="27" rx="7" class="box"/><rect x="244" y="469" width="5" height="27" rx="2.5" fill="#0f9d8f"/>
+<text x="261" y="486" class="t" font-size="11">agent-atlassian<tspan class="s" font-size="10"> — live Confluence / Jira</tspan></text>
+<rect x="244" y="499" width="486" height="27" rx="7" class="box"/><rect x="244" y="499" width="5" height="27" rx="2.5" fill="#0f9d8f"/>
+<text x="261" y="516" class="t" font-size="11">google-workspace<tspan class="s" font-size="10"> — Drive · Docs · Gmail</tspan></text>
+<rect x="244" y="529" width="486" height="27" rx="7" class="box"/><rect x="244" y="529" width="5" height="27" rx="2.5" fill="#0f9d8f"/>
+<text x="261" y="546" class="t" font-size="11">agent-mailer<tspan class="s" font-size="10"> — email (MailerSend)</tspan></text>
+<rect x="244" y="559" width="486" height="27" rx="7" class="box"/><rect x="244" y="559" width="5" height="27" rx="2.5" fill="#0f9d8f"/>
+<text x="261" y="576" class="t" font-size="11">exa<tspan class="s" font-size="10"> — web search · enrichment</tspan></text>
+
+<!-- future generic slot -->
+<rect x="244" y="593" width="486" height="30" rx="7" fill="none" stroke="#cfcfca" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text x="261" y="611" class="s" font-size="10.5" font-style="italic">+ future MCP — add as many as you need</text>
+
+<!-- RIGHT : OUTPUTS -->
+<text x="785" y="282" class="sub" font-size="9.5">CORE WIKI</text>
+<rect x="785" y="288" width="185" height="60" rx="8" class="box"/><rect x="785" y="288" width="5" height="60" rx="2.5" fill="#e8710a"/>
+<text x="801" y="310" class="t" font-size="12.5">Wiki + graph</text>
+<text x="801" y="326" class="s" font-size="10">linked pages ·</text>
+<text x="801" y="339" class="s" font-size="10">sources / concepts graph</text>
+<rect x="785" y="354" width="185" height="58" rx="8" class="box"/><rect x="785" y="354" width="5" height="58" rx="2.5" fill="#e8710a"/>
+<text x="801" y="374" class="t" font-size="12.5">Deliverables</text>
+<text x="801" y="389" class="s" font-size="10">reports · pages · exports</text>
+<text x="801" y="403" class="t" font-size="9.5" fill="#e8710a">kept up to date in Markdown</text>
+
+<text x="785" y="440" class="sub" font-size="9.5">EXTERNAL</text>
+<rect x="785" y="446" width="185" height="42" rx="8" class="box"/><rect x="785" y="446" width="5" height="42" rx="2.5" fill="#1a73e8"/>
+<text x="801" y="468" class="t" font-size="12.5">Emails</text>
+<text x="801" y="482" class="s" font-size="10">deliverable distribution</text>
+
+<!-- flow arrows -->
+<path d="M210,340 C224,340 226,347 240,349" class="flow" marker-end="url(#ar)"/>
+<text x="214" y="332" class="s" font-size="9">sources</text>
+<path d="M210,460 C224,460 226,358 240,354" class="flow" marker-end="url(#ar)"/>
+<text x="212" y="452" class="s" font-size="9">structural</text>
+<path d="M742,340 C762,340 766,320 783,318" class="flow" marker-end="url(#ar)"/>
+<path d="M742,370 C762,370 766,380 783,380" class="flow" marker-end="url(#ar)"/>
+<path d="M742,542 C762,542 766,470 783,467" class="flow" marker-end="url(#ar)"/>
+
+<!-- BOTTOM : workspaces -->
+<rect x="30" y="652" width="940" height="44" rx="9" class="box"/><rect x="30" y="652" width="5" height="44" rx="2.5" fill="#e8710a"/>
+<text x="46" y="674" class="t" font-size="13">Workspaces — one project = one isolated folder (core wiki)</text>
+<text x="46" y="690" class="s" font-size="10.5">sources · template · build-context · skills · deliverables · graph · credentials, never mixed between projects</text>
+
+<!-- legend -->
+<text x="30" y="726" class="s" font-size="10.5">
+<tspan fill="#1a73e8" font-weight="700">■</tspan> external data
+<tspan fill="#e8710a" font-weight="700">■</tspan> core wiki (incl. skills)
+<tspan fill="#9334e6" font-weight="700">■</tspan> internal MCP
+<tspan fill="#0f9d8f" font-weight="700">■</tspan> external MCP (toolbox)
+<tspan fill="#8a8a8a" font-weight="700">■</tspan> control plane
+<tspan font-weight="700">▢</tspan> future / replaceable</text>
+</svg>

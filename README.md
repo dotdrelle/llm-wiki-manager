@@ -24,47 +24,132 @@ everything — either with the mouse in a browser, or by talking to an assistant
 A **workspace** = a project. Each project is isolated: its documents, settings,
 and results never get mixed up with the others.
 
-## The 4 ways to use it
+## Functional overview
 
-The same system has four faces depending on what you want to do.
+The diagram below shows the whole picture at a glance: how **inputs** (external
+sources plus structural template / build-context / skills from a marketplace)
+flow through the **MCP calls** — split between the *internal* production engine
+and a *replaceable* toolbox of *external* MCP servers — to produce the **core
+wiki** outputs, all driven by an agentic, multi-model orchestrator and grounded
+in isolated workspaces.
 
-### 1. The web interface — to explore with the mouse
+![wikiLLM functional diagram — inputs, MCP calls and outputs around the agentic orchestrator and workspaces](docs/architecture.svg)
 
-You open a site in your browser and work visually. This is the most accessible
-mode, with nothing technical to type. It brings together four facets:
+## Quick start — your first wiki in ~5 minutes
 
-- **Browse the wiki** — read, search, navigate pages. A **graph** visualizes the
-  **interdependencies** between pages: at a glance you see which documents rely on
-  which others, and the impact of a change.
-- **The interface** — buttons, menus, everything is clickable.
-- **Chat with an assistant** — an integrated chat that answers about the content,
-  but above all an **agent** able to **act**. When a request involves several
-  tools (MCP) that depend on each other, it **organizes them into a workflow**:
-  it chains the tasks in the right order, waits for one step to finish before
-  launching the next, and coordinates everything for you.
-- **Plug in tools** — the interface can call external services (Confluence
-  export, sending e-mail…) without you having to deal with them.
+The fastest way in: a **browsable wiki, its dependency graph, and a grounded
+chat** — all on the **shipped example**, with **no external source to
+configure**. External agents (Confluence, mail…) come later, only when you plug
+in real sources.
 
-### 2. Scripting mode — to let it run on its own
+> **Prerequisites:** Docker running and Node ≥ 22.
 
-The same tool can run **with nobody in front of the screen**: you write the task
-as a **script** (one command, or a sequence of commands), launched on demand or
-**scheduled** (for example "update the wiki every morning"). Ideal for repetitive,
-automated tasks.
+**1 — Install once, pick a home folder.**
+The manager keeps its state (workspaces, `.env`, endpoints) in the directory
+where you launch it, so give it a home:
 
-### 3. The driver assistant (shell) — to talk in plain language
+```bash
+npm i -g @dotdrelle/wiki-manager
+mkdir -p ~/llm-wiki && cd ~/llm-wiki      # all manager state lives here
+```
 
-It's a **shell that works like Claude**: you write your request in plain language,
-and the `donna` assistant chains the steps for you. It's the **agentic
-orchestrator**: it understands the request, picks the right tools, and acts. Under
-the hood it relies on its **internal agentic building blocks** (what it can drive
-itself).
+**2 — Set the environment.**
+Copy the template and keep the defaults — nothing is mandatory for the local
+demo (tokens/credentials are only needed when you connect real sources, see
+[docs/usage.md](docs/usage.md)). The `mcp.endpoints.json` file is created
+automatically on the first command.
 
-### 4. The shared external agents — the common toolbox
+```bash
+cp .env.example .env
+```
 
-Some services live apart and serve **all projects** at once: Confluence export,
-sending e-mails, heavy production jobs. You start them once, and they stay
-available for any workspace.
+**3 — Start the shared agents.**
+Start the common toolbox once (Confluence export `cme`, `documents`, `mailer`).
+They run in the background and serve every workspace.
+
+```bash
+wiki-workspace agents up
+wiki-workspace agents status              # ✅ each agent should report healthy
+```
+
+**4 — Create the demo workspace.**
+This creates the folder, auto-selects ports, and runs `wiki init` with the
+"basic" scaffold — a working example out of the box.
+
+```bash
+wiki-workspace config demo
+```
+
+**5 — Start it. Two doors, your choice:**
+
+```bash
+# A) just serve — the web interface
+wiki-workspace up demo --open             # wiki + graph + built-in chat, in your browser
+
+# B) the donna shell — talk in plain language
+wiki-manager                              # then: /use demo
+```
+
+**6 — Check everything is live.**
+Before doing real work, confirm the wiring from the `donna` shell:
+
+```text
+/use demo            # activate the workspace
+/config status       # ✅ LLM configured (apiKey, model, baseUrl)
+/mcp status          # ✅ MCP endpoints connected (llm-wiki, production, cme, documents…)
+/mcp tools           # the tools each agent exposes
+/services            # ✅ serve / mcp-http / production-mcp running
+```
+
+Then send a one-line prompt to confirm the **LLM answers**, e.g.
+`say hello in one word`. From the CLI you can re-check anytime with
+`wiki-workspace agents status` and `wiki-workspace list`.
+
+> If `/config status` reports missing fields, run `/config edit` to open the
+> workspace **`.wikirc.yaml`**. That's where you set both the **LLM** (`llm.provider`,
+> `llm.model`, `llm.apiKey`, `llm.baseUrl`) — direct chat needs them — and the
+> **vectorization** under `retrieval.vector` (`enabled`, `embeddingModel`, optional
+> separate `baseUrl`/`apiKey`, and reranking) used for retrieval-grounded answers.
+
+**7 — Try a few commands & prompts.**
+Plain-language prompts (web chat **or** `donna` shell):
+
+```text
+"Summarize wiki/index.md and list the pages it links to."
+"What sources is this page grounded on?"
+"Build the deliverable from the current wiki."
+```
+
+Slash primitives (shell):
+
+```text
+/wiki                # inspect the wiki
+/skills              # bundled examples: pipeline, diagnose, status, wiki-sync
+/skills run pipeline # run the shipped end-to-end example
+```
+
+**8 — See a concrete result.**
+Open the default page `wiki/index.md` and the **graph view** in the browser,
+then regenerate a deliverable:
+
+```bash
+wiki-workspace wiki demo build            # or, in the shell: /skills run pipeline
+```
+
+That's the whole loop. Next: the four ways to use it and how to configure the
+external agents (CME & co.) live in [docs/usage.md](docs/usage.md); the detailed
+story is in [The journey](#the-journey-from-first-launch-to-first-result); and
+installing from source is in [Initial Setup](#initial-setup).
+
+## The 4 ways to use it & agent configuration
+
+The same system has four faces — the **web interface** (explore with the mouse),
+**scripting** (let it run on its own), the **`donna` shell** (talk in plain
+language), and the **shared external agents** (the common toolbox). Each external
+agent (Confluence export with **CME**, document conversion, mail) also needs a
+little setup the first time.
+
+Both are covered in **[docs/usage.md](docs/usage.md)**.
 
 ## The journey: from first launch to first result
 

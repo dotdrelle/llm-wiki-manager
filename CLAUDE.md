@@ -37,7 +37,15 @@ src/core/wikirc.js          .wikirc.yaml profile loading
 src/core/skills.js          Workspace skill discovery
 bunfig.toml                 Bun preload for @opentui/solid
 tsconfig.json               TSX compilation config (jsxImportSource = @opentui/solid)
+docs/architecture.svg       Functional overview diagram embedded in the README
+docs/usage.md               Four usage modes and external-agent configuration
+docs/claude-desktop.md      Claude Desktop integration notes
 ```
+
+The README quick start should remain runnable from a fresh manager home
+directory. Manager state (`.env`, `mcp.endpoints.json`, `workspaces/`, and
+`.agents-data/`) belongs in that user-selected directory, not in the installed
+npm package directory.
 
 ## Shell Model
 
@@ -135,6 +143,8 @@ is absent. `endpoint.activeConfigPath` is kept in sync with
 The MCP Streamable HTTP initialize payload includes a `clientInfo.version`.
 When bumping `package.json`, keep that version in `src/core/mcp.js` in sync so
 MCP server logs and client handshakes report the published manager version.
+The external MCP agents should use the same release version when they are
+published as one coordinated manager/agent release.
 
 `graph.js toolExecutorNode` additionally injects `callerLabel:
 "<workspace>/wiki-manager"` for `production_start_job` calls that lack one,

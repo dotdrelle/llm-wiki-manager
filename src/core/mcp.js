@@ -2,10 +2,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
 
 function envValue(key) {
-  if (key in process.env) return process.env[key];
   const filePath = managerEnvFile();
-  if (!existsSync(filePath)) return undefined;
-  return readEnvFile(filePath)[key];
+  if (existsSync(filePath)) {
+    const fileValue = readEnvFile(filePath)[key];
+    if (fileValue !== undefined) return fileValue;
+  }
+  return process.env[key];
 }
 
 function interpolateEnv(value) {
@@ -75,16 +77,17 @@ const MCP_SERVICE_MAP = {
 
 export function buildMcpStatus(session) {
   const workspaceEnv = session.workspaceEnv ?? {};
+  const wikiMcpToken = session.wikircConfig?.mcp?.accessKey ?? workspaceEnv.WIKI_MCP_AUTH_TOKEN;
   const external = readExternalMcpEndpoints();
 
   return {
     wiki: {
       ...endpointStatus(
-        workspaceEnv.WIKI_MCP_PORT && workspaceEnv.WIKI_MCP_AUTH_TOKEN,
+        workspaceEnv.WIKI_MCP_PORT && wikiMcpToken,
         workspaceEnv.WIKI_MCP_PORT ? `:${workspaceEnv.WIKI_MCP_PORT}` : '',
       ),
       url: workspaceEnv.WIKI_MCP_PORT ? `http://127.0.0.1:${workspaceEnv.WIKI_MCP_PORT}/mcp` : null,
-      token: workspaceEnv.WIKI_MCP_AUTH_TOKEN || null,
+      token: wikiMcpToken || null,
     },
     production: {
       ...endpointStatus(
@@ -205,7 +208,7 @@ async function mcpRequest(endpoint, method, params, signal, options = {}) {
           params: {
             protocolVersion: '2025-06-18',
             capabilities: {},
-            clientInfo: { name: 'wiki-manager', version: '0.6.26' },
+            clientInfo: { name: 'wiki-manager', version: '0.6.28' },
           },
         }),
       });
@@ -295,6 +298,7 @@ export async function discoverMcpTools(mcpStatus) {
       const message = err instanceof Error ? err.message : String(err);
       next[name] = {
         ...value,
+        status: value.status === 'connected' ? 'configured' : value.status,
         tools: [],
         toolError: message,
       };

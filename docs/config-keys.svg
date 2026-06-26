@@ -1,0 +1,103 @@
+<svg viewBox="0 0 880 620" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" role="img">
+<title>wikiLLM configuration keys — MCP vs LLM</title>
+<desc>Donna reaches the external agents and the internal wiki MCP through Bearer tokens (MCP keys). The wiki then uses LLM keys (apiKey + baseUrl) from its workspace .env and .wikirc.yaml to call models and embeddings. Remote MCP clients can connect to both MCP surfaces with the same Bearer tokens. MCP keys are configured in the root .env; the wiki's LLM/vector config lives in the workspace .env and .wikirc.yaml.</desc>
+
+<style>
+.box  { fill:#ffffff; stroke:#e2e2dd; stroke-width:1.5; }
+.t    { fill:#0e0e10; font-weight:600; }
+.s    { fill:#5f6066; font-weight:400; }
+.mcp  { stroke:#2f6fb0; }
+.llm  { stroke:#2e8b57; }
+.mcpt { fill:#2f6fb0; }
+.llmt { fill:#1e6b40; }
+</style>
+<defs>
+<marker id="aMcp" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+<path d="M0,0 L8,4 L0,8 Z" fill="#2f6fb0"/>
+</marker>
+<marker id="aLlm" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+<path d="M0,0 L8,4 L0,8 Z" fill="#2e8b57"/>
+</marker>
+</defs>
+
+<rect x="0" y="0" width="880" height="620" rx="18" fill="#f7f7f4"/>
+
+<!-- Legend -->
+<rect x="250" y="14" width="14" height="14" rx="3" fill="#2f6fb0"/>
+<text x="270" y="25" class="s" font-size="12">MCP keys — authenticate (Bearer)</text>
+<rect x="510" y="14" width="14" height="14" rx="3" fill="#2e8b57"/>
+<text x="530" y="25" class="s" font-size="12">LLM keys — reach the models</text>
+
+<!-- Donna -->
+<rect x="340" y="48" width="200" height="56" rx="10" class="box" stroke="#0e0e10" stroke-width="2"/>
+<text x="440" y="74" text-anchor="middle" class="t" font-size="16" font-weight="700">Donna</text>
+<text x="440" y="93" text-anchor="middle" class="s" font-size="11">orchestrator / agent</text>
+
+<!-- ============ LEFT : external agents ============ -->
+<rect x="40" y="168" width="210" height="52" rx="9" class="box mcp" stroke-width="1.6"/>
+<text x="145" y="190" text-anchor="middle" class="t" font-size="13">mcp.endpoints.json</text>
+<text x="145" y="208" text-anchor="middle" class="s" font-size="10.5">wiring: url + Bearer</text>
+
+<path d="M350,104 C270,135 200,150 152,166" class="mcp" fill="none" stroke-width="1.6" marker-end="url(#aMcp)"/>
+<rect x="160" y="120" width="150" height="22" rx="11" fill="#2f6fb0" opacity="0.13"/>
+<text x="235" y="135" text-anchor="middle" class="mcpt" font-size="10.5" font-weight="600">config: root .env</text>
+
+<rect x="28" y="300" width="100" height="48" rx="8" class="box"/>
+<text x="78" y="322" text-anchor="middle" class="t" font-size="12">CME</text>
+<text x="78" y="338" text-anchor="middle" class="s" font-size="9">Confluence→MD</text>
+<rect x="140" y="300" width="116" height="48" rx="8" class="box"/>
+<text x="198" y="322" text-anchor="middle" class="t" font-size="12">Documents</text>
+<text x="198" y="338" text-anchor="middle" class="s" font-size="9">OCR / ingest</text>
+<rect x="268" y="300" width="96" height="48" rx="8" class="box"/>
+<text x="316" y="322" text-anchor="middle" class="t" font-size="12">Mailer</text>
+<text x="316" y="338" text-anchor="middle" class="s" font-size="9">e-mail</text>
+
+<path d="M135,222 C105,250 90,272 80,298" class="mcp" fill="none" stroke-width="1.4" marker-end="url(#aMcp)"/>
+<path d="M155,222 L196,298" class="mcp" fill="none" stroke-width="1.4" marker-end="url(#aMcp)"/>
+<path d="M185,222 C250,250 300,272 314,298" class="mcp" fill="none" stroke-width="1.4" marker-end="url(#aMcp)"/>
+<text x="150" y="270" text-anchor="middle" class="mcpt" font-size="10" font-style="italic">Bearer = *_MCP_AUTH_TOKEN</text>
+
+<!-- ============ RIGHT : internal wiki MCP + LLM ============ -->
+<rect x="620" y="168" width="210" height="52" rx="9" class="box mcp" stroke-width="1.6"/>
+<text x="725" y="190" text-anchor="middle" class="t" font-size="13">wiki MCP (internal)</text>
+<text x="725" y="208" text-anchor="middle" class="s" font-size="10">serve · mcp-http · production</text>
+
+<path d="M530,104 C610,135 680,150 718,166" class="mcp" fill="none" stroke-width="1.6" marker-end="url(#aMcp)"/>
+<rect x="560" y="120" width="200" height="22" rx="11" fill="#2f6fb0" opacity="0.13"/>
+<text x="660" y="135" text-anchor="middle" class="mcpt" font-size="10" font-weight="600">WIKI_MCP_AUTH_TOKEN / mcp.accessKey</text>
+
+<!-- wiki MCP -> models, config chip on the path -->
+<path d="M725,220 L725,238" class="llm" fill="none" stroke-width="1.5"/>
+<rect x="610" y="238" width="230" height="40" rx="10" fill="#2e8b57" opacity="0.12"/>
+<text x="725" y="254" text-anchor="middle" class="llmt" font-size="10" font-weight="700">config in 2 files:</text>
+<text x="725" y="270" text-anchor="middle" class="llmt" font-size="10" font-weight="600">workspace .env  +  .wikirc.yaml</text>
+<path d="M725,278 L725,298" class="llm" fill="none" stroke-width="1.5" marker-end="url(#aLlm)"/>
+
+<rect x="620" y="300" width="210" height="52" rx="8" class="box llm" stroke-width="1.5"/>
+<text x="725" y="322" text-anchor="middle" class="t" font-size="12">LLM models + embeddings</text>
+<text x="725" y="339" text-anchor="middle" class="s" font-size="9.3">llm.apiKey/baseUrl · vector.apiKey/baseUrl</text>
+
+<text x="725" y="378" text-anchor="middle" class="s" font-size="10">provider chosen by the profile:</text>
+<rect x="612" y="386" width="66" height="20" rx="10" class="box" stroke="#d9d9d4"/>
+<text x="645" y="400" text-anchor="middle" class="t" font-size="10">OpenAI</text>
+<rect x="686" y="386" width="62" height="20" rx="10" class="box" stroke="#d9d9d4"/>
+<text x="717" y="400" text-anchor="middle" class="t" font-size="10">Albert</text>
+<rect x="756" y="386" width="66" height="20" rx="10" class="box" stroke="#d9d9d4"/>
+<text x="789" y="400" text-anchor="middle" class="t" font-size="10">NVIDIA</text>
+
+<!-- ============ REMOTE MCP CLIENT (reaches BOTH surfaces) ============ -->
+<rect x="335" y="440" width="210" height="52" rx="9" fill="#2f6fb0" opacity="0.10"/>
+<rect x="335" y="440" width="210" height="52" rx="9" fill="none" class="mcp" stroke-width="1.6" stroke-dasharray="6 4"/>
+<text x="440" y="462" text-anchor="middle" class="mcpt" font-size="12" font-weight="700">Remote MCP client</text>
+<text x="440" y="480" text-anchor="middle" class="s" font-size="10">Claude desktop, scripts… (elsewhere)</text>
+<text x="440" y="425" text-anchor="middle" class="mcpt" font-size="10.5" font-style="italic">reachable from elsewhere: HTTP + same Bearer</text>
+
+<!-- far-left L : client -> agent endpoints -->
+<path d="M335,466 L18,466 L18,194 L38,194" class="mcp" fill="none" stroke-width="1.4" stroke-dasharray="6 4" marker-end="url(#aMcp)"/>
+<!-- far-right L : client -> wiki MCP -->
+<path d="M545,466 L862,466 L862,194 L832,194" class="mcp" fill="none" stroke-width="1.4" stroke-dasharray="6 4" marker-end="url(#aMcp)"/>
+
+<!-- bottom note -->
+<text x="440" y="540" text-anchor="middle" class="s" font-size="11"><tspan class="mcpt" font-weight="700">root .env</tspan> = shared MCP secrets (agent tokens, MailerSend, OCR)</text>
+<text x="440" y="560" text-anchor="middle" class="s" font-size="11"><tspan class="llmt" font-weight="700">workspace .env</tspan> = ports + wiki MCP tokens  ·  <tspan class="llmt" font-weight="700">.wikirc.yaml</tspan> = LLM &amp; vector keys</text>
+</svg>

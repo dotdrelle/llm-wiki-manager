@@ -33,7 +33,7 @@ and a *replaceable* toolbox of *external* MCP servers — to produce the **core
 wiki** outputs, all driven by an agentic, multi-model orchestrator and grounded
 in isolated workspaces.
 
-![wikiLLM functional diagram — inputs, MCP calls and outputs around the agentic orchestrator and workspaces](docs/architecture.svg)
+![wikiLLM functional diagram — inputs, MCP calls and outputs around the agentic orchestrator and workspaces](https://raw.githubusercontent.com/dotdrelle/llm-wiki-manager/main/docs/architecture.svg)
 
 ## Quick start — your first wiki in ~5 minutes
 
@@ -56,7 +56,7 @@ mkdir -p ~/llm-wiki && cd ~/llm-wiki      # all manager state lives here
 **2 — Set the environment.**
 Copy the template and keep the defaults — nothing is mandatory for the local
 demo (tokens/credentials are only needed when you connect real sources, see
-[docs/usage.md](docs/usage.md)). The `mcp.endpoints.json` file is created
+[docs/usage.md](https://raw.githubusercontent.com/dotdrelle/llm-wiki-manager/main/docs/usage.md)). The `mcp.endpoints.json` file is created
 automatically on the first command.
 
 ```bash
@@ -137,19 +137,9 @@ wiki-workspace wiki demo build            # or, in the shell: /skills run pipeli
 ```
 
 That's the whole loop. Next: the four ways to use it and how to configure the
-external agents (CME & co.) live in [docs/usage.md](docs/usage.md); the detailed
+external agents (CME & co.) live in [docs/usage.md](https://raw.githubusercontent.com/dotdrelle/llm-wiki-manager/main/docs/usage.md); the detailed
 story is in [The journey](#the-journey-from-first-launch-to-first-result); and
 installing from source is in [Initial Setup](#initial-setup).
-
-## The 4 ways to use it & agent configuration
-
-The same system has four faces — the **web interface** (explore with the mouse),
-**scripting** (let it run on its own), the **`donna` shell** (talk in plain
-language), and the **shared external agents** (the common toolbox). Each external
-agent (Confluence export with **CME**, document conversion, mail) also needs a
-little setup the first time.
-
-Both are covered in **[docs/usage.md](docs/usage.md)**.
 
 ## The journey: from first launch to first result
 
@@ -352,6 +342,30 @@ ingest -> build -> export -> polish
 
 The legacy copy step is only for deployments that explicitly configure external
 import mappings.
+
+## Configuration overview
+
+wikiLLM is configured by **four files** held together by two families of keys:
+**MCP keys** (Bearer tokens that authenticate *who connects to whom*) and **LLM
+keys** (`apiKey` + `baseUrl` that *reach a model*).
+
+![wikiLLM configuration keys — MCP vs LLM, where each key is configured](https://raw.githubusercontent.com/dotdrelle/llm-wiki-manager/main/docs/config-keys.svg)
+
+| File | Owner | Scope | Holds |
+| --- | --- | --- | --- |
+| `.env` | manager | global | shared secrets: agent MCP tokens, MailerSend, OCR LLM, port overrides |
+| `mcp.endpoints.json` | manager | global | where each external agent lives + which `Bearer`/header to send |
+| `workspaces/<name>/.env` | manager | per workspace | ports, workspace path, the wiki's own MCP tokens |
+| `workspaces/<name>/.wikirc.yaml` (+ `.wikirc.yaml.<profile>`) | workspace | per workspace | LLM & vector keys (provider/model/apiKey/baseUrl/retrieval) |
+
+Donna reaches the external agents and the internal wiki MCP through Bearer
+tokens; the wiki then uses its `.wikirc.yaml` LLM keys to call models and
+embeddings. Because every MCP server is an HTTP endpoint, remote MCP clients can
+connect to the same surfaces with the same tokens. **MCP keys** are set in the
+root `.env`; the wiki's **LLM keys** live in each workspace `.wikirc.yaml`.
+
+See the full, field-by-field reference in
+**[docs/configuration.md](https://raw.githubusercontent.com/dotdrelle/llm-wiki-manager/main/docs/configuration.md)**.
 
 ## Initial Setup
 

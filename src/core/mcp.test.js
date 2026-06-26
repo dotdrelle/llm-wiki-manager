@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { buildMcpStatus, callMcpTool } from './mcp.js';
+import { buildMcpStatus, callMcpTool, discoverMcpTools } from './mcp.js';
 
 test('buildMcpStatus reads external MCP endpoints from mcp.endpoints.json', async () => {
   const originalCwd = process.cwd();
@@ -85,6 +85,79 @@ test('buildMcpStatus interpolates external endpoints from manager .env', async (
     if (originalPort === undefined) delete process.env.TEST_EXTERNAL_PORT;
     else process.env.TEST_EXTERNAL_PORT = originalPort;
   }
+});
+
+test('buildMcpStatus reloads external endpoint keys changed in manager .env', async () => {
+  const originalCwd = process.cwd();
+  const originalToken = process.env.TEST_EXTERNAL_TOKEN;
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wiki-manager-mcp-env-reload-'));
+  await writeFile(
+    path.join(root, '.env'),
+    'TEST_EXTERNAL_TOKEN=first-token\n',
+    'utf8',
+  );
+  await writeFile(
+    path.join(root, 'mcp.endpoints.json'),
+    JSON.stringify({
+      mcpServers: {
+        external: {
+          url: 'http://127.0.0.1:9999/mcp/',
+          headers: {
+            Authorization: 'Bearer ${TEST_EXTERNAL_TOKEN}',
+          },
+        },
+      },
+    }),
+    'utf8',
+  );
+  process.env.TEST_EXTERNAL_TOKEN = 'first-token';
+
+  try {
+    process.chdir(root);
+    await writeFile(
+      path.join(root, '.env'),
+      'TEST_EXTERNAL_TOKEN=second-token\n',
+      'utf8',
+    );
+    const status = buildMcpStatus({ workspaceEnv: {} });
+    assert.deepEqual(status.external.headers, {
+      authorization: 'Bearer second-token',
+    });
+  } finally {
+    process.chdir(originalCwd);
+    if (originalToken === undefined) delete process.env.TEST_EXTERNAL_TOKEN;
+    else process.env.TEST_EXTERNAL_TOKEN = originalToken;
+  }
+});
+
+test('buildMcpStatus uses the latest workspace MCP tokens supplied by /use', () => {
+  const status = buildMcpStatus({
+    workspaceEnv: {
+      WIKI_MCP_PORT: '3101',
+      WIKI_MCP_AUTH_TOKEN: 'wiki-token-2',
+      PRODUCTION_MCP_PORT: '3102',
+      PRODUCTION_MCP_AUTH_TOKEN: 'production-token-2',
+    },
+  });
+
+  assert.equal(status.wiki.token, 'wiki-token-2');
+  assert.equal(status.production.token, 'production-token-2');
+});
+
+test('buildMcpStatus prefers active wikirc mcp.accessKey for wiki MCP', () => {
+  const status = buildMcpStatus({
+    workspaceEnv: {
+      WIKI_MCP_PORT: '3101',
+      WIKI_MCP_AUTH_TOKEN: 'env-wiki-token',
+    },
+    wikircConfig: {
+      mcp: {
+        accessKey: 'wikirc-wiki-token',
+      },
+    },
+  });
+
+  assert.equal(status.wiki.token, 'wikirc-wiki-token');
 });
 
 test('callMcpTool injects active configPath for production_start_job', async () => {
@@ -188,6 +261,32 @@ test('callMcpTool sends configured endpoint headers', async () => {
     );
 
     assert.equal(requestHeaders['x-api-key'], 'secret');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('discoverMcpTools downgrades connected endpoint when tool discovery fails', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 401,
+    headers: { get: () => null },
+    text: async () => '{"error":"invalid or missing bearer token"}',
+  });
+
+  try {
+    const status = await discoverMcpTools({
+      wiki: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3201/mcp',
+        token: 'token',
+      },
+    });
+
+    assert.equal(status.wiki.status, 'configured');
+    assert.equal(status.wiki.tools.length, 0);
+    assert.match(status.wiki.toolError, /401/);
   } finally {
     globalThis.fetch = originalFetch;
   }

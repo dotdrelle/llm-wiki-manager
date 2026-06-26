@@ -1,6 +1,44 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+CACERT_PATH="${WIKI_MANAGER_CACERT_PATH:-}"
+ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --cacert)
+      [[ $# -ge 2 ]] || { printf 'Error: --cacert requires a file path\n' >&2; exit 2; }
+      CACERT_PATH="$2"
+      shift 2
+      ;;
+    *)
+      ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+absolute_file_path() {
+  local value="$1"
+  local dir base
+  if [[ "$value" = /* ]]; then
+    printf '%s\n' "$value"
+    return
+  fi
+  dir="$(dirname "$value")"
+  base="$(basename "$value")"
+  printf '%s/%s\n' "$(cd "$dir" && pwd)" "$base"
+}
+
+if [[ -n "$CACERT_PATH" ]]; then
+  CACERT_PATH="$(absolute_file_path "$CACERT_PATH")"
+  [[ -f "$CACERT_PATH" ]] || { printf 'Error: --cacert file not found: %s\n' "$CACERT_PATH" >&2; exit 2; }
+  export WIKI_MANAGER_CACERT_PATH="$CACERT_PATH"
+  export NODE_EXTRA_CA_CERTS="$CACERT_PATH"
+  export SSL_CERT_FILE="$CACERT_PATH"
+  export REQUESTS_CA_BUNDLE="$CACERT_PATH"
+  export CURL_CA_BUNDLE="$CACERT_PATH"
+fi
+
 BUN_BIN="$(command -v bun 2>/dev/null || true)"
 if [[ -z "$BUN_BIN" && -n "${BUN_INSTALL:-}" && -x "$BUN_INSTALL/bin/bun" ]]; then
   BUN_BIN="$BUN_INSTALL/bin/bun"
@@ -27,4 +65,4 @@ while [[ -L "$SCRIPT_SOURCE" ]]; do
 done
 BIN_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
 
-exec "$BUN_BIN" "$BIN_DIR/wiki-manager.js" "$@"
+exec "$BUN_BIN" "$BIN_DIR/wiki-manager.js" "${ARGS[@]}"

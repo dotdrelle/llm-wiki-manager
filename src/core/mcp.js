@@ -77,14 +77,17 @@ const MCP_SERVICE_MAP = {
 
 export function buildMcpStatus(session) {
   const workspaceEnv = session.workspaceEnv ?? {};
-  const wikiMcpToken = session.wikircConfig?.mcp?.accessKey ?? workspaceEnv.WIKI_MCP_AUTH_TOKEN;
+  const wikiMcpToken = session.wikircConfig?.mcp?.accessKey;
+  const wikiMcpDetail = workspaceEnv.WIKI_MCP_PORT
+    ? (wikiMcpToken ? `:${workspaceEnv.WIKI_MCP_PORT}` : `:${workspaceEnv.WIKI_MCP_PORT} (mcp.accessKey missing in active wikirc)`)
+    : '';
   const external = readExternalMcpEndpoints();
 
   return {
     wiki: {
       ...endpointStatus(
         workspaceEnv.WIKI_MCP_PORT && wikiMcpToken,
-        workspaceEnv.WIKI_MCP_PORT ? `:${workspaceEnv.WIKI_MCP_PORT}` : '',
+        wikiMcpDetail,
       ),
       url: workspaceEnv.WIKI_MCP_PORT ? `http://127.0.0.1:${workspaceEnv.WIKI_MCP_PORT}/mcp` : null,
       token: wikiMcpToken || null,
@@ -208,7 +211,7 @@ async function mcpRequest(endpoint, method, params, signal, options = {}) {
           params: {
             protocolVersion: '2025-06-18',
             capabilities: {},
-            clientInfo: { name: 'wiki-manager', version: '0.6.28' },
+            clientInfo: { name: 'wiki-manager', version: '0.6.31' },
           },
         }),
       });

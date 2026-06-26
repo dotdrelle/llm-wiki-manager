@@ -562,6 +562,7 @@ Usage:
 Options:
   -v, --version        Print version
   -h, --help           Print help
+  --cacert <path>      Trust a local CA; Docker must be able to read this host path
   --once <prompt>      Run one agent turn and exit
   --headless           Run a workspace task non-interactively
   --workspace <name>   Workspace for --headless
@@ -658,7 +659,11 @@ export async function handleSlashCommand(line, context) {
       context.session.workspacePath = workspace.workspacePath;
       context.session.workspaceEnv = workspace.env;
       context.session.workspaceEnvFile = workspace.envFile;
-      context.session.mcp = buildMcpStatus(context.session);
+      context.session.wikirc = null;
+      context.session.wikircConfig = null;
+      context.session.language = null;
+      context.session.llm = null;
+      context.session.mcp = null;
       context.session.systemPrompt = loadWorkspaceSystemPrompt(workspace.workspacePath);
       try {
         step(`Workspace: loading ${workspace.name} config…`);
@@ -702,6 +707,7 @@ export async function handleSlashCommand(line, context) {
         }
         try {
           const summary = loadSessionWikirc(context.session, profileName);
+          await refreshMcpRuntimeStatus(context.session);
           return {
             output: [
               'Active wikirc:',

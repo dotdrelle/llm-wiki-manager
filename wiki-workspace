@@ -16,10 +16,66 @@ DEFAULT_MANAGER_DIR="$PWD"
 WORKSPACES_DIR="${WIKI_WORKSPACES_DIR:-$DEFAULT_MANAGER_DIR/workspaces}"
 MANAGER_ENV_FILE="${WIKI_MANAGER_ENV_FILE:-$DEFAULT_MANAGER_DIR/.env}"
 MANAGER_ENDPOINTS_FILE="${WIKI_MANAGER_ENDPOINTS_FILE:-$DEFAULT_MANAGER_DIR/mcp.endpoints.json}"
+MANAGER_STATE_DIR="$(cd "$(dirname "$MANAGER_ENV_FILE")" && pwd)"
+MANAGER_RUNTIME_DIR="$MANAGER_STATE_DIR/.wiki-manager"
+CACERT_PATH="${WIKI_MANAGER_CACERT_PATH:-}"
+
+normalize_path() {
+  local value="$1"
+  if command -v wslpath >/dev/null 2>&1 && [[ "$value" =~ ^[A-Za-z]:[\\/] ]]; then
+    wslpath -u "$value"
+    return
+  fi
+  printf '%s\n' "$value"
+}
+
+absolute_path() {
+  local value="$1"
+  local base="${2:-$ROOT_DIR}"
+  value="$(normalize_path "$value")"
+  if [[ "$value" = /* ]]; then
+    printf '%s\n' "$value"
+  else
+    printf '%s\n' "$base/$value"
+  fi
+}
+
+parse_global_options() {
+  local parsed=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --cacert)
+        [[ $# -ge 2 ]] || { printf 'Error: --cacert requires a file path\n' >&2; exit 2; }
+        CACERT_PATH="$2"
+        shift 2
+        ;;
+      *)
+        parsed+=("$1")
+        shift
+        ;;
+    esac
+  done
+  if [[ -n "$CACERT_PATH" ]]; then
+    CACERT_PATH="$(absolute_path "$CACERT_PATH" "$PWD")"
+    [[ -f "$CACERT_PATH" ]] || { printf 'Error: --cacert file not found: %s\n' "$CACERT_PATH" >&2; exit 2; }
+    export WIKI_MANAGER_CACERT_PATH="$CACERT_PATH"
+    export NODE_EXTRA_CA_CERTS="$CACERT_PATH"
+    export SSL_CERT_FILE="$CACERT_PATH"
+    export REQUESTS_CA_BUNDLE="$CACERT_PATH"
+    export CURL_CA_BUNDLE="$CACERT_PATH"
+  fi
+  set -- "${parsed[@]}"
+  PARSED_ARGS=("$@")
+}
+
+PARSED_ARGS=()
+parse_global_options "$@"
+set -- "${PARSED_ARGS[@]}"
 
 usage() {
   cat <<'EOF'
 Usage:
+  wiki-workspace [--cacert <path>] <command> ...
   wiki-workspace config <workspace> [path]
   wiki-workspace up <workspace>
   wiki-workspace wiki <workspace> <command> [args...]
@@ -50,32 +106,13 @@ Commands:
 Configuration:
   workspaces/<workspace>/.env
   Override directory: WIKI_WORKSPACES_DIR=/path/to/dir
+  Local CA: --cacert /absolute/path/to/ca.pem (Docker must be able to read this host path)
 EOF
 }
 
 die() {
   printf 'Error: %s\n' "$*" >&2
   exit 1
-}
-
-normalize_path() {
-  local value="$1"
-  if command -v wslpath >/dev/null 2>&1 && [[ "$value" =~ ^[A-Za-z]:[\\/] ]]; then
-    wslpath -u "$value"
-    return
-  fi
-  printf '%s\n' "$value"
-}
-
-absolute_path() {
-  local value="$1"
-  local base="${2:-$ROOT_DIR}"
-  value="$(normalize_path "$value")"
-  if [[ "$value" = /* ]]; then
-    printf '%s\n' "$value"
-  else
-    printf '%s\n' "$base/$value"
-  fi
 }
 
 workspace_env_file() {
@@ -169,9 +206,12 @@ agents_compose() {
   [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
 
   _agents_dc() {
+    local cacert_args=()
+    WORKSPACES_ROOT="$workspaces_root" AGENTS_DATA_DIR="$agents_data_dir" \
+      read_lines_into_array cacert_args cacert_compose_args "$agents_compose_file" "agents.cacert.compose.yml"
     WORKSPACES_ROOT="$workspaces_root" AGENTS_DATA_DIR="$agents_data_dir" \
       docker compose --project-directory "$DEFAULT_MANAGER_DIR" \
-        "${compose_env_args[@]}" -f "$agents_compose_file" -p wiki-agents "$@"
+        "${compose_env_args[@]}" -f "$agents_compose_file" "${cacert_args[@]}" -p wiki-agents "$@"
   }
 
   case "$subcommand" in
@@ -444,13 +484,19 @@ compose_for_workspace() {
   local compose_env_args=()
   [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
   compose_env_args+=(--env-file "$workspace_env")
+  local cacert_args=()
+  WIKI_WORKSPACE_PATH="$ws_path" \
+  WIKI_SERVE_PORT="$serve_port" \
+  WIKI_MCP_PORT="$mcp_port" \
+  PRODUCTION_MCP_PORT="$prod_port" \
+    read_lines_into_array cacert_args cacert_compose_args "$ROOT_DIR/docker-compose.yml" "cacert.compose.yml"
 
   WIKI_WORKSPACE_PATH="$ws_path" \
   WIKI_SERVE_PORT="$serve_port" \
   WIKI_MCP_PORT="$mcp_port" \
   PRODUCTION_MCP_PORT="$prod_port" \
   docker compose --project-directory "$DEFAULT_MANAGER_DIR" \
-    "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" -p "$project" "$@"
+    "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" "${cacert_args[@]}" -p "$project" "$@"
 }
 
 logs_args() {
@@ -472,6 +518,48 @@ read_lines_into_array() {
   while IFS= read -r line; do
     eval "$array_name+=(\"\$line\")"
   done < <("$@")
+}
+
+cacert_compose_args() {
+  local compose_file="$1"
+  local override_name="$2"
+  [[ -n "$CACERT_PATH" ]] || return 0
+  command -v node >/dev/null 2>&1 || die "--cacert requires node to generate Docker Compose overrides"
+
+  local services
+  services="$(
+    ROOT_DIR="$ROOT_DIR" _WIKI_COMPOSE_FILE_PATH="$compose_file" node <<'NODE'
+const { createRequire } = require('node:module');
+const fs = require('node:fs');
+const requireFromPackage = createRequire(`${process.env.ROOT_DIR}/package.json`);
+const YAML = requireFromPackage('yaml');
+const parsed = YAML.parse(fs.readFileSync(process.env._WIKI_COMPOSE_FILE_PATH, 'utf8')) ?? {};
+for (const service of Object.keys(parsed.services ?? {})) {
+  console.log(service);
+}
+NODE
+  )"
+  [[ -n "$services" ]] || return 0
+
+  mkdir -p "$MANAGER_RUNTIME_DIR"
+  local override_path="$MANAGER_RUNTIME_DIR/$override_name"
+  {
+    printf '# Generated by wiki-manager. Safe to delete.\n'
+    printf '# Rewritten when --cacert is used with a Docker Compose command.\n'
+    printf 'services:\n'
+    while IFS= read -r service || [[ -n "$service" ]]; do
+      [[ -n "$service" ]] || continue
+      printf '  %s:\n' "$service"
+      printf '    volumes:\n'
+      printf '      - %s:/wiki-manager-ca.pem:ro\n' "$CACERT_PATH"
+      printf '    environment:\n'
+      printf '      NODE_EXTRA_CA_CERTS: /wiki-manager-ca.pem\n'
+      printf '      SSL_CERT_FILE: /wiki-manager-ca.pem\n'
+      printf '      REQUESTS_CA_BUNDLE: /wiki-manager-ca.pem\n'
+      printf '      CURL_CA_BUNDLE: /wiki-manager-ca.pem\n'
+    done <<< "$services"
+  } > "$override_path"
+  printf '%s\n' -f "$override_path"
 }
 
 run_wiki() {
@@ -623,12 +711,17 @@ config_workspace() {
   local compose_env_args=()
   [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
   compose_env_args+=(--env-file "$env_file")
+  local cacert_args=()
+  WIKI_WORKSPACE_PATH="$target_path" \
+  WIKI_SERVE_PORT="$serve_port" \
+  WIKI_MCP_PORT="$mcp_port" \
+    read_lines_into_array cacert_args cacert_compose_args "$ROOT_DIR/docker-compose.yml" "cacert.compose.yml"
 
   WIKI_WORKSPACE_PATH="$target_path" \
   WIKI_SERVE_PORT="$serve_port" \
   WIKI_MCP_PORT="$mcp_port" \
     docker compose --project-directory "$DEFAULT_MANAGER_DIR" \
-      "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" run --rm wiki init
+      "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" "${cacert_args[@]}" run --rm wiki init
 
   printf 'Workspace ready: %s\n' "$target_path"
   printf 'Start with:      wiki-workspace up %s\n' "$workspace"

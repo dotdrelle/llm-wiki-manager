@@ -130,7 +130,7 @@ test('buildMcpStatus reloads external endpoint keys changed in manager .env', as
   }
 });
 
-test('buildMcpStatus uses the latest workspace MCP tokens supplied by /use', () => {
+test('buildMcpStatus does not use workspace env token for wiki MCP without active wikirc accessKey', () => {
   const status = buildMcpStatus({
     workspaceEnv: {
       WIKI_MCP_PORT: '3101',
@@ -140,11 +140,13 @@ test('buildMcpStatus uses the latest workspace MCP tokens supplied by /use', () 
     },
   });
 
-  assert.equal(status.wiki.token, 'wiki-token-2');
+  assert.equal(status.wiki.status, 'missing');
+  assert.equal(status.wiki.token, null);
+  assert.match(status.wiki.detail, /mcp\.accessKey missing/);
   assert.equal(status.production.token, 'production-token-2');
 });
 
-test('buildMcpStatus prefers active wikirc mcp.accessKey for wiki MCP', () => {
+test('buildMcpStatus uses active wikirc mcp.accessKey for wiki MCP', () => {
   const status = buildMcpStatus({
     workspaceEnv: {
       WIKI_MCP_PORT: '3101',
@@ -157,6 +159,7 @@ test('buildMcpStatus prefers active wikirc mcp.accessKey for wiki MCP', () => {
     },
   });
 
+  assert.equal(status.wiki.status, 'configured');
   assert.equal(status.wiki.token, 'wikirc-wiki-token');
 });
 

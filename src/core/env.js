@@ -1,18 +1,28 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 export function userManagerDir() {
   return process.cwd();
 }
 
+export function managerStateDir() {
+  return process.env.WIKI_MANAGER_ENV_FILE
+    ? dirname(resolve(process.env.WIKI_MANAGER_ENV_FILE))
+    : userManagerDir();
+}
+
+export function managerRuntimeDir() {
+  return join(managerStateDir(), '.wiki-manager');
+}
+
 export function managerEnvFile() {
   return process.env.WIKI_MANAGER_ENV_FILE
     ? resolve(process.env.WIKI_MANAGER_ENV_FILE)
-    : join(userManagerDir(), '.env');
+    : join(managerStateDir(), '.env');
 }
 
 export function managerMcpEndpointsFile() {
-  return join(userManagerDir(), 'mcp.endpoints.json');
+  return join(managerStateDir(), 'mcp.endpoints.json');
 }
 
 function parseEnvValue(value) {

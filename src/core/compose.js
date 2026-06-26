@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import YAML from 'yaml';
+import { cacertEnv, ensureCacertComposeOverride } from './cacert.js';
 import { managerEnvFile, readEnvFile } from './env.js';
 import { managerRoot } from './workspaces.js';
 
@@ -93,14 +94,14 @@ function projectName(session) {
 }
 
 function composeBaseArgs(session) {
-  const args = ['compose', '-f', composeFile(), '-p', projectName(session)];
+  const compose = composeFile();
+  const cacertOverride = ensureCacertComposeOverride(compose);
+  const args = ['compose', '-f', compose];
+  if (cacertOverride) args.push('-f', cacertOverride);
+  args.push('-p', projectName(session));
   const managerEnvPath = managerEnvFile();
-  if (existsSync(managerEnvPath)) {
-    args.push('--env-file', managerEnvPath);
-  }
-  if (session.workspaceEnvFile && existsSync(session.workspaceEnvFile)) {
-    args.push('--env-file', session.workspaceEnvFile);
-  }
+  if (existsSync(managerEnvPath)) args.push('--env-file', managerEnvPath);
+  if (session.workspaceEnvFile && existsSync(session.workspaceEnvFile)) args.push('--env-file', session.workspaceEnvFile);
   return args;
 }
 
@@ -109,6 +110,7 @@ function composeEnv(session) {
     ...process.env,
     ...readManagerEnv(),
     ...(session.workspaceEnv ?? {}),
+    ...cacertEnv(),
     WORKSPACE_NAME: session.workspace,
     WIKI_WORKSPACE_PATH: session.workspacePath,
   };

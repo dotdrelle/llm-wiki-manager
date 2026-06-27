@@ -24,14 +24,15 @@ export function SlashDialog(props: { context: any }) {
             {(item: any, index) => (
               <text
                 height={1}
-                fg={index() === context().selected ? '#111318' : '#D6DEE8'}
-                bg={index() === context().selected ? '#8BD5CA' : '#111318'}
+                fg={index() === context().visibleSelected ? '#111318' : '#D6DEE8'}
+                bg={index() === context().visibleSelected ? '#8BD5CA' : '#111318'}
               >
                 {item.value.padEnd(16, ' ')} {item.description}
               </text>
             )}
           </For>
-          <text fg="#7F8C8D">[up/down navigate  Tab complete  Enter confirm  Esc clear]</text>
+          <text height={1} />
+          <text fg="#7F8C8D">[up/down navigate, Tab complete, Enter confirm, Esc clear]</text>
         </box>
       )}
     </Show>

@@ -238,7 +238,7 @@ export async function composePs(session) {
   return runCompose(session, ['ps'], { timeout: 30_000 });
 }
 
-function parseComposePsJson(output) {
+export function parseComposePsJson(output) {
   const text = output.trim();
   if (!text) return [];
   try {

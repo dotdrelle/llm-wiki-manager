@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { For, createEffect, createMemo, createSignal } from 'solid-js';
+import { For, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import { colorForRenderedLine, helpCommandParts, keyValueParts, renderPlainMarkdown } from './renderer';
 
 const LEGACY_DONNA_ROLE = 'do' + 't';
@@ -59,12 +59,12 @@ const STATUS_COLUMN_GAP = 2;
 type HelpCard = { title: string; text: string; example: string };
 
 const HELP_CARDS: HelpCard[] = [
+  { title: '/use', text: 'Load one workspace.', example: 'Ex: /use <workspace>' },
   { title: '/new', text: 'Create/configure a workspace.', example: 'Ex: /new <name> [path]' },
-  { title: 'modify wikirc', text: 'Action: edit file.', example: 'File: .wikirc.yaml' },
-  { title: 'configure CME', text: 'Add type, URL, PAT, email.', example: 'Provide source credentials' },
-  { title: 'add MCP', text: 'Inspect and use MCP endpoints.', example: 'Ex: /mcp endpoints' },
-  { title: '/use', text: 'Load one workspace and its tools.', example: 'Ex: /use <workspace>' },
-  { title: 'llm call action', text: 'Ask to LLM.', example: 'Ex: ask to LLM to run an action' },
+  { title: '/config', text: 'Modify LLM configuration.', example: 'Ex: /config edit <profile>' },
+  { title: '/mcp', text: 'View MCP.', example: 'Ex: /mcp status' },
+  { title: 'configure CME', text: 'Add type, URL, PAT, email.', example: 'Ask to donna to set credentials' },
+  { title: '/status', text: 'Check config.', example: 'Ex: /status' },
 ];
 
 function HelpCardPanel(props: { card: HelpCard; width: number }) {
@@ -364,6 +364,7 @@ function conversationLines(messages: Array<{ role: string; content: string }>, c
     if (isStatusOutput(message)) {
       return [
         { segments: messageHeaderSegments(message.role, columns), copyContent: raw },
+        { segments: [{ text: ' ', color: '#D6DEE8' }] },
         ...raw.split('\n').map((line) => {
           const { left, right } = statusColumns(line || ' ');
           return { status: true, statusLeft: left, statusRight: right, segments: [] };
@@ -379,6 +380,7 @@ function conversationLines(messages: Array<{ role: string; content: string }>, c
     }
     return [
       { segments: messageHeaderSegments(message.role, columns), copyContent: raw },
+      { segments: [{ text: ' ', color: '#D6DEE8' }] },
       ...renderMarkdownLines(lines, message.role, columns),
       { segments: [{ text: ' ', color: '#D6DEE8' }] },
     ];
@@ -397,7 +399,7 @@ export function ConversationView(props: {
   const allLines = createMemo(() => conversationLines(props.messages, props.columns));
   const visibleLines = () => {
     const lines = allLines();
-    const rows = Math.max(1, props.rows - 1);
+    const rows = Math.max(1, props.rows - 2);
     const maxScroll = Math.max(0, lines.length - rows);
     const scroll = Math.min(props.scroll, maxScroll);
     const end = lines.length - scroll;
@@ -406,7 +408,7 @@ export function ConversationView(props: {
   };
   const scrollHint = () => {
     const lines = allLines();
-    const rows = Math.max(1, props.rows - 1);
+    const rows = Math.max(1, props.rows - 2);
     const maxScroll = Math.max(0, lines.length - rows);
     const scroll = Math.min(props.scroll, maxScroll);
     if (maxScroll === 0) return '';
@@ -483,6 +485,7 @@ export function ConversationView(props: {
           )
         )}
       </For>
+      <text height={1} />
     </box>
   );
 }
@@ -504,28 +507,34 @@ export function ChatInput(props: {
   const minRows = 1;
   const maxRows = 5;
   const [textareaRows, setTextareaRows] = createSignal(minRows);
+  let disposed = false;
   const idleColor = () => props.chatMode ? '#22C55E' : '#06B6D4';
   const promptText = () => props.busy ? `${props.spinnerFrame} ` : props.prompt;
   const boxHeight = () => textareaRows() + 2;
+  const inputColumns = () => Math.max(8, props.width - promptText().length - 6);
   const textareaColumns = () => {
     const measured = Number(textareaRef?.width ?? 0);
-    if (Number.isFinite(measured) && measured > 0) return Math.max(8, measured - 1);
-    return Math.max(8, props.width - promptText().length - 7);
+    const bounded = Math.min(inputColumns(), Number.isFinite(measured) && measured > 0 ? measured : inputColumns());
+    return Math.max(8, bounded - 1);
   };
   const estimatedVisualRows = (value: string) => {
     const columns = textareaColumns();
     return Math.max(1, value.split('\n').reduce((rows, line) => rows + Math.max(1, Math.ceil(line.length / columns)), 0));
   };
   const measuredVisualRows = (value: string) => {
-    const virtualRows = Number(textareaRef?.virtualLineCount ?? 0);
-    const logicalRows = Number(textareaRef?.lineCount ?? 0);
-    const scrollRows = Number(textareaRef?.scrollHeight ?? 0);
-    return Math.max(
-      estimatedVisualRows(value),
-      Number.isFinite(virtualRows) ? virtualRows : 0,
-      Number.isFinite(logicalRows) ? logicalRows : 0,
-      Number.isFinite(scrollRows) ? scrollRows : 0,
-    );
+    try {
+      const virtualRows = Number(textareaRef?.virtualLineCount ?? 0);
+      const logicalRows = Number(textareaRef?.lineCount ?? 0);
+      const scrollRows = Number(textareaRef?.scrollHeight ?? 0);
+      return Math.max(
+        estimatedVisualRows(value),
+        Number.isFinite(virtualRows) ? virtualRows : 0,
+        Number.isFinite(logicalRows) ? logicalRows : 0,
+        Number.isFinite(scrollRows) ? scrollRows : 0,
+      );
+    } catch {
+      return estimatedVisualRows(value);
+    }
   };
   const applyHeight = (rows: number) => {
     const height = rows + 2;
@@ -533,10 +542,24 @@ export function ChatInput(props: {
     if (containerRef) containerRef.height = height;
     props.onHeightChange(height);
   };
-  const updateRows = (value = String(textareaRef?.plainText ?? props.value ?? '')) => {
-    const rows = Math.min(maxRows, Math.max(minRows, measuredVisualRows(value)));
+  const safePlainText = () => {
+    try {
+      return String(textareaRef?.plainText ?? props.value ?? '');
+    } catch {
+      return String(props.value ?? '');
+    }
+  };
+  const updateRows = (value?: string) => {
+    if (disposed) return;
+    const text = value ?? safePlainText();
+    const rows = Math.min(maxRows, Math.max(minRows, measuredVisualRows(text)));
     setTextareaRows(rows);
     applyHeight(rows);
+  };
+  const queueUpdateRows = (value?: string) => {
+    queueMicrotask(() => {
+      if (!disposed) updateRows(value);
+    });
   };
   const syncTextareaValue = (value: string) => {
     const current = String(textareaRef?.plainText ?? '');
@@ -549,16 +572,16 @@ export function ChatInput(props: {
       // Some renderable states reject cursor movement while layout is settling.
     }
     updateRows(value);
-    queueMicrotask(() => updateRows(value));
+    queueUpdateRows(value);
   };
   const handleContentChange = () => {
-    const value = String(textareaRef?.plainText ?? '');
+    const value = safePlainText();
     props.onInput(value);
     updateRows(value);
-    queueMicrotask(() => updateRows(value));
+    queueUpdateRows(value);
   };
   const submitCurrentValue = () => {
-    props.onSubmit(String(textareaRef?.plainText ?? props.value ?? ''));
+    props.onSubmit(safePlainText());
   };
 
   createEffect(() => {
@@ -573,7 +596,10 @@ export function ChatInput(props: {
     props.width;
     props.prompt;
     props.spinnerFrame;
-    queueMicrotask(() => updateRows());
+    queueUpdateRows();
+  });
+  onCleanup(() => {
+    disposed = true;
   });
 
   return (
@@ -590,7 +616,7 @@ export function ChatInput(props: {
       <text height={1} fg={props.busy ? '#FBBF24' : idleColor()}>{promptText()}</text>
       <textarea
         ref={textareaRef}
-        flexGrow={1}
+        width={inputColumns()}
         height={textareaRows()}
         focused={props.focused && !props.busy}
         initialValue={props.value}
@@ -599,7 +625,7 @@ export function ChatInput(props: {
         keyBindings={[
           { name: 'return', action: 'submit' },
           { name: 'kpenter', action: 'submit' },
-          { name: 'linefeed', action: 'newline' },
+          { name: 'linefeed', action: 'submit' },
           { name: 'return', shift: true, action: 'newline' },
           { name: 'kpenter', shift: true, action: 'newline' },
           { name: 'linefeed', shift: true, action: 'newline' },

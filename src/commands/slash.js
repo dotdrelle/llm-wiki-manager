@@ -30,6 +30,7 @@ import {
   resolveWikircProfile,
   summarizeWikircConfig,
 } from '../core/wikirc.js';
+import { deleteWorkspaceAndFiles, startAgents, stopAgents } from '../core/wikiSetup.js';
 import {
   cleanDocumentUploads,
   convertPendingDocumentUploads,
@@ -433,8 +434,7 @@ async function createWorkspaceCommand(context, workspaceName, targetPath) {
       output: [
         'Usage: /new <name> [path]',
         '',
-        'Creates/configures a new workspace through wiki-workspace config.',
-        'Legacy form: /workspace init <name> [path].',
+        'Creates and registers a workspace via wiki-workspace config.',
         'For llm-wiki init inside the current workspace, use /wiki run init.',
       ].join('\n'),
     };
@@ -455,6 +455,7 @@ async function createWorkspaceCommand(context, workspaceName, targetPath) {
     return { output: message };
   }
 }
+
 
 function formatMcpCallActivity(serverName, toolName, resultText) {
   if (serverName === 'production') return null;
@@ -551,6 +552,47 @@ function loadSessionWikirc(session, profileName = 'default') {
   return summarizeWikircConfig(loaded.profile, loaded.config);
 }
 
+function clearWorkspaceSession(session) {
+  session.workspace = null;
+  session.workspacePath = null;
+  session.workspaceEnv = null;
+  session.workspaceEnvFile = null;
+  session.wikirc = null;
+  session.wikircConfig = null;
+  session.language = null;
+  session.llm = null;
+  session.mcp = null;
+  session.systemPrompt = null;
+}
+
+function formatWorkspaceList(workspaces, session = null) {
+  if (workspaces.length === 0) return 'No workspace configured.';
+  return [
+    'Workspaces',
+    '',
+    ...workspaces.flatMap((workspace) => {
+      const active = workspace.name === session?.workspace ? 'active' : 'available';
+      return [
+        `${workspace.name}\t${active}`,
+        `  path\t${workspace.workspacePath}`,
+        `  use\t/use ${workspace.name}`,
+        `  delete\t/workspace delete ${workspace.name}`,
+        '',
+      ];
+    }),
+  ].join('\n').trimEnd();
+}
+
+function workspaceDeletePrompt(workspaces) {
+  if (workspaces.length === 0) return 'No workspace configured.';
+  return [
+    'Delete a workspace:',
+    ...workspaces.map((workspace) => `  /workspace delete ${workspace.name}\t${workspace.workspacePath}`),
+    '',
+    'The next step asks for confirmation before deleting files.',
+  ].join('\n');
+}
+
 export function helpText(packageJson) {
   return `wiki-manager ${packageJson.version}
 
@@ -576,12 +618,12 @@ Options:
 
 Interactive shell:
 ${helpPair('/help', 'Help', '/version', 'Version')}
-${helpPair('/workspaces', 'Workspaces', '/new <n> [path]', 'New workspace')}
+${helpPair('/workspace list', 'Workspaces', '/new <n> [path]', 'New workspace')}
 ${helpPair('/use <workspace>', 'Use workspace', '/status', 'Session status')}
 ${helpPair('/config list', 'Config profiles', '/config use <n>', 'Use config')}
-${helpPair('/config edit <n>', 'Edit config', '/config status', 'Active config')}
-${helpPair('/services', 'Services', '/start [service]', 'Start service(s)')}
-${helpPair('/stop [service]', 'Stop service(s)', '/logs <service>', 'Service logs')}
+${helpPair('/config edit <n>', 'Edit config', '/workspace delete <n>', 'Delete workspace')}
+${helpPair('/services', 'Services', '/start [service|agents]', 'Start service(s)')}
+${helpPair('/stop [service|agents]', 'Stop service(s)', '/logs <service>', 'Service logs')}
 ${helpPair('/skills', 'List skills', '/skills show <n>', 'Show skill')}
 ${helpPair('/skills run <n>', 'Run skill guide', '/skills edit <n>', 'Edit skill')}
 ${helpPair('/mcp status', 'MCP status', '/mcp endpoints', 'MCP endpoints')}
@@ -618,6 +660,16 @@ export async function handleSlashCommand(line, context) {
   const args = line.slice(1).trim().split(/\s+/).filter(Boolean);
   const [command] = args;
   const step = context.onStep ?? (() => {});
+  const runAgentCommand = async (fn, verb) => {
+    try {
+      step(`Agents: ${verb}ing external agents…`);
+      const output = await fn();
+      return { output: output || `Agents ${verb}ed.` };
+    } catch (err) {
+      step(formatActivityError('agents', verb, err));
+      return { output: err instanceof Error ? err.message : String(err) };
+    }
+  };
 
   switch (command) {
     case '':
@@ -631,17 +683,6 @@ export async function handleSlashCommand(line, context) {
     case 'agent':
       context.session.chatMode = false;
       return { setMode: 'agent', output: 'Mode: agent' };
-    case 'workspaces': {
-      const workspaces = listWorkspaces();
-      if (workspaces.length === 0) {
-        return { output: 'No workspace configured.' };
-      }
-      return {
-        output: workspaces
-          .map((workspace) => `${workspace.name}\t${workspace.workspacePath}`)
-          .join('\n'),
-      };
-    }
     case 'status': {
       step('Shell: refreshing workspace, services and MCP status…');
       return { output: await statusText(context.session) };
@@ -655,15 +696,11 @@ export async function handleSlashCommand(line, context) {
       if (!workspace) {
         return { output: `Workspace not found: ${workspaceName}` };
       }
+      clearWorkspaceSession(context.session);
       context.session.workspace = workspace.name;
       context.session.workspacePath = workspace.workspacePath;
       context.session.workspaceEnv = workspace.env;
       context.session.workspaceEnvFile = workspace.envFile;
-      context.session.wikirc = null;
-      context.session.wikircConfig = null;
-      context.session.language = null;
-      context.session.llm = null;
-      context.session.mcp = null;
       context.session.systemPrompt = loadWorkspaceSystemPrompt(workspace.workspacePath);
       try {
         step(`Workspace: loading ${workspace.name} config…`);
@@ -778,6 +815,7 @@ export async function handleSlashCommand(line, context) {
     }
     case 'start': {
       const service = args[1];
+      if (service === 'agents') return runAgentCommand(startAgents, 'start');
       try {
         step(`Services: starting ${service ?? 'workspace services'}…`);
         const output = await startService(context.session, service);
@@ -792,6 +830,7 @@ export async function handleSlashCommand(line, context) {
     }
     case 'stop': {
       const service = args[1];
+      if (service === 'agents') return runAgentCommand(stopAgents, 'stop');
       try {
         step(`Services: stopping ${service ?? 'workspace services'}…`);
         const output = await stopService(context.session, service);
@@ -955,12 +994,50 @@ export async function handleSlashCommand(line, context) {
     case 'new': {
       return createWorkspaceCommand(context, args[1], args[2] ?? null);
     }
-    case 'workspace': {
-      const subcommand = args[1];
-      if (subcommand !== 'init') {
-        return { output: 'Usage: /new <name> [path]\nLegacy: /workspace init <name> [path]' };
+    case 'workspace':
+    case 'workplace': {
+      const subcommand = args[1] ?? 'list';
+      if (subcommand === 'list') {
+        return { output: formatWorkspaceList(listWorkspaces(), context.session) };
       }
-      return createWorkspaceCommand(context, args[2], args[3] ?? null);
+      if (subcommand === 'delete') {
+        const workspaceName = args[2];
+        const confirmed = args.includes('--confirm');
+        const workspaces = listWorkspaces();
+        if (!workspaceName) return { output: workspaceDeletePrompt(workspaces) };
+        const workspace = workspaces.find((item) => item.name === workspaceName);
+        if (!workspace) return { output: `Workspace not found: ${workspaceName}` };
+        if (!confirmed) {
+          return {
+            output: [
+              `Confirm workspace deletion: ${workspace.name}`,
+              `Path: ${workspace.workspacePath}`,
+              'This removes the registry entry and deletes the workspace files.',
+              '',
+              `Run: /workspace delete ${workspace.name} --confirm`,
+            ].join('\n'),
+          };
+        }
+        try {
+          step(`Workspace: deleting ${workspace.name}…`);
+          const result = await deleteWorkspaceAndFiles(workspace, workspace.workspacePath);
+          const wasCurrent = context.session.workspace === workspace.name
+            || context.session.workspacePath === workspace.workspacePath;
+          if (wasCurrent) clearWorkspaceSession(context.session);
+          return {
+            output: [
+              `Deleted workspace: ${workspace.name}`,
+              `Removed registry entry and files at: ${result.deletedPath}`,
+              wasCurrent ? 'Current session cleared. Use /use <workspace> or /workspace init <name> [path].' : null,
+            ].filter(Boolean).join('\n'),
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return { output: message };
+        }
+      }
+      if (subcommand === 'init') return createWorkspaceCommand(context, args[2], args[3] ?? null);
+      return { output: 'Usage: /workspace <list|delete <name> --confirm|init <name> [path]>' };
     }
     case 'wiki': {
       const subcommand = args[1];

@@ -6,6 +6,7 @@ import { FileEditorDialog } from './FileEditorDialog';
 import { LeftPane } from './LeftPane';
 import { RightPane } from './RightPane';
 import { SlashDialog } from './SlashDialog';
+import { SetupWizard } from './SetupWizard';
 import { useSession } from './useSession';
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -37,7 +38,10 @@ function copyToClipboard(text: string, renderer: unknown) {
   }
 }
 
-function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
+function App(props: {
+  agent: unknown;
+  packageJson: Record<string, unknown>;
+}) {
   const renderer = useRenderer();
   const dimensions = useTerminalDimensions();
   const [spinnerIndex, setSpinnerIndex] = createSignal(0);
@@ -100,11 +104,12 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
   });
 
   useKeyboard((key) => {
+    const keyName = String(key.name ?? '').toLowerCase();
     if (state.activeEditor()) {
-      if (key.name === 'escape') state.closeEditor();
+      if (keyName === 'escape') state.closeEditor();
       return;
     }
-    if (key.ctrl && key.name === 'c') {
+    if ((key.ctrl || key.meta) && keyName === 'c') {
       if (state.busy()) {
         state.abort();
         return;
@@ -121,19 +126,19 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
       }, 1600);
       return;
     }
-    if (key.ctrl && key.name === 'q') {
+    if (key.ctrl && keyName === 'q') {
       state.toggleRightTab();
       return;
     }
     if (state.busy()) return;
-    if (key.name === 'tab') state.completeSelected();
-    if (key.name === 'pageup') state.scrollConversation(conversationRows());
-    else if (key.name === 'pagedown') state.scrollConversation(-conversationRows());
-    if (key.name === 'up' && state.slash()) state.moveCompletion(-1);
-    else if (key.name === 'down' && state.slash()) state.moveCompletion(1);
-    else if (key.name === 'up' && !state.input().includes('\n')) state.historyUp();
-    else if (key.name === 'down' && !state.input().includes('\n')) state.historyDown();
-    else if (key.name === 'escape') {
+    if (keyName === 'tab') state.completeSelected();
+    if (keyName === 'pageup') state.scrollConversation(conversationRows());
+    else if (keyName === 'pagedown') state.scrollConversation(-conversationRows());
+    if (keyName === 'up' && state.slash()) state.moveCompletion(-1);
+    else if (keyName === 'down' && state.slash()) state.moveCompletion(1);
+    else if (keyName === 'up' && !state.input().includes('\n')) state.historyUp();
+    else if (keyName === 'down' && !state.input().includes('\n')) state.historyDown();
+    else if (keyName === 'escape') {
       if (state.slash()) state.dismissSlash();
       else state.setInput('');
     }
@@ -196,10 +201,77 @@ function App(props: { agent: unknown; packageJson: Record<string, unknown> }) {
   );
 }
 
-export async function runOpenTuiShell({ agent, packageJson }: { agent: unknown; packageJson: Record<string, unknown> }) {
+export async function runOpenTuiShell({
+  agent,
+  packageJson,
+}: {
+  agent: unknown;
+  packageJson: Record<string, unknown>;
+}) {
   await render(() => <App agent={agent} packageJson={packageJson} />, {
     exitOnCtrlC: false,
     useMouse: true,
     targetFps: 30,
+  });
+  return {};
+}
+
+function WizardApp(props: {
+  mode: 'startup' | 'setup';
+  gaps?: any[];
+  initialWorkspaceName?: string;
+  initialWorkspacePath?: string | null;
+  onDone: () => void;
+}) {
+  const renderer = useRenderer();
+  const dimensions = useTerminalDimensions();
+  const close = () => {
+    props.onDone();
+    renderer.destroy();
+  };
+  return (
+    <box width="100%" height="100%" backgroundColor="#0B0D12">
+      <SetupWizard
+        mode={props.mode}
+        session={{}}
+        gaps={props.gaps}
+        width={dimensions().width}
+        height={dimensions().height}
+        initialRoute={props.mode === 'setup' ? 'workspace-name' : undefined}
+        initialWorkspaceName={props.initialWorkspaceName}
+        initialWorkspacePath={props.initialWorkspacePath ?? null}
+        closeOnDone={props.mode === 'setup'}
+        onComplete={close}
+        onClose={close}
+      />
+    </box>
+  );
+}
+
+export async function runStartupWizard(gaps: any[]) {
+  if (!gaps.length) return;
+  await new Promise<void>((resolve, reject) => {
+    render(() => <WizardApp mode="startup" gaps={gaps} onDone={resolve} />, {
+      exitOnCtrlC: false,
+      useMouse: true,
+      targetFps: 30,
+    }).catch(reject);
+  });
+}
+
+export async function runSetupWizard(options: { workspaceName?: string; workspacePath?: string | null } = {}) {
+  await new Promise<void>((resolve, reject) => {
+    render(() => (
+      <WizardApp
+        mode="setup"
+        initialWorkspaceName={options.workspaceName}
+        initialWorkspacePath={options.workspacePath ?? null}
+        onDone={resolve}
+      />
+    ), {
+      exitOnCtrlC: false,
+      useMouse: true,
+      targetFps: 30,
+    }).catch(reject);
   });
 }

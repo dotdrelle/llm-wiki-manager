@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { Index, Show } from 'solid-js';
+import { createMemo, Index, Show } from 'solid-js';
 
 type PlanStep = { step: number; description: string; status: string };
 type QueueItem = {
@@ -12,6 +12,7 @@ type QueueItem = {
   reason?: string;
 };
 type QueueInfo = { active: number; current: number; frozen: number };
+type LogLineParts = { time: string | null; message: string };
 
 const ACTIVITY_SLOTS = Array.from({ length: 6 }, (_, index) => index);
 const LOG_SLOTS = Array.from({ length: 24 }, (_, index) => index);
@@ -49,6 +50,12 @@ function fit(value: string, width: number) {
   if (value.length <= max) return value;
   if (max <= 1) return '…';
   return value.slice(0, max - 1) + '…';
+}
+
+function logLineParts(line: string): LogLineParts {
+  const match = line.match(/^((?:\d{1,2}:\d{2}(?::\d{2})?(?:\s?[AP]M)?|\d{4}-\d{2}-\d{2}[T ][0-9:.]+Z?))\s+(.+)$/i);
+  if (!match) return { time: null, message: line };
+  return { time: match[1], message: match[2] };
 }
 
 function activityColor(status: string) {
@@ -190,7 +197,23 @@ export function LogPanel(props: { logs: string[]; width: number }) {
       <text width={lineWidth()} fg="#D6DEE8" content="Logs / Trace" />
       <box flexGrow={1} flexDirection="column" overflow="hidden">
         <Index each={LOG_SLOTS}>
-          {(slot) => <text width={lineWidth()} fg="#AAB7C4" content={logLineAt(slot())} />}
+          {(slot) => {
+            const line = () => logLineAt(slot());
+            const parts = createMemo(() => logLineParts(line()));
+            const timeWidth = () => parts().time ? Math.min(parts().time!.length + 1, lineWidth()) : 0;
+            const messageWidth = () => Math.max(1, lineWidth() - timeWidth());
+            return (
+              <Show
+                when={parts().time}
+                fallback={<text width={lineWidth()} fg="#AAB7C4" content={line()} />}
+              >
+                <box height={1} flexDirection="row" overflow="hidden">
+                  <text width={timeWidth()} fg="#89B4FA" content={fit(`${parts().time} `, timeWidth())} />
+                  <text width={messageWidth()} fg="#AAB7C4" content={fit(parts().message, messageWidth())} />
+                </box>
+              </Show>
+            );
+          }}
         </Index>
       </box>
     </box>

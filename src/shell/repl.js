@@ -54,8 +54,8 @@ const COMMAND_COMPLETION_DESCRIPTIONS = {
   '/help': 'Show shell commands.',
   '/version': 'Print the wiki-manager version.',
   '/exit': 'Exit the shell.',
-  '/workspaces': 'List configured workspaces.',
-  '/new': 'Create or configure a new workspace.',
+  '/workspace': 'List, create, or delete workspaces.',
+  '/new': 'Open the setup wizard in the interactive TUI.',
   '/use': 'Load a workspace and its default config.',
   '/config': 'Inspect or switch .wikirc.yaml profiles.',
   '/status': 'Show the current workspace and session state.',
@@ -89,7 +89,9 @@ const SUBCOMMAND_COMPLETION_DESCRIPTIONS = {
   '/queue': 'Inspect or cancel queued MCP jobs.',
   '/queue:cancel': 'Cancel a queued or running queue item.',
   '/queue:clear': 'Clear finished queue items.',
-  '/workspace:init': 'Legacy form of /new.',
+  '/workspace:init': 'Low-level workspace creation.',
+  '/workspace:list': 'List configured workspaces.',
+  '/workspace:delete': 'Delete one workspace after confirmation.',
   '/wiki:run': 'Use the low-level llm-wiki CLI fallback.',
   '/skills:edit': 'Edit one workspace skill file.',
   '/skills:list': 'List workspace skills.',
@@ -106,7 +108,7 @@ export function createSession() {
     wikircConfig: null,
     language: null,
     mcp: null,
-    commands: ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'upload', 'uploads', 'clear', 'chat', 'agent', 'openui', 'queue'],
+    commands: ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'upload', 'uploads', 'clear', 'chat', 'agent', 'openui', 'queue'],
     chatMode: true,
     llm: null,
     activities: {},
@@ -216,11 +218,16 @@ function completionValuesFor(parts, inputBuffer, session) {
       .filter((item) => ['waiting', 'starting', 'running'].includes(item.status))
       .map((item) => item.id);
   }
-  if (command === '/workspace' && tokenIndex === 1) return ['init'];
+  if (command === '/workspace') {
+    if (tokenIndex === 1) return ['delete', 'init', 'list'];
+    if (previousToken === 'delete') return workspaceNames();
+    if (parts[1] === 'delete' && tokenIndex === 3) return ['--confirm'];
+  }
   if (command === '/wiki' && tokenIndex === 1) return ['run'];
   if (command === '/skills' && tokenIndex === 1) return ['edit', 'list', 'run', 'show'];
   if (command === '/skills' && ['edit', 'run', 'show'].includes(previousToken ?? '')) return skillNames(session);
-  if ((command === '/start' || command === '/stop' || command === '/logs') && tokenIndex === 1) return serviceNames();
+  if ((command === '/start' || command === '/stop') && tokenIndex === 1) return ['agents', ...serviceNames()];
+  if (command === '/logs' && tokenIndex === 1) return serviceNames();
   return [];
 }
 
@@ -289,6 +296,11 @@ export function completionDescription(value, parts) {
   if (command === '/start') return serviceDescription(value) ?? 'Start this Docker Compose service.';
   if (command === '/stop') return serviceDescription(value) ?? 'Stop this Docker Compose service.';
   if (command === '/logs') return serviceDescription(value) ?? 'Show logs for this Docker Compose service.';
+  if (command === '/workspace') {
+    if (parts[1] === 'delete' && value === '--confirm') return 'Confirm workspace deletion.';
+    if (parts.at(-1) === 'delete') return 'Delete this workspace.';
+    return 'Choose a workspace action.';
+  }
   if (command === '/mcp') return parts[1] === 'call' ? 'Use this MCP server.' : 'Filter tools to this MCP server.';
   if (command === '/skills') {
     if (parts.at(-1) === 'edit') return 'Edit this skill.';
@@ -1174,7 +1186,7 @@ async function runTuiShell({ agent, packageJson, session }) {
   rerender();
 
   try {
-    const { output: wsOutput } = await handleSlashCommand('/workspaces', { packageJson, session });
+    const { output: wsOutput } = await handleSlashCommand('/workspace list', { packageJson, session });
     if (wsOutput) messages.push({ role: 'command', content: wsOutput });
   } finally {
     clearInterval(spinnerInterval);
@@ -1316,7 +1328,7 @@ async function runTuiShell({ agent, packageJson, session }) {
       }
       return;
     }
-    if (key?.ctrl && key.name === 'c') {
+    if ((key?.ctrl || key?.meta) && key.name === 'c') {
       if (busy) {
         currentAbortController?.abort();
         spinnerLabel = 'Interrupting…';

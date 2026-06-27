@@ -211,7 +211,7 @@ agents_compose() {
       read_lines_into_array cacert_args cacert_compose_args "$agents_compose_file" "agents.cacert.compose.yml"
     WORKSPACES_ROOT="$workspaces_root" AGENTS_DATA_DIR="$agents_data_dir" \
       docker compose --project-directory "$DEFAULT_MANAGER_DIR" \
-        "${compose_env_args[@]}" -f "$agents_compose_file" "${cacert_args[@]}" -p wiki-agents "$@"
+        ${compose_env_args[@]+"${compose_env_args[@]}"} -f "$agents_compose_file" ${cacert_args[@]+"${cacert_args[@]}"} -p wiki-agents "$@"
   }
 
   case "$subcommand" in
@@ -496,7 +496,7 @@ compose_for_workspace() {
   WIKI_MCP_PORT="$mcp_port" \
   PRODUCTION_MCP_PORT="$prod_port" \
   docker compose --project-directory "$DEFAULT_MANAGER_DIR" \
-    "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" "${cacert_args[@]}" -p "$project" "$@"
+    ${compose_env_args[@]+"${compose_env_args[@]}"} -f "$ROOT_DIR/docker-compose.yml" ${cacert_args[@]+"${cacert_args[@]}"} -p "$project" "$@"
 }
 
 logs_args() {
@@ -721,7 +721,7 @@ config_workspace() {
   WIKI_SERVE_PORT="$serve_port" \
   WIKI_MCP_PORT="$mcp_port" \
     docker compose --project-directory "$DEFAULT_MANAGER_DIR" \
-      "${compose_env_args[@]}" -f "$ROOT_DIR/docker-compose.yml" "${cacert_args[@]}" run --rm wiki init
+      ${compose_env_args[@]+"${compose_env_args[@]}"} -f "$ROOT_DIR/docker-compose.yml" ${cacert_args[@]+"${cacert_args[@]}"} run --rm wiki init
 
   printf 'Workspace ready: %s\n' "$target_path"
   printf 'Start with:      wiki-workspace up %s\n' "$workspace"

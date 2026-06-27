@@ -7,6 +7,7 @@ loadManagerEnv();
 import { createAgentGraph, buildAgentSystemPrompt, buildLimitedAgentResponse } from '../agent/graph.js';
 import { handleSlashCommand, printHelp, printVersion } from '../commands/slash.js';
 import { runShell } from '../shell/repl.js';
+import { runChecks } from '../core/startupCheck.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { extractHeadlessPlan, syncActivitiesToPlan, formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
@@ -15,7 +16,7 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageJsonPath = resolve(__dirname, '../../package.json');
 const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
-const SHELL_COMMANDS = ['help', 'version', 'exit', 'workspaces', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'clear', 'chat', 'agent'];
+const SHELL_COMMANDS = ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'clear', 'chat', 'agent'];
 
 function valueAfter(argv, flag) {
   const index = argv.indexOf(flag);
@@ -345,6 +346,18 @@ async function runHeadless(argv, agent) {
 }
 
 export async function runCli(argv) {
+  if (argv.includes('--setup-wizard')) {
+    if (!process.versions.bun) {
+      throw new Error('Setup wizard requires Bun. Run: bun ./bin/wiki-manager.js --setup-wizard');
+    }
+    const { runSetupWizard } = await import('../shell/tui.tsx');
+    await runSetupWizard({
+      workspaceName: valueAfter(argv, '--workspace-name'),
+      workspacePath: valueAfter(argv, '--workspace-path') ?? null,
+    });
+    return;
+  }
+
   if (argv.includes('--version') || argv.includes('-v')) {
     printVersion(packageJson);
     return;
@@ -380,7 +393,9 @@ export async function runCli(argv) {
     if (!process.versions.bun) {
       throw new Error('Interactive TUI requires Bun. Run: bun ./bin/wiki-manager.js');
     }
-    const { runOpenTuiShell } = await import('../shell/tui.tsx');
+    const { runOpenTuiShell, runStartupWizard } = await import('../shell/tui.tsx');
+    const gaps = await runChecks();
+    if (gaps.length > 0) await runStartupWizard(gaps);
     await runOpenTuiShell({ agent, packageJson });
     return;
   }

@@ -17,8 +17,6 @@ const MAX_SPINNER_ARG_LENGTH = 96;
 const AGENT_SLASH_COMMANDS = new Set([
   'help',
   'version',
-  'workspaces',
-  'new',
   'workspace',
   'use',
   'config',
@@ -36,8 +34,8 @@ const SHELL_RUN_COMMAND_TOOL = {
     name: 'shell__run_command',
     description: [
       'Run a deterministic wiki-manager slash command inside the current shell session.',
-      'Allowed commands: /workspaces, /new <name> [path], /use <workspace>, /config, /status, /services, /skills, /skills show <name>, /skills run <name>, /upload <path>, /upload convert <id|pending>, /uploads.',
-      'Do not use for arbitrary system shell commands, /mcp call, /wiki run, /start, /stop, /logs, or /exit.',
+      'Allowed commands: /workspace list, /workspace init <name> [path], /use <workspace>, /config, /status, /services, /skills, /skills show <name>, /skills run <name>, /upload <path>, /upload convert <id|pending>, /uploads.',
+      'Do not use for arbitrary system shell commands, /workspace delete, /mcp call, /wiki run, /start, /stop, /logs, or /exit.',
     ].join(' '),
     parameters: {
       type: 'object',
@@ -45,7 +43,7 @@ const SHELL_RUN_COMMAND_TOOL = {
       properties: {
         command: {
           type: 'string',
-          description: 'Slash command to run, for example "/workspaces", "/new demo", or "/use juno".',
+          description: 'Slash command to run, for example "/workspace list", "/workspace init demo", or "/use juno".',
         },
       },
       required: ['command'],
@@ -217,9 +215,6 @@ function assertAgentSlashCommandAllowed(commandLine) {
   if (!AGENT_SLASH_COMMANDS.has(command)) {
     throw new Error(`Command is not available to the agent: /${command}`);
   }
-  if (command === 'new' && parts.length < 2) {
-    throw new Error('Usage: /new <name> [path].');
-  }
   if (command === 'workspace' && parts[1] !== 'init') {
     throw new Error('Only /workspace init is available to the agent.');
   }
@@ -324,7 +319,7 @@ export function buildAgentSystemPrompt(state) {
     'When the user asks for an action that can be performed with connected MCP tools or safe primitives, do not answer with future intent such as "I will call...", "I am going to run...", or "launching..." unless you also call the tool in the same turn. Either call the tool now, ask for the exact missing required arguments, or explain the concrete blocker.',
     'For connector configuration/setup/update requests, if a matching setup/configuration tool is connected and the required arguments are known, call it immediately. If the connector or tool is not connected, say which concrete capability is missing and recommend the exact service/status primitive to inspect it. Do not invent a pending connector action in plain text.',
     'For workspace-scoped external MCP tools, the orchestrator enforces workspace injection. Use the active workspace for configuration, source, import, export, conversion, and generation tools unless a tool is explicitly job-scoped and only requires a job id.',
-    'You can call shell__run_command for safe manager slash commands such as /workspaces, /new <name> [path], /use <workspace>, /config, /status, /services, /skills, /skills show <name>, and /skills run <name>.',
+    'You can call shell__run_command for safe manager slash commands such as /workspace list, /workspace init <name> [path], /use <workspace>, /config, /status, /services, /skills, /skills show <name>, and /skills run <name>.',
     'Skills are workflow instructions, not executable code. When a user asks to run a skill, inspect it, propose the concrete primitive/tool plan, and ask for confirmation before costly or mutating actions.',
     [
       state.session.headless ? 'HEADLESS MODE ACTIVE. Execute the requested skill or task autonomously using available safe primitives and MCP tools. Do not ask for interactive confirmation unless the request is genuinely ambiguous or outside the loaded workspace.' : null,
@@ -361,7 +356,7 @@ export function buildAgentSystemPrompt(state) {
     'For ingest/build/export/polish/pipeline workflows, use production MCP tools. Do not route these through direct /wiki shortcuts. To chain multiple sequential steps (e.g. build then polish), always use a single production_start_job call with type="pipeline" and steps=["build","polish"] — never start them as separate jobs: the first job is asynchronous and the second would run before it completes. For existing deliverables where content stability matters, pass stabilize:true so the build step preserves unchanged sections; keep polish in the pipeline when publication output is requested. Do not ask the user to confirm between steps; start the pipeline call directly.',
     'Long-running MCP jobs: do not call the same status tool more than once consecutively. When chaining jobs sequentially: (1) start the job, report job/activity id and status; (2) check status once — if done, proceed to the next step immediately; (3) if still running, report status, list the remaining steps, and return control; (4) when re-invoked, check status first, then proceed. Do not spin-poll (status → status → status with no new action between). The shell activity panel monitors non-terminal jobs automatically.',
     'If production_start_job is returned as queued/waiting by the manager, report that it is waiting in the local queue and return control. Do not continue as if the production job has started.',
-    'For diagnostics, use /wiki run doctor when the user asks for doctor. Use /new <name> [path] to create/configure a new workspace. Use /wiki for index, or /wiki run index through the explicit backup hatch. Use /wiki run init only for explicit current-workspace llm-wiki init.',
+    'For diagnostics, use /wiki run doctor when the user asks for doctor. Use /workspace init <name> [path] for low-level non-interactive workspace creation. In the interactive TUI, /new <name> opens the setup wizard. Use /wiki for index, or /wiki run index through the explicit backup hatch. Use /wiki run init only for explicit current-workspace llm-wiki init.',
     'If an action requires tools or skills not available yet, explain the limitation and name the expected primitive.',
   ].join('\n');
 

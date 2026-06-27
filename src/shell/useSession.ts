@@ -86,14 +86,22 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
       session.llm ? 'llm ready' : 'llm limited',
     ].join('  ');
   });
-  const slash = createMemo(() => {
+  const matchContext = createMemo(() => {
     if (input() === dismissedSlashInput()) return null;
-    const context = completionContext(input(), session);
+    return completionContext(input(), session);
+  });
+  const slash = createMemo(() => {
+    const context = matchContext();
     if (!context) return null;
+    const selected = Math.min(selectedCompletion(), Math.max(0, context.matches.length - 1));
+    const visibleCount = 10;
+    const start = Math.max(0, Math.min(selected - Math.floor(visibleCount / 2), Math.max(0, context.matches.length - visibleCount)));
+    const visibleMatches = context.matches.slice(start, start + visibleCount);
     return {
       ...context,
-      selected: Math.min(selectedCompletion(), Math.max(0, context.matches.length - 1)),
-      items: context.matches.slice(0, 10).map((value: string) => ({
+      selected,
+      visibleSelected: selected - start,
+      items: visibleMatches.map((value: string) => ({
         value,
         description: completionDescription(value, context.parts),
       })),
@@ -249,8 +257,8 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
 
   function completeSelected() {
     const context = slash();
-    if (!context || context.items.length === 0) return;
-    const selected = context.items[context.selected]?.value;
+    if (!context || context.matches.length === 0) return;
+    const selected = context.matches[context.selected];
     if (!selected) return;
     const lastSpace = input().lastIndexOf(' ');
     const base = input().endsWith(' ') ? input() : input().slice(0, lastSpace + 1);
@@ -259,7 +267,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   }
 
   function moveCompletion(delta: number) {
-    const count = slash()?.items.length ?? 0;
+    const count = slash()?.matches.length ?? 0;
     if (!count) return;
     setSelectedCompletion((value) => (value + delta + count) % count);
   }

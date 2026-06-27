@@ -551,8 +551,9 @@ The TUI uses a two-pane layout:
 Useful primitives:
 
 ```text
-/workspaces
-/new <name> [path]
+/workspace list
+/new <name> [path]              # interactive TUI wizard
+/workspace init <name> [path]   # low-level non-interactive creation
 /use <workspace>
 /config list
 /config use <name>

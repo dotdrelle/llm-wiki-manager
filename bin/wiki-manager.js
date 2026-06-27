@@ -81,7 +81,7 @@ async function main() {
   // exports these before Bun starts.
   if (parsed.cacert) Object.assign(process.env, cacertEnvVars(parsed.cacert));
   await import('@opentui/solid/preload');
-  const interactive = process.stdout.isTTY && process.stdin.isTTY && !argv.includes('--headless') && !argv.includes('--once') && !argv.includes('--version') && !argv.includes('-v') && !argv.includes('--help') && !argv.includes('-h');
+  const interactive = process.stdout.isTTY && process.stdin.isTTY && !argv.includes('--setup-wizard') && !argv.includes('--headless') && !argv.includes('--once') && !argv.includes('--version') && !argv.includes('-v') && !argv.includes('--help') && !argv.includes('-h');
   if (interactive) process.stdout.write('Starting wiki-manager…\r');
   const { runCli } = await import('../src/cli/wiki-manager.js');
   await runCli(argv);

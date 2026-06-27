@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { useKeyboard } from '@opentui/solid';
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js';
-import { fetchModels, fallbackModels, normalizeProvider } from '../core/modelFetch.js';
+import { fallbackModels, normalizeProvider } from '../core/modelFetch.js';
 import {
   createNewWorkspace,
   deleteWorkspaceAndFiles,
@@ -28,6 +28,7 @@ type Step =
 type LogEntry = { icon: string; label: string; detail?: string };
 
 const PROVIDERS = ['OpenAI', 'Anthropic', 'Ollama (local)', 'Other (OpenAI-compatible)'];
+const PLACEHOLDER_MODEL_RE = /YOUR_|<your/i;
 const MAIN_MENU = ['Agents', 'Workspaces', 'LLM configuration', 'Vector search', '---', 'Close'];
 
 function defaultBaseUrl(provider: string) {
@@ -114,19 +115,19 @@ export function SetupWizard(props: {
   onClose: () => void;
 }) {
   const [route, setRoute] = createSignal(props.initialRoute ?? 'startup');
+  const [routeHistory, setRouteHistory] = createSignal<string[]>([]);
   const [stepIndex, setStepIndex] = createSignal(0);
   const [selected, setSelected] = createSignal(0);
   const [input, setInput] = createSignal('');
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
-  const [note, setNote] = createSignal<string | null>(null);
+
   const [logs, setLogs] = createSignal<LogEntry[]>([]);
   const [targetWorkspace, setTargetWorkspace] = createSignal<any>(null);
   const [creationFlow, setCreationFlow] = createSignal(false);
+  const [language, setLanguage] = createSignal('');
   const [llm, setLlm] = createSignal<any>({});
   const [vector, setVector] = createSignal<any>({});
-  const [modelOptions, setModelOptions] = createSignal<string[]>([]);
-  const [embeddingOptions, setEmbeddingOptions] = createSignal<string[]>([]);
 
   const startupGaps = createMemo(() => props.gaps ?? []);
   createEffect(() => {
@@ -201,7 +202,7 @@ export function SetupWizard(props: {
       return { kind: 'text', title: 'Workspace', label: 'Workspace name', prefill: props.initialWorkspaceName ?? '' };
     }
     if (currentRoute === 'language') {
-      return { kind: 'text', title: 'Workspace', label: 'Language (2 chars, e.g. fr, en)' };
+      return { kind: 'text', title: 'Workspace', label: 'Language (2 chars, e.g. fr, en)', prefill: language() };
     }
     if (currentRoute === 'workspace-rename') {
       return { kind: 'text', title: 'Rename workspace', label: 'New workspace name', prefill: targetWorkspace()?.name ?? '' };
@@ -222,19 +223,11 @@ export function SetupWizard(props: {
       return { kind: 'text', title: 'LLM configuration', label: 'Base URL', prefill: baseUrl, placeholder: baseUrl };
     }
     if (currentRoute === 'llm-apikey') {
-      return { kind: 'text', title: 'LLM configuration', label: 'API key', placeholder: llm().apiKey ? '(keep existing)' : undefined, secret: true };
+      return { kind: 'text', title: 'LLM configuration', label: 'API key (required)', secret: true };
     }
     if (currentRoute === 'llm-model') {
-      return {
-        kind: 'select',
-        title: 'LLM configuration',
-        label: 'Model',
-        options: [...(modelOptions().length ? modelOptions() : fallbackModels(llm().provider)), 'custom-model'],
-        note: note() ?? undefined,
-      };
-    }
-    if (currentRoute === 'llm-model-custom') {
-      return { kind: 'text', title: 'LLM configuration', label: 'Model name' };
+      const defaultModel = llm().model || fallbackModels(llm().provider)[0] || '';
+      return { kind: 'text', title: 'LLM configuration', label: 'Model', prefill: defaultModel };
     }
     if (currentRoute === 'vector-confirm') {
       return { kind: 'confirm', title: 'Vector search', message: 'Configure vector search?', yesLabel: 'Enable', noLabel: 'Skip' };
@@ -244,42 +237,19 @@ export function SetupWizard(props: {
       return { kind: 'text', title: 'Vector search', label: 'Embeddings/rerank base URL', prefill: baseUrl, placeholder: baseUrl };
     }
     if (currentRoute === 'vector-apikey') {
-      return {
-        kind: 'text',
-        title: 'Vector search',
-        label: 'Vector API key',
-        placeholder: vector().apiKey ? '(keep existing)' : '(leave empty to use LLM key)',
-        secret: true,
-      };
+      const hint = llm().apiKey ? '(leave empty to reuse LLM key)' : undefined;
+      return { kind: 'text', title: 'Vector search', label: 'Vector API key', placeholder: hint, secret: true };
     }
     if (currentRoute === 'vector-model') {
-      return {
-        kind: 'select',
-        title: 'Vector search',
-        label: 'Embedding model',
-        options: [...(embeddingOptions().length ? embeddingOptions() : fallbackModels(vector().provider ?? llm().provider, 'embedding')), 'custom-model'],
-        note: note() ?? undefined,
-      };
-    }
-    if (currentRoute === 'vector-model-custom') {
-      return { kind: 'text', title: 'Vector search', label: 'Embedding model name' };
+      const defaultEmbedding = vector().embeddingModel || fallbackModels(vector().provider || llm().provider, 'embedding')[0] || '';
+      return { kind: 'text', title: 'Vector search', label: 'Embedding model', prefill: defaultEmbedding };
     }
     if (currentRoute === 'vector-rerank') {
       return { kind: 'confirm', title: 'Vector search', message: 'Enable reranking?', yesLabel: 'Enable', noLabel: 'Skip' };
     }
     if (currentRoute === 'vector-rerank-model') {
-      const options = ['cohere-rerank-v3.5', 'BAAI/bge-reranker-v2-m3', 'bge-reranker-v2-m3', 'jina-reranker-v2-base-multilingual', 'custom-model'];
-      return {
-        kind: 'select',
-        title: 'Vector search',
-        label: 'Rerank model',
-        options: vector().rerankerModel && !options.includes(vector().rerankerModel)
-          ? [vector().rerankerModel, ...options]
-          : options,
-      };
-    }
-    if (currentRoute === 'vector-rerank-model-custom') {
-      return { kind: 'text', title: 'Vector search', label: 'Rerank model name' };
+      const defaultReranker = vector().rerankerModel || 'BAAI/bge-reranker-v2-m3';
+      return { kind: 'text', title: 'Vector search', label: 'Rerank model', prefill: defaultReranker };
     }
     if (currentRoute === 'unregister-confirm') {
       const workspace = targetWorkspace();
@@ -307,9 +277,10 @@ export function SetupWizard(props: {
     setError(null);
     setInput((s as any).prefill ?? '');
     const items = (s as any).items ?? (s as any).options?.map((label: string) => ({ label })) ?? [{ label: 'x' }];
-    const preferred = route() === 'vector-rerank-model' && s.kind === 'select' && vector().rerankerModel
-      ? s.options.indexOf(vector().rerankerModel)
-      : -1;
+    let preferred = -1;
+    if (route() === 'llm-provider' && llm().provider) {
+      preferred = PROVIDERS.findIndex((p) => normalizeProvider(p) === normalizeProvider(llm().provider));
+    }
     setSelected(preferred >= 0 ? preferred : firstSelectableIndex(items));
   });
 
@@ -318,8 +289,15 @@ export function SetupWizard(props: {
     if (!workspacePath) return;
     try {
       const { config } = loadWikircProfile(workspacePath, context?.profileName ?? 'default');
+      if (config?.language) setLanguage(String(config.language));
       if (config?.llm?.provider) {
-        setLlm({ provider: config.llm.provider, baseUrl: config.llm.baseUrl, apiKey: config.llm.apiKey, model: config.llm.model });
+        const model = config.llm.model;
+        setLlm({
+          provider: normalizeProvider(config.llm.provider),
+          baseUrl: config.llm.baseUrl,
+          apiKey: config.llm.apiKey,
+          model: (model && !PLACEHOLDER_MODEL_RE.test(model)) ? model : null,
+        });
       }
       if (config?.retrieval?.vector) {
         setVector({
@@ -356,6 +334,7 @@ export function SetupWizard(props: {
 
   function nextStartup(label?: string) {
     if (label) setLogs((items) => [...items, { icon: '✓', label }]);
+    setRouteHistory([]);
     if (props.mode !== 'startup') {
       if (props.closeOnDone) {
         props.onComplete();
@@ -378,6 +357,7 @@ export function SetupWizard(props: {
 
   function skipCurrent() {
     const s = step();
+    setRouteHistory([]);
     if (props.mode === 'setup') {
       if (props.closeOnDone) {
         props.onClose();
@@ -389,16 +369,6 @@ export function SetupWizard(props: {
     }
     setLogs((items) => [...items, { icon: '->', label: stepTitle(s), detail: 'skipped' }]);
     nextStartup();
-  }
-
-  async function loadRemoteModels(kind: 'chat' | 'embedding' = 'chat') {
-    const config = kind === 'embedding'
-      ? { provider: vector().provider || llm().provider, baseUrl: vector().baseUrl || llm().baseUrl, apiKey: vector().apiKey || llm().apiKey }
-      : llm();
-    const result = await fetchModels(config.provider, config.baseUrl, config.apiKey, { kind });
-    if (kind === 'embedding') setEmbeddingOptions(result.models);
-    else setModelOptions(result.models);
-    setNote(result.source === 'fallback' ? `offline list (${result.error})` : null);
   }
 
   async function runAction(fn: () => Promise<void>) {
@@ -413,13 +383,31 @@ export function SetupWizard(props: {
     }
   }
 
+  function navigate(newRoute: string) {
+    setRouteHistory((h) => [...h, route()]);
+    setRoute(newRoute);
+  }
+
+  function jumpTo(newRoute: string) {
+    setRouteHistory([]);
+    setRoute(newRoute);
+  }
+
+  function goBack() {
+    const history = routeHistory();
+    if (!history.length) { props.onClose(); return; }
+    setRouteHistory(history.slice(0, -1));
+    setError(null);
+    setRoute(history[history.length - 1]);
+  }
+
   async function commitLlmModel(value: string) {
     const context = currentWorkspaceContext(props.session, currentGap()?.context ?? targetWorkspace());
     if (!context?.workspacePath) return setError('No workspace available.');
     await runAction(async () => {
       writeLlmConfig(context.workspacePath, context.profileName ?? 'default', { ...llm(), model: value });
       setLogs((items) => [...items, { icon: '✓', label: 'LLM configured', detail: value }]);
-      if (creationFlow()) setRoute('vector-confirm');
+      if (creationFlow()) navigate('vector-confirm');
       else nextStartup();
     });
   }
@@ -442,33 +430,33 @@ export function SetupWizard(props: {
     const currentRoute = route();
     if (currentRoute === 'main') {
       if (value === 'Close') return props.onClose();
-      if (value === 'Agents') return setRoute('agents');
-      if (value === 'Workspaces') return setRoute('workspaces');
-      if (value === 'LLM configuration') return setRoute('llm-provider');
-      if (value === 'Vector search') return setRoute('vector-confirm');
+      if (value === 'Agents') return navigate('agents');
+      if (value === 'Workspaces') return navigate('workspaces');
+      if (value === 'LLM configuration') return navigate('llm-provider');
+      if (value === 'Vector search') return navigate('vector-confirm');
       return;
     }
     if (currentRoute === 'workspaces') {
-      if (value === 'back') return setRoute('main');
-      if (value === 'create') return setRoute('workspace-name');
-      if (value.startsWith('workspace:')) return setRoute(value);
+      if (value === 'back') return goBack();
+      if (value === 'create') return navigate('workspace-name');
+      if (value.startsWith('workspace:')) return navigate(value);
       return;
     }
     if (currentRoute.startsWith('workspace:')) {
-      if (value === 'back') return setRoute('workspaces');
+      if (value === 'back') return goBack();
       const workspace = listWorkspaces().find((item) => item.name === currentRoute.slice('workspace:'.length));
       setTargetWorkspace(workspace);
       if (value === 'llm') {
         preloadWikirc(currentWorkspaceContext(props.session, targetWorkspace()));
-        return setRoute('llm-provider');
+        return navigate('llm-provider');
       }
       if (value === 'vector') {
         preloadWikirc(currentWorkspaceContext(props.session, targetWorkspace()));
-        return setRoute('vector-confirm');
+        return navigate('vector-confirm');
       }
-      if (value === 'rename') return setRoute('workspace-rename');
-      if (value === 'unregister') return setRoute('unregister-confirm');
-      if (value === 'delete') return setRoute('delete-confirm');
+      if (value === 'rename') return navigate('workspace-rename');
+      if (value === 'unregister') return navigate('unregister-confirm');
+      if (value === 'delete') return navigate('delete-confirm');
       return;
     }
     if (currentRoute === 'llm-provider') {
@@ -477,39 +465,24 @@ export function SetupWizard(props: {
         const baseUrl = (old.provider === provider && old.baseUrl) ? old.baseUrl : defaultBaseUrl(provider);
         return { ...old, provider, baseUrl, ...(provider === 'ollama' && !old.apiKey ? { apiKey: 'ollama' } : {}) };
       });
-      if (provider === 'ollama' || provider === 'openai-compatible') return setRoute('llm-baseurl');
-      return setRoute('llm-apikey');
-    }
-    if (currentRoute === 'llm-model') {
-      if (value === 'custom-model') return setRoute('llm-model-custom');
-      await commitLlmModel(value);
-      return;
-    }
-    if (currentRoute === 'vector-model') {
-      if (value === 'custom-model') return setRoute('vector-model-custom');
-      setVector((old: any) => ({ ...old, embeddingModel: value }));
-      return setRoute('vector-rerank');
-    }
-    if (currentRoute === 'vector-rerank-model') {
-      if (value === 'custom-model') return setRoute('vector-rerank-model-custom');
-      await commitVectorRerank(value);
-      return;
+      if (provider === 'ollama' || provider === 'openai-compatible') return navigate('llm-baseurl');
+      return navigate('llm-apikey');
     }
     if (currentRoute === 'unregister-confirm') {
-      if (value === 'Cancel') return setRoute('workspaces');
+      if (value === 'Cancel') return goBack();
       await runAction(async () => {
         await unregisterWorkspace(targetWorkspace()?.name);
         setLogs((items) => [...items, { icon: '✓', label: 'Workspace unregistered', detail: targetWorkspace()?.name }]);
-        setRoute('workspaces');
+        jumpTo('workspaces');
       });
       return;
     }
     if (currentRoute === 'delete-confirm') {
-      if (value === 'Cancel') return setRoute('workspaces');
+      if (value === 'Cancel') return goBack();
       await runAction(async () => {
         await deleteWorkspaceAndFiles(targetWorkspace()?.name, targetWorkspace()?.workspacePath);
         setLogs((items) => [...items, { icon: '✓', label: 'Workspace deleted', detail: targetWorkspace()?.name }]);
-        setRoute('workspaces');
+        jumpTo('workspaces');
       });
     }
   }
@@ -540,15 +513,15 @@ export function SetupWizard(props: {
       });
       return;
     }
-    if (currentRoute === 'workspace-confirm') return setRoute('workspace-name');
-    if (currentRoute === 'vector-rerank') return setRoute('vector-rerank-model');
+    if (currentRoute === 'workspace-confirm') return navigate('workspace-name');
+    if (currentRoute === 'vector-rerank') return navigate('vector-rerank-model');
     if (currentRoute === 'vector-confirm') {
       setVector((old: any) => ({
         ...old,
         provider: old.provider || llm().provider,
         baseUrl: old.baseUrl || llm().baseUrl || defaultBaseUrl(llm().provider),
       }));
-      return setRoute('vector-baseurl');
+      return navigate('vector-baseurl');
     }
   }
 
@@ -560,7 +533,7 @@ export function SetupWizard(props: {
       if (lang.length < 2) return setError('Please enter a 2-character language code (e.g. fr, en).');
       const context = currentWorkspaceContext(props.session, currentGap()?.context ?? targetWorkspace());
       if (context?.workspacePath) writeLanguageConfig(context.workspacePath, context.profileName ?? 'default', lang);
-      setRoute('llm-provider');
+      navigate('llm-provider');
       return;
     }
     if (currentRoute === 'workspace-name') {
@@ -568,14 +541,12 @@ export function SetupWizard(props: {
       await runAction(async () => {
         const created = await createNewWorkspace(value, props.initialWorkspacePath ?? null);
         const workspacePath = created.workspace?.workspacePath ?? defaultWorkspacePath(value);
-        setTargetWorkspace({
-          workspaceName: value,
-          workspacePath,
-          profileName: 'default',
-        });
+        const newTarget = { workspaceName: value, workspacePath, profileName: 'default' };
+        setTargetWorkspace(newTarget);
+        preloadWikirc(newTarget);
         setCreationFlow(true);
         setLogs((items) => [...items, { icon: '✓', label: `Workspace: ${value}` }]);
-        setRoute('language');
+        navigate('language');
       });
       return;
     }
@@ -584,58 +555,42 @@ export function SetupWizard(props: {
       await runAction(async () => {
         const renamed = await renameWorkspace(targetWorkspace()?.name, value);
         setLogs((items) => [...items, { icon: '✓', label: 'Workspace renamed', detail: `${renamed.previousName} -> ${renamed.name}` }]);
-        setRoute('workspaces');
+        jumpTo('workspaces');
       });
       return;
     }
     if (currentRoute === 'llm-baseurl') {
       setLlm((old: any) => ({ ...old, baseUrl: value || old.baseUrl || defaultBaseUrl(old.provider) }));
-      if (llm().provider === 'ollama') {
-        await runAction(async () => {
-          await loadRemoteModels('chat');
-          setRoute('llm-model');
-        });
-      } else {
-        setRoute('llm-apikey');
-      }
-      return;
+      if (llm().provider === 'ollama') return navigate('llm-model');
+      return navigate('llm-apikey');
     }
     if (currentRoute === 'llm-apikey') {
-      const apiKey = value || llm().apiKey;
-      if (!apiKey) return setError('API key is required.');
-      setLlm((old: any) => ({ ...old, apiKey }));
-      await runAction(async () => {
-        await loadRemoteModels('chat');
-        setRoute('llm-model');
-      });
-      return;
+      if (!value) return setError('API key is required.');
+      setLlm((old: any) => ({ ...old, apiKey: value }));
+      return navigate('llm-model');
     }
     if (currentRoute === 'vector-baseurl') {
       const baseUrl = value || vector().baseUrl || llm().baseUrl || defaultBaseUrl(llm().provider);
       setVector((old: any) => ({ ...old, provider: llm().provider, baseUrl }));
-      return setRoute('vector-apikey');
+      return navigate('vector-apikey');
     }
     if (currentRoute === 'vector-apikey') {
-      const apiKey = value || vector().apiKey || undefined;
-      setVector((old: any) => ({ ...old, apiKey: apiKey ?? null }));
-      await runAction(async () => {
-        await loadRemoteModels('embedding');
-        setRoute('vector-model');
-      });
-      return;
+      const apiKey = value || llm().apiKey || undefined;
+      if (!apiKey) return setError('API key is required (or set LLM key first).');
+      setVector((old: any) => ({ ...old, apiKey }));
+      return navigate('vector-model');
     }
-    if (currentRoute === 'llm-model-custom') {
+    if (currentRoute === 'llm-model') {
       if (!value) return setError('Model name is required.');
       await commitLlmModel(value);
       return;
     }
-    if (currentRoute === 'vector-model-custom') {
+    if (currentRoute === 'vector-model') {
       if (!value) return setError('Model name is required.');
       setVector((old: any) => ({ ...old, embeddingModel: value }));
-      setRoute('vector-rerank');
-      return;
+      return navigate('vector-rerank');
     }
-    if (currentRoute === 'vector-rerank-model-custom') {
+    if (currentRoute === 'vector-rerank-model') {
       if (!value) return setError('Model name is required.');
       await commitVectorRerank(value);
       return;
@@ -659,9 +614,14 @@ export function SetupWizard(props: {
     const lowerSequence = sequence.toLowerCase();
     const isCopyExit = ((key.ctrl || key.meta) && keyName === 'c') || sequence === '\x03' || (key.meta && lowerSequence === '\x1bc');
     const isPaste = ((key.ctrl || key.meta) && keyName === 'v') || (key.meta && lowerSequence === '\x1bv');
+    const isBack = key.ctrl && keyName === 'z';
     const isEnter = keyName === 'return' || keyName === 'enter' || keyName === 'linefeed';
     if (isCopyExit) {
       props.onClose();
+      return;
+    }
+    if (isBack && routeHistory().length > 0) {
+      goBack();
       return;
     }
     if (keyName === 'escape') {
@@ -738,6 +698,22 @@ export function SetupWizard(props: {
   const showLine3 = () => displayValue().length > lineWidth() * 2;
   const contextPath = () => targetWorkspace()?.workspacePath ?? (currentGap()?.context?.workspacePath ?? null);
 
+  const contextSummary = createMemo(() => {
+    const parts: string[] = [];
+    const wp = targetWorkspace()?.workspacePath ?? (currentGap()?.context?.workspacePath ?? null);
+    if (wp) parts.push(wp);
+    if (language()) parts.push(`lang:${language()}`);
+    const p = llm().provider;
+    if (p) parts.push(p);
+    if (llm().baseUrl) parts.push(llm().baseUrl);
+    if (llm().apiKey) parts.push('key:***');
+    const model = llm().model;
+    if (model) parts.push(model);
+    if (vector().baseUrl && vector().baseUrl !== llm().baseUrl) parts.push(`vec:${vector().baseUrl}`);
+    if (vector().embeddingModel) parts.push(vector().embeddingModel);
+    return parts.join('  ');
+  });
+
   return (
     <box
       position="absolute"
@@ -809,18 +785,22 @@ export function SetupWizard(props: {
           )}
         </For>
       </Show>
-      <Show when={(step() as any).note}>
-        <text height={1} fg="#9CA3AF">{(step() as any).note}</text>
-      </Show>
+
       <Show when={error()}>
         {(message) => <text height={6} fg="#F87171">{message()}</text>}
       </Show>
       <box flexGrow={1} />
-      <Show when={contextPath()}>
-        <text height={1} fg="#4B5563">{contextPath()}</text>
+      <Show when={contextSummary()}>
+        <text height={1} fg="#374151">{contextSummary()}</text>
       </Show>
       <text height={1}>{''}</text>
-      <text height={1} fg="#7F8C8D">{step().kind === 'text' ? 'Enter Confirm   Esc Skip/Back' : 'Up/Down Navigate   Enter Select   Esc Skip/Back'}</text>
+      <box height={1} flexDirection="row">
+        <text fg="#7F8C8D">{step().kind === 'text' ? 'Enter Confirm   Esc Skip' : 'Up/Down   Enter Select   Esc Skip'}</text>
+        <box flexGrow={1} />
+        <Show when={routeHistory().length > 0}>
+          <text fg="#7F8C8D">Ctrl+Z ←</text>
+        </Show>
+      </box>
     </box>
   );
 }

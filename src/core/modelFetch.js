@@ -64,7 +64,7 @@ export async function fetchModels(provider, baseUrl, apiKey, options = {}) {
   if (normalized === 'anthropic') {
     return { ok: false, models: fallbackFor(normalized, options.kind), source: 'fallback', error: 'Anthropic model listing is not supported' };
   }
-  const timeoutMs = options.timeoutMs ?? 5000;
+  const timeoutMs = options.timeoutMs ?? 10000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {

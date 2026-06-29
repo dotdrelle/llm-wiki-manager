@@ -29,8 +29,8 @@ export function resolveWikircProfile(workspacePath, profileName = 'default') {
   const normalized = profileName || 'default';
   const found = profiles.find((profile) => profile.name === normalized || profile.fileName === normalized);
   if (!found) {
-    const available = profiles.map((profile) => profile.name).join(', ') || 'aucun';
-    throw new Error(`profil wikirc introuvable: ${normalized} (disponibles: ${available})`);
+    const available = profiles.map((profile) => profile.name).join(', ') || 'none';
+    throw new Error(`wikirc profile not found: ${normalized} (available: ${available})`);
   }
   return found;
 }

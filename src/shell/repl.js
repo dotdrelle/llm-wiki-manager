@@ -13,7 +13,7 @@ import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { listSkills } from '../core/skills.js';
 import { listWikircProfiles } from '../core/wikirc.js';
-import { findWorkspace, listWorkspaces } from '../core/workspaces.js';
+import { listWorkspaces } from '../core/workspaces.js';
 
 marked.use(markedTerminal());
 // marked-terminal's text renderer extracts token.text (raw string) instead of
@@ -179,26 +179,9 @@ function workspaceNames() {
   return listWorkspaces().map((workspace) => workspace.name).sort();
 }
 
-function workspaceUseTargets() {
-  return listWorkspaces()
-    .flatMap((workspace) => {
-      const profiles = listWikircProfiles(workspace.workspacePath);
-      if (profiles.length <= 1) return [workspace.name];
-      return profiles.map((profile) => `${workspace.name}:${profile.name}`);
-    })
-    .sort();
-}
-
 function wikircProfileNames(session) {
   return session.workspacePath
     ? listWikircProfiles(session.workspacePath).map((profile) => profile.name).sort()
-    : [];
-}
-
-function wikircProfileNamesForWorkspace(workspaceName) {
-  const workspace = workspaceName ? findWorkspace(workspaceName) : null;
-  return workspace
-    ? listWikircProfiles(workspace.workspacePath).map((profile) => profile.name).sort()
     : [];
 }
 
@@ -218,8 +201,8 @@ function completionValuesFor(parts, inputBuffer, session) {
 
   if (tokenIndex === 0) return slashCompletions(session);
   if (command === '/new' && tokenIndex === 1) return [];
-  if (command === '/use' && tokenIndex === 1) return workspaceUseTargets();
-  if (command === '/use' && tokenIndex === 2) return wikircProfileNamesForWorkspace(parts[1]);
+  if (command === '/use' && tokenIndex === 1) return workspaceNames();
+  if (command === '/use' && tokenIndex === 2) return [];
   if (command === '/config' && tokenIndex === 1) return ['edit', 'list', 'status', 'use'];
   if (command === '/config' && (previousToken === 'use' || previousToken === 'edit')) return wikircProfileNames(session);
   if (command === '/mcp' && tokenIndex === 1) return ['call', 'endpoints', 'status', 'tools'];
@@ -310,7 +293,7 @@ export function completionDescription(value, parts) {
   const command = parts[0];
   const subcommand = SUBCOMMAND_COMPLETION_DESCRIPTIONS[`${command}:${value}`];
   if (subcommand) return subcommand;
-  if (command === '/use') return value.includes(':') ? 'Load this workspace config.' : 'Load this workspace.';
+  if (command === '/use') return 'Load this workspace.';
   if (command === '/start') return serviceDescription(value) ?? 'Start this Docker Compose service.';
   if (command === '/stop') return serviceDescription(value) ?? 'Stop this Docker Compose service.';
   if (command === '/logs') return serviceDescription(value) ?? 'Show logs for this Docker Compose service.';

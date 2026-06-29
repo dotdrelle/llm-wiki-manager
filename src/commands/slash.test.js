@@ -68,7 +68,7 @@ test('/new without a name shows usage', async () => {
   assert.match(result.output ?? '', /Usage/i);
 });
 
-test('/use lists profiles before selecting one when several wikirc profiles exist', async () => {
+test('/use loads only workspaces and /config use switches wikirc profiles', async () => {
   const root = await mkdtemp(join(tmpdir(), 'wiki-manager-use-profile-'));
   const registryRoot = join(root, 'registry');
   const registryPath = join(registryRoot, 'demo');
@@ -100,38 +100,45 @@ test('/use lists profiles before selecting one when several wikirc profiles exis
 
   try {
     const session = {};
-    const listResult = await handleSlashCommand('/use demo', {
+    const listResult = await handleSlashCommand('/use', {
+      packageJson: { version: 'test' },
+      session,
+    });
+    assert.match(listResult.output ?? '', /Workspaces/);
+    assert.match(listResult.output ?? '', /demo\tavailable/);
+    assert.doesNotMatch(listResult.output ?? '', /vpn\t\.wikirc\.yaml\.vpn/);
+
+    const useResult = await handleSlashCommand('/use demo', {
       packageJson: { version: 'test' },
       session,
     });
 
     assert.equal(session.workspace, 'demo');
-    assert.equal(session.wikirc, null);
-    assert.match(listResult.output ?? '', /Select config/);
-    assert.match(listResult.output ?? '', /default\t\.wikirc\.yaml/);
-    assert.match(listResult.output ?? '', /vpn\t\.wikirc\.yaml\.vpn/);
-    assert.match(listResult.output ?? '', /\/use demo vpn/);
+    assert.equal(session.wikirc.profile, 'default');
+    assert.match(useResult.output ?? '', /profile: default/);
+    assert.match(useResult.output ?? '', /\* default\t\.wikirc\.yaml/);
+    assert.match(useResult.output ?? '', /vpn\t\.wikirc\.yaml\.vpn/);
+    assert.match(useResult.output ?? '', /Switch config: \/config use <profile>/);
 
-    const result = await handleSlashCommand('/use demo vpn', {
+    const invalidUse = await handleSlashCommand('/use demo vpn', {
       packageJson: { version: 'test' },
       session,
     });
+    assert.match(invalidUse.output ?? '', /Usage: \/use <workspace>/);
+    assert.equal(session.wikirc.profile, 'default');
 
+    const result = await handleSlashCommand('/config use vpn', {
+      packageJson: { version: 'test' },
+      session,
+    });
     assert.equal(session.workspace, 'demo');
     assert.equal(session.wikirc.profile, 'vpn');
-    assert.match(result.output ?? '', /profile: vpn/);
-    assert.match(result.output ?? '', /\* vpn\t\.wikirc\.yaml\.vpn/);
-    assert.match(result.output ?? '', /Switch: \/use demo <profile>/);
-
-    const colonResult = await handleSlashCommand('/use demo:vpn', {
-      packageJson: { version: 'test' },
-      session,
-    });
-    assert.equal(session.wikirc.profile, 'vpn');
-    assert.match(colonResult.output ?? '', /profile: vpn/);
+    assert.match(result.output ?? '', /profile=vpn/);
 
     const completion = completionContext('/use ', { commands: ['use'] });
-    assert.deepEqual(completion?.matches, ['demo:default', 'demo:vpn']);
+    assert.deepEqual(completion?.matches, ['demo']);
+    const configCompletion = completionContext('/config use ', session);
+    assert.deepEqual(configCompletion?.matches, ['default', 'vpn']);
   } finally {
     if (previousDir === undefined) delete process.env.WIKI_WORKSPACES_DIR;
     else process.env.WIKI_WORKSPACES_DIR = previousDir;

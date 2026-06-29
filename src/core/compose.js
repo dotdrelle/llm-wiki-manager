@@ -113,6 +113,7 @@ function composeEnv(session) {
     ...cacertEnv(),
     WORKSPACE_NAME: session.workspace,
     WIKI_WORKSPACE_PATH: session.workspacePath,
+    ...(session.wikirc?.fileName && { WIKI_CONFIG_PATH: session.wikirc.fileName }),
   };
 }
 
@@ -303,8 +304,7 @@ export async function runWikiCli(session, args, options = {}) {
   if (!Array.isArray(args) || args.length === 0) {
     throw new Error('Usage: /wiki run <args...>');
   }
-  const configEnv = session.wikirc?.fileName ? ['-e', `WIKI_CONFIG_PATH=${session.wikirc.fileName}`] : [];
-  return runCompose(session, ['run', '--rm', ...configEnv, 'wiki', ...args], {
+  return runCompose(session, ['run', '--rm', 'wiki', ...args], {
     timeout: options.timeout ?? 180_000,
     maxBuffer: options.maxBuffer ?? 1024 * 1024 * 8,
     onOutput: options.onOutput,

@@ -43,7 +43,7 @@ const SHELL_RUN_COMMAND_TOOL = {
       properties: {
         command: {
           type: 'string',
-          description: 'Slash command to run, for example "/workspace list", "/workspace init demo", or "/use juno".',
+          description: 'Slash command to run, for example "/workspace list", "/workspace init <name>", or "/use <workspace>".',
         },
       },
       required: ['command'],
@@ -366,23 +366,6 @@ export function buildAgentSystemPrompt(state) {
 export function buildLimitedAgentResponse(state, reason = 'no workspace loaded with .wikirc.yaml') {
   const workspace = state.session.workspace ?? 'no workspace selected';
   const wikirc = state.session.wikirc?.profile ?? 'no profile loaded';
-  const language = state.session.language ?? 'en-US';
-  if (language.toLowerCase().startsWith('fr')) {
-    return [
-      `Donna est active. Workspace courant: ${workspace}.`,
-      `Profil wikirc courant: ${wikirc}.`,
-      '',
-      "Je suis le mode agent du shell: utilise `/agent` pour router les entrees libres vers ce graphe LangGraph, ou `/chat` pour revenir au chat direct.",
-      `Connexion LLM: mode limite (${reason}).`,
-      `Primitives disponibles maintenant: ${commandList(state.session)}.`,
-      '',
-      'Outils MCP connectes:',
-      formatMcpToolsForAgent(state.session.mcp),
-      '',
-      'Mode limite: workspace, Docker Compose, appels MCP, echappatoire /wiki, decouverte skills et mode headless sont branches.',
-      "Utilise `/help` pour voir les commandes deterministes disponibles.",
-    ].join('\n');
-  }
   return [
     `Donna is active. Current workspace: ${workspace}.`,
     `Current wikirc profile: ${wikirc}.`,
@@ -506,7 +489,7 @@ export function createAgentGraph(options = {}) {
     } catch (err) {
       if (err.name === 'AbortError') throw err;
       const message = err instanceof Error ? err.message : String(err);
-      return { response: buildLimitedAgentResponse(state, `LLM indisponible: ${message}`), pendingToolCalls: null, readyToStream: false };
+      return { response: buildLimitedAgentResponse(state, `LLM unavailable: ${message}`), pendingToolCalls: null, readyToStream: false };
     }
   }
 

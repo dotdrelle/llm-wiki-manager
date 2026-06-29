@@ -282,6 +282,13 @@ function workspaceStatsText(stats) {
 }
 
 function workspaceLoadedText(workspace, summary, session) {
+  const profiles = listWikircProfiles(workspace.workspacePath);
+  const profileLines = profiles.length > 0
+    ? profiles.map((profile) => {
+        const marker = profile.name === summary.profile ? '*' : ' ';
+        return `${marker} ${profile.name}\t${profile.fileName}`;
+      })
+    : ['No .wikirc.yaml profile found.'];
   return [
     `Workspace: ${workspace.name}`,
     '',
@@ -300,6 +307,12 @@ function workspaceLoadedText(workspace, summary, session) {
     `vector: ${summary.vectorEnabled ? 'enabled' : 'disabled'}`,
     `embedding: ${summary.embeddingModel ?? '-'}`,
     '',
+    'Available configs',
+    '',
+    ...profileLines,
+    '',
+    `Switch: /use ${workspace.name} <profile> or /config use <profile>`,
+    '',
     'Session',
     '',
     `llm: ${session.llm ? 'configured' : 'missing config'}`,
@@ -317,6 +330,24 @@ function workspaceLoadedWithoutConfigText(workspace, message) {
     'Active config',
     '',
     `Wikirc not loaded: ${message}`,
+  ].join('\n');
+}
+
+function workspaceConfigSelectionText(workspace, profiles) {
+  return [
+    `Workspace: ${workspace.name}`,
+    '',
+    `Path: ${workspace.workspacePath}`,
+    `Env: ${workspace.envFile}`,
+    '',
+    'Select config',
+    '',
+    ...profiles.map((profile) => [
+      `${profile.name}\t${profile.fileName}`,
+      `  use\t/use ${workspace.name} ${profile.name}`,
+    ].join('\n')),
+    '',
+    `Type /use ${workspace.name} <profile> to load one.`,
   ].join('\n');
 }
 
@@ -619,7 +650,7 @@ Options:
 Interactive shell:
 ${helpPair('/help', 'Help', '/version', 'Version')}
 ${helpPair('/workspace list', 'Workspaces', '/new <n> [path]', 'New workspace')}
-${helpPair('/use <workspace>', 'Use workspace', '/status', 'Session status')}
+${helpPair('/use <workspace> [cfg]', 'Use workspace', '/status', 'Session status')}
 ${helpPair('/config list', 'Config profiles', '/config use <n>', 'Use config')}
 ${helpPair('/config edit <n>', 'Edit config', '/workspace delete <n>', 'Delete workspace')}
 ${helpPair('/services', 'Services', '/start [service|agents]', 'Start service(s)')}
@@ -647,7 +678,7 @@ Modes:
 Status:
   Agent-first shell is installed with workspace services, MCP calls, wiki CLI, skill discovery, and headless runs.
   Shell UI is English. Agent exchange language is read from the active .wikirc.yaml.
-  LLM config is intentionally workspace-scoped and will be read from .wikirc.yaml after /use <workspace>.
+  LLM config is intentionally workspace-scoped and is read from .wikirc.yaml after /use <workspace> [profile].
   Headless mode supports one-shot workspace prompts and skill runs with log output.
 `;
 }
@@ -688,10 +719,12 @@ export async function handleSlashCommand(line, context) {
       return { output: await statusText(context.session) };
     }
     case 'use': {
-      const workspaceName = args[1];
-      if (!workspaceName) {
-        return { output: 'Usage: /use <workspace>' };
+      const rawWorkspaceName = args[1];
+      if (!rawWorkspaceName) {
+        return { output: 'Usage: /use <workspace> [profile]' };
       }
+      const [workspaceName, profileFromWorkspace] = String(rawWorkspaceName).split(':', 2);
+      const profileName = args[2] || profileFromWorkspace || null;
       const workspace = findWorkspace(workspaceName);
       if (!workspace) {
         return { output: `Workspace not found: ${workspaceName}` };
@@ -702,9 +735,13 @@ export async function handleSlashCommand(line, context) {
       context.session.workspaceEnv = workspace.env;
       context.session.workspaceEnvFile = workspace.envFile;
       context.session.systemPrompt = loadWorkspaceSystemPrompt(workspace.workspacePath);
+      const profiles = listWikircProfiles(workspace.workspacePath);
+      if (!profileName && profiles.length > 1) {
+        return { output: workspaceConfigSelectionText(workspace, profiles) };
+      }
       try {
         step(`Workspace: loading ${workspace.name} config…`);
-        const summary = loadSessionWikirc(context.session, 'default');
+        const summary = loadSessionWikirc(context.session, profileName || 'default');
         step(`Workspace: discovering ${workspace.name} MCP tools…`);
         await refreshMcpRuntimeStatus(context.session);
         return {

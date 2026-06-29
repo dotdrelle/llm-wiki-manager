@@ -92,7 +92,7 @@ function checkWikirc(workspace) {
       profileName: loaded.profile.name,
     };
     const gaps = [];
-    if (!summary.hasApiKey || !summary.model) gaps.push({ kind: 'llm', context });
+    if (!summary.provider || !summary.baseUrl || !summary.hasApiKey || !summary.model) gaps.push({ kind: 'llm', context });
     if (!summary.vectorEnabled) gaps.push({ kind: 'vector', context });
     return gaps;
   } catch {

@@ -225,9 +225,14 @@ agents_compose() {
       mkdir -p "$agents_data_dir/cme" "$agents_data_dir/documents/input" "$agents_data_dir/documents/output" "$agents_data_dir/documents/uploads"
       mkdir -p "$workspaces_root"
       $do_pull && _agents_dc pull
-      _agents_dc up -d
+      local up_args=(up -d)
+      if [[ -n "$CACERT_PATH" ]]; then
+        up_args+=(--force-recreate)
+      fi
+      _agents_dc "${up_args[@]}"
       printf 'Workspaces root: %s\n' "$workspaces_root"
       printf 'Agents data:     %s\n' "$agents_data_dir"
+      [[ -z "$CACERT_PATH" ]] || printf 'CA cert:         %s -> /wiki-manager-ca.pem\n' "$CACERT_PATH"
       printf 'Agents: cme=:%s  documents=:%s  mailer=:%s\n' \
         "${CME_MCP_PORT:-3336}" "${DOCUMENTS_MCP_PORT:-3337}" "${MAILER_MCP_PORT:-3335}"
       ;;
@@ -524,20 +529,19 @@ cacert_compose_args() {
   local compose_file="$1"
   local override_name="$2"
   [[ -n "$CACERT_PATH" ]] || return 0
-  command -v node >/dev/null 2>&1 || die "--cacert requires node to generate Docker Compose overrides"
 
   local services
   services="$(
-    ROOT_DIR="$ROOT_DIR" _WIKI_COMPOSE_FILE_PATH="$compose_file" node <<'NODE'
-const { createRequire } = require('node:module');
-const fs = require('node:fs');
-const requireFromPackage = createRequire(`${process.env.ROOT_DIR}/package.json`);
-const YAML = requireFromPackage('yaml');
-const parsed = YAML.parse(fs.readFileSync(process.env._WIKI_COMPOSE_FILE_PATH, 'utf8')) ?? {};
-for (const service of Object.keys(parsed.services ?? {})) {
-  console.log(service);
-}
-NODE
+    awk '
+      /^[[:space:]]*services:[[:space:]]*$/ { in_services=1; next }
+      in_services && /^[^[:space:]#]/ { exit }
+      in_services && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ {
+        line=$0
+        sub(/^  /, "", line)
+        sub(/:[[:space:]]*$/, "", line)
+        print line
+      }
+    ' "$compose_file"
   )"
   [[ -n "$services" ]] || return 0
 

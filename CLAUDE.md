@@ -46,6 +46,11 @@ manager directory, not in the installed npm package directory.
 Do not route natural-language input by keyword heuristics. The user controls
 the route with `/chat`, `/agent`, and slash commands.
 
+Shell UI, deterministic command output, MCP status labels, and orchestration
+activity text must stay in English. The active workspace language is forwarded
+to LLM prompts for generated answers only; do not localize manager UI strings
+from `.wikirc`.
+
 ## Agent Orchestration
 
 `src/agent/graph.js` is a ReAct loop:
@@ -152,6 +157,9 @@ remain the source of truth. Queue state is workspace-scoped.
 ## Docker And Security
 
 - Prefer `wiki-workspace` over raw `docker compose`.
+- Keep `package.json`, MCP `clientInfo.version`, and external agent
+  `_AGENT_VERSION` values aligned for each coordinated release. Current release
+  line: `0.6.47`.
 - `--cacert <path>` is the supported way to trust a local proxy/private CA for
   the manager process and Docker Compose services. The file path must exist on
   the host and be readable by Docker; the certificate is mounted directly from

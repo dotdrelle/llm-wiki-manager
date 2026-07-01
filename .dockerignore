@@ -1,0 +1,9 @@
+.git
+.wiki-manager
+workspaces
+.agents-data
+node_modules
+*.md
+.env
+.env.*
+mcp.endpoints.json

@@ -480,6 +480,7 @@ async function runRuntime(argv, agent) {
       const recoverableRuns = store.listRecoverableRuns({ workspace: context.workspace });
       const runningRun = recoverableRuns.find((run) => run.status === 'running');
       const activeActivities = activeNonTerminalActivities(context.session);
+      const pollingActivities = activePollingActivities(context.session);
       if (runningRun && activeActivities.length === 0) {
         if (!runningRun.input) {
           const interrupted = store.interruptRuns({ workspace: context.workspace });
@@ -498,12 +499,24 @@ async function runRuntime(argv, agent) {
           mode: 'agentic_loop',
         };
       }
+      if (runningRun && runningRun.input && pollingActivities.length > 0) {
+        context.session._onActivitiesTerminal = () => {
+          startRecoveredAgenticRun(context, runningRun);
+        };
+        emitRuntimeLog(context.session, `runtime: recovery watching ${pollingActivities.length} active activity(s)`);
+        return {
+          workspace: context.workspace ?? workspace ?? null,
+          resumed: true,
+          interrupted: 0,
+          mode: 'activity_poll_then_resume',
+        };
+      }
       emitRuntimeLog(context.session, manual ? 'runtime: manual resume completed' : 'runtime: recovery completed');
       return {
         workspace: context.workspace ?? workspace ?? null,
         resumed: true,
         interrupted: 0,
-        mode: activePollingActivities(context.session).length > 0 ? 'activity_poll' : 'context',
+        mode: pollingActivities.length > 0 ? 'activity_poll' : 'context',
       };
     } catch (err) {
       const interrupted = store.interruptRuns({ workspace });

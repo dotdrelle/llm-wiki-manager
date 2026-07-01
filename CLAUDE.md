@@ -28,6 +28,15 @@ src/core/queueStore.js      QueueStore interface (memory & SQLite impls)
 src/core/skills.js          Workspace skill discovery
 src/core/workspaces.js      Workspace registry and creation
 src/runtime/                Agentic runtime HTTP/SSE server + SQLite store
+  store.js                  SQLite persistence (events, runs, queue_items)
+  server.js                 HTTP/SSE endpoints: /health /state /events/stream /run /cancel /resume /approve
+  runner.js                 runRuntimeAgenticWorkflow: loop → evaluate → replan; finishRuntimeRun; evaluateRuntimeRun; replanRuntimeRun
+  approvals.js              Run-level and tool-level approval gate; POST /approve handler
+  supervisor.js             Background activity poller; pollBusy set shared with runner
+  lifecycle.js              ensureRuntime: health-check, spawn Node child, inject token
+  auth.js                   Bearer token resolution and validation
+  client.js                 HTTP client for /run /cancel /resume /approve /state /events/stream
+  queueStore.js             SQLite-backed QueueStore for runtime sessions
 docs/                       Architecture and usage docs
 ```
 
@@ -145,27 +154,53 @@ activity wait → continuation prompt flow.
 Key modules in `src/runtime/`:
 
 - **`store.js`**: SQLite persistence via `node:sqlite` `DatabaseSync`. Tables:
-  `events`, `runs`, `queue_items`. `hydrateSession` replays on startup.
-  `runtime_log` events are never persisted (unbounded — SSE-only).
+  `events` (sequence AUTOINCREMENT primary key, replayed ORDER BY sequence),
+  `runs`, `queue_items`. `hydrateSession` replays on startup. `runtime_log`
+  events are never persisted (unbounded — SSE-only). `RUN_STATUS_BY_EVENT`
+  maps all run-affecting event types to their run status (including
+  `run_pending_approval` and `run_approved`).
 - **`server.js`**: `GET /health`, `GET /state`, `GET /events/stream` (SSE),
-  `POST /run`, `POST /cancel`. `running` flag is set before `await readJson` to
-  close the TOCTOU race on concurrent POST /run requests.
-- **`auth.js`**: Bearer token required when `--host 0.0.0.0`. Read from env
-  `WIKI_MANAGER_RUNTIME_TOKEN`, then `.wiki-manager/runtime.token`, then
-  auto-generated (32-byte hex) on first exposed-host start.
-- **`runner.js`**: runtime adapter around `runAgenticLoop`. Takes `pollBusy`
-  from the supervisor to prevent double-polling the same activity.
+  `POST /run`, `POST /cancel`, `POST /resume`, `POST /approve`. `running` flag
+  is set before `await readJson` to close the TOCTOU race on concurrent
+  `POST /run` requests.
+- **`runner.js`**: `runRuntimeAgenticWorkflow` — the full runtime run sequence:
+  agentic loop → optional evaluator (`evaluateRuntimeRun`) → optional replanner
+  (`replanRuntimeRun`) if evaluation fails or a tracked activity ends in error,
+  with a configurable `maxReplans` limit. Each replan emits `run_replanned` and
+  restarts the loop on the partial plan. `finishRuntimeRun` provides the same
+  evaluate-and-finish tail for legacy/external callers. Takes `pollBusy` from
+  the supervisor to prevent double-polling.
+- **`approvals.js`**: run-level and tool-level approval gate. Run-level:
+  `requireApproval: true` in the `/run` body suspends execution after the first
+  plan is formed and emits `run_pending_approval`; `POST /approve?runId=...`
+  unblocks. Tool-level: tools listed in endpoint `requireApproval` or
+  `WIKI_MANAGER_REQUIRE_APPROVAL_TOOLS` emit `tool_pending_approval` and queue
+  the item as `pending_approval`; `POST /approve?itemId=...` or shell
+  `/approve item <id>` unblocks. Timeout defaults to 10 min
+  (`WIKI_MANAGER_APPROVAL_TIMEOUT_MS`, or `approvalTimeoutMs` per run).
 - **`supervisor.js`**: polls non-terminal `_activity` items on an interval.
   Exposes `pollBusy` set shared with the runner.
 - **`lifecycle.js`**: `ensureRuntime` — resolves token, health-checks an existing
-  runtime, spawns a child process if absent, injects token into both parent and
-  child env.
+  runtime, spawns a child Node 22 process if absent, injects token into both
+  parent and child env. When the shell runs under Bun, uses
+  `WIKI_MANAGER_NODE_BIN ?? 'node'` instead of `process.execPath`.
+- **`auth.js`**: Bearer token required when `--host 0.0.0.0`. Read from env
+  `WIKI_MANAGER_RUNTIME_TOKEN`, then `.wiki-manager/runtime.token`, then
+  auto-generated (32-byte hex) on first exposed-host start.
+- **`client.js`**: HTTP client for `/run`, `/cancel`, `/resume`, `/approve`,
+  `/state`, `/events/stream`.
 - **`queueStore.js`**: SQLite-backed `QueueStore` for runtime sessions.
 
-`POST /run` body: `{ input, workspace?, timeout?, maxTurns? }`. If `workspace`
-differs from the current session, `/use <workspace>` runs before the agentic
-loop. The Shell sends its current `session.workspace`; `llm-wiki serve` injects
-`workspace: WORKSPACE_NAME` at the proxy layer (`proxyRuntimeJson` in `serve.ts`).
+`POST /run` body: `{ input, workspace?, timeout?, maxTurns?, evaluate?, replans?,
+requireApproval?, approvalTimeoutMs? }`. If `workspace` differs from the current
+session, `/use <workspace>` runs before the agentic loop. The Shell sends its
+current `session.workspace`; `llm-wiki serve` injects `workspace: WORKSPACE_NAME`
+at the proxy layer (`proxyRuntimeJson` in `serve.ts`).
+
+MCP `tools/call` retries transient HTTP/MCP failures. Configure globally with
+`WIKI_MANAGER_MCP_RETRY_MAX_ATTEMPTS` and `WIKI_MANAGER_MCP_RETRY_BACKOFF_MS`,
+or per endpoint (`retry`) and per tool (`toolRetries`) in `mcp.endpoints.json`.
+The env-based defaults are resolved once and cached in `getEnvRetryPolicy()`.
 
 **QueueStore** (`src/core/queueStore.js`): interface with `list()`, `replace()`,
 `changed()`. `createMemoryQueueStore` for shell/headless sessions;
@@ -177,10 +212,20 @@ loop. The Shell sends its current `session.workspace`; `llm-wiki serve` injects
 All plan/activity mutations go through `dispatchAgentEvent` and the reducer in
 `src/core/agentEvents.js`.
 
-- `run_started` clears stale plan/activity state.
+- `run_started` clears stale plan/activity state; injects a default 3-step plan
+  (Analyze / Execute / Verify) owned by the orchestrator.
+- `run_done` finalizes all running/pending plan steps to `done`.
+- `run_evaluated` sets `state.evaluation { ok, reason, suggestedAction }`.
+- `run_replanned` records `state.replans[]` entries and resets the plan.
+- `run_pending_approval` sets run status to `pending_approval` in SQLite.
+- `run_approved` restores run status to `running` in SQLite.
+- `tool_pending_approval` / `tool_approved` track tool-level approval lifecycle.
 - `plan_set` replaces the current plan.
 - `activity_upserted` syncs activity and may create/replace the plan.
 - `plan_step_updated` patches one step.
+
+`/state` exposes: `status`, `plan`, `activities`, `conversation`, `evaluation`,
+`replans`, `approvals`, `runs`, `queue`, `eventsCursor`.
 
 Any MCP can opt into manager monitoring by returning additive `_activity`
 metadata with `id`, `source`, `kind`, `label`, `status`, optional `progress`,
@@ -219,7 +264,7 @@ remain the source of truth. Queue state is workspace-scoped.
 - Prefer `wiki-workspace` over raw `docker compose`.
 - Keep `package.json`, MCP `clientInfo.version`, and external agent
   `_AGENT_VERSION` values aligned for each coordinated release. Current release
-  line: `0.7.0`.
+  line: `0.8.2`.
 - `--cacert <path>` is the supported way to trust a local proxy/private CA for
   the manager process and Docker Compose services. The file path must exist on
   the host and be readable by Docker; the certificate is mounted directly from
@@ -272,6 +317,9 @@ wiki-manager --headless --workspace <workspace> --skill pipeline --timeout 3600 
 wiki-workspace runtime up
 wiki-workspace runtime status
 wiki-manager runtime [--host 0.0.0.0] [--port 7788] [--state-dir .wiki-manager]
+# approve a pending run or tool approval from the shell:
+/approve run <runId>
+/approve item <itemId>
 ```
 
 Headless `--skill` uses the agentic loop: run a turn, wait for active MCP

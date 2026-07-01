@@ -602,6 +602,7 @@ Useful primitives:
 /queue
 /queue cancel <id>
 /queue clear
+/approve [run|item] <id>
 /wiki
 /wiki run <args...>
 /skills

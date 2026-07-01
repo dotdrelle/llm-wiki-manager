@@ -80,6 +80,12 @@ export async function pollActivitiesOnce(session, {
           await startNextQueuedJob(session, {
             addLog: (message) => emitRuntimeLog(session, message),
           });
+          const remainingPollable = sessionActivities(session).filter((a) => !a.terminal && a.poll);
+          if (remainingPollable.length === 0 && typeof session._onActivitiesTerminal === 'function') {
+            const cb = session._onActivitiesTerminal;
+            delete session._onActivitiesTerminal;
+            cb(session);
+          }
         }
       }
     } catch (err) {

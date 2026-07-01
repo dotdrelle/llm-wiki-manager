@@ -154,6 +154,82 @@ test('startActivitySupervisor passes the active run signal to background polls',
   }
 });
 
+test('pollActivitiesOnce fires _onActivitiesTerminal when last activity becomes terminal', async () => {
+  let fired = false;
+  const session = {
+    mcp: { production: { status: 'connected' } },
+    activities: {},
+    headlessPlan: null,
+    jobQueue: [],
+    _onActivitiesTerminal: () => { fired = true; },
+  };
+  dispatchAgentEvent(session, createAgentEvent('activity_upserted', {
+    payload: {
+      activity: {
+        id: 'job-hook',
+        source: 'production',
+        status: 'running',
+        poll: { server: 'production', tool: 'production_job_status', args: { jobId: 'job-hook' }, intervalMs: 0 },
+      },
+    },
+  }));
+  const key = Object.keys(session.activities)[0];
+  session.activities[key].lastPolledAt = '1970-01-01T00:00:00.000Z';
+
+  await pollActivitiesOnce(session, {
+    callTool: async () => ({
+      content: [{ type: 'text', text: JSON.stringify({
+        _activity: { id: 'job-hook', source: 'production', status: 'done', terminal: true },
+      }) }],
+    }),
+  });
+
+  assert.equal(fired, true);
+  assert.equal(session._onActivitiesTerminal, undefined);
+});
+
+test('pollActivitiesOnce does not fire _onActivitiesTerminal while other activities remain', async () => {
+  let fired = false;
+  const session = {
+    mcp: { production: { status: 'connected' } },
+    activities: {},
+    headlessPlan: null,
+    jobQueue: [],
+    _onActivitiesTerminal: () => { fired = true; },
+  };
+  for (const id of ['job-a', 'job-b']) {
+    dispatchAgentEvent(session, createAgentEvent('activity_upserted', {
+      payload: {
+        activity: {
+          id,
+          source: 'production',
+          status: 'running',
+          poll: { server: 'production', tool: 'production_job_status', args: { jobId: id }, intervalMs: 0 },
+        },
+      },
+    }));
+  }
+  for (const key of Object.keys(session.activities)) {
+    session.activities[key].lastPolledAt = '1970-01-01T00:00:00.000Z';
+  }
+
+  let callCount = 0;
+  await pollActivitiesOnce(session, {
+    callTool: async (_mcp, _server, _tool, args) => {
+      callCount += 1;
+      const terminal = args.jobId === 'job-a';
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          _activity: { id: args.jobId, source: 'production', status: terminal ? 'done' : 'running', terminal },
+        }) }],
+      };
+    },
+  });
+
+  assert.equal(fired, false);
+  assert.equal(callCount, 2);
+});
+
 async function waitFor(predicate, timeoutMs = 250) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

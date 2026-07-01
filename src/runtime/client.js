@@ -68,6 +68,19 @@ export async function postRuntimeCancel({
   return response.json();
 }
 
+export async function postRuntimeResume({
+  url = runtimeUrlFromEnv(),
+  token = runtimeToken(),
+  workspace = null,
+} = {}) {
+  const response = await fetch(runtimeEndpoint(url, '/resume', workspace), {
+    method: 'POST',
+    headers: runtimeHeaders(token),
+  });
+  if (!response.ok) throw new Error(`Runtime resume failed: HTTP ${response.status}`);
+  return response.json();
+}
+
 function runtimeHeaders(token) {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }

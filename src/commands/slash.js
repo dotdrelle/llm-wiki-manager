@@ -490,7 +490,7 @@ function publishDocumentActivity(session, activity) {
   return publishPayloadActivity(session, { _activity: activity }, { server: 'documents', tool: 'documents_convert_to_markdown' });
 }
 
-async function refreshMcpRuntimeStatus(session) {
+export async function refreshMcpRuntimeStatus(session) {
   session.mcp = buildMcpStatus(session);
   if (!session.workspacePath) return null;
   try {

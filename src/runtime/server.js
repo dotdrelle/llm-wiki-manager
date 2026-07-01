@@ -11,6 +11,7 @@ export function startRuntimeServer({
   getContext = null,
   run,
   cancel,
+  resume,
 } = {}) {
   const clients = new Set();
   const defaultContext = {
@@ -122,6 +123,12 @@ export function startRuntimeServer({
         if (getContext) await cancel?.(context);
         else await cancel?.();
         sendJson(response, 202, { cancelled: true, workspace: context.workspace ?? workspace ?? null });
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/resume') {
+        const workspace = workspaceFromUrl(url);
+        const result = await resume?.({ workspace });
+        sendJson(response, 202, result ?? { resumed: false, workspace: workspace ?? null });
         return;
       }
 

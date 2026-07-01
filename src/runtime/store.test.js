@@ -226,3 +226,27 @@ test('runtime state exposes queue as blocked jobs and pending plan steps', () =>
   assert.equal(queue[1].args.type, 'Build');
   store.close();
 });
+
+test('runtime store identifies recoverable workspaces and interrupts stale runs', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  store.persistRun({
+    id: 'run-juno',
+    workspace: 'juno',
+    status: 'running',
+    input: 'build juno',
+  });
+  store.persistRun({
+    id: 'run-done',
+    workspace: 'docs',
+    status: 'done',
+    input: 'done',
+  });
+  store.saveQueue([{ id: 'q-docs', workspace: 'docs', status: 'waiting' }], { workspace: 'docs' });
+
+  assert.deepEqual(store.listRecoverableWorkspaces(), ['docs', 'juno']);
+  assert.deepEqual(store.listRecoverableRuns({ workspace: 'juno' }).map((run) => run.id), ['run-juno']);
+  assert.equal(store.interruptRuns({ workspace: 'juno' }), 1);
+  assert.equal(store.listRuns({ workspace: 'juno' })[0].status, 'interrupted');
+  store.close();
+});

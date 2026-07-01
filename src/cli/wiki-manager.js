@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { loadManagerEnv } from '../core/env.js';
 loadManagerEnv();
 import { createAgentGraph } from '../agent/graph.js';
-import { handleSlashCommand, printHelp, printVersion } from '../commands/slash.js';
+import { handleSlashCommand, printHelp, printVersion, refreshMcpRuntimeStatus } from '../commands/slash.js';
 import { runShell } from '../shell/repl.js';
 import { runChecks } from '../core/startupCheck.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
@@ -354,6 +354,69 @@ async function runRuntime(argv, agent) {
     return pending;
   }
 
+  function recoveryMcpGaps(context) {
+    const gaps = [];
+    const session = context.session;
+    for (const activity of sessionActivities(session)) {
+      if (activity.terminal || !activity.poll?.server) continue;
+      const endpoint = session.mcp?.[activity.poll.server];
+      if (endpoint?.status !== 'connected') gaps.push(activity.poll.server);
+    }
+    for (const item of session.queueStore?.list?.() ?? []) {
+      const status = String(item.status ?? '').toLowerCase();
+      if (!['waiting', 'queued', 'starting', 'running', 'blocked'].includes(status)) continue;
+      const endpoint = session.mcp?.[item.server ?? 'production'];
+      if (endpoint?.status !== 'connected') gaps.push(item.server ?? 'production');
+    }
+    return [...new Set(gaps)];
+  }
+
+  async function recoverWorkspace(workspace, { manual = false } = {}) {
+    try {
+      const context = await getWorkspaceContext(workspace);
+      await refreshMcpRuntimeStatus(context.session);
+      const gaps = recoveryMcpGaps(context);
+      if (gaps.length > 0) {
+        const interrupted = store.interruptRuns({ workspace: context.workspace });
+        return {
+          workspace: context.workspace ?? workspace ?? null,
+          resumed: false,
+          interrupted,
+          reason: `MCP unavailable: ${gaps.join(', ')}`,
+        };
+      }
+      emitRuntimeLog(context.session, manual ? 'runtime: manual resume completed' : 'runtime: recovery completed');
+      return {
+        workspace: context.workspace ?? workspace ?? null,
+        resumed: true,
+        interrupted: 0,
+      };
+    } catch (err) {
+      const interrupted = store.interruptRuns({ workspace });
+      return {
+        workspace: workspace ?? null,
+        resumed: false,
+        interrupted,
+        reason: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  async function recoverRuntime({ workspace = null, manual = false } = {}) {
+    const workspaces = workspace
+      ? [workspace]
+      : store.listRecoverableWorkspaces();
+    const results = [];
+    for (const item of workspaces) {
+      results.push(await recoverWorkspace(item, { manual }));
+    }
+    return {
+      resumed: results.filter((result) => result.resumed).length,
+      interrupted: results.reduce((sum, result) => sum + Number(result.interrupted ?? 0), 0),
+      workspaces: results,
+    };
+  }
+
   async function executeRun(context, body, { signal } = {}) {
     const session = context.session;
     const supervisor = context.supervisor;
@@ -448,11 +511,16 @@ async function runRuntime(argv, agent) {
     getContext: getWorkspaceContext,
     run: executeRun,
     cancel: (context) => emitRuntimeLog(context.session, 'runtime: cancel requested'),
+    resume: ({ workspace }) => recoverRuntime({ workspace, manual: true }),
     token: auth.token,
   });
+  const recovery = await recoverRuntime();
 
   console.log(`wiki-manager runtime listening on http://${host}:${port}`);
   console.log(`runtime state: ${store.dbPath}`);
+  if (recovery.resumed > 0 || recovery.interrupted > 0) {
+    console.log(`runtime recovery: resumed=${recovery.resumed} interrupted=${recovery.interrupted}`);
+  }
   if (auth.tokenPath) console.log(`runtime token: ${auth.tokenPath}`);
 
   const shutdown = async () => {

@@ -15,6 +15,9 @@ const RUN_STATUS_BY_TERMINAL_EVENT = {
   run_cancelled: 'cancelled',
 };
 
+const RECOVERABLE_RUN_STATUSES = ['running', 'waiting'];
+const RECOVERABLE_QUEUE_STATUSES = ['waiting', 'queued', 'starting', 'running', 'blocked'];
+
 export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName = 'runtime.db' } = {}) {
   const resolvedStateDir = resolve(stateDir);
   mkdirSync(resolvedStateDir, { recursive: true });
@@ -102,6 +105,23 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     WHERE workspace = ?
     ORDER BY created_at DESC
   `);
+  const listRecoverableRunsStatement = db.prepare(`
+    SELECT id, workspace, status, input, created_at, updated_at
+    FROM runs
+    WHERE status IN (${RECOVERABLE_RUN_STATUSES.map(() => '?').join(', ')})
+    ORDER BY created_at ASC
+  `);
+  const listRecoverableRunsByWorkspaceStatement = db.prepare(`
+    SELECT id, workspace, status, input, created_at, updated_at
+    FROM runs
+    WHERE workspace = ? AND status IN (${RECOVERABLE_RUN_STATUSES.map(() => '?').join(', ')})
+    ORDER BY created_at ASC
+  `);
+  const interruptRunsStatement = db.prepare(`
+    UPDATE runs
+    SET status = 'interrupted', updated_at = ?
+    WHERE workspace = ? AND status IN (${RECOVERABLE_RUN_STATUSES.map(() => '?').join(', ')})
+  `);
   const upsertQueueItem = db.prepare(`
     INSERT INTO queue_items (
       id, workspace, server, tool, args, lock_key, status, reason, job_id, activity_key,
@@ -146,6 +166,11 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     FROM queue_items
     WHERE workspace = ?
     ORDER BY COALESCE(created_at, updated_at) ASC, id ASC
+  `);
+  const listRecoverableQueueWorkspacesStatement = db.prepare(`
+    SELECT DISTINCT workspace
+    FROM queue_items
+    WHERE workspace IS NOT NULL AND status IN (${RECOVERABLE_QUEUE_STATUSES.map(() => '?').join(', ')})
   `);
 
   function persistEvent(event) {
@@ -210,6 +235,38 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));
+  }
+
+  function listRecoverableRuns({ workspace = null } = {}) {
+    const rows = workspace
+      ? listRecoverableRunsByWorkspaceStatement.all(workspace, ...RECOVERABLE_RUN_STATUSES)
+      : listRecoverableRunsStatement.all(...RECOVERABLE_RUN_STATUSES);
+    return rows.map((row) => ({
+      id: row.id,
+      workspace: row.workspace ?? null,
+      status: row.status,
+      input: row.input,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  function listRecoverableWorkspaces() {
+    const workspaces = new Set();
+    for (const run of listRecoverableRuns()) {
+      if (run.workspace) workspaces.add(run.workspace);
+    }
+    for (const row of listRecoverableQueueWorkspacesStatement.all(...RECOVERABLE_QUEUE_STATUSES)) {
+      if (row.workspace) workspaces.add(row.workspace);
+    }
+    return [...workspaces].sort();
+  }
+
+  function interruptRuns({ workspace, reason = 'Runtime restart recovery failed.' } = {}) {
+    if (!workspace) return 0;
+    const now = new Date().toISOString();
+    const result = interruptRunsStatement.run(now, workspace, ...RECOVERABLE_RUN_STATUSES);
+    return Number(result.changes ?? 0);
   }
 
   function saveQueue(queue = [], { workspace = null } = {}) {
@@ -317,6 +374,9 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     persistRun,
     listEvents,
     listRuns,
+    listRecoverableRuns,
+    listRecoverableWorkspaces,
+    interruptRuns,
     saveQueue,
     listQueue,
     replayEvents,

@@ -219,3 +219,45 @@ test('runtime server filters state and events by workspace', async (t) => {
     await handle.close();
   }
 });
+
+test('runtime server exposes manual resume endpoint', async (t) => {
+  let resumedWorkspace = null;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'idle' }),
+        listEvents: () => [],
+      },
+      run: async () => {},
+      resume: async ({ workspace }) => {
+        resumedWorkspace = workspace;
+        return { resumed: 1, interrupted: 0, workspaces: [{ workspace, resumed: true }] };
+      },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/resume?workspace=juno`, {
+      method: 'POST',
+    });
+    assert.equal(response.status, 202);
+    assert.equal(resumedWorkspace, 'juno');
+    assert.deepEqual(await response.json(), {
+      resumed: 1,
+      interrupted: 0,
+      workspaces: [{ workspace: 'juno', resumed: true }],
+    });
+  } finally {
+    await handle.close();
+  }
+});

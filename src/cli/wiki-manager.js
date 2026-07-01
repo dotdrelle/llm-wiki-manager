@@ -5,14 +5,15 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadManagerEnv } from '../core/env.js';
 loadManagerEnv();
-import { createAgentGraph, buildAgentSystemPrompt, buildLimitedAgentResponse } from '../agent/graph.js';
+import { createAgentGraph } from '../agent/graph.js';
 import { handleSlashCommand, printHelp, printVersion } from '../commands/slash.js';
 import { runShell } from '../shell/repl.js';
 import { runChecks } from '../core/startupCheck.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
-import { activitySnapshot, extractActivity, newNonTerminalActivities, parseJsonText, sessionActivities, terminalFailures } from '../core/activity.js';
-import { extractHeadlessPlan, syncActivitiesToPlan, formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
+import { extractActivity, parseJsonText, sessionActivities, terminalFailures } from '../core/activity.js';
+import { syncActivitiesToPlan, formatPlanStatus } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
+import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
 import { defaultRuntimeStateDir, openRuntimeStore } from '../runtime/store.js';
 import { startRuntimeServer } from '../runtime/server.js';
 import { ensureRuntime } from '../runtime/lifecycle.js';
@@ -147,116 +148,59 @@ async function runHeadlessActivityLoop(session, log, { wait, timeoutMs }) {
 
 async function runHeadlessAgentTurn(agent, session, input, log, messages = []) {
   session.packageJson = packageJson;
-  let streamedContent = '';
-  session._onStream = (delta) => { streamedContent += delta; };
-  session._onStreamReset = () => { streamedContent = ''; };
-  let result;
-  try {
-    result = await agent.invoke({ input, session, messages });
-  } finally {
-    delete session._onStream;
-    delete session._onStreamReset;
-  }
-  if (result.streamedInline) {
-    return streamedContent.trim() || buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
-  }
-  if (result.response != null) return result.response;
-  if (result.readyToStream && session.llm?.stream) {
-    const { system, messages: streamMessages = [] } = result.streamContext ?? {};
-    let content = '';
-    for await (const delta of session.llm.stream({
-      system: system ?? buildAgentSystemPrompt({ input, session }),
-      messages: streamMessages,
-    })) {
-      content += delta;
-    }
-    return content.trim() || buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
-  }
-  return buildLimitedAgentResponse({ input, session });
+  return runAgentTurn(agent, session, input, { messages });
 }
 
 async function runHeadlessAgenticLoop(agent, session, initialInput, log, { timeoutMs, maxTurns }) {
-  const conversationHistory = [];
-  let currentInput = initialInput;
-
-  for (let turn = 1; turn <= maxTurns; turn++) {
-    log.push(`agentic-loop: turn ${turn}/${maxTurns}`);
-    console.log(`[headless] Agent turn ${turn}/${maxTurns}…`);
-
-    const snapshot = activitySnapshot(session);
-
-    const response = await runHeadlessAgentTurn(agent, session, currentInput, log, conversationHistory);
-    log.push(`agentic-loop: turn ${turn} response:`);
-    log.push(response);
-    console.log(response);
-
-    conversationHistory.push(
-      { role: 'user', content: currentInput },
-      { role: 'assistant', content: response },
-    );
-
-    // session.headlessPlan is set authoritatively by wiki__plan_set tool call.
-    // Fall back to text extraction only if the agent didn't call the tool.
-    if (turn === 1 && session.headlessPlan === null) {
-      const extractedPlan = extractHeadlessPlan(response);
-      if (extractedPlan) {
-        dispatchAgentEvent(session, createAgentEvent('plan_set', {
-          origin: 'llm',
-          payload: { steps: extractedPlan },
-        }));
-        log.push(`agentic-loop: plan extracted from text (${session.headlessPlan.length} steps, fallback)`);
-      }
-    } else if (turn === 1 && session.headlessPlan) {
-      log.push(`agentic-loop: plan set via tool (${session.headlessPlan.length} steps)`);
-    }
-
-    const newPending = newNonTerminalActivities(snapshot, session);
-    if (newPending.length === 0) {
-      const pendingSteps = (session.headlessPlan ?? []).filter((s) => s.status === 'pending');
-      if (pendingSteps.length === 0) {
-        log.push('agentic-loop: no new non-terminal activities — plan complete');
-        console.log('[headless] Plan complete.');
-        return { exitCode: 0 };
-      }
+  const result = await runAgenticLoop(agent, session, initialInput, {
+    timeoutMs,
+    maxTurns,
+    runTurn: (agentInstance, turnSession, input, { messages }) =>
+      runHeadlessAgentTurn(agentInstance, turnSession, input, log, messages),
+    waitForActivities: async (turnSession, _startedActivities, waitOptions) => {
+      const waitResult = await runHeadlessActivityLoop(turnSession, log, { wait: true, timeoutMs: waitOptions.timeoutMs });
+      return {
+        ok: waitResult.exitCode === 0 && !waitResult.timedOut,
+        ...waitResult,
+      };
+    },
+    onTurnStart: ({ turn, maxTurns: totalTurns }) => {
+      log.push(`agentic-loop: turn ${turn}/${totalTurns}`);
+      console.log(`[headless] Agent turn ${turn}/${totalTurns}…`);
+    },
+    onTurnResponse: ({ turn, response }) => {
+      log.push(`agentic-loop: turn ${turn} response:`);
+      log.push(response);
+      console.log(response);
+    },
+    onPlanExtracted: ({ steps }) => {
+      log.push(`agentic-loop: plan extracted from text (${steps.length} steps, fallback)`);
+    },
+    onPlanAlreadySet: ({ steps }) => {
+      log.push(`agentic-loop: plan set via tool (${steps.length} steps)`);
+    },
+    onComplete: () => {
+      log.push('agentic-loop: no new non-terminal activities — plan complete');
+      console.log('[headless] Plan complete.');
+    },
+    onPendingSteps: ({ pendingSteps }) => {
       log.push(`agentic-loop: no new async activity, ${pendingSteps.length} pending step(s) remain`);
       if (session.headlessPlan) log.push(`agentic-loop: plan status:\n${formatPlanStatus(session.headlessPlan)}`);
-      currentInput = [
-        'Original task:',
-        initialInput,
-        '',
-        `Plan status:\n${formatPlanStatus(session.headlessPlan)}`,
-        '',
-        'No new background activity was started in the previous turn.',
-        'Continue the original plan. Start the next pending step only.',
-        'If required information is missing and cannot be inferred, stop with a clear blocker.',
-      ].join('\n');
-      continue;
-    }
+    },
+    onActivitiesStarted: ({ activities }) => {
+      log.push(`agentic-loop: ${activities.length} new job(s) started, waiting…`);
+    },
+    onActivitiesCompleted: ({ summary }) => {
+      log.push(`agentic-loop: completed activities:\n${summary}`);
+      if (session.headlessPlan) log.push(`agentic-loop: plan status:\n${formatPlanStatus(session.headlessPlan)}`);
+    },
+    onMaxTurns: ({ maxTurns: totalTurns }) => {
+      log.push(`agentic-loop: max turns (${totalTurns}) reached without completing`);
+      console.error(`[headless] Max agent turns (${totalTurns}) reached.`);
+    },
+  });
 
-    log.push(`agentic-loop: ${newPending.length} new job(s) started, waiting…`);
-    const { exitCode, completed, timedOut } = await runHeadlessActivityLoop(session, log, { wait: true, timeoutMs });
-
-    if (timedOut || exitCode !== 0) return { exitCode };
-
-    const summary = formatCompletedActivities(completed);
-    log.push(`agentic-loop: completed activities:\n${summary}`);
-    if (session.headlessPlan) log.push(`agentic-loop: plan status:\n${formatPlanStatus(session.headlessPlan)}`);
-    currentInput = [
-      'Original task:',
-      initialInput,
-      '',
-      session.headlessPlan ? `Plan status:\n${formatPlanStatus(session.headlessPlan)}\n` : null,
-      'Completed activities:',
-      summary,
-      '',
-      'Continue the original plan. Start the next required step only.',
-      'If all steps are complete, provide the final summary.',
-    ].filter(Boolean).join('\n');
-  }
-
-  log.push(`agentic-loop: max turns (${maxTurns}) reached without completing`);
-  console.error(`[headless] Max agent turns (${maxTurns}) reached.`);
-  return { exitCode: 1 };
+  return { exitCode: result.ok ? 0 : (result.waitResult?.exitCode ?? 1) };
 }
 
 async function runHeadless(argv, agent) {

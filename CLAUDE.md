@@ -19,6 +19,7 @@ src/shell/                  Repl/OpenTUI shell, panes, session state
 src/agent/graph.js          LangGraph ReAct orchestrator
 src/agent/llm.js            OpenAI-compatible client
 src/commands/slash.js       Deterministic slash commands
+src/core/agentLoop.js       Shared agent turn + multi-turn agentic loop
 src/core/agentEvents.js     AgentRunEvent reducer/projection
 src/core/activity.js        Generic activity normalization/polling
 src/core/jobQueue.js        Workspace-scoped production queue
@@ -131,6 +132,11 @@ raw system commands through this tool without a separate allowlist design.
 that shares orchestration state between the Shell UI and `llm-wiki serve`. The
 Shell sends agent runs to the runtime; serve proxies the same runs from the web.
 
+The multi-turn orchestration loop is shared in `src/core/agentLoop.js`.
+Headless and runtime provide different callbacks for logging/events and
+different activity waiters, but both use the same turn → plan fallback →
+activity wait → continuation prompt flow.
+
 Key modules in `src/runtime/`:
 
 - **`store.js`**: SQLite persistence via `node:sqlite` `DatabaseSync`. Tables:
@@ -142,9 +148,8 @@ Key modules in `src/runtime/`:
 - **`auth.js`**: Bearer token required when `--host 0.0.0.0`. Read from env
   `WIKI_MANAGER_RUNTIME_TOKEN`, then `.wiki-manager/runtime.token`, then
   auto-generated (32-byte hex) on first exposed-host start.
-- **`runner.js`**: `runRuntimeAgenticLoop` — agentic turns, plan extraction from
-  text, activity wait loop. Takes `pollBusy` from the supervisor to prevent
-  double-polling the same activity.
+- **`runner.js`**: runtime adapter around `runAgenticLoop`. Takes `pollBusy`
+  from the supervisor to prevent double-polling the same activity.
 - **`supervisor.js`**: polls non-terminal `_activity` items on an interval.
   Exposes `pollBusy` set shared with the runner.
 - **`lifecycle.js`**: `ensureRuntime` — resolves token, health-checks an existing

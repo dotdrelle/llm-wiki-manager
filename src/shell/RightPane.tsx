@@ -68,7 +68,7 @@ function activityColor(status: string) {
 
 function queueColor(status: string) {
   const value = String(status ?? '').toLowerCase();
-  if (value === 'waiting') return '#FBBF24';
+  if (value === 'waiting' || value === 'pending_approval') return '#FBBF24';
   return activityColor(status);
 }
 

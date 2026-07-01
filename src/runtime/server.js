@@ -12,6 +12,7 @@ export function startRuntimeServer({
   run,
   cancel,
   resume,
+  approve,
 } = {}) {
   const clients = new Set();
   const defaultContext = { workspace: null, session, running: false, currentAbortController: null };
@@ -122,6 +123,18 @@ export function startRuntimeServer({
         const workspace = workspaceFromUrl(url);
         const result = await resume?.({ workspace });
         sendJson(response, 202, result ?? { resumed: false, workspace: workspace ?? null });
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/approve') {
+        const body = await readJson(request);
+        const workspace = workspaceFromBody(body) ?? workspaceFromUrl(url);
+        const result = await approve?.({
+          workspace,
+          runId: url.searchParams.get('runId') ?? body.runId ?? null,
+          itemId: url.searchParams.get('itemId') ?? body.itemId ?? null,
+          approvalId: url.searchParams.get('approvalId') ?? body.approvalId ?? null,
+        });
+        sendJson(response, result?.approved ? 202 : 404, result ?? { approved: false });
         return;
       }
 

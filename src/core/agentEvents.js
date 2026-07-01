@@ -8,6 +8,10 @@ const SESSION_PROJECTION_EVENTS = new Set([
   'activity_upserted',
   'run_evaluated',
   'run_replanned',
+  'run_pending_approval',
+  'run_approved',
+  'tool_pending_approval',
+  'tool_approved',
   'run_done',
   'run_error',
   'run_cancelled',
@@ -96,6 +100,7 @@ function createProjectionState() {
     logs: [],
     evaluation: null,
     replans: [],
+    approvals: [],
     summary: null,
     status: 'idle',
   };
@@ -110,6 +115,7 @@ function publicProjection(state) {
     logs: [...state.logs],
     evaluation: state.evaluation ? { ...state.evaluation } : null,
     replans: state.replans.map((replan) => ({ ...replan, plan: [...(replan.plan ?? [])] })),
+    approvals: state.approvals.map((approval) => ({ ...approval })),
     summary: state.summary,
     status: state.status,
   };
@@ -138,6 +144,7 @@ function applyEvent(state, event) {
       state.logs = [];
       state.evaluation = null;
       state.replans = [];
+      state.approvals = [];
       state.summary = null;
       return;
     case 'user_message':
@@ -189,6 +196,31 @@ function applyEvent(state, event) {
         plan: Array.isArray(event.payload?.plan) ? event.payload.plan.map(String) : [],
         replansLeft: Number(event.payload?.replansLeft ?? 0),
         runId: event.runId ?? event.payload?.runId ?? null,
+      });
+      return;
+    case 'run_pending_approval':
+    case 'tool_pending_approval':
+      upsertApproval(state, {
+        id: event.payload?.approvalId ?? event.payload?.runId ?? event.payload?.itemId ?? event.id,
+        scope: event.type === 'run_pending_approval' ? 'run' : 'tool',
+        status: 'pending_approval',
+        runId: event.runId ?? event.payload?.runId ?? null,
+        itemId: event.payload?.itemId ?? null,
+        reason: event.payload?.reason ?? null,
+        tool: event.payload?.tool ?? null,
+        plan: event.payload?.plan ?? null,
+        createdAt: event.ts,
+      });
+      return;
+    case 'run_approved':
+    case 'tool_approved':
+      upsertApproval(state, {
+        id: event.payload?.approvalId ?? event.payload?.runId ?? event.payload?.itemId ?? event.id,
+        scope: event.type === 'run_approved' ? 'run' : 'tool',
+        status: 'approved',
+        runId: event.runId ?? event.payload?.runId ?? null,
+        itemId: event.payload?.itemId ?? null,
+        approvedAt: event.ts,
       });
       return;
     case 'run_done':
@@ -244,6 +276,18 @@ function finishToolCall(state, payload = {}) {
   step.result = payload.result ?? null;
   step.summary = payload.summary ?? step.summary ?? step.status;
   if (!existing) state.chain.push(step);
+}
+
+function upsertApproval(state, next) {
+  const index = state.approvals.findIndex((approval) => approval.id === next.id);
+  if (index === -1) {
+    state.approvals.push(next);
+    return;
+  }
+  state.approvals[index] = {
+    ...state.approvals[index],
+    ...next,
+  };
 }
 
 function finishPendingPlanSteps(plan) {

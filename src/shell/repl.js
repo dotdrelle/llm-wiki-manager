@@ -15,7 +15,7 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { listSkills } from '../core/skills.js';
 import { listWikircProfiles } from '../core/wikirc.js';
 import { listWorkspaces } from '../core/workspaces.js';
-import { fetchRuntimeState, postRuntimeCancel, postRuntimeRun, streamRuntimeEvents } from '../runtime/client.js';
+import { fetchRuntimeState, postRuntimeApprove, postRuntimeCancel, postRuntimeRun, streamRuntimeEvents } from '../runtime/client.js';
 
 marked.use(markedTerminal());
 // marked-terminal's text renderer extracts token.text (raw string) instead of
@@ -74,6 +74,7 @@ const COMMAND_COMPLETION_DESCRIPTIONS = {
   '/chat': 'Switch free text to direct LLM chat without tools.',
   '/agent': 'Switch free text to the LangGraph agent with tools.',
   '/openui': 'Open the workspace web UI in the browser.',
+  '/approve': 'Approve a pending runtime run or tool.',
 };
 
 const SUBCOMMAND_COMPLETION_DESCRIPTIONS = {
@@ -110,7 +111,7 @@ export function createSession() {
     wikircConfig: null,
     language: null,
     mcp: null,
-    commands: ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'upload', 'uploads', 'clear', 'chat', 'agent', 'openui', 'queue'],
+    commands: ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'upload', 'uploads', 'clear', 'chat', 'agent', 'openui', 'queue', 'approve'],
     chatMode: true,
     llm: null,
     activities: {},
@@ -1482,7 +1483,22 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
       session._abortSignal = currentAbortController.signal;
       let aborted = false;
       try {
-        if (runtime?.url && !session.chatMode && !line.trim().startsWith('/')) {
+        if (runtime?.url && line.trim().startsWith('/approve')) {
+          const parts = line.trim().split(/\s+/).slice(1);
+          const kind = ['run', 'item', 'approval'].includes(parts[0]) ? parts.shift() : 'run';
+          const id = parts[0];
+          if (!id) {
+            conversationMessages(session).push({ role: 'command', content: 'Usage: /approve [run|item|approval] <id>' });
+          } else {
+            const result = await postRuntimeApprove({
+              url: runtime.url,
+              workspace: session.workspace ?? null,
+              ...(kind === 'item' ? { itemId: id } : kind === 'approval' ? { approvalId: id } : { runId: id }),
+            });
+            conversationMessages(session).push({ role: 'command', content: `Approval ${result.approved ? 'accepted' : 'not found'}: ${id}` });
+            syncRuntimeState();
+          }
+        } else if (runtime?.url && !session.chatMode && !line.trim().startsWith('/')) {
           await postRuntimeRun(line, {
             url: runtime.url,
             workspace: session.workspace ?? null,

@@ -163,6 +163,29 @@ test('buildMcpStatus uses active wikirc mcp.accessKey for wiki MCP', () => {
   assert.equal(status.wiki.token, 'wikirc-wiki-token');
 });
 
+test('buildMcpStatus applies internal tool approval policy from env', () => {
+  const original = process.env.WIKI_MANAGER_REQUIRE_APPROVAL_TOOLS;
+  process.env.WIKI_MANAGER_REQUIRE_APPROVAL_TOOLS = 'production.production_start_job,wiki.wiki_search';
+  try {
+    const status = buildMcpStatus({
+      workspaceEnv: {
+        PRODUCTION_MCP_PORT: '3102',
+        PRODUCTION_MCP_AUTH_TOKEN: 'production-token',
+        WIKI_MCP_PORT: '3101',
+      },
+      wikircConfig: {
+        mcp: { accessKey: 'wiki-token' },
+      },
+    });
+
+    assert.deepEqual(status.production.requireApproval, ['production_start_job']);
+    assert.deepEqual(status.wiki.requireApproval, ['wiki_search']);
+  } finally {
+    if (original === undefined) delete process.env.WIKI_MANAGER_REQUIRE_APPROVAL_TOOLS;
+    else process.env.WIKI_MANAGER_REQUIRE_APPROVAL_TOOLS = original;
+  }
+});
+
 test('callMcpTool injects active configPath for production_start_job', async () => {
   const originalFetch = globalThis.fetch;
   let requestBody = null;

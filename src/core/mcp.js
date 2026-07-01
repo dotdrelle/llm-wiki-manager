@@ -70,6 +70,18 @@ function endpointStatus(configured, detail = '') {
   };
 }
 
+function approvalToolsFor(serverName) {
+  const raw = envValue('WIKI_MANAGER_REQUIRE_APPROVAL_TOOLS');
+  if (!raw) return undefined;
+  const tools = String(raw)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .filter((item) => item === '*' || item.startsWith(`${serverName}.`) || !item.includes('.'))
+    .map((item) => item.startsWith(`${serverName}.`) ? item.slice(serverName.length + 1) : item);
+  return tools.length > 0 ? tools : undefined;
+}
+
 const MCP_SERVICE_MAP = {
   wiki: 'mcp-http',
   production: 'production-mcp',
@@ -96,6 +108,7 @@ export function buildMcpStatus(session) {
       ),
       url: workspaceEnv.WIKI_MCP_PORT ? `http://127.0.0.1:${workspaceEnv.WIKI_MCP_PORT}/mcp` : null,
       token: wikiMcpToken || null,
+      requireApproval: approvalToolsFor('wiki'),
     },
     production: {
       ...endpointStatus(
@@ -105,6 +118,7 @@ export function buildMcpStatus(session) {
       url: workspaceEnv.PRODUCTION_MCP_PORT ? `http://127.0.0.1:${workspaceEnv.PRODUCTION_MCP_PORT}/mcp/` : null,
       token: workspaceEnv.PRODUCTION_MCP_AUTH_TOKEN || null,
       activeConfigPath: session.wikirc?.fileName || null,
+      requireApproval: approvalToolsFor('production'),
     },
     ...external,
   };
@@ -216,7 +230,7 @@ async function mcpRequest(endpoint, method, params, signal, options = {}) {
           params: {
             protocolVersion: '2025-06-18',
             capabilities: {},
-            clientInfo: { name: 'wiki-manager', version: '0.7.13' },
+            clientInfo: { name: 'wiki-manager', version: '0.7.14' },
           },
         }),
       });

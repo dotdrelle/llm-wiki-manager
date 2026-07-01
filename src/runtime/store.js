@@ -15,8 +15,8 @@ const RUN_STATUS_BY_TERMINAL_EVENT = {
   run_cancelled: 'cancelled',
 };
 
-const RECOVERABLE_RUN_STATUSES = ['running', 'waiting'];
-export const RECOVERABLE_QUEUE_STATUSES = ['waiting', 'queued', 'starting', 'running', 'blocked'];
+const RECOVERABLE_RUN_STATUSES = ['running', 'waiting', 'pending_approval'];
+export const RECOVERABLE_QUEUE_STATUSES = ['waiting', 'queued', 'starting', 'running', 'blocked', 'pending_approval'];
 
 export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName = 'runtime.db' } = {}) {
   const resolvedStateDir = resolve(stateDir);
@@ -211,6 +211,26 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
         createdAt: event.ts,
         updatedAt: event.ts,
       });
+    } else if (event.type === 'run_pending_approval') {
+      const runId = event.runId ?? event.payload?.runId ?? null;
+      if (runId) {
+        persistRun({
+          id: runId,
+          status: 'pending_approval',
+          workspace: ws,
+          updatedAt: event.ts,
+        });
+      }
+    } else if (event.type === 'run_approved') {
+      const runId = event.runId ?? event.payload?.runId ?? null;
+      if (runId) {
+        persistRun({
+          id: runId,
+          status: 'running',
+          workspace: ws,
+          updatedAt: event.ts,
+        });
+      }
     } else if (RUN_STATUS_BY_TERMINAL_EVENT[event.type]) {
       const runId = event.runId ?? event.payload?.runId ?? null;
       if (runId) {

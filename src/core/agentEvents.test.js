@@ -182,6 +182,34 @@ test('reduceAgentEvents: run_replanned records replan trace', () => {
   }]);
 });
 
+test('reduceAgentEvents: approvals move from pending to approved', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('run_pending_approval', {
+      origin: 'runtime',
+      runId: 'run-1',
+      payload: {
+        approvalId: 'approval-1',
+        runId: 'run-1',
+        reason: 'Approve plan.',
+        plan: ['Build'],
+      },
+    }),
+    createAgentEvent('run_approved', {
+      origin: 'runtime',
+      runId: 'run-1',
+      payload: {
+        approvalId: 'approval-1',
+        runId: 'run-1',
+      },
+    }),
+  ]);
+
+  assert.equal(projection.approvals.length, 1);
+  assert.equal(projection.approvals[0].status, 'approved');
+  assert.equal(projection.approvals[0].scope, 'run');
+  assert.deepEqual(projection.approvals[0].plan, ['Build']);
+});
+
 test('reduceAgentEvents: activity-owned plan is used when no orchestrator plan exists', () => {
   const projection = reduceAgentEvents([
     createAgentEvent('activity_upserted', {

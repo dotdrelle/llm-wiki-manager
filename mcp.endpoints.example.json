@@ -5,6 +5,9 @@
       "headers": {
         "Authorization": "Bearer ${CME_MCP_AUTH_TOKEN}"
       },
+      "requireApproval": [
+        "cme_export_run"
+      ],
       "retry": {
         "maxAttempts": 2,
         "backoffMs": 500

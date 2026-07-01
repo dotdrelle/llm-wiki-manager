@@ -88,6 +88,27 @@ export async function postRuntimeResume({
   return response.json();
 }
 
+export async function postRuntimeApprove({
+  url = runtimeUrlFromEnv(),
+  token = runtimeToken(),
+  workspace = null,
+  runId = null,
+  itemId = null,
+  approvalId = null,
+} = {}) {
+  const endpoint = runtimeEndpoint(url, '/approve', workspace);
+  const parsed = new URL(endpoint);
+  if (runId) parsed.searchParams.set('runId', runId);
+  if (itemId) parsed.searchParams.set('itemId', itemId);
+  if (approvalId) parsed.searchParams.set('approvalId', approvalId);
+  const response = await fetch(parsed.toString(), {
+    method: 'POST',
+    headers: runtimeHeaders(token),
+  });
+  if (!response.ok) throw new Error(`Runtime approve failed: HTTP ${response.status}`);
+  return response.json();
+}
+
 function runtimeHeaders(token) {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }

@@ -194,7 +194,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     const runtimeQueue = runtimeState()?.queue;
     if (Array.isArray(runtimeQueue)) {
       return {
-        active: runtimeQueue.filter((item: any) => ['waiting', 'starting', 'running', 'queued', 'pending'].includes(String(item.status ?? '').toLowerCase())).length,
+        active: runtimeQueue.filter((item: any) => ['waiting', 'starting', 'running', 'queued', 'pending', 'pending_approval'].includes(String(item.status ?? '').toLowerCase())).length,
         current: runtimeQueue.filter((item: any) => ['starting', 'running'].includes(String(item.status ?? '').toLowerCase())).length,
         frozen: 0,
       };

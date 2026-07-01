@@ -263,3 +263,46 @@ test('runtime server exposes manual resume endpoint', async (t) => {
     await handle.close();
   }
 });
+
+test('runtime server exposes approval endpoint', async (t) => {
+  let approved = null;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'idle' }),
+        listEvents: () => [],
+      },
+      run: async () => {},
+      approve: async (request) => {
+        approved = request;
+        return { approved: true, runId: request.runId, itemId: request.itemId };
+      },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/approve?workspace=juno&runId=run-1&itemId=item-1`, {
+      method: 'POST',
+    });
+    assert.equal(response.status, 202);
+    assert.deepEqual(approved, {
+      workspace: 'juno',
+      runId: 'run-1',
+      itemId: 'item-1',
+      approvalId: null,
+    });
+    assert.deepEqual(await response.json(), { approved: true, runId: 'run-1', itemId: 'item-1' });
+  } finally {
+    await handle.close();
+  }
+});

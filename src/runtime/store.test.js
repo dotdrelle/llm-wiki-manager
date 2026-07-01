@@ -142,6 +142,36 @@ test('runtime store replays replan trace into state', () => {
   reopened.close();
 });
 
+test('runtime store tracks pending approval run status', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  store.persistEvent(createAgentEvent('run_started', {
+    origin: 'runtime',
+    runId: 'run-approval',
+    workspace: 'docs',
+    payload: { input: 'build docs', workspace: 'docs' },
+  }));
+  store.persistEvent(createAgentEvent('run_pending_approval', {
+    origin: 'runtime',
+    runId: 'run-approval',
+    workspace: 'docs',
+    payload: { approvalId: 'approval-1', runId: 'run-approval', plan: ['Build'] },
+  }));
+
+  assert.equal(store.listRuns({ workspace: 'docs' })[0].status, 'pending_approval');
+
+  store.persistEvent(createAgentEvent('run_approved', {
+    origin: 'runtime',
+    runId: 'run-approval',
+    workspace: 'docs',
+    payload: { approvalId: 'approval-1', runId: 'run-approval' },
+  }));
+
+  assert.equal(store.listRuns({ workspace: 'docs' })[0].status, 'running');
+  assert.equal(store.getState(null, { workspace: 'docs' }).approvals[0].status, 'approved');
+  store.close();
+});
+
 test('runtime store orders events by durable sequence', () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
   const store = openRuntimeStore({ stateDir });

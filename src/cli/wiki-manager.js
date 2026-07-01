@@ -19,7 +19,7 @@ import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageJsonPath = resolve(__dirname, '../../package.json');
 const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
-const SHELL_COMMANDS = ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'clear', 'chat', 'agent'];
+const SHELL_COMMANDS = ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'clear', 'chat', 'agent', 'approve'];
 
 function valueAfter(argv, flag) {
   const index = argv.indexOf(flag);
@@ -290,6 +290,7 @@ async function runRuntime(argv, agent) {
   const { emitRuntimeLog, startActivitySupervisor } = await import('../runtime/supervisor.js');
   const { resolveRuntimeAuthToken } = await import('../runtime/auth.js');
   const { createSqliteQueueStore } = await import('../runtime/queueStore.js');
+  const { createApprovalManager } = await import('../runtime/approvals.js');
   const { runRuntimeAgenticWorkflow } = await import('../runtime/runner.js');
 
   const host = valueAfter(argv, '--host') ?? process.env.WIKI_MANAGER_RUNTIME_HOST ?? '0.0.0.0';
@@ -330,6 +331,7 @@ async function runRuntime(argv, agent) {
         supervisor: null,
         running: false,
         currentAbortController: null,
+        approvalManager: null,
       };
       session._onAgentEvent = (event) => {
         store.persistEvent(event);
@@ -342,6 +344,12 @@ async function runRuntime(argv, agent) {
           payload: { message, workspace },
         }));
       };
+      context.approvalManager = createApprovalManager(session, {
+        defaultTimeoutMs: Number.isFinite(Number(process.env.WIKI_MANAGER_APPROVAL_TIMEOUT_MS))
+          ? Math.max(1, Number(process.env.WIKI_MANAGER_APPROVAL_TIMEOUT_MS))
+          : undefined,
+      });
+      session._requestApproval = (request) => context.approvalManager.requestApproval(request);
       context.supervisor = startActivitySupervisor(session);
       contexts.set(key, context);
       if (workspace && workspace !== key) contexts.set(workspace, context);
@@ -549,6 +557,11 @@ async function runRuntime(argv, agent) {
         payload: { content: input },
       }));
       session._abortSignal = signal ?? null;
+      session._runApprovalRequired = body.requireApproval === true;
+      session._runApprovalResolved = false;
+      session._approvalTimeoutMs = Number.isFinite(Number(body.approvalTimeoutMs))
+        ? Math.max(1, Number(body.approvalTimeoutMs))
+        : undefined;
       supervisor?.setRunSignal(signal);
       session._onStep = (message) => emitRuntimeLog(session, message);
       await runRuntimeAgenticWorkflow(agent, session, input, {
@@ -585,6 +598,9 @@ async function runRuntime(argv, agent) {
       delete session._abortSignal;
       delete session._onStep;
       delete session._currentRunIdentity;
+      delete session._runApprovalRequired;
+      delete session._runApprovalResolved;
+      delete session._approvalTimeoutMs;
     }
   }
 
@@ -596,6 +612,10 @@ async function runRuntime(argv, agent) {
     run: executeRun,
     cancel: (context) => emitRuntimeLog(context.session, 'runtime: cancel requested'),
     resume: ({ workspace }) => recoverRuntime({ workspace, manual: true }),
+    approve: async ({ workspace, runId, itemId, approvalId }) => {
+      const context = await getWorkspaceContext(workspace);
+      return context.approvalManager?.approve({ runId, itemId, approvalId }) ?? { approved: false };
+    },
     token: auth.token,
   });
   const recovery = await recoverRuntime();

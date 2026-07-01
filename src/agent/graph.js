@@ -10,7 +10,7 @@ import { formatSkillsForAgent } from '../core/skills.js';
 import { handleSlashCommand } from '../commands/slash.js';
 import { extractActivity, formatActivitySummary, parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { enqueueProductionJob, formatQueue, productionLockBusy } from '../core/jobQueue.js';
+import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
 
 const MAX_TOOL_ITERATIONS = 80;
 const MAX_SPINNER_ARG_LENGTH = 96;
@@ -263,6 +263,77 @@ function rememberProductionProgress(session, payload, label) {
     terminal: ['done', 'failed', 'cancelled'].includes(String(status)),
     updatedAt: new Date().toISOString(),
   };
+}
+
+function toolRequiresApproval(session, server, tool) {
+  const policy = session.mcp?.[server]?.requireApproval;
+  if (policy === true) return true;
+  if (typeof policy === 'string') return policy === tool || policy === '*';
+  if (Array.isArray(policy)) return policy.includes(tool) || policy.includes('*');
+  return false;
+}
+
+function queueApprovalItem(session, { itemId, server, tool, args }) {
+  const queue = ensureJobQueue(session);
+  const existing = queue.find((item) => item.id === itemId);
+  if (existing) return existing;
+  const item = {
+    id: itemId,
+    workspace: session.workspace ?? null,
+    server,
+    tool,
+    args,
+    status: 'pending_approval',
+    reason: 'approval_required',
+    createdAt: new Date().toISOString(),
+  };
+  queue.push(item);
+  session.queueStore?.changed?.();
+  return item;
+}
+
+function markApprovalQueueItem(session, itemId, status) {
+  const item = ensureJobQueue(session).find((entry) => entry.id === itemId);
+  if (!item) return;
+  item.status = status;
+  item.finishedAt = new Date().toISOString();
+  session.queueStore?.changed?.();
+}
+
+async function awaitRunApproval(session, { runId, tool }) {
+  if (!session._runApprovalRequired || session._runApprovalResolved || !session._requestApproval) return;
+  const plan = (session.headlessPlan ?? []).map((step) => step.description ?? step.label ?? `Step ${step.step}`);
+  await session._requestApproval({
+    scope: 'run',
+    runId,
+    reason: `Approve run plan before executing ${tool}.`,
+    plan,
+    tool,
+    timeoutMs: session._approvalTimeoutMs,
+    signal: session._abortSignal,
+  });
+  session._runApprovalResolved = true;
+}
+
+async function awaitToolApproval(session, { runId, server, tool, args, callId }) {
+  if (!toolRequiresApproval(session, server, tool) || !session._requestApproval) return;
+  const itemId = `approval-${callId ?? `${server}-${tool}`}`;
+  queueApprovalItem(session, { itemId, server, tool, args });
+  try {
+    await session._requestApproval({
+      scope: 'tool',
+      runId,
+      itemId,
+      reason: `Approve MCP tool ${server}.${tool}.`,
+      tool: `${server}.${tool}`,
+      timeoutMs: session._approvalTimeoutMs,
+      signal: session._abortSignal,
+    });
+    markApprovalQueueItem(session, itemId, 'approved');
+  } catch (err) {
+    markApprovalQueueItem(session, itemId, 'failed');
+    throw err;
+  }
 }
 
 function emitAgentEvent(session, type, origin, payload = {}) {
@@ -527,21 +598,38 @@ export function createAgentGraph(options = {}) {
         if (server === 'production' && tool === 'production_start_job' && state.session.workspace && !args.callerLabel) {
           args = { ...args, callerLabel: `${state.session.workspace}/wiki-manager` };
         }
-        if (server === 'shell' && tool === 'run_command') {
-          resultText = await runShellCommandTool(state.session, args.command);
-        } else if (isInternalWikiTool) {
+        if (isInternalWikiTool) {
           resultText = handleWikiTool(state.session, tool, args);
-        } else if (server === 'production' && tool === 'production_start_job' && productionLockBusy(state.session)) {
-          const item = enqueueProductionJob(state.session, args, 'production lock busy');
-          resultText = buildQueuedResult(state.session, item);
-          if (minimalPlanActive) {
-            minimalPlanActive = false;
-            emitAgentEvent(state.session, 'plan_step_updated', 'tool', { step: 1, status: 'pending' });
+        } else if (server === 'shell' && tool === 'run_command') {
+          await awaitRunApproval(state.session, {
+            runId: state.session._currentRunIdentity?.runId ?? null,
+            tool: toolName,
+          });
+          resultText = await runShellCommandTool(state.session, args.command);
+        } else if (server !== 'shell') {
+          await awaitRunApproval(state.session, {
+            runId: state.session._currentRunIdentity?.runId ?? null,
+            tool: toolName,
+          });
+          await awaitToolApproval(state.session, {
+            runId: state.session._currentRunIdentity?.runId ?? null,
+            server,
+            tool,
+            args,
+            callId: call.id,
+          });
+          if (server === 'production' && tool === 'production_start_job' && productionLockBusy(state.session)) {
+            const item = enqueueProductionJob(state.session, args, 'production lock busy');
+            resultText = buildQueuedResult(state.session, item);
+            if (minimalPlanActive) {
+              minimalPlanActive = false;
+              emitAgentEvent(state.session, 'plan_step_updated', 'tool', { step: 1, status: 'pending' });
+            }
+          } else {
+            args = withActiveWorkspaceForExternalTool(state.session, server, tool, args);
+            const result = await callMcpTool(state.session.mcp, server, tool, args, state.session._abortSignal);
+            resultText = formatMcpToolResult(result);
           }
-        } else {
-          args = withActiveWorkspaceForExternalTool(state.session, server, tool, args);
-          const result = await callMcpTool(state.session.mcp, server, tool, args, state.session._abortSignal);
-          resultText = formatMcpToolResult(result);
         }
         if (server === 'production') {
           let payload = parseJsonText(resultText);
@@ -574,7 +662,10 @@ export function createAgentGraph(options = {}) {
           emitAgentEvent(state.session, 'plan_step_updated', 'tool', { step: 1, status: 'done' });
         }
       } catch (err) {
-        if (err.name === 'AbortError' && state.session._abortSignal?.aborted) throw err;
+        if (
+          (err.name === 'AbortError' && state.session._abortSignal?.aborted) ||
+          err.name === 'ApprovalError'
+        ) throw err;
         ok = false;
         resultText = `Error [${server}.${tool}]: ${err instanceof Error ? err.message : String(err)}`;
         if (minimalPlanActive && state.session.headlessPlan?.[0]?._activityKey === null) {

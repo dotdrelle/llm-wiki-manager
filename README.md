@@ -415,6 +415,7 @@ process environment (including the `.env` loaded at startup):
     "cme": {
       "url": "http://host.docker.internal:${CME_MCP_PORT:-3336}/mcp/",
       "headers": { "Authorization": "Bearer ${CME_MCP_AUTH_TOKEN}" },
+      "requireApproval": ["cme_export_run"],
       "retry": { "maxAttempts": 2, "backoffMs": 500 },
       "toolRetries": {
         "cme_export_run": { "maxAttempts": 3, "backoffMs": 1000 }
@@ -447,6 +448,17 @@ ask the LLM for a partial recovery plan and continue only the remaining steps.
 Each recovery is emitted as `run_replanned` and appears in runtime state as
 `replans`. Limit attempts with `WIKI_MANAGER_REPLANNER_MAX_REPLANS` or per run
 with `"replans": 1` in the `/run` body.
+
+Runtime approvals support two levels. For run-level approval, post `/run` with
+`"requireApproval": true`; the runtime emits `run_pending_approval` before the
+first action and waits for `POST /approve?runId=...`. For tool-level approval,
+set `requireApproval` on an external endpoint, or set
+`WIKI_MANAGER_REQUIRE_APPROVAL_TOOLS=production.production_start_job` for
+workspace-native MCP tools. Pending tool approvals appear in the queue with
+status `pending_approval` and can be approved with `POST /approve?itemId=...`
+or the shell command `/approve item <id>`. The approval timeout defaults to 10
+minutes and can be changed with `WIKI_MANAGER_APPROVAL_TIMEOUT_MS` or
+`approvalTimeoutMs` in the `/run` body.
 
 ### Starting external agents
 

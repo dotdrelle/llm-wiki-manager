@@ -1,0 +1,145 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createAgentGraph } from './graph.js';
+
+function sessionBase(overrides = {}) {
+  return {
+    commands: ['status'],
+    workspace: 'docs',
+    workspaceEnv: {},
+    mcp: {
+      production: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3000/mcp/',
+        tools: [{
+          name: 'production_start_job',
+          description: 'Start production job',
+          inputSchema: { type: 'object', properties: { type: { type: 'string' } } },
+        }],
+      },
+    },
+    ...overrides,
+  };
+}
+
+function toolCallingLlm() {
+  let calls = 0;
+  return {
+    async completeWithTools() {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          content: null,
+          message: { role: 'assistant', content: null },
+          tool_calls: [
+            {
+              id: 'plan-call',
+              type: 'function',
+              function: {
+                name: 'wiki__plan_set',
+                arguments: '{"steps":["Run production job"]}',
+              },
+            },
+            {
+              id: 'tool-call',
+              type: 'function',
+              function: {
+                name: 'production__production_start_job',
+                arguments: '{"type":"doctor"}',
+              },
+            },
+          ],
+        };
+      }
+      return {
+        content: 'Done.',
+        message: { role: 'assistant', content: 'Done.' },
+        tool_calls: null,
+      };
+    },
+  };
+}
+
+test('agent graph waits for run-level approval before first MCP action', async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({ result: { content: [{ type: 'text', text: '{"ok":true}' }] } }),
+    };
+  };
+  const approvals = [];
+  const session = sessionBase({
+    _runApprovalRequired: true,
+    _currentRunIdentity: { runId: 'run-approval', turnId: 'run-approval:turn-1', workspace: 'docs' },
+    _requestApproval: async (request) => {
+      approvals.push(request);
+      assert.equal(fetchCalls, 0);
+      return { approved: true };
+    },
+    llm: toolCallingLlm(),
+  });
+
+  try {
+    const agent = createAgentGraph();
+    const result = await agent.invoke({ input: 'Run doctor', session });
+
+    assert.equal(result.response, 'Done.');
+    assert.equal(fetchCalls, 1);
+    assert.equal(approvals.length, 1);
+    assert.equal(approvals[0].scope, 'run');
+    assert.deepEqual(approvals[0].plan, ['Run production job']);
+    assert.equal(session._runApprovalResolved, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('agent graph waits for tool-level approval configured on endpoint', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    text: async () => JSON.stringify({ result: { content: [{ type: 'text', text: '{"ok":true}' }] } }),
+  });
+  const approvals = [];
+  const session = sessionBase({
+    mcp: {
+      production: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3000/mcp/',
+        requireApproval: ['production_start_job'],
+        tools: [{
+          name: 'production_start_job',
+          description: 'Start production job',
+          inputSchema: { type: 'object', properties: { type: { type: 'string' } } },
+        }],
+      },
+    },
+    _currentRunIdentity: { runId: 'run-tool-approval', turnId: 'run-tool-approval:turn-1', workspace: 'docs' },
+    _requestApproval: async (request) => {
+      approvals.push(request);
+      return { approved: true };
+    },
+    llm: toolCallingLlm(),
+  });
+
+  try {
+    const agent = createAgentGraph();
+    await agent.invoke({ input: 'Run doctor', session });
+
+    assert.equal(approvals.length, 1);
+    assert.equal(approvals[0].scope, 'tool');
+    assert.equal(approvals[0].tool, 'production.production_start_job');
+    assert.equal(session.jobQueue[0].status, 'approved');
+    assert.equal(session.jobQueue[0].reason, 'approval_required');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+

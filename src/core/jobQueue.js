@@ -72,7 +72,7 @@ export function queueCounts(session) {
 
 export function projectQueue(plan, queue, { workspace = null } = {}) {
   const blockedJobs = (queue ?? [])
-    .filter((item) => ['waiting', 'blocked'].includes(String(item.status ?? '').toLowerCase()))
+    .filter((item) => ['waiting', 'blocked', 'pending_approval'].includes(String(item.status ?? '').toLowerCase()))
     .map((item) => ({
       ...item,
       queueType: 'blocked_job',

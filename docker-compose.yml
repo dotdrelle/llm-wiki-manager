@@ -100,7 +100,6 @@ services:
   # ── wiki-manager runtime ─────────────────────────────────────────────────
 
   agent-runtime:
-    build: .
     image: dotdrelle/llm-wiki-manager:latest
     labels:
       wiki-manager.description: "Agentic runtime — runs, plan, activities, queue."

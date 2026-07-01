@@ -3,6 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { applyAgentProjectionToSession, dispatchAgentEvent, reduceAgentEvents } from '../core/agentEvents.js';
 import { defaultRuntimeStateDir } from '../core/env.js';
+import { projectQueue } from '../core/jobQueue.js';
 
 export { defaultRuntimeStateDir };
 
@@ -288,11 +289,11 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   function getState(session = null, { workspace = null } = {}) {
     const events = session?.agentProjection ? null : listEvents({ workspace });
     const projection = session?.agentProjection ?? reduceAgentEvents(events);
-    const queue = session?.queueStore?.list() ?? listQueue({ workspace });
+    const rawQueue = session?.queueStore?.list() ?? listQueue({ workspace });
     return {
       ...projection,
       runs: listRuns({ workspace }),
-      queue: queue.map((item) => ({ ...item })),
+      queue: projectQueue(projection.plan, rawQueue, { workspace }),
       eventsCursor: session?.agentEvents?.at(-1)?.id ?? events?.at(-1)?.id ?? lastEventId,
     };
   }

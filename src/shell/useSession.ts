@@ -5,7 +5,7 @@ import { formatMcpToolResult, callMcpTool } from '../core/mcp.js';
 import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { queueCounts, startNextQueuedJob, syncQueueWithActivity } from '../core/jobQueue.js';
+import { projectQueue, queueCounts, startNextQueuedJob, syncQueueWithActivity } from '../core/jobQueue.js';
 import { queueStoreFor } from '../core/queueStore.js';
 import { fetchRuntimeState, streamRuntimeEvents } from '../runtime/client.js';
 import type { ActiveFileEditor } from './FileEditorDialog';
@@ -186,7 +186,8 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     version();
     const runtimeQueue = nonEmptyRuntimeArray(runtimeState()?.queue);
     if (runtimeQueue) return runtimeQueue.map((item: any) => ({ ...item, _runtime: true }));
-    return ((session as any).jobQueue ?? []).map((item: any) => ({ ...item }));
+    return projectQueue((session as any).headlessPlan, (session as any).jobQueue ?? [], { workspace: (session as any).workspace ?? null })
+      .map((item: any) => ({ ...item }));
   });
   const queueInfo = createMemo(() => {
     version();

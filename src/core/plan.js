@@ -1,6 +1,11 @@
 export function ensurePlanFromActivity(session, activity) {
   if (!activity) return;
   const actKey = activity.key ?? null;
+  if (session.headlessPlan?.some((step) => step.owner === 'orchestrator')) {
+    attachActivityToExistingPlan(session.headlessPlan, activity);
+    session._onPlanUpdate?.();
+    return;
+  }
   // Same activity still being tracked — preserve current plan state (polling update).
   if (session.headlessPlan && actKey !== null && session.headlessPlan[0]?._activityKey === actKey) return;
   const steps = activity.plan?.steps;
@@ -10,6 +15,8 @@ export function ensurePlanFromActivity(session, activity) {
       id: s.id ?? null,
       description: s.label,
       status: 'pending',
+      owner: 'activity',
+      ownerActivityKey: activity.key,
       _activityKey: activity.key,
     }));
   } else {
@@ -18,6 +25,8 @@ export function ensurePlanFromActivity(session, activity) {
       id: null,
       description: activity.label,
       status: 'pending',
+      owner: 'activity',
+      ownerActivityKey: activity.key,
       _activityKey: activity.key,
     }];
   }
@@ -178,4 +187,28 @@ function statusRank(status) {
   if (status === 'pending') return 1;
   if (status === 'done') return 2;
   return 3;
+}
+
+function attachActivityToExistingPlan(plan, activity) {
+  const actKey = activity.key ?? activity.id ?? activity.jobId ?? null;
+  if (!actKey) return;
+  const matched = plan.find((step) => step.activityKey === actKey)
+    ?? plan.find((step) => step.ownerActivityKey === actKey)
+    ?? plan.find((step) => step.status === 'pending')
+    ?? plan.find((step) => step.status === 'running');
+  if (!matched) return;
+  matched.activityKey = actKey;
+  if (!matched.ownerActivityKey) matched.ownerActivityKey = actKey;
+  const failed = ['failed', 'error', 'cancelled', 'canceled'].includes(String(activity.status).toLowerCase());
+  if (activity.terminal) {
+    matched.status = failed ? 'failed' : 'done';
+    return;
+  }
+  if (!failed) {
+    for (const step of plan) {
+      if (step.status === 'failed') continue;
+      if (step.step < matched.step) step.status = 'done';
+      else if (step.step === matched.step) step.status = 'running';
+    }
+  }
 }

@@ -124,7 +124,7 @@ function applyEvent(state, event) {
   switch (event.type) {
     case 'run_started':
       state.status = 'running';
-      state.plan = null;
+      state.plan = defaultRunPlan();
       state.chain = [];
       state.activities = {};
       state.logs = [];
@@ -232,6 +232,10 @@ function upsertActivity(state, rawActivity) {
 
 function ensurePlanFromActivityProjection(state, activity) {
   const actKey = activity.key ?? null;
+  if (state.plan?.some((step) => step.owner === 'orchestrator')) {
+    attachActivityToExistingPlan(state.plan, activity);
+    return;
+  }
   if (state.plan && actKey !== null && state.plan[0]?._activityKey === actKey) return;
   const steps = activity.plan?.steps;
   if (Array.isArray(steps) && steps.length > 0) {
@@ -240,6 +244,8 @@ function ensurePlanFromActivityProjection(state, activity) {
       id: step.id ?? null,
       description: step.label,
       status: 'pending',
+      owner: 'activity',
+      ownerActivityKey: activity.key,
       _activityKey: activity.key,
     }));
     return;
@@ -249,12 +255,16 @@ function ensurePlanFromActivityProjection(state, activity) {
     id: null,
     description: activity.label,
     status: 'pending',
+    owner: 'activity',
+    ownerActivityKey: activity.key,
     _activityKey: activity.key,
   }];
 }
 
 function normalizePlan(steps, payload = {}) {
   if (!Array.isArray(steps)) return null;
+  const owner = payload.owner ?? 'orchestrator';
+  const ownerActivityKey = payload.ownerActivityKey ?? payload.activityKey ?? null;
   return steps.map((raw, i) => {
     const item = typeof raw === 'string' ? { description: raw } : (raw ?? {});
     return {
@@ -262,9 +272,43 @@ function normalizePlan(steps, payload = {}) {
       id: item.id ?? null,
       description: String(item.description ?? item.label ?? item.name ?? `Step ${i + 1}`),
       status: item.status ?? 'pending',
+      owner: item.owner ?? owner,
+      ownerActivityKey: item.ownerActivityKey ?? ownerActivityKey,
       _activityKey: item._activityKey ?? payload.activityKey ?? null,
     };
   });
+}
+
+function defaultRunPlan() {
+  return [
+    { step: 1, id: 'analyze', description: 'Analyser la demande', status: 'running', owner: 'orchestrator', ownerActivityKey: null, _activityKey: null },
+    { step: 2, id: 'execute', description: 'Exécuter les actions nécessaires', status: 'pending', owner: 'orchestrator', ownerActivityKey: null, _activityKey: null },
+    { step: 3, id: 'verify', description: 'Vérifier le résultat', status: 'pending', owner: 'orchestrator', ownerActivityKey: null, _activityKey: null },
+  ];
+}
+
+function attachActivityToExistingPlan(plan, activity) {
+  const actKey = activity.key ?? activity.id ?? activity.jobId ?? null;
+  if (!actKey) return;
+  const matched = plan.find((step) => step.activityKey === actKey)
+    ?? plan.find((step) => step.ownerActivityKey === actKey)
+    ?? plan.find((step) => step.status === 'pending')
+    ?? plan.find((step) => step.status === 'running');
+  if (!matched) return;
+  matched.activityKey = actKey;
+  if (!matched.ownerActivityKey) matched.ownerActivityKey = actKey;
+  const failed = ['failed', 'error', 'cancelled', 'canceled'].includes(String(activity.status).toLowerCase());
+  if (activity.terminal) {
+    matched.status = failed ? 'failed' : 'done';
+    return;
+  }
+  if (!failed) {
+    for (const step of plan) {
+      if (step.status === 'failed') continue;
+      if (step.step < matched.step) step.status = 'done';
+      else if (step.step === matched.step) step.status = 'running';
+    }
+  }
 }
 
 function updatePlanStep(plan, payload) {

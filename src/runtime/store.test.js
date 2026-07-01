@@ -196,3 +196,33 @@ test('runtime store filters events runs and queue by workspace', () => {
   assert.deepEqual(store.getState(session, { workspace: 'docs' }).runs.map((run) => run.id), ['run-docs']);
   store.close();
 });
+
+test('runtime state exposes queue as blocked jobs and pending plan steps', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  const session = { activities: {}, headlessPlan: null };
+
+  store.persistEvent(dispatchAgentEvent(session, createAgentEvent('plan_set', {
+    origin: 'tool',
+    workspace: 'docs',
+    payload: {
+      steps: [
+        { step: 1, description: 'Analyze', status: 'done' },
+        { step: 2, description: 'Build', status: 'pending' },
+        { step: 3, description: 'Verify', status: 'pending' },
+      ],
+    },
+  })));
+  store.saveQueue([
+    { id: 'q-wait', workspace: 'docs', status: 'waiting', args: { type: 'blocked' } },
+    { id: 'q-run', workspace: 'docs', status: 'running', args: { type: 'active' } },
+    { id: 'q-done', workspace: 'docs', status: 'done', args: { type: 'done' } },
+  ], { workspace: 'docs' });
+
+  const queue = store.getState(session, { workspace: 'docs' }).queue;
+  assert.deepEqual(queue.map((item) => item.id), ['q-wait', 'plan-2', 'plan-3']);
+  assert.equal(queue[0].queueType, 'blocked_job');
+  assert.equal(queue[1].queueType, 'pending_step');
+  assert.equal(queue[1].args.type, 'Build');
+  store.close();
+});

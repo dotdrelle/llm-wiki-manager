@@ -61,17 +61,33 @@ export function queueSummary(args = {}) {
 }
 
 export function queueCounts(session) {
-  let active = 0;
-  let current = 0;
-  let frozen = 0;
-  for (const item of ensureJobQueue(session)) {
-    if (['waiting', 'starting', 'running'].includes(item.status)) {
-      active += 1;
-      if (item.workspace === session.workspace) current += 1;
-      else frozen += 1;
-    }
-  }
-  return { active, current, frozen };
+  const queue = projectQueue(session.headlessPlan, ensureJobQueue(session), { workspace: session.workspace ?? null });
+  return {
+    active: queue.length,
+    current: queue.filter((item) => item.workspace === session.workspace || !item.workspace).length,
+    frozen: queue.filter((item) => item.workspace && item.workspace !== session.workspace).length,
+  };
+}
+
+export function projectQueue(plan, queue, { workspace = null } = {}) {
+  const blockedJobs = (queue ?? [])
+    .filter((item) => ['waiting', 'blocked'].includes(String(item.status ?? '').toLowerCase()))
+    .map((item) => ({
+      ...item,
+      queueType: 'blocked_job',
+    }));
+  const pendingSteps = (plan ?? [])
+    .filter((step) => step.status === 'pending')
+    .map((step) => ({
+      id: `plan-${step.step}`,
+      queueType: 'pending_step',
+      status: 'pending',
+      workspace,
+      step: step.step,
+      activityKey: step.activityKey ?? step.ownerActivityKey ?? undefined,
+      args: { type: step.description },
+    }));
+  return [...blockedJobs, ...pendingSteps];
 }
 
 export function formatQueue(session) {

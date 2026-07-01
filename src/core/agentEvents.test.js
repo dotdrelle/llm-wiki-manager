@@ -22,7 +22,9 @@ test('reduceAgentEvents: run_started clears stale plan', () => {
     }),
     createAgentEvent('run_started', { origin: 'user' }),
   ]);
-  assert.equal(projection.plan, null);
+  assert.equal(projection.plan.length, 3);
+  assert.equal(projection.plan[0].description, 'Analyser la demande');
+  assert.equal(projection.plan[0].owner, 'orchestrator');
   assert.equal(projection.activities.length, 0);
   assert.equal(projection.status, 'running');
 });
@@ -67,7 +69,7 @@ test('reduceAgentEvents: activity with plan creates visible plan and progress', 
   assert.equal(projection.plan[1].status, 'pending');
 });
 
-test('reduceAgentEvents: real activity replaces minimal MCP plan', () => {
+test('reduceAgentEvents: activity attaches to orchestrator plan without replacing it', () => {
   const projection = reduceAgentEvents([
     createAgentEvent('plan_set', {
       origin: 'tool',
@@ -87,8 +89,55 @@ test('reduceAgentEvents: real activity replaces minimal MCP plan', () => {
     }),
   ]);
   assert.equal(projection.plan.length, 1);
-  assert.equal(projection.plan[0].description, 'CME export');
-  assert.equal(projection.plan[0]._activityKey, 'cme:export-1');
+  assert.equal(projection.plan[0].description, 'cme.cme_export_run');
+  assert.equal(projection.plan[0].owner, 'orchestrator');
+  assert.equal(projection.plan[0].activityKey, 'cme:export-1');
+  assert.equal(projection.plan[0].ownerActivityKey, 'cme:export-1');
+});
+
+test('reduceAgentEvents: run activity attaches to execution step of default plan', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('run_started', { origin: 'runtime' }),
+    createAgentEvent('activity_upserted', {
+      origin: 'tool',
+      payload: {
+        activity: {
+          key: 'production:build-1',
+          id: 'build-1',
+          source: 'production',
+          label: 'Production build',
+          status: 'running',
+        },
+      },
+    }),
+  ]);
+
+  assert.equal(projection.plan[0].status, 'done');
+  assert.equal(projection.plan[1].status, 'running');
+  assert.equal(projection.plan[1].activityKey, 'production:build-1');
+  assert.equal(projection.plan[2].status, 'pending');
+});
+
+test('reduceAgentEvents: activity-owned plan is used when no orchestrator plan exists', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('activity_upserted', {
+      origin: 'tool',
+      payload: {
+        activity: {
+          key: 'production:job-1',
+          id: 'job-1',
+          source: 'production',
+          label: 'Production build',
+          status: 'running',
+        },
+      },
+    }),
+  ]);
+
+  assert.equal(projection.plan.length, 1);
+  assert.equal(projection.plan[0].description, 'Production build');
+  assert.equal(projection.plan[0].owner, 'activity');
+  assert.equal(projection.plan[0].ownerActivityKey, 'production:job-1');
 });
 
 test('dispatchAgentEvent: writes compatibility projections to session', () => {

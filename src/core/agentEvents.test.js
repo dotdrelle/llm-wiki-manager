@@ -118,6 +118,16 @@ test('reduceAgentEvents: run activity attaches to execution step of default plan
   assert.equal(projection.plan[2].status, 'pending');
 });
 
+test('reduceAgentEvents: run_done finalizes running and pending plan steps', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('run_started', { origin: 'runtime' }),
+    createAgentEvent('run_done', { origin: 'runtime' }),
+  ]);
+
+  assert.deepEqual(projection.plan.map((step) => step.status), ['done', 'done', 'done']);
+  assert.equal(projection.status, 'done');
+});
+
 test('reduceAgentEvents: activity-owned plan is used when no orchestrator plan exists', () => {
   const projection = reduceAgentEvents([
     createAgentEvent('activity_upserted', {

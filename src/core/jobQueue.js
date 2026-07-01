@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { extractActivity, parseJsonText, sessionActivities } from './activity.js';
 import { createAgentEvent, dispatchAgentEvent } from './agentEvents.js';
 import { callMcpTool, formatMcpToolResult } from './mcp.js';
@@ -14,7 +15,7 @@ function notifyQueueUpdate(session) {
 }
 
 function shortId() {
-  return `q-${Math.random().toString(16).slice(2, 6)}`;
+  return `q-${randomUUID()}`;
 }
 
 function terminalStatus(status) {

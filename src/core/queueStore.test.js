@@ -25,6 +25,7 @@ test('job queue uses an injected queue store', () => {
   const item = enqueueProductionJob(session, { type: 'build' }, 'workspace_busy');
 
   assert.equal(item.workspace, 'docs');
+  assert.match(item.id, /^q-[0-9a-f-]{36}$/);
   assert.equal(queue.length, 1);
   assert.equal(ensureJobQueue(session), queue);
   assert.equal(changed, 1);

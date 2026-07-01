@@ -167,6 +167,7 @@ function applyEvent(state, event) {
       return;
     case 'run_done':
       state.status = 'done';
+      finishPendingPlanSteps(state.plan);
       return;
     case 'run_cancelled':
       state.status = 'cancelled';
@@ -217,6 +218,14 @@ function finishToolCall(state, payload = {}) {
   step.result = payload.result ?? null;
   step.summary = payload.summary ?? step.summary ?? step.status;
   if (!existing) state.chain.push(step);
+}
+
+function finishPendingPlanSteps(plan) {
+  for (const step of plan ?? []) {
+    if (step.status === 'running' || step.status === 'pending') {
+      step.status = 'done';
+    }
+  }
 }
 
 function upsertActivity(state, rawActivity) {

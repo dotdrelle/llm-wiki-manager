@@ -447,6 +447,7 @@ runtime_command() {
       mkdir -p "$MANAGER_RUNTIME_DIR"
       ensure_runtime_node
       token="$(ensure_manager_runtime_token)"
+      export WIKI_MANAGER_RUNTIME_TOKEN="$token"
       if runtime_health_check; then
         printf 'agent-runtime already healthy at %s\n' "$(runtime_health_url)"
         return

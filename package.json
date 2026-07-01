@@ -11,7 +11,7 @@
   },
   "scripts": {
     "start": "bun ./bin/wiki-manager.js",
-    "test": "node --test src/core/activity.test.js src/core/agentEvents.test.js src/core/agentLoop.test.js src/core/plan.test.js src/core/mcp.test.js src/core/documentIntake.test.js src/core/wikirc.test.js src/core/modelFetch.test.js src/core/startupCheck.test.js src/core/queueStore.test.js src/commands/slash.test.js src/shell/repl.test.js src/runtime/store.test.js src/runtime/server.test.js src/runtime/supervisor.test.js src/runtime/auth.test.js",
+    "test": "node --test src/core/activity.test.js src/core/agentEvents.test.js src/core/agentLoop.test.js src/core/plan.test.js src/core/mcp.test.js src/core/documentIntake.test.js src/core/dockerCompose.test.js src/core/wikirc.test.js src/core/modelFetch.test.js src/core/startupCheck.test.js src/core/queueStore.test.js src/commands/slash.test.js src/shell/repl.test.js src/runtime/store.test.js src/runtime/server.test.js src/runtime/supervisor.test.js src/runtime/auth.test.js",
     "check": "bun ./bin/wiki-manager.js --version && bun ./bin/wiki-manager.js --help && bun ./bin/wiki-manager.js --once \"verifie le mode agent\""
   },
   "engines": {

@@ -103,7 +103,7 @@ services:
     image: dotdrelle/llm-wiki-manager:latest
     labels:
       wiki-manager.description: "Agentic runtime — runs, plan, activities, queue."
-    command: wiki-manager runtime --host 0.0.0.0 --port 7788 --state-dir /state
+    command: runtime --host 0.0.0.0 --port 7788 --state-dir /state
     volumes:
       - ./.wiki-manager:/state
       - ${WIKI_WORKSPACES_DIR:-./workspaces}:/workspaces

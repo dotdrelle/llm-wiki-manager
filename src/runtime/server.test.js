@@ -86,7 +86,7 @@ test('runtime server returns the accepted run id and passes it to the runner', a
     const response = await fetch(`http://127.0.0.1:${handle.port}/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: 'build', workspace: 'juno' }),
+      body: JSON.stringify({ input: 'build', workspace: 'juno', evaluate: false }),
     });
     assert.equal(response.status, 202);
     const body = await response.json();
@@ -95,6 +95,7 @@ test('runtime server returns the accepted run id and passes it to the runner', a
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(receivedBody.runId, body.runId);
     assert.equal(receivedBody.workspace, 'juno');
+    assert.equal(receivedBody.evaluate, false);
   } finally {
     await handle.close();
   }

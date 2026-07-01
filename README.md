@@ -436,6 +436,12 @@ Set global defaults with `WIKI_MANAGER_MCP_RETRY_MAX_ATTEMPTS` and
 `WIKI_MANAGER_MCP_RETRY_BACKOFF_MS`, or override them per endpoint with `retry`
 and per tool with `toolRetries`.
 
+After a clean runtime run, the manager runs a lightweight evaluator pass against
+the original task, final plan, recent activities, and recent conversation. The
+verdict is emitted as `run_evaluated` and appears in runtime state as
+`evaluation`. Disable it globally with `WIKI_MANAGER_EVALUATOR=0`, or per run by
+posting `/run` with `"evaluate": false`.
+
 ### Starting external agents
 
 Start CME, documents, and mailer once for all workspaces:

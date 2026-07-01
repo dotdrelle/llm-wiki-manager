@@ -6,6 +6,7 @@ const SESSION_PROJECTION_EVENTS = new Set([
   'plan_set',
   'plan_step_updated',
   'activity_upserted',
+  'run_evaluated',
   'run_done',
   'run_error',
   'run_cancelled',
@@ -92,6 +93,7 @@ function createProjectionState() {
     plan: null,
     activities: {},
     logs: [],
+    evaluation: null,
     summary: null,
     status: 'idle',
   };
@@ -104,6 +106,7 @@ function publicProjection(state) {
     plan: state.plan ? state.plan.map((step) => ({ ...step })) : null,
     activities: sortedActivities(state.activities).map((activity) => ({ ...activity })),
     logs: [...state.logs],
+    evaluation: state.evaluation ? { ...state.evaluation } : null,
     summary: state.summary,
     status: state.status,
   };
@@ -130,6 +133,7 @@ function applyEvent(state, event) {
       state.chain = [];
       state.activities = {};
       state.logs = [];
+      state.evaluation = null;
       state.summary = null;
       return;
     case 'user_message':
@@ -166,6 +170,14 @@ function applyEvent(state, event) {
     case 'run_summary':
       state.summary = String(event.payload?.content ?? '');
       if (state.summary) state.conversation.push({ role: 'assistant', content: state.summary });
+      return;
+    case 'run_evaluated':
+      state.evaluation = {
+        ok: event.payload?.ok === true,
+        reason: String(event.payload?.reason ?? ''),
+        suggestedAction: event.payload?.suggestedAction ?? null,
+        runId: event.runId ?? event.payload?.runId ?? null,
+      };
       return;
     case 'run_done':
       state.status = 'done';

@@ -290,7 +290,7 @@ async function runRuntime(argv, agent) {
   const { emitRuntimeLog, startActivitySupervisor } = await import('../runtime/supervisor.js');
   const { resolveRuntimeAuthToken } = await import('../runtime/auth.js');
   const { createSqliteQueueStore } = await import('../runtime/queueStore.js');
-  const { runRuntimeAgenticLoop } = await import('../runtime/runner.js');
+  const { finishRuntimeRun, runRuntimeAgenticLoop } = await import('../runtime/runner.js');
 
   const host = valueAfter(argv, '--host') ?? process.env.WIKI_MANAGER_RUNTIME_HOST ?? '0.0.0.0';
   const port = Number(valueAfter(argv, '--port') ?? process.env.WIKI_MANAGER_RUNTIME_PORT ?? 7788);
@@ -424,7 +424,7 @@ async function runRuntime(argv, agent) {
       runId,
       pollBusy: supervisor?.pollBusy,
     })
-      .then((result) => {
+      .then(async (result) => {
         if (!result.ok) {
           dispatchAgentEvent(session, createAgentEvent('run_error', {
             origin: 'runtime',
@@ -440,11 +440,10 @@ async function runRuntime(argv, agent) {
           }));
           return;
         }
-        dispatchAgentEvent(session, createAgentEvent('run_done', {
-          origin: 'runtime',
+        await finishRuntimeRun(session, run.input ?? input, {
           runId,
-          payload: { runId },
-        }));
+          signal: context.currentAbortController.signal,
+        });
       })
       .catch((err) => {
         if (err?.name === 'AbortError') {
@@ -593,11 +592,11 @@ async function runRuntime(argv, agent) {
         }));
         return;
       }
-      dispatchAgentEvent(session, createAgentEvent('run_done', {
-        origin: 'runtime',
+      await finishRuntimeRun(session, input, {
         runId,
-        payload: { runId },
-      }));
+        signal,
+        evaluate: body.evaluate !== false,
+      });
     } catch (err) {
       if (err?.name === 'AbortError') {
         dispatchAgentEvent(session, createAgentEvent('run_cancelled', {

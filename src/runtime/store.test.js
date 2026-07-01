@@ -70,6 +70,42 @@ test('runtime store persists run identity fields on events', () => {
   store.close();
 });
 
+test('runtime store replays evaluator verdict into state', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  store.persistEvent(createAgentEvent('run_started', {
+    origin: 'runtime',
+    runId: 'run-eval',
+    turnId: 'run-eval:turn-0',
+    workspace: 'docs',
+    payload: { input: 'build docs', workspace: 'docs' },
+  }));
+  store.persistEvent(createAgentEvent('run_evaluated', {
+    origin: 'runtime',
+    runId: 'run-eval',
+    turnId: 'run-eval:turn-1',
+    workspace: 'docs',
+    payload: {
+      ok: true,
+      reason: 'Task complete.',
+      suggestedAction: null,
+    },
+  }));
+  store.close();
+
+  const reopened = openRuntimeStore({ stateDir });
+  const session = { activities: {}, headlessPlan: null };
+  reopened.hydrateSession(session, { workspace: 'docs' });
+
+  assert.deepEqual(reopened.getState(session, { workspace: 'docs' }).evaluation, {
+    ok: true,
+    reason: 'Task complete.',
+    suggestedAction: null,
+    runId: 'run-eval',
+  });
+  reopened.close();
+});
+
 test('runtime store orders events by durable sequence', () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
   const store = openRuntimeStore({ stateDir });

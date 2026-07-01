@@ -137,6 +137,29 @@ test('dispatchAgentEvent: run_done finalizes session plan', () => {
   assert.equal(session.agentProjection.status, 'done');
 });
 
+test('reduceAgentEvents: run_evaluated exposes evaluator verdict', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('run_started', { origin: 'runtime', runId: 'run-1' }),
+    createAgentEvent('run_evaluated', {
+      origin: 'runtime',
+      runId: 'run-1',
+      payload: {
+        ok: false,
+        reason: 'Missing export.',
+        suggestedAction: 'Run export step.',
+      },
+    }),
+  ]);
+
+  assert.deepEqual(projection.evaluation, {
+    ok: false,
+    reason: 'Missing export.',
+    suggestedAction: 'Run export step.',
+    runId: 'run-1',
+  });
+  assert.equal(projection.status, 'running');
+});
+
 test('reduceAgentEvents: activity-owned plan is used when no orchestrator plan exists', () => {
   const projection = reduceAgentEvents([
     createAgentEvent('activity_upserted', {

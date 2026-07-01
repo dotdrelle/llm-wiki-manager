@@ -1,6 +1,7 @@
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { sessionActivities, terminalFailures } from '../core/activity.js';
 import { runAgenticLoop, throwIfAborted } from '../core/agentLoop.js';
+import { formatPlanStatus } from '../core/plan.js';
 import { emitRuntimeLog, pollActivitiesOnce } from './supervisor.js';
 
 async function waitForRuntimeActivities(session, startedActivities, { timeoutMs, signal, pollBusy }) {
@@ -70,4 +71,123 @@ export async function runRuntimeAgenticLoop(agent, session, initialInput, { sign
       emitRuntimeLog(session, `agentic-loop: max turns (${totalTurns}) reached`);
     },
   });
+}
+
+export async function finishRuntimeRun(session, input, {
+  runId,
+  signal = null,
+  evaluate = true,
+} = {}) {
+  const evaluation = await evaluateRuntimeRun(session, input, { runId, signal, evaluate });
+  if (evaluation) {
+    dispatchAgentEvent(session, createAgentEvent('run_evaluated', {
+      origin: 'runtime',
+      runId,
+      payload: {
+        runId,
+        ok: evaluation.ok,
+        reason: evaluation.reason,
+        suggestedAction: evaluation.suggestedAction ?? null,
+      },
+    }));
+    if (!evaluation.ok) {
+      dispatchAgentEvent(session, createAgentEvent('run_error', {
+        origin: 'runtime',
+        runId,
+        payload: {
+          runId,
+          message: `Runtime evaluator rejected the run: ${evaluation.reason}`,
+          suggestedAction: evaluation.suggestedAction ?? null,
+        },
+      }));
+      return { ok: false, evaluation, evaluationRejected: true };
+    }
+  }
+  dispatchAgentEvent(session, createAgentEvent('run_done', {
+    origin: 'runtime',
+    runId,
+    payload: { runId },
+  }));
+  return { ok: true, evaluation };
+}
+
+export async function evaluateRuntimeRun(session, input, {
+  runId = null,
+  signal = null,
+  evaluate = true,
+} = {}) {
+  if (!shouldEvaluate(evaluate)) return null;
+  const llm = session.llm;
+  if (!llm || typeof llm.completeWithTools !== 'function') {
+    return fallbackEvaluation('Evaluator unavailable: no LLM completeWithTools client.');
+  }
+  try {
+    emitRuntimeLog(session, 'runtime: evaluating completed run');
+    const result = await llm.completeWithTools({
+      system: [
+        'You are a strict evaluator for an agentic runtime run.',
+        'Inspect whether the original task was accomplished using the final plan and recent conversation.',
+        'Return only JSON with this exact shape: {"ok":boolean,"reason":"...","suggestedAction":string|null}.',
+        'Use ok=false only when a concrete missing action, failed requirement, or wrong result is visible.',
+      ].join('\n'),
+      tools: [],
+      messages: [{ role: 'user', content: buildEvaluationPrompt(input, session, { runId }) }],
+      signal,
+    });
+    return normalizeEvaluation(parseEvaluationJson(result.content));
+  } catch (err) {
+    return fallbackEvaluation(`Evaluator unavailable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+function shouldEvaluate(value) {
+  if (value === false) return false;
+  const env = String(process.env.WIKI_MANAGER_EVALUATOR ?? '').trim().toLowerCase();
+  return !['0', 'false', 'off', 'no'].includes(env);
+}
+
+function buildEvaluationPrompt(input, session, { runId = null } = {}) {
+  const conversation = session.agentProjection?.conversation ?? [];
+  const recentConversation = conversation
+    .slice(-12)
+    .map((message) => `${message.role}: ${message.content}`)
+    .join('\n');
+  const activities = sessionActivities(session)
+    .slice(-12)
+    .map((activity) => `- ${activity.label ?? activity.id}: ${activity.status}${activity.error ? ` (${activity.error})` : ''}`)
+    .join('\n');
+  return [
+    runId ? `Run id: ${runId}` : null,
+    'Original task:',
+    input || '(unknown)',
+    '',
+    session.headlessPlan ? `Final plan:\n${formatPlanStatus(session.headlessPlan)}` : 'Final plan: none',
+    activities ? `Recent activities:\n${activities}` : null,
+    recentConversation ? `Recent conversation:\n${recentConversation}` : null,
+    '',
+    'Return JSON only.',
+  ].filter(Boolean).join('\n');
+}
+
+function parseEvaluationJson(content) {
+  const text = String(content ?? '').trim();
+  if (!text) throw new Error('empty evaluator response');
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  return JSON.parse(fenced ? fenced[1].trim() : text);
+}
+
+function normalizeEvaluation(value) {
+  return {
+    ok: value?.ok === true,
+    reason: String(value?.reason ?? '').trim() || (value?.ok === true ? 'Task completed.' : 'Evaluator rejected the run.'),
+    suggestedAction: value?.suggestedAction == null ? null : String(value.suggestedAction),
+  };
+}
+
+function fallbackEvaluation(reason) {
+  return {
+    ok: true,
+    reason,
+    suggestedAction: null,
+  };
 }

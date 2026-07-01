@@ -97,25 +97,6 @@ services:
       - host.docker.internal:host-gateway
     restart: unless-stopped
 
-  # ── wiki-manager runtime ─────────────────────────────────────────────────
-
-  agent-runtime:
-    image: dotdrelle/llm-wiki-manager:latest
-    labels:
-      wiki-manager.description: "Agentic runtime — runs, plan, activities, queue."
-    command: runtime --host 0.0.0.0 --port 7788 --state-dir /state
-    volumes:
-      - ./.wiki-manager:/state
-      - ${WIKI_WORKSPACES_DIR:-./workspaces}:/workspaces
-    environment:
-      - WIKI_WORKSPACES_DIR=/workspaces
-      - WIKI_MANAGER_RUNTIME_TOKEN=${WIKI_MANAGER_RUNTIME_TOKEN:-}
-    ports:
-      - '127.0.0.1:7788:7788'
-    extra_hosts:
-      - host.docker.internal:host-gateway
-    restart: unless-stopped
-
   # ── agent-wiki-production ─────────────────────────────────────────────────
 
   production-mcp:
@@ -140,7 +121,7 @@ services:
 x-wiki-manager:
   service-aliases:
     all:
-      targets: [serve, mcp-http, agent-runtime, production-mcp]
+      targets: [serve, mcp-http, production-mcp]
       description: "Full workspace service set."
     ui:
       targets: [serve]
@@ -151,9 +132,6 @@ x-wiki-manager:
     mcp:
       targets: [mcp-http]
       description: "Alias for mcp-http: wiki MCP server."
-    runtime:
-      targets: [agent-runtime]
-      description: "Alias for agent-runtime: agentic runtime."
     production:
       targets: [production-mcp]
       description: "Alias for production-mcp: production jobs."

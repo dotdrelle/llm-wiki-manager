@@ -205,12 +205,15 @@ remain the source of truth. Queue state is workspace-scoped.
 
 ## Docker And Security
 
-- `agent-runtime` runs on `127.0.0.1:7788` (loopback only). It mounts
-  `./workspaces:/workspaces` (all workspaces at once) with
-  `WIKI_WORKSPACES_DIR=/workspaces`. If a workspace `.env` has a host-absolute
-  `WIKI_WORKSPACE_PATH` that doesn't exist in the container, `workspaces.js`
-  falls back to the registry directory (the mounted path). Workspaces registered
-  outside `./workspaces/` require a manual bind-mount in a local compose override.
+- Workspace Docker Compose runs `serve`, `mcp-http`, and `production-mcp` per
+  workspace. It intentionally does not start `agent-runtime`, because the
+  runtime is global and binds a single port.
+- `agent-runtime` runs on the host through `wiki-workspace runtime up` or
+  `ensureRuntime` from the shell. It requires Node.js 22+ for `node:sqlite`.
+  When the shell runs under Bun, lifecycle code starts the runtime with
+  `WIKI_MANAGER_NODE_BIN` or `node`, never Bun.
+- The host runtime listens on `127.0.0.1:7788`/`0.0.0.0:7788` depending on
+  launch options and uses state under `.wiki-manager/`.
 - `serve` receives `WIKI_MANAGER_RUNTIME_URL=http://host.docker.internal:7788`
   and `WIKI_MANAGER_RUNTIME_TOKEN` to connect to the runtime.
 - Prefer `wiki-workspace` over raw `docker compose`.
@@ -266,6 +269,8 @@ Also exercise relevant paths:
 printf '/use <workspace>\n/config status\n/workspaces\n/exit\n' | node ./bin/wiki-manager.js
 node ./bin/wiki-manager.js --headless --workspace __missing__ --prompt test
 wiki-manager --headless --workspace <workspace> --skill pipeline --timeout 3600 --max-turns 20
+wiki-workspace runtime up
+wiki-workspace runtime status
 wiki-manager runtime [--host 0.0.0.0] [--port 7788] [--state-dir .wiki-manager]
 ```
 
@@ -275,4 +280,6 @@ done or limits are reached.
 
 `wiki-manager runtime` starts the HTTP/SSE runtime server. When launched by
 `ensureRuntime` (shell path), the token is resolved before spawning and injected
-via `WIKI_MANAGER_RUNTIME_TOKEN`. In Docker, the token comes from the compose env.
+via `WIKI_MANAGER_RUNTIME_TOKEN`. `wiki-workspace runtime up` writes/reuses
+`WIKI_MANAGER_RUNTIME_TOKEN` in the manager `.env` so Dockerized `serve` can
+call the host runtime through `host.docker.internal:7788`.

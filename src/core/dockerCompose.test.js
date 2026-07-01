@@ -3,12 +3,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import YAML from 'yaml';
 
-test('agent-runtime compose command passes runtime args to the image entrypoint', async () => {
+test('workspace compose does not start a per-workspace agent runtime', async () => {
   const raw = await readFile(new URL('../../docker-compose.yml', import.meta.url), 'utf8');
   const compose = YAML.parse(raw);
-  const service = compose.services['agent-runtime'];
+  const aliases = compose['x-wiki-manager']['service-aliases'];
 
-  assert.equal(service.image, 'dotdrelle/llm-wiki-manager:latest');
-  assert.equal(service.command, 'runtime --host 0.0.0.0 --port 7788 --state-dir /state');
-  assert.ok(!service.command.startsWith('wiki-manager '));
+  assert.equal(compose.services['agent-runtime'], undefined);
+  assert.deepEqual(aliases.all.targets, ['serve', 'mcp-http', 'production-mcp']);
+  assert.equal(aliases.runtime, undefined);
 });

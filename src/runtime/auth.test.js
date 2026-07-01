@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { resolveRuntimeAuthToken } from './auth.js';
+import { assertRuntimeNode, runtimeNodeExecutable } from './lifecycle.js';
 
 test('resolveRuntimeAuthToken: loopback host does not require token', () => {
   const result = resolveRuntimeAuthToken({ host: '127.0.0.1', explicitToken: null });
@@ -18,4 +19,11 @@ test('resolveRuntimeAuthToken: exposed host generates and reuses token', () => {
   assert.equal(first.source, 'generated');
   assert.equal(second.source, 'file');
   assert.equal(second.token, first.token);
+});
+
+test('runtime lifecycle uses a Node executable with node:sqlite support', async () => {
+  const runtimeNode = await assertRuntimeNode(runtimeNodeExecutable());
+
+  assert.ok(runtimeNode.executable);
+  assert.ok(Number(runtimeNode.version.split('.')[0]) >= 22);
 });

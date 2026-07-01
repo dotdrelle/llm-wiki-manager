@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkRuntimeHealth, runtimeUrlFromEnv } from './client.js';
@@ -8,6 +8,29 @@ import { resolveRuntimeAuthToken, runtimeTokenFromEnv } from './auth.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const managerRoot = resolve(__dirname, '../..');
 const binPath = resolve(managerRoot, 'bin/wiki-manager.js');
+
+export function runtimeNodeExecutable() {
+  return process.versions.bun
+    ? (process.env.WIKI_MANAGER_NODE_BIN ?? 'node')
+    : process.execPath;
+}
+
+export async function assertRuntimeNode(executable = runtimeNodeExecutable()) {
+  const version = await new Promise((resolveVersion, reject) => {
+    execFile(executable, ['-p', 'process.versions.node'], (err, stdout) => {
+      if (err) {
+        reject(new Error(`Runtime requires Node.js 22+; could not execute ${executable}. Set WIKI_MANAGER_NODE_BIN to a Node.js 22 binary.`));
+        return;
+      }
+      resolveVersion(String(stdout).trim());
+    });
+  });
+  const major = Number(String(version).split('.')[0]);
+  if (!Number.isInteger(major) || major < 22) {
+    throw new Error(`Runtime requires Node.js 22+ for node:sqlite; ${executable} is Node ${version}. Set WIKI_MANAGER_NODE_BIN to a Node.js 22 binary.`);
+  }
+  return { executable, version };
+}
 
 export async function ensureRuntime({
   host = process.env.WIKI_MANAGER_RUNTIME_HOST ?? '0.0.0.0',
@@ -21,7 +44,8 @@ export async function ensureRuntime({
   const existing = await runtimeHealthOrNull(url, auth.token);
   if (existing) return { url, started: false, health: existing, token: auth.token, tokenPath: auth.tokenPath };
 
-  const child = spawn(process.execPath, [
+  const runtimeNode = await assertRuntimeNode();
+  const child = spawn(runtimeNode.executable, [
     binPath,
     'runtime',
     '--host',
@@ -45,7 +69,7 @@ export async function ensureRuntime({
   let health = null;
   while (Date.now() < deadline) {
     health = await runtimeHealthOrNull(url, auth.token);
-    if (health) return { url, started: true, health, pid: child.pid, token: auth.token, tokenPath: auth.tokenPath };
+    if (health) return { url, started: true, health, pid: child.pid, token: auth.token, tokenPath: auth.tokenPath, node: runtimeNode };
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
   }
   throw new Error(`Runtime did not become healthy at ${url}`);

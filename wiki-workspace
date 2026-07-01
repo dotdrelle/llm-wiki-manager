@@ -92,6 +92,11 @@ Commands:
   agents pull                       Pull latest external agent images
   agents status                     Check reachability of configured MCP endpoints
 
+  runtime up                        Start the single host agent-runtime on Node.js 22
+  runtime down                      Stop the host agent-runtime
+  runtime status                    Check host agent-runtime health
+  runtime logs [args...]            Show host agent-runtime logs
+
   wiki <workspace> init             Initialize the workspace with wiki init
   wiki <workspace> up               Start llm-wiki serve + mcp-http + production-mcp
   wiki <workspace> down             Stop all services for this workspace
@@ -106,6 +111,7 @@ Commands:
 Configuration:
   workspaces/<workspace>/.env
   Override directory: WIKI_WORKSPACES_DIR=/path/to/dir
+  Runtime node: WIKI_MANAGER_NODE_BIN=/path/to/node
   Local CA: --cacert /absolute/path/to/ca.pem (Docker must be able to read this host path)
 EOF
 }
@@ -358,6 +364,143 @@ NODE
       ;;
     *)
       die "unknown agents command: $subcommand (expected: up, down, logs, pull, status)"
+      ;;
+  esac
+}
+
+runtime_node_bin() {
+  printf '%s\n' "${WIKI_MANAGER_NODE_BIN:-node}"
+}
+
+ensure_runtime_node() {
+  local node_bin
+  node_bin="$(runtime_node_bin)"
+  command -v "$node_bin" >/dev/null 2>&1 || die "runtime requires Node.js 22+: command not found: $node_bin (set WIKI_MANAGER_NODE_BIN)"
+  local version major
+  version="$("$node_bin" -p 'process.versions.node' 2>/dev/null)" || die "could not execute Node runtime: $node_bin"
+  major="${version%%.*}"
+  [[ "$major" =~ ^[0-9]+$ && "$major" -ge 22 ]] || die "runtime requires Node.js 22+ for node:sqlite; $node_bin is Node $version"
+}
+
+ensure_manager_runtime_token() {
+  local token
+  token="$(env_value "$MANAGER_ENV_FILE" WIKI_MANAGER_RUNTIME_TOKEN "")"
+  if [[ -z "$token" ]]; then
+    token="$(generate_token)"
+    mkdir -p "$(dirname "$MANAGER_ENV_FILE")"
+    set_env_value "$MANAGER_ENV_FILE" WIKI_MANAGER_RUNTIME_TOKEN "$token"
+  fi
+  printf '%s\n' "$token"
+}
+
+runtime_pid_file() {
+  printf '%s/runtime.pid\n' "$MANAGER_RUNTIME_DIR"
+}
+
+runtime_log_file() {
+  printf '%s/runtime.log\n' "$MANAGER_RUNTIME_DIR"
+}
+
+runtime_pid_running() {
+  local pid_file pid
+  pid_file="$(runtime_pid_file)"
+  [[ -f "$pid_file" ]] || return 1
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" >/dev/null 2>&1
+}
+
+runtime_health_url() {
+  printf 'http://127.0.0.1:%s/health\n' "${WIKI_MANAGER_RUNTIME_PORT:-7788}"
+}
+
+runtime_health_check() {
+  local token url
+  token="$(env_value "$MANAGER_ENV_FILE" WIKI_MANAGER_RUNTIME_TOKEN "")"
+  url="$(runtime_health_url)"
+  if command -v curl >/dev/null 2>&1; then
+    if [[ -n "$token" ]]; then
+      curl -fsS -H "Authorization: Bearer $token" "$url" >/dev/null 2>&1
+    else
+      curl -fsS "$url" >/dev/null 2>&1
+    fi
+    return
+  fi
+  local node_bin
+  node_bin="$(runtime_node_bin)"
+  RUNTIME_URL="$url" RUNTIME_TOKEN="$token" "$node_bin" --input-type=module -e "const h=process.env.RUNTIME_TOKEN?{Authorization:'Bearer '+process.env.RUNTIME_TOKEN}:{}; const r=await fetch(process.env.RUNTIME_URL,{headers:h}); process.exit(r.ok?0:1);"
+}
+
+runtime_command() {
+  local subcommand="$1"
+  shift
+  local host="${WIKI_MANAGER_RUNTIME_HOST:-0.0.0.0}"
+  local port="${WIKI_MANAGER_RUNTIME_PORT:-7788}"
+  local pid_file log_file node_bin token
+  pid_file="$(runtime_pid_file)"
+  log_file="$(runtime_log_file)"
+  node_bin="$(runtime_node_bin)"
+
+  case "$subcommand" in
+    up)
+      [[ $# -eq 0 ]] || die "runtime up does not take arguments"
+      mkdir -p "$MANAGER_RUNTIME_DIR"
+      ensure_runtime_node
+      token="$(ensure_manager_runtime_token)"
+      if runtime_health_check; then
+        printf 'agent-runtime already healthy at %s\n' "$(runtime_health_url)"
+        return
+      fi
+      if runtime_pid_running; then
+        printf 'agent-runtime process is already running (pid %s), but health is not ready yet.\n' "$(cat "$pid_file")"
+        return
+      fi
+      WIKI_WORKSPACES_DIR="$WORKSPACES_DIR" \
+      WIKI_MANAGER_ENV_FILE="$MANAGER_ENV_FILE" \
+      WIKI_MANAGER_STATE_DIR="$MANAGER_RUNTIME_DIR" \
+      WIKI_MANAGER_RUNTIME_TOKEN="$token" \
+      nohup "$node_bin" "$ROOT_DIR/bin/wiki-manager.js" runtime --host "$host" --port "$port" --state-dir "$MANAGER_RUNTIME_DIR" > "$log_file" 2>&1 &
+      printf '%s\n' "$!" > "$pid_file"
+      sleep 0.5
+      printf 'agent-runtime started on http://127.0.0.1:%s (pid %s)\n' "$port" "$(cat "$pid_file")"
+      printf 'state: %s\nlog:   %s\n' "$MANAGER_RUNTIME_DIR" "$log_file"
+      ;;
+    down|stop)
+      [[ $# -eq 0 ]] || die "runtime down does not take arguments"
+      if ! runtime_pid_running; then
+        printf 'agent-runtime is not running from %s\n' "$pid_file"
+        rm -f "$pid_file"
+        return
+      fi
+      kill "$(cat "$pid_file")"
+      rm -f "$pid_file"
+      printf 'agent-runtime stopped\n'
+      ;;
+    status)
+      [[ $# -eq 0 ]] || die "runtime status does not take arguments"
+      if runtime_health_check; then
+        printf 'agent-runtime healthy at %s\n' "$(runtime_health_url)"
+      elif runtime_pid_running; then
+        printf 'agent-runtime process running (pid %s), health check failed\n' "$(cat "$pid_file")"
+        exit 1
+      else
+        printf 'agent-runtime is not running\n'
+        exit 1
+      fi
+      ;;
+    logs)
+      if [[ ! -f "$log_file" ]]; then
+        printf 'No runtime log found at %s\n' "$log_file" >&2
+        exit 1
+      fi
+      if [[ $# -eq 0 ]]; then
+        tail -100 -f "$log_file"
+      else
+        tail "$@" "$log_file"
+      fi
+      ;;
+    *)
+      die "unknown runtime command: $subcommand (expected: up, down, status, logs)"
       ;;
   esac
 }
@@ -752,6 +895,7 @@ up_workspace() {
   printf 'Workspace UI: http://localhost:%s\n' "$serve_port"
   printf 'Chat:         http://localhost:%s/chat\n' "$serve_port"
   printf 'Production:   http://localhost:%s/mcp/\n' "$prod_port"
+  printf 'Runtime:      %s\n' "$(runtime_health_check && printf 'healthy at %s' "$(runtime_health_url)" || printf 'start with: wiki-workspace runtime up')"
   printf 'External MCPs: see %s\n' "$MANAGER_ENDPOINTS_FILE"
 
   if [[ "$open_browser" == "1" ]]; then
@@ -802,10 +946,22 @@ main() {
     exit 0
   fi
 
+  # runtime <subcommand> [args...]
+  if [[ $# -ge 1 && "$1" == "runtime" ]]; then
+    local runtime_sub="${2:-status}"
+    if [[ $# -ge 2 ]]; then
+      shift 2
+    else
+      shift 1
+    fi
+    runtime_command "$runtime_sub" "$@"
+    exit 0
+  fi
+
   [[ $# -ge 2 ]] || { usage; exit 2; }
 
   local scope="$1"
-  [[ "$scope" == "wiki" ]] || die "unknown scope: $scope (expected: wiki, agents, up, config, or list)"
+  [[ "$scope" == "wiki" ]] || die "unknown scope: $scope (expected: wiki, agents, runtime, up, config, or list)"
   shift
   [[ $# -ge 2 ]] || die "wiki requires a workspace and a command"
 
@@ -825,6 +981,7 @@ main() {
       printf 'Workspace UI: http://localhost:%s\n' "$serve_port"
       printf 'Chat MCP:     http://localhost:%s/chat\n' "$serve_port"
       printf 'Production:   http://localhost:%s/mcp/\n' "$production_port"
+      printf 'Runtime:      %s\n' "$(runtime_health_check && printf 'healthy at %s' "$(runtime_health_url)" || printf 'start with: wiki-workspace runtime up')"
       ;;
     down)
       compose_for_workspace "$workspace" down
@@ -852,6 +1009,7 @@ main() {
       printf 'Workspace UI: http://localhost:%s\n' "$serve_port"
       printf 'Chat MCP:     http://localhost:%s/chat\n' "$serve_port"
       printf 'Production:   http://localhost:%s/mcp/\n' "$production_port"
+      printf 'Runtime:      %s\n' "$(runtime_health_check && printf 'healthy at %s' "$(runtime_health_url)" || printf 'start with: wiki-workspace runtime up')"
       printf 'Note: compose logs may show http://localhost:3000, which is the container port.\n'
       if [[ $open_browser -eq 1 ]]; then
         wait_and_open "http://localhost:${serve_port}" &

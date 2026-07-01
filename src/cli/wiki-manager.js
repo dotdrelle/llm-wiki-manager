@@ -14,13 +14,8 @@ import { extractActivity, parseJsonText, sessionActivities, terminalFailures } f
 import { syncActivitiesToPlan, formatPlanStatus } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
-import { defaultRuntimeStateDir, openRuntimeStore } from '../runtime/store.js';
-import { startRuntimeServer } from '../runtime/server.js';
-import { ensureRuntime } from '../runtime/lifecycle.js';
-import { emitRuntimeLog, startActivitySupervisor } from '../runtime/supervisor.js';
-import { resolveRuntimeAuthToken } from '../runtime/auth.js';
-import { createSqliteQueueStore } from '../runtime/queueStore.js';
-import { runRuntimeAgenticLoop } from '../runtime/runner.js';
+// Runtime modules use node:sqlite (Node.js built-in unavailable in Bun).
+// They are imported dynamically so the shell / TUI path never loads them.
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageJsonPath = resolve(__dirname, '../../package.json');
@@ -291,6 +286,13 @@ async function runRuntime(argv, agent) {
     ].join('\n'));
     return;
   }
+  const { defaultRuntimeStateDir, openRuntimeStore } = await import('../runtime/store.js');
+  const { startRuntimeServer } = await import('../runtime/server.js');
+  const { emitRuntimeLog, startActivitySupervisor } = await import('../runtime/supervisor.js');
+  const { resolveRuntimeAuthToken } = await import('../runtime/auth.js');
+  const { createSqliteQueueStore } = await import('../runtime/queueStore.js');
+  const { runRuntimeAgenticLoop } = await import('../runtime/runner.js');
+
   const host = valueAfter(argv, '--host') ?? process.env.WIKI_MANAGER_RUNTIME_HOST ?? '0.0.0.0';
   const port = Number(valueAfter(argv, '--port') ?? process.env.WIKI_MANAGER_RUNTIME_PORT ?? 7788);
   const stateDir = valueAfter(argv, '--state-dir') ?? defaultRuntimeStateDir();
@@ -487,6 +489,7 @@ export async function runCli(argv) {
     if (gaps.length > 0) await runStartupWizard(gaps);
     let runtime = null;
     try {
+      const { ensureRuntime } = await import('../runtime/lifecycle.js');
       runtime = await ensureRuntime();
     } catch (err) {
       console.error(`Runtime unavailable: ${err instanceof Error ? err.message : String(err)}`);
@@ -498,6 +501,7 @@ export async function runCli(argv) {
   let runtime = null;
   if (process.stdin.isTTY && process.stdout.isTTY) {
     try {
+      const { ensureRuntime } = await import('../runtime/lifecycle.js');
       runtime = await ensureRuntime();
     } catch (err) {
       console.error(`Runtime unavailable: ${err instanceof Error ? err.message : String(err)}`);

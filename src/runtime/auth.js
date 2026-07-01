@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { defaultRuntimeStateDir } from './store.js';
+import { defaultRuntimeStateDir } from '../core/env.js';
 
 export function runtimeTokenPath(stateDir = defaultRuntimeStateDir()) {
   return join(resolve(stateDir), 'runtime.token');

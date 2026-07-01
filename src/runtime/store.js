@@ -2,7 +2,9 @@ import { mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { applyAgentProjectionToSession, dispatchAgentEvent, reduceAgentEvents } from '../core/agentEvents.js';
-import { managerRuntimeDir } from '../core/env.js';
+import { defaultRuntimeStateDir } from '../core/env.js';
+
+export { defaultRuntimeStateDir };
 
 const NON_PERSISTED_EVENT_TYPES = new Set(['runtime_log']);
 
@@ -11,12 +13,6 @@ const RUN_STATUS_BY_TERMINAL_EVENT = {
   run_error: 'error',
   run_cancelled: 'cancelled',
 };
-
-export function defaultRuntimeStateDir() {
-  return process.env.WIKI_MANAGER_STATE_DIR
-    ? resolve(process.env.WIKI_MANAGER_STATE_DIR)
-    : managerRuntimeDir();
-}
 
 export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName = 'runtime.db' } = {}) {
   const resolvedStateDir = resolve(stateDir);

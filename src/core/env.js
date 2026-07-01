@@ -15,6 +15,12 @@ export function managerRuntimeDir() {
   return join(managerStateDir(), '.wiki-manager');
 }
 
+export function defaultRuntimeStateDir() {
+  return process.env.WIKI_MANAGER_STATE_DIR
+    ? resolve(process.env.WIKI_MANAGER_STATE_DIR)
+    : managerRuntimeDir();
+}
+
 export function managerEnvFile() {
   return process.env.WIKI_MANAGER_ENV_FILE
     ? resolve(process.env.WIKI_MANAGER_ENV_FILE)

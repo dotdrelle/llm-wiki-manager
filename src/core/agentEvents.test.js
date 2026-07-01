@@ -23,7 +23,7 @@ test('reduceAgentEvents: run_started clears stale plan', () => {
     createAgentEvent('run_started', { origin: 'user' }),
   ]);
   assert.equal(projection.plan.length, 3);
-  assert.equal(projection.plan[0].description, 'Analyser la demande');
+  assert.equal(projection.plan[0].description, 'Analyze the request');
   assert.equal(projection.plan[0].owner, 'orchestrator');
   assert.equal(projection.activities.length, 0);
   assert.equal(projection.status, 'running');

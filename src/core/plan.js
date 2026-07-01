@@ -189,7 +189,7 @@ function statusRank(status) {
   return 3;
 }
 
-function attachActivityToExistingPlan(plan, activity) {
+export function attachActivityToExistingPlan(plan, activity) {
   const actKey = activity.key ?? activity.id ?? activity.jobId ?? null;
   if (!actKey) return;
   const matched = plan.find((step) => step.activityKey === actKey)

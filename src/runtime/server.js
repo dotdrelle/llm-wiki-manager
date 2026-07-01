@@ -8,18 +8,14 @@ export function startRuntimeServer({
   token = runtimeTokenFromEnv(),
   store,
   session = null,
-  getContext = null,
+  getContext,
   run,
   cancel,
   resume,
 } = {}) {
   const clients = new Set();
-  const defaultContext = {
-    workspace: null,
-    session,
-    running: false,
-    currentAbortController: null,
-  };
+  const defaultContext = { workspace: null, session, running: false, currentAbortController: null };
+  const resolvedGetContext = getContext ?? (() => defaultContext);
 
   function publish(event) {
     const payload = `event: agent_event\ndata: ${JSON.stringify(event)}\n\n`;
@@ -93,9 +89,7 @@ export function startRuntimeServer({
           context.running = true;
           context.currentAbortController = new AbortController();
           const runBody = { ...body, workspace: runWorkspace, runId };
-          const runPromise = getContext
-            ? run(context, runBody, { signal: context.currentAbortController.signal, runId })
-            : run(runBody, { signal: context.currentAbortController.signal, runId });
+          const runPromise = run(context, runBody, { signal: context.currentAbortController.signal, runId });
           runPromise
             .catch((err) => {
               context.session?._onRuntimeError?.(err);
@@ -120,8 +114,7 @@ export function startRuntimeServer({
           return;
         }
         context.currentAbortController.abort();
-        if (getContext) await cancel?.(context);
-        else await cancel?.();
+        await cancel?.(context);
         sendJson(response, 202, { cancelled: true, workspace: context.workspace ?? workspace ?? null });
         return;
       }
@@ -157,8 +150,7 @@ export function startRuntimeServer({
   });
 
   async function resolveContext({ workspace = null } = {}) {
-    if (getContext) return getContext(workspace);
-    return defaultContext;
+    return resolvedGetContext(workspace);
   }
 }
 

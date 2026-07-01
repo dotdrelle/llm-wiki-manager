@@ -70,7 +70,7 @@ test('runtime server returns the accepted run id and passes it to the runner', a
         listEvents: () => [],
       },
       session: {},
-      run: async (body) => {
+      run: async (context, body) => {
         receivedBody = body;
       },
     });

@@ -285,7 +285,7 @@ async function runRuntime(argv, agent) {
     ].join('\n'));
     return;
   }
-  const { defaultRuntimeStateDir, openRuntimeStore } = await import('../runtime/store.js');
+  const { defaultRuntimeStateDir, openRuntimeStore, RECOVERABLE_QUEUE_STATUSES } = await import('../runtime/store.js');
   const { startRuntimeServer } = await import('../runtime/server.js');
   const { emitRuntimeLog, startActivitySupervisor } = await import('../runtime/supervisor.js');
   const { resolveRuntimeAuthToken } = await import('../runtime/auth.js');
@@ -364,7 +364,7 @@ async function runRuntime(argv, agent) {
     }
     for (const item of session.queueStore?.list?.() ?? []) {
       const status = String(item.status ?? '').toLowerCase();
-      if (!['waiting', 'queued', 'starting', 'running', 'blocked'].includes(status)) continue;
+      if (!RECOVERABLE_QUEUE_STATUSES.includes(status)) continue;
       const endpoint = session.mcp?.[item.server ?? 'production'];
       if (endpoint?.status !== 'connected') gaps.push(item.server ?? 'production');
     }
@@ -403,13 +403,8 @@ async function runRuntime(argv, agent) {
   }
 
   async function recoverRuntime({ workspace = null, manual = false } = {}) {
-    const workspaces = workspace
-      ? [workspace]
-      : store.listRecoverableWorkspaces();
-    const results = [];
-    for (const item of workspaces) {
-      results.push(await recoverWorkspace(item, { manual }));
-    }
+    const workspaces = workspace ? [workspace] : store.listRecoverableWorkspaces();
+    const results = await Promise.all(workspaces.map((item) => recoverWorkspace(item, { manual })));
     return {
       resumed: results.filter((result) => result.resumed).length,
       interrupted: results.reduce((sum, result) => sum + Number(result.interrupted ?? 0), 0),
@@ -524,10 +519,7 @@ async function runRuntime(argv, agent) {
   if (auth.tokenPath) console.log(`runtime token: ${auth.tokenPath}`);
 
   const shutdown = async () => {
-    for (const value of new Set(contexts.values())) {
-      const context = await value;
-      context.supervisor?.stop();
-    }
+    await Promise.all([...new Set(contexts.values())].map(async (v) => { (await v).supervisor?.stop(); }));
     await serverHandle.close();
     store.close();
     process.exit(0);

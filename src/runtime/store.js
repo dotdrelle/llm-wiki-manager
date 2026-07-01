@@ -16,7 +16,7 @@ const RUN_STATUS_BY_TERMINAL_EVENT = {
 };
 
 const RECOVERABLE_RUN_STATUSES = ['running', 'waiting'];
-const RECOVERABLE_QUEUE_STATUSES = ['waiting', 'queued', 'starting', 'running', 'blocked'];
+export const RECOVERABLE_QUEUE_STATUSES = ['waiting', 'queued', 'starting', 'running', 'blocked'];
 
 export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName = 'runtime.db' } = {}) {
   const resolvedStateDir = resolve(stateDir);
@@ -167,10 +167,13 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     WHERE workspace = ?
     ORDER BY COALESCE(created_at, updated_at) ASC, id ASC
   `);
-  const listRecoverableQueueWorkspacesStatement = db.prepare(`
-    SELECT DISTINCT workspace
-    FROM queue_items
+  const listRecoverableWorkspacesStatement = db.prepare(`
+    SELECT DISTINCT workspace FROM runs
+    WHERE workspace IS NOT NULL AND status IN (${RECOVERABLE_RUN_STATUSES.map(() => '?').join(', ')})
+    UNION
+    SELECT DISTINCT workspace FROM queue_items
     WHERE workspace IS NOT NULL AND status IN (${RECOVERABLE_QUEUE_STATUSES.map(() => '?').join(', ')})
+    ORDER BY workspace
   `);
 
   function persistEvent(event) {
@@ -252,14 +255,9 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   }
 
   function listRecoverableWorkspaces() {
-    const workspaces = new Set();
-    for (const run of listRecoverableRuns()) {
-      if (run.workspace) workspaces.add(run.workspace);
-    }
-    for (const row of listRecoverableQueueWorkspacesStatement.all(...RECOVERABLE_QUEUE_STATUSES)) {
-      if (row.workspace) workspaces.add(row.workspace);
-    }
-    return [...workspaces].sort();
+    return listRecoverableWorkspacesStatement
+      .all(...RECOVERABLE_RUN_STATUSES, ...RECOVERABLE_QUEUE_STATUSES)
+      .map((row) => row.workspace);
   }
 
   function interruptRuns({ workspace, reason = 'Runtime restart recovery failed.' } = {}) {

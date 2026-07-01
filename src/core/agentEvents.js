@@ -1,5 +1,5 @@
 import { normalizeActivity } from './activity.js';
-import { syncActivitiesToPlan } from './plan.js';
+import { attachActivityToExistingPlan, syncActivitiesToPlan } from './plan.js';
 
 const SESSION_PROJECTION_EVENTS = new Set([
   'run_started',
@@ -281,34 +281,10 @@ function normalizePlan(steps, payload = {}) {
 
 function defaultRunPlan() {
   return [
-    { step: 1, id: 'analyze', description: 'Analyser la demande', status: 'running', owner: 'orchestrator', ownerActivityKey: null, _activityKey: null },
-    { step: 2, id: 'execute', description: 'Exécuter les actions nécessaires', status: 'pending', owner: 'orchestrator', ownerActivityKey: null, _activityKey: null },
-    { step: 3, id: 'verify', description: 'Vérifier le résultat', status: 'pending', owner: 'orchestrator', ownerActivityKey: null, _activityKey: null },
+    { step: 1, id: 'analyze', description: 'Analyze the request', status: 'running', owner: 'orchestrator', ownerActivityKey: null, _activityKey: null },
+    { step: 2, id: 'execute', description: 'Execute the required actions', status: 'pending', owner: 'orchestrator', ownerActivityKey: null, _activityKey: null },
+    { step: 3, id: 'verify', description: 'Verify the result', status: 'pending', owner: 'orchestrator', ownerActivityKey: null, _activityKey: null },
   ];
-}
-
-function attachActivityToExistingPlan(plan, activity) {
-  const actKey = activity.key ?? activity.id ?? activity.jobId ?? null;
-  if (!actKey) return;
-  const matched = plan.find((step) => step.activityKey === actKey)
-    ?? plan.find((step) => step.ownerActivityKey === actKey)
-    ?? plan.find((step) => step.status === 'pending')
-    ?? plan.find((step) => step.status === 'running');
-  if (!matched) return;
-  matched.activityKey = actKey;
-  if (!matched.ownerActivityKey) matched.ownerActivityKey = actKey;
-  const failed = ['failed', 'error', 'cancelled', 'canceled'].includes(String(activity.status).toLowerCase());
-  if (activity.terminal) {
-    matched.status = failed ? 'failed' : 'done';
-    return;
-  }
-  if (!failed) {
-    for (const step of plan) {
-      if (step.status === 'failed') continue;
-      if (step.step < matched.step) step.status = 'done';
-      else if (step.step === matched.step) step.status = 'running';
-    }
-  }
 }
 
 function updatePlanStep(plan, payload) {

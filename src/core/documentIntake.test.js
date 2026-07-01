@@ -16,16 +16,16 @@ test('document intake stores uploads without requiring documents MCP', async () 
   const source = path.join(root, 'rapport.pdf');
   await writeFile(source, 'fake pdf content');
   const session = {
-    workspace: 'juno',
+    workspace: 'my-project',
     mcp: {},
   };
 
   try {
     const { record, converted } = await storeAndMaybeConvertDocument(session, source);
     assert.equal(converted, false);
-    assert.equal(record.workspace, 'juno');
+    assert.equal(record.workspace, 'my-project');
     assert.equal(record.status, 'stored');
-    assert.equal(record.agentPath.startsWith('/documents/input/juno/'), true);
+    assert.equal(record.agentPath.startsWith('/documents/input/my-project/'), true);
     assert.equal(await readFile(record.storedPath, 'utf8'), 'fake pdf content');
 
     const uploads = await listDocumentUploads(session);
@@ -45,7 +45,7 @@ test('document intake accepts quoted absolute paths with spaces', async () => {
   const source = path.join(root, 'Screenshot 2026-06-21 at 10.03.36.png');
   await writeFile(source, 'fake png content');
   const session = {
-    workspace: 'juno',
+    workspace: 'my-project',
     mcp: {},
   };
 
@@ -66,7 +66,7 @@ test('document intake accepts double-quoted absolute paths with spaces', async (
   const source = path.join(root, 'scan avec espace.pdf');
   await writeFile(source, 'fake pdf content');
   const session = {
-    workspace: 'juno',
+    workspace: 'my-project',
     mcp: {},
   };
 
@@ -87,7 +87,7 @@ test('document intake replaces an existing upload with the same original filenam
   process.env.AGENTS_DATA_DIR = agentsDataDir;
   const source = path.join(root, 'rapport.pdf');
   const session = {
-    workspace: 'juno',
+    workspace: 'my-project',
     mcp: {},
   };
 
@@ -98,7 +98,7 @@ test('document intake replaces an existing upload with the same original filenam
     await mkdir(path.dirname(outputPath), { recursive: true });
     await writeFile(outputPath, 'old markdown');
 
-    const manifest = path.join(agentsDataDir, 'documents', 'uploads', 'juno.jsonl');
+    const manifest = path.join(agentsDataDir, 'documents', 'uploads', 'my-project.jsonl');
     const firstRecord = JSON.parse(await readFile(manifest, 'utf8'));
     await writeFile(manifest, `${JSON.stringify({ ...firstRecord, outputPath })}\n`, 'utf8');
 

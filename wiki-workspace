@@ -516,6 +516,11 @@ ensure_runtime_up() {
   runtime_command up
 }
 
+start_workspace_services() {
+  ensure_runtime_up
+  compose_for_workspace "$1" up -d serve mcp-http production-mcp
+}
+
 ensure_manager_endpoints_file() {
   if [[ ! -f "$MANAGER_ENDPOINTS_FILE" && -f "$ROOT_DIR/mcp.endpoints.example.json" ]]; then
     mkdir -p "$(dirname "$MANAGER_ENDPOINTS_FILE")"
@@ -897,9 +902,7 @@ up_workspace() {
   local ws_path
   ws_path="$(normalize_path "$(workspace_value "$workspace" WIKI_WORKSPACE_PATH)")"
   ensure_workspace_dirs "$ws_path"
-  ensure_runtime_up
-
-  compose_for_workspace "$workspace" up -d serve mcp-http production-mcp
+  start_workspace_services "$workspace"
 
   local serve_port prod_port
   serve_port="$(workspace_value "$workspace" WIKI_SERVE_PORT 3100)"
@@ -986,8 +989,7 @@ main() {
       run_wiki "$workspace" init "$@"
       ;;
     up)
-      ensure_runtime_up
-      compose_for_workspace "$workspace" up -d serve mcp-http production-mcp
+      start_workspace_services "$workspace"
       local serve_port production_port
       serve_port="$(workspace_value "$workspace" WIKI_SERVE_PORT 3100)"
       production_port="$(workspace_value "$workspace" PRODUCTION_MCP_PORT 3102)"

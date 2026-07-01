@@ -125,13 +125,14 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
 
   function persistEvent(event) {
     if (NON_PERSISTED_EVENT_TYPES.has(event.type)) return event;
+    const ws = event.workspace ?? event.payload?.workspace ?? null;
     insertEvent.run(
       event.id,
       event.ts,
       event.type,
       event.runId ?? null,
       event.turnId ?? null,
-      event.workspace ?? event.payload?.workspace ?? null,
+      ws,
       event.origin ?? null,
       JSON.stringify(event.payload ?? {}),
     );
@@ -141,7 +142,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
         id: event.runId ?? event.payload?.runId ?? event.id,
         status: 'running',
         input: event.payload?.input ?? null,
-        workspace: event.workspace ?? event.payload?.workspace ?? null,
+        workspace: ws,
         createdAt: event.ts,
         updatedAt: event.ts,
       });
@@ -151,7 +152,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
         persistRun({
           id: runId,
           status: RUN_STATUS_BY_TERMINAL_EVENT[event.type],
-          workspace: event.workspace ?? event.payload?.workspace ?? null,
+          workspace: ws,
           updatedAt: event.ts,
         });
       }

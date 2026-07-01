@@ -301,31 +301,62 @@ async function runRuntime(argv, agent) {
     throw new Error(`Invalid runtime port: ${port}`);
   }
 
-  const session = createSession();
-  session.headless = true;
-  session.chatMode = false;
-  session.packageJson = packageJson;
-
   const store = openRuntimeStore({ stateDir });
-  store.hydrateSession(session);
-  session.queueStore = createSqliteQueueStore(store, session);
-
   let serverHandle = null;
-  session._onAgentEvent = (event) => {
-    store.persistEvent(event);
-    serverHandle?.publish(event);
-  };
-  session._onRuntimeError = (err) => {
-    const message = err instanceof Error ? err.message : String(err);
-    dispatchAgentEvent(session, createAgentEvent('run_error', {
-      origin: 'runtime',
-      payload: { message },
-    }));
-  };
+  const contexts = new Map();
 
-  let supervisor = null;
+  async function getWorkspaceContext(workspaceName = null) {
+    const requestedWorkspace = workspaceName ? String(workspaceName).trim() : null;
+    const key = requestedWorkspace ?? '__default__';
+    if (contexts.has(key)) return contexts.get(key);
 
-  async function executeRun(body, { signal } = {}) {
+    const pending = (async () => {
+      const session = createSession();
+      session.headless = true;
+      session.chatMode = false;
+      session.packageJson = packageJson;
+
+      if (requestedWorkspace) {
+        const result = await handleSlashCommand(`/use ${requestedWorkspace}`, { packageJson, session });
+        if (!session.workspacePath) throw new Error(result.output || `Workspace not loaded: ${requestedWorkspace}`);
+      }
+      const workspace = session.workspace ?? requestedWorkspace ?? null;
+      store.hydrateSession(session, { workspace });
+      session.queueStore = createSqliteQueueStore(store, session, { workspace });
+
+      const context = {
+        workspace,
+        session,
+        supervisor: null,
+        running: false,
+        currentAbortController: null,
+      };
+      session._onAgentEvent = (event) => {
+        store.persistEvent(event);
+        serverHandle?.publish(event);
+      };
+      session._onRuntimeError = (err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        dispatchAgentEvent(session, createAgentEvent('run_error', {
+          origin: 'runtime',
+          payload: { message, workspace },
+        }));
+      };
+      context.supervisor = startActivitySupervisor(session);
+      contexts.set(key, context);
+      if (workspace && workspace !== key) contexts.set(workspace, context);
+      return context;
+    })();
+    contexts.set(key, pending);
+    pending.catch(() => {
+      if (contexts.get(key) === pending) contexts.delete(key);
+    });
+    return pending;
+  }
+
+  async function executeRun(context, body, { signal } = {}) {
+    const session = context.session;
+    const supervisor = context.supervisor;
     const input = String(body.input ?? body.prompt ?? '').trim();
     const workspace = body.workspace ? String(body.workspace).trim() : null;
     const timeoutMs = (Number.isFinite(Number(body.timeout)) ? Math.max(1, Number(body.timeout)) : 3600) * 1000;
@@ -336,10 +367,11 @@ async function runRuntime(argv, agent) {
         const result = await handleSlashCommand(`/use ${workspace}`, { packageJson, session });
         if (!session.workspacePath) throw new Error(result.output || `Workspace not loaded: ${workspace}`);
       }
+      context.workspace = session.workspace ?? workspace ?? context.workspace ?? null;
       session._currentRunIdentity = {
         runId,
         turnId: `${runId}:turn-0`,
-        workspace: session.workspace ?? workspace ?? null,
+        workspace: context.workspace,
       };
       dispatchAgentEvent(session, createAgentEvent('run_started', {
         origin: 'runtime',
@@ -413,19 +445,21 @@ async function runRuntime(argv, agent) {
     host,
     port,
     store,
-    session,
+    getContext: getWorkspaceContext,
     run: executeRun,
-    cancel: () => emitRuntimeLog(session, 'runtime: cancel requested'),
+    cancel: (context) => emitRuntimeLog(context.session, 'runtime: cancel requested'),
     token: auth.token,
   });
-  supervisor = startActivitySupervisor(session);
 
   console.log(`wiki-manager runtime listening on http://${host}:${port}`);
   console.log(`runtime state: ${store.dbPath}`);
   if (auth.tokenPath) console.log(`runtime token: ${auth.tokenPath}`);
 
   const shutdown = async () => {
-    supervisor?.stop();
+    for (const value of new Set(contexts.values())) {
+      const context = await value;
+      context.supervisor?.stop();
+    }
     await serverHandle.close();
     store.close();
     process.exit(0);

@@ -75,6 +75,12 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     FROM events
     ORDER BY ts ASC, id ASC
   `);
+  const listEventsByWorkspaceStatement = db.prepare(`
+    SELECT id, ts, type, run_id, turn_id, workspace, origin, payload
+    FROM events
+    WHERE workspace = ?
+    ORDER BY ts ASC, id ASC
+  `);
   const upsertRun = db.prepare(`
     INSERT INTO runs (id, workspace, status, input, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -87,6 +93,12 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   const listRunsStatement = db.prepare(`
     SELECT id, workspace, status, input, created_at, updated_at
     FROM runs
+    ORDER BY created_at DESC
+  `);
+  const listRunsByWorkspaceStatement = db.prepare(`
+    SELECT id, workspace, status, input, created_at, updated_at
+    FROM runs
+    WHERE workspace = ?
     ORDER BY created_at DESC
   `);
   const upsertQueueItem = db.prepare(`
@@ -115,11 +127,23 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     DELETE FROM queue_items
     WHERE id NOT IN (SELECT value FROM json_each(?))
   `);
+  const deleteMissingQueueItemsForWorkspace = db.prepare(`
+    DELETE FROM queue_items
+    WHERE workspace = ? AND id NOT IN (SELECT value FROM json_each(?))
+  `);
+  const clearQueueItemsForWorkspace = db.prepare('DELETE FROM queue_items WHERE workspace = ?');
   const clearQueueItems = db.prepare('DELETE FROM queue_items');
   const listQueueStatement = db.prepare(`
     SELECT id, workspace, server, tool, args, lock_key, status, reason, job_id, activity_key,
       error, created_at, started_at, finished_at, updated_at
     FROM queue_items
+    ORDER BY COALESCE(created_at, updated_at) ASC, id ASC
+  `);
+  const listQueueByWorkspaceStatement = db.prepare(`
+    SELECT id, workspace, server, tool, args, lock_key, status, reason, job_id, activity_key,
+      error, created_at, started_at, finished_at, updated_at
+    FROM queue_items
+    WHERE workspace = ?
     ORDER BY COALESCE(created_at, updated_at) ASC, id ASC
   `);
 
@@ -166,12 +190,18 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     upsertRun.run(id, workspace, status, input, createdAt ?? now, updatedAt ?? now);
   }
 
-  function listEvents() {
-    return listEventsStatement.all().map(rowToEvent);
+  function listEvents({ workspace = null } = {}) {
+    const rows = workspace
+      ? listEventsByWorkspaceStatement.all(workspace)
+      : listEventsStatement.all();
+    return rows.map(rowToEvent);
   }
 
-  function listRuns() {
-    return listRunsStatement.all().map((row) => ({
+  function listRuns({ workspace = null } = {}) {
+    const rows = workspace
+      ? listRunsByWorkspaceStatement.all(workspace)
+      : listRunsStatement.all();
+    return rows.map((row) => ({
       id: row.id,
       workspace: row.workspace ?? null,
       status: row.status,
@@ -181,19 +211,21 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     }));
   }
 
-  function saveQueue(queue = []) {
+  function saveQueue(queue = [], { workspace = null } = {}) {
     const items = Array.isArray(queue) ? queue : [];
     const now = new Date().toISOString();
     db.exec('BEGIN');
     try {
       if (items.length === 0) {
-        clearQueueItems.run();
+        if (workspace) clearQueueItemsForWorkspace.run(workspace);
+        else clearQueueItems.run();
       } else {
-        deleteMissingQueueItems.run(JSON.stringify(items.map((item) => item.id)));
+        if (workspace) deleteMissingQueueItemsForWorkspace.run(workspace, JSON.stringify(items.map((item) => item.id)));
+        else deleteMissingQueueItems.run(JSON.stringify(items.map((item) => item.id)));
         for (const item of items) {
           upsertQueueItem.run(
             item.id,
-            item.workspace ?? null,
+            item.workspace ?? workspace ?? null,
             item.server ?? 'production',
             item.tool ?? 'production_start_job',
             JSON.stringify(item.args ?? {}),
@@ -217,8 +249,11 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     }
   }
 
-  function listQueue() {
-    return listQueueStatement.all().map((row) => ({
+  function listQueue({ workspace = null } = {}) {
+    const rows = workspace
+      ? listQueueByWorkspaceStatement.all(workspace)
+      : listQueueStatement.all();
+    return rows.map((row) => ({
       id: row.id,
       workspace: row.workspace ?? null,
       server: row.server,
@@ -237,8 +272,8 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     }));
   }
 
-  function replayEvents(session) {
-    const events = listEvents();
+  function replayEvents(session, { workspace = null } = {}) {
+    const events = listEvents({ workspace });
     for (const event of events) {
       dispatchAgentEvent(session, event);
     }
@@ -246,25 +281,26 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     return session.agentProjection ?? reduceAgentEvents([]);
   }
 
-  function getProjection() {
-    return reduceAgentEvents(listEvents());
+  function getProjection({ workspace = null } = {}) {
+    return reduceAgentEvents(listEvents({ workspace }));
   }
 
-  function getState(session = null) {
-    const projection = session?.agentProjection ?? reduceAgentEvents(listEvents());
-    const queue = session?.queueStore?.list() ?? listQueue();
+  function getState(session = null, { workspace = null } = {}) {
+    const events = session?.agentProjection ? null : listEvents({ workspace });
+    const projection = session?.agentProjection ?? reduceAgentEvents(events);
+    const queue = session?.queueStore?.list() ?? listQueue({ workspace });
     return {
       ...projection,
-      runs: listRuns(),
+      runs: listRuns({ workspace }),
       queue: queue.map((item) => ({ ...item })),
-      eventsCursor: lastEventId,
+      eventsCursor: session?.agentEvents?.at(-1)?.id ?? events?.at(-1)?.id ?? lastEventId,
     };
   }
 
-  function hydrateSession(session) {
-    const projection = replayEvents(session);
+  function hydrateSession(session, { workspace = null } = {}) {
+    const projection = replayEvents(session, { workspace });
     applyAgentProjectionToSession(session, projection);
-    session.jobQueue = listQueue();
+    session.jobQueue = listQueue({ workspace });
     return projection;
   }
 

@@ -4,6 +4,12 @@ function base(url) {
   return url.replace(/\/$/, '');
 }
 
+function runtimeEndpoint(url, path, workspace = null) {
+  const endpoint = new URL(`${base(url)}${path}`);
+  if (workspace) endpoint.searchParams.set('workspace', workspace);
+  return endpoint.toString();
+}
+
 export function runtimeUrlFromEnv() {
   return process.env.WIKI_MANAGER_RUNTIME_URL ?? 'http://127.0.0.1:7788';
 }
@@ -11,8 +17,9 @@ export function runtimeUrlFromEnv() {
 export async function fetchRuntimeState({
   url = runtimeUrlFromEnv(),
   token = runtimeToken(),
+  workspace = null,
 } = {}) {
-  const response = await fetch(`${base(url)}/state`, {
+  const response = await fetch(runtimeEndpoint(url, '/state', workspace), {
     headers: runtimeHeaders(token),
   });
   if (!response.ok) throw new Error(`Runtime state failed: HTTP ${response.status}`);
@@ -22,8 +29,9 @@ export async function fetchRuntimeState({
 export async function checkRuntimeHealth({
   url = runtimeUrlFromEnv(),
   token = runtimeToken(),
+  workspace = null,
 } = {}) {
-  const response = await fetch(`${base(url)}/health`, {
+  const response = await fetch(runtimeEndpoint(url, '/health', workspace), {
     headers: runtimeHeaders(token),
   });
   if (!response.ok) return null;
@@ -35,7 +43,7 @@ export async function postRuntimeRun(input, {
   token = runtimeToken(),
   workspace = null,
 } = {}) {
-  const response = await fetch(`${base(url)}/run`, {
+  const response = await fetch(runtimeEndpoint(url, '/run', workspace), {
     method: 'POST',
     headers: {
       ...runtimeHeaders(token),
@@ -50,8 +58,9 @@ export async function postRuntimeRun(input, {
 export async function postRuntimeCancel({
   url = runtimeUrlFromEnv(),
   token = runtimeToken(),
+  workspace = null,
 } = {}) {
-  const response = await fetch(`${base(url)}/cancel`, {
+  const response = await fetch(runtimeEndpoint(url, '/cancel', workspace), {
     method: 'POST',
     headers: runtimeHeaders(token),
   });
@@ -67,8 +76,9 @@ export async function* streamRuntimeEvents({
   url = runtimeUrlFromEnv(),
   token = runtimeToken(),
   signal = null,
+  workspace = null,
 } = {}) {
-  const response = await fetch(`${base(url)}/events/stream`, {
+  const response = await fetch(runtimeEndpoint(url, '/events/stream', workspace), {
     headers: { ...runtimeHeaders(token), Accept: 'text/event-stream' },
     signal,
   });

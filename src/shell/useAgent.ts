@@ -53,7 +53,7 @@ export function useAgent(props: { agent: unknown; packageJson: Record<string, un
 
   function abort() {
     if (props.runtimeUrl) {
-      void postRuntimeCancel({ url: props.runtimeUrl })
+      void postRuntimeCancel({ url: props.runtimeUrl, workspace: props.session.workspace ?? null })
         .then(() => props.addLog('runtime: cancel requested'))
         .catch((err) => props.addLog(`runtime cancel error: ${err instanceof Error ? err.message : String(err)}`));
     }

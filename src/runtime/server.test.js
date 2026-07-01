@@ -99,3 +99,123 @@ test('runtime server returns the accepted run id and passes it to the runner', a
     await handle.close();
   }
 });
+
+test('runtime server isolates active runs by workspace', async (t) => {
+  const releases = new Map();
+  const runWorkspaces = [];
+  const contexts = new Map();
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: (session) => ({ status: session?.running ? 'running' : 'idle' }),
+        listEvents: () => [],
+      },
+      getContext: async (workspace) => {
+        if (!contexts.has(workspace)) {
+          contexts.set(workspace, {
+            workspace,
+            session: { workspace },
+            running: false,
+            currentAbortController: null,
+          });
+        }
+        return contexts.get(workspace);
+      },
+      run: async (context) => {
+        runWorkspaces.push(context.workspace);
+        context.session.running = true;
+        await new Promise((resolve) => { releases.set(context.workspace, resolve); });
+        context.session.running = false;
+      },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const url = `http://127.0.0.1:${handle.port}/run`;
+    const [juno, docs] = await Promise.all([
+      fetch(`${url}?workspace=juno`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: 'first' }),
+      }),
+      fetch(`${url}?workspace=docs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: 'second' }),
+      }),
+    ]);
+    assert.deepEqual([juno.status, docs.status], [202, 202]);
+
+    const conflict = await fetch(`${url}?workspace=juno`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: 'third' }),
+    });
+    assert.equal(conflict.status, 409);
+    assert.deepEqual(runWorkspaces.sort(), ['docs', 'juno']);
+  } finally {
+    releases.get('juno')?.();
+    releases.get('docs')?.();
+    await handle.close();
+  }
+});
+
+test('runtime server filters state and events by workspace', async (t) => {
+  let stateWorkspace = null;
+  let eventWorkspace = null;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: (_session, options) => {
+          stateWorkspace = options.workspace;
+          return { status: 'idle', workspace: options.workspace };
+        },
+        listEvents: (options) => {
+          eventWorkspace = options.workspace;
+          return [{ id: 'e1', workspace: options.workspace }];
+        },
+      },
+      getContext: async (workspace) => ({
+        workspace,
+        session: { workspace },
+        running: false,
+        currentAbortController: null,
+      }),
+      run: async () => {},
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const state = await fetch(`http://127.0.0.1:${handle.port}/state?workspace=juno`);
+    assert.equal(state.status, 200);
+    assert.equal((await state.json()).workspace, 'juno');
+    assert.equal(stateWorkspace, 'juno');
+
+    const events = await fetch(`http://127.0.0.1:${handle.port}/events?workspace=docs`);
+    assert.equal(events.status, 200);
+    assert.deepEqual(await events.json(), { events: [{ id: 'e1', workspace: 'docs' }] });
+    assert.equal(eventWorkspace, 'docs');
+  } finally {
+    await handle.close();
+  }
+});

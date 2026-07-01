@@ -7,18 +7,24 @@ export function startRuntimeServer({
   port = 7788,
   token = runtimeTokenFromEnv(),
   store,
-  session,
+  session = null,
+  getContext = null,
   run,
   cancel,
 } = {}) {
   const clients = new Set();
-  let running = false;
-  let currentAbortController = null;
+  const defaultContext = {
+    workspace: null,
+    session,
+    running: false,
+    currentAbortController: null,
+  };
 
   function publish(event) {
     const payload = `event: agent_event\ndata: ${JSON.stringify(event)}\n\n`;
-    for (const response of clients) {
-      response.write(payload);
+    for (const client of clients) {
+      if (client.workspace && event.workspace !== client.workspace) continue;
+      client.response.write(payload);
     }
   }
 
@@ -31,71 +37,91 @@ export function startRuntimeServer({
 
       const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
       if (request.method === 'GET' && url.pathname === '/health') {
-        sendJson(response, 200, { ok: true, status: running ? 'running' : 'idle', dbPath: store.dbPath });
+        const workspace = workspaceFromUrl(url);
+        const context = workspace ? await resolveContext({ workspace }) : null;
+        sendJson(response, 200, {
+          ok: true,
+          status: context?.running ? 'running' : 'idle',
+          workspace: context?.workspace ?? workspace ?? null,
+          dbPath: store.dbPath,
+        });
         return;
       }
       if (request.method === 'GET' && url.pathname === '/state') {
-        sendJson(response, 200, store.getState(session));
+        const workspace = workspaceFromUrl(url);
+        const context = workspace ? await resolveContext({ workspace }) : null;
+        sendJson(response, 200, store.getState(context?.session ?? session, { workspace }));
         return;
       }
       if (request.method === 'GET' && url.pathname === '/events') {
-        sendJson(response, 200, { events: store.listEvents() });
+        const workspace = workspaceFromUrl(url);
+        sendJson(response, 200, { events: store.listEvents({ workspace }) });
         return;
       }
       if (request.method === 'GET' && url.pathname === '/events/stream') {
+        const workspace = workspaceFromUrl(url);
+        const context = workspace ? await resolveContext({ workspace }) : null;
         response.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           Connection: 'keep-alive',
           'X-Accel-Buffering': 'no',
         });
-        response.write(`event: state\ndata: ${JSON.stringify(store.getState(session))}\n\n`);
-        clients.add(response);
-        request.on('close', () => clients.delete(response));
+        response.write(`event: state\ndata: ${JSON.stringify(store.getState(context?.session ?? session, { workspace }))}\n\n`);
+        const client = { response, workspace };
+        clients.add(client);
+        request.on('close', () => clients.delete(client));
         return;
       }
       if (request.method === 'POST' && url.pathname === '/run') {
-        if (running) {
+        const body = await readJson(request);
+        const workspace = workspaceFromBody(body) ?? workspaceFromUrl(url);
+        const context = await resolveContext({ workspace });
+        if (context.running) {
           sendJson(response, 409, { error: 'A runtime run is already active.' });
           return;
         }
-        running = true;
-        currentAbortController = new AbortController();
         try {
-          const body = await readJson(request);
           const input = String(body.input ?? body.prompt ?? '').trim();
           if (!input) {
-            running = false;
-            currentAbortController = null;
             sendJson(response, 400, { error: 'Missing input.' });
             return;
           }
           const runId = randomUUID();
-          const runBody = { ...body, runId };
-          run(runBody, { signal: currentAbortController.signal, runId })
+          const runWorkspace = context.workspace ?? workspace ?? null;
+          context.running = true;
+          context.currentAbortController = new AbortController();
+          const runBody = { ...body, workspace: runWorkspace, runId };
+          const runPromise = getContext
+            ? run(context, runBody, { signal: context.currentAbortController.signal, runId })
+            : run(runBody, { signal: context.currentAbortController.signal, runId });
+          runPromise
             .catch((err) => {
-              session._onRuntimeError?.(err);
+              context.session?._onRuntimeError?.(err);
             })
             .finally(() => {
-              running = false;
-              currentAbortController = null;
+              context.running = false;
+              context.currentAbortController = null;
             });
-          sendJson(response, 202, { accepted: true, runId });
+          sendJson(response, 202, { accepted: true, runId, workspace: runWorkspace });
         } catch (err) {
-          running = false;
-          currentAbortController = null;
+          context.running = false;
+          context.currentAbortController = null;
           throw err;
         }
         return;
       }
       if (request.method === 'POST' && url.pathname === '/cancel') {
-        if (!running || !currentAbortController) {
+        const workspace = workspaceFromUrl(url);
+        const context = await resolveContext({ workspace });
+        if (!context.running || !context.currentAbortController) {
           sendJson(response, 200, { cancelled: false, reason: 'no active run' });
           return;
         }
-        currentAbortController.abort();
-        await cancel?.();
-        sendJson(response, 202, { cancelled: true });
+        context.currentAbortController.abort();
+        if (getContext) await cancel?.(context);
+        else await cancel?.();
+        sendJson(response, 202, { cancelled: true, workspace: context.workspace ?? workspace ?? null });
         return;
       }
 
@@ -115,13 +141,28 @@ export function startRuntimeServer({
         port: typeof address === 'object' && address ? address.port : port,
         publish,
         close: () => new Promise((closeResolve, closeReject) => {
-          for (const response of clients) response.end();
+          for (const client of clients) client.response.end();
           clients.clear();
           server.close((err) => (err ? closeReject(err) : closeResolve()));
         }),
       });
     });
   });
+
+  async function resolveContext({ workspace = null } = {}) {
+    if (getContext) return getContext(workspace);
+    return defaultContext;
+  }
+}
+
+function workspaceFromUrl(url) {
+  const workspace = url.searchParams.get('workspace');
+  return workspace ? workspace.trim() || null : null;
+}
+
+function workspaceFromBody(body) {
+  const workspace = body?.workspace;
+  return workspace == null ? null : String(workspace).trim() || null;
 }
 
 function isAuthorized(request, token) {

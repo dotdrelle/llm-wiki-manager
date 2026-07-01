@@ -165,3 +165,34 @@ test('runtime store persists and hydrates queue items', () => {
   assert.equal(reopened.getState(session).queue[0].workspace, 'docs');
   reopened.close();
 });
+
+test('runtime store filters events runs and queue by workspace', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  store.persistEvent(createAgentEvent('run_started', {
+    origin: 'test',
+    runId: 'run-juno',
+    turnId: 'run-juno:turn-0',
+    workspace: 'juno',
+    payload: { input: 'juno', workspace: 'juno' },
+  }));
+  store.persistEvent(createAgentEvent('run_started', {
+    origin: 'test',
+    runId: 'run-docs',
+    turnId: 'run-docs:turn-0',
+    workspace: 'docs',
+    payload: { input: 'docs', workspace: 'docs' },
+  }));
+  store.saveQueue([{ id: 'q-juno', workspace: 'juno', status: 'waiting' }], { workspace: 'juno' });
+  store.saveQueue([{ id: 'q-docs', workspace: 'docs', status: 'waiting' }], { workspace: 'docs' });
+
+  assert.deepEqual(store.listEvents({ workspace: 'juno' }).map((event) => event.runId), ['run-juno']);
+  assert.deepEqual(store.listRuns({ workspace: 'docs' }).map((run) => run.id), ['run-docs']);
+  assert.deepEqual(store.listQueue({ workspace: 'juno' }).map((item) => item.id), ['q-juno']);
+
+  const session = { activities: {}, headlessPlan: null };
+  store.hydrateSession(session, { workspace: 'docs' });
+  assert.equal(session.jobQueue[0].id, 'q-docs');
+  assert.deepEqual(store.getState(session, { workspace: 'docs' }).runs.map((run) => run.id), ['run-docs']);
+  store.close();
+});

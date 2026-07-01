@@ -1242,7 +1242,7 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
 
   function syncRuntimeState() {
     if (!runtime?.url) return;
-    void fetchRuntimeState({ url: runtime.url })
+    void fetchRuntimeState({ url: runtime.url, workspace: session.workspace ?? null })
       .then((state) => {
         runtimePollingActive = true;
         applyRuntimeStateToShellSession(session, state);
@@ -1263,7 +1263,7 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
     if (!runtime?.url || runtimeStreamStopped) return;
     runtimeStreamAbort = new AbortController();
     try {
-      for await (const event of streamRuntimeEvents({ url: runtime.url, signal: runtimeStreamAbort.signal })) {
+      for await (const event of streamRuntimeEvents({ url: runtime.url, signal: runtimeStreamAbort.signal, workspace: session.workspace ?? null })) {
         runtimePollingActive = true;
         if (event.type === 'state') {
           applyRuntimeStateToShellSession(session, event.data);
@@ -1424,7 +1424,7 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
         return;
       }
       if (runtime?.url && runtimeRunActive(session)) {
-        void postRuntimeCancel({ url: runtime.url })
+        void postRuntimeCancel({ url: runtime.url, workspace: session.workspace ?? null })
           .then(() => {
             activityLines = [...activityLines, 'runtime: cancel requested'].slice(-LOWER_DETAIL_ROWS);
             rerender();

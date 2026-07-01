@@ -229,7 +229,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   });
 
   function syncRuntimeState() {
-    void fetchRuntimeState({ url: props.runtime.url })
+    void fetchRuntimeState({ url: props.runtime.url, workspace: (session as any).workspace ?? null })
       .then((state) => {
         setRuntimeState(state);
         setRuntimeStatus('connected');
@@ -254,7 +254,11 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     if (!props.runtime?.url || runtimeStreamStopped) return;
     runtimeStreamAbort = new AbortController();
     try {
-      for await (const _event of streamRuntimeEvents({ url: props.runtime.url, signal: runtimeStreamAbort.signal })) {
+      for await (const _event of streamRuntimeEvents({
+        url: props.runtime.url,
+        signal: runtimeStreamAbort.signal,
+        workspace: (session as any).workspace ?? null,
+      })) {
         setRuntimeStatus('connected');
         debouncedSyncRuntimeState();
       }

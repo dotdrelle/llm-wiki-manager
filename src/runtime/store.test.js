@@ -106,6 +106,42 @@ test('runtime store replays evaluator verdict into state', () => {
   reopened.close();
 });
 
+test('runtime store replays replan trace into state', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  store.persistEvent(createAgentEvent('run_started', {
+    origin: 'runtime',
+    runId: 'run-replan',
+    turnId: 'run-replan:turn-0',
+    workspace: 'docs',
+    payload: { input: 'build docs', workspace: 'docs' },
+  }));
+  store.persistEvent(createAgentEvent('run_replanned', {
+    origin: 'runtime',
+    runId: 'run-replan',
+    turnId: 'run-replan:turn-1',
+    workspace: 'docs',
+    payload: {
+      reason: 'Build failed.',
+      plan: ['Retry build'],
+      replansLeft: 1,
+    },
+  }));
+  store.close();
+
+  const reopened = openRuntimeStore({ stateDir });
+  const session = { activities: {}, headlessPlan: null };
+  reopened.hydrateSession(session, { workspace: 'docs' });
+
+  assert.deepEqual(reopened.getState(session, { workspace: 'docs' }).replans, [{
+    reason: 'Build failed.',
+    plan: ['Retry build'],
+    replansLeft: 1,
+    runId: 'run-replan',
+  }]);
+  reopened.close();
+});
+
 test('runtime store orders events by durable sequence', () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
   const store = openRuntimeStore({ stateDir });

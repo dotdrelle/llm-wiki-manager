@@ -7,6 +7,7 @@ const SESSION_PROJECTION_EVENTS = new Set([
   'plan_step_updated',
   'activity_upserted',
   'run_evaluated',
+  'run_replanned',
   'run_done',
   'run_error',
   'run_cancelled',
@@ -94,6 +95,7 @@ function createProjectionState() {
     activities: {},
     logs: [],
     evaluation: null,
+    replans: [],
     summary: null,
     status: 'idle',
   };
@@ -107,6 +109,7 @@ function publicProjection(state) {
     activities: sortedActivities(state.activities).map((activity) => ({ ...activity })),
     logs: [...state.logs],
     evaluation: state.evaluation ? { ...state.evaluation } : null,
+    replans: state.replans.map((replan) => ({ ...replan, plan: [...(replan.plan ?? [])] })),
     summary: state.summary,
     status: state.status,
   };
@@ -134,6 +137,7 @@ function applyEvent(state, event) {
       state.activities = {};
       state.logs = [];
       state.evaluation = null;
+      state.replans = [];
       state.summary = null;
       return;
     case 'user_message':
@@ -178,6 +182,14 @@ function applyEvent(state, event) {
         suggestedAction: event.payload?.suggestedAction ?? null,
         runId: event.runId ?? event.payload?.runId ?? null,
       };
+      return;
+    case 'run_replanned':
+      state.replans.push({
+        reason: String(event.payload?.reason ?? ''),
+        plan: Array.isArray(event.payload?.plan) ? event.payload.plan.map(String) : [],
+        replansLeft: Number(event.payload?.replansLeft ?? 0),
+        runId: event.runId ?? event.payload?.runId ?? null,
+      });
       return;
     case 'run_done':
       state.status = 'done';

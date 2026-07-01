@@ -43,6 +43,7 @@ export async function postRuntimeRun(input, {
   token = runtimeToken(),
   workspace = null,
   evaluate = undefined,
+  replans = undefined,
 } = {}) {
   const response = await fetch(runtimeEndpoint(url, '/run', workspace), {
     method: 'POST',
@@ -54,6 +55,7 @@ export async function postRuntimeRun(input, {
       input,
       workspace,
       ...(evaluate === undefined ? {} : { evaluate }),
+      ...(replans === undefined ? {} : { replans }),
     }),
   });
   if (!response.ok) throw new Error(`Runtime run failed: HTTP ${response.status}`);

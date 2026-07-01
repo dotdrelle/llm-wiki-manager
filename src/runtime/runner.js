@@ -4,6 +4,8 @@ import { runAgenticLoop, throwIfAborted } from '../core/agentLoop.js';
 import { formatPlanStatus } from '../core/plan.js';
 import { emitRuntimeLog, pollActivitiesOnce } from './supervisor.js';
 
+const DEFAULT_MAX_REPLANS = 2;
+
 async function waitForRuntimeActivities(session, startedActivities, { timeoutMs, signal, pollBusy }) {
   const deadline = Date.now() + timeoutMs;
   const trackedKeys = new Set(startedActivities.map((activity) => activity.key));
@@ -71,6 +73,104 @@ export async function runRuntimeAgenticLoop(agent, session, initialInput, { sign
       emitRuntimeLog(session, `agentic-loop: max turns (${totalTurns}) reached`);
     },
   });
+}
+
+export async function runRuntimeAgenticWorkflow(agent, session, input, {
+  initialInput = null,
+  signal = null,
+  timeoutMs,
+  maxTurns,
+  runId,
+  pollBusy,
+  evaluate = true,
+  maxReplans = resolveMaxReplans(),
+} = {}) {
+  let currentInput = initialInput ?? input;
+  let replansLeft = Math.max(0, Math.floor(Number(maxReplans) || 0));
+
+  while (true) {
+    const result = await runRuntimeAgenticLoop(agent, session, currentInput, {
+      signal,
+      timeoutMs,
+      maxTurns,
+      runId,
+      pollBusy,
+    });
+    if (!result.ok) {
+      const trigger = replanTriggerFromLoopResult(result);
+      if (trigger && replansLeft > 0) {
+        const replanned = await replanRuntimeRun(session, input, trigger, {
+          runId,
+          signal,
+          replansLeft: replansLeft - 1,
+        });
+        if (replanned.ok) {
+          replansLeft -= 1;
+          currentInput = buildReplannedRunPrompt(input, trigger, replanned.steps);
+          continue;
+        }
+      }
+      dispatchAgentEvent(session, createAgentEvent('run_error', {
+        origin: 'runtime',
+        runId,
+        payload: {
+          runId,
+          message: runtimeLoopErrorMessage(result),
+        },
+      }));
+      return { ok: false, result };
+    }
+
+    const evaluation = await evaluateRuntimeRun(session, input, { runId, signal, evaluate });
+    if (evaluation) {
+      dispatchAgentEvent(session, createAgentEvent('run_evaluated', {
+        origin: 'runtime',
+        runId,
+        payload: {
+          runId,
+          ok: evaluation.ok,
+          reason: evaluation.reason,
+          suggestedAction: evaluation.suggestedAction ?? null,
+        },
+      }));
+      if (!evaluation.ok) {
+        if (replansLeft > 0) {
+          const trigger = {
+            kind: 'evaluation',
+            reason: evaluation.reason,
+            suggestedAction: evaluation.suggestedAction ?? null,
+          };
+          const replanned = await replanRuntimeRun(session, input, trigger, {
+            runId,
+            signal,
+            replansLeft: replansLeft - 1,
+          });
+          if (replanned.ok) {
+            replansLeft -= 1;
+            currentInput = buildReplannedRunPrompt(input, trigger, replanned.steps);
+            continue;
+          }
+        }
+        dispatchAgentEvent(session, createAgentEvent('run_error', {
+          origin: 'runtime',
+          runId,
+          payload: {
+            runId,
+            message: `Runtime evaluator rejected the run: ${evaluation.reason}`,
+            suggestedAction: evaluation.suggestedAction ?? null,
+          },
+        }));
+        return { ok: false, evaluation, evaluationRejected: true };
+      }
+    }
+
+    dispatchAgentEvent(session, createAgentEvent('run_done', {
+      origin: 'runtime',
+      runId,
+      payload: { runId },
+    }));
+    return { ok: true, evaluation };
+  }
 }
 
 export async function finishRuntimeRun(session, input, {
@@ -190,4 +290,131 @@ function fallbackEvaluation(reason) {
     reason,
     suggestedAction: null,
   };
+}
+
+export async function replanRuntimeRun(session, input, trigger, {
+  runId = null,
+  signal = null,
+  replansLeft = 0,
+} = {}) {
+  const llm = session.llm;
+  if (!llm || typeof llm.completeWithTools !== 'function') {
+    return { ok: false, reason: 'Replanner unavailable: no LLM completeWithTools client.' };
+  }
+  try {
+    emitRuntimeLog(session, 'runtime: replanning remaining work');
+    const result = await llm.completeWithTools({
+      system: [
+        'You are a replanner for an agentic runtime run.',
+        'Given the original objective, current plan, and failure reason, return only the remaining steps required.',
+        'Do not include steps that are already done.',
+        'Return only JSON with this exact shape: {"steps":["..."]}.',
+      ].join('\n'),
+      tools: [],
+      messages: [{ role: 'user', content: buildReplanPrompt(input, session, trigger) }],
+      signal,
+    });
+    const steps = normalizeReplan(parseJsonResponse(result.content).steps);
+    if (steps.length === 0) throw new Error('empty replan');
+    dispatchAgentEvent(session, createAgentEvent('run_replanned', {
+      origin: 'runtime',
+      runId,
+      payload: {
+        runId,
+        reason: trigger.reason,
+        plan: steps,
+        replansLeft,
+      },
+    }));
+    dispatchAgentEvent(session, createAgentEvent('plan_set', {
+      origin: 'runtime',
+      runId,
+      payload: {
+        steps: steps.map((description, index) => ({
+          step: index + 1,
+          description,
+          status: 'pending',
+        })),
+      },
+    }));
+    return { ok: true, steps };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function replanTriggerFromLoopResult(result) {
+  const failures = terminalFailures(result.completed ?? []);
+  const failure = failures[0];
+  if (!failure) return null;
+  return {
+    kind: 'activity_error',
+    reason: `${failure.label ?? failure.id ?? 'Activity'} ended with ${failure.status}${failure.error ? `: ${failure.error}` : ''}`,
+    suggestedAction: failure.error ?? null,
+    activity: failure,
+  };
+}
+
+function runtimeLoopErrorMessage(result) {
+  if (result.timedOut) return 'Runtime agentic loop timed out.';
+  if (result.maxTurns) return 'Runtime agentic loop reached max turns.';
+  const trigger = replanTriggerFromLoopResult(result);
+  return trigger?.reason ?? 'Runtime agentic loop failed.';
+}
+
+function buildReplanPrompt(input, session, trigger) {
+  const conversation = session.agentProjection?.conversation ?? [];
+  const recentConversation = conversation
+    .slice(-12)
+    .map((message) => `${message.role}: ${message.content}`)
+    .join('\n');
+  return [
+    'Original task:',
+    input || '(unknown)',
+    '',
+    session.headlessPlan ? `Current plan:\n${formatPlanStatus(session.headlessPlan)}` : 'Current plan: none',
+    '',
+    `Failure source: ${trigger.kind}`,
+    `Failure reason: ${trigger.reason}`,
+    trigger.suggestedAction ? `Suggested action: ${trigger.suggestedAction}` : null,
+    recentConversation ? `Recent conversation:\n${recentConversation}` : null,
+    '',
+    'Return only the remaining steps still required. Exclude already completed steps.',
+  ].filter(Boolean).join('\n');
+}
+
+function buildReplannedRunPrompt(input, trigger, steps) {
+  return [
+    'Continue a replanned runtime run.',
+    '',
+    'Original task:',
+    input || '(unknown)',
+    '',
+    `Replan reason: ${trigger.reason}`,
+    '',
+    'New partial plan:',
+    ...steps.map((step, index) => `${index + 1}. ${step}`),
+    '',
+    'Execute only the first pending replanned step. Do not repeat completed work.',
+  ].join('\n');
+}
+
+function normalizeReplan(steps) {
+  if (!Array.isArray(steps)) return [];
+  return steps
+    .map((step) => String(step ?? '').trim())
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function parseJsonResponse(content) {
+  const text = String(content ?? '').trim();
+  if (!text) throw new Error('empty JSON response');
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  return JSON.parse(fenced ? fenced[1].trim() : text);
+}
+
+function resolveMaxReplans(value = process.env.WIKI_MANAGER_REPLANNER_MAX_REPLANS) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : DEFAULT_MAX_REPLANS;
 }

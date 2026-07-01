@@ -160,6 +160,28 @@ test('reduceAgentEvents: run_evaluated exposes evaluator verdict', () => {
   assert.equal(projection.status, 'running');
 });
 
+test('reduceAgentEvents: run_replanned records replan trace', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('run_started', { origin: 'runtime', runId: 'run-1' }),
+    createAgentEvent('run_replanned', {
+      origin: 'runtime',
+      runId: 'run-1',
+      payload: {
+        reason: 'Export file missing.',
+        plan: ['Run export again'],
+        replansLeft: 1,
+      },
+    }),
+  ]);
+
+  assert.deepEqual(projection.replans, [{
+    reason: 'Export file missing.',
+    plan: ['Run export again'],
+    replansLeft: 1,
+    runId: 'run-1',
+  }]);
+});
+
 test('reduceAgentEvents: activity-owned plan is used when no orchestrator plan exists', () => {
   const projection = reduceAgentEvents([
     createAgentEvent('activity_upserted', {

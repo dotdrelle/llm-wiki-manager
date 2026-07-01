@@ -290,7 +290,7 @@ async function runRuntime(argv, agent) {
   const { emitRuntimeLog, startActivitySupervisor } = await import('../runtime/supervisor.js');
   const { resolveRuntimeAuthToken } = await import('../runtime/auth.js');
   const { createSqliteQueueStore } = await import('../runtime/queueStore.js');
-  const { finishRuntimeRun, runRuntimeAgenticLoop } = await import('../runtime/runner.js');
+  const { runRuntimeAgenticWorkflow } = await import('../runtime/runner.js');
 
   const host = valueAfter(argv, '--host') ?? process.env.WIKI_MANAGER_RUNTIME_HOST ?? '0.0.0.0';
   const port = Number(valueAfter(argv, '--port') ?? process.env.WIKI_MANAGER_RUNTIME_PORT ?? 7788);
@@ -417,34 +417,14 @@ async function runRuntime(argv, agent) {
     session._onStep = (message) => emitRuntimeLog(session, message);
     emitRuntimeLog(session, `runtime: resuming interrupted run ${runId}`);
 
-    runRuntimeAgenticLoop(agent, session, input, {
+    runRuntimeAgenticWorkflow(agent, session, run.input ?? input, {
+      initialInput: input,
       signal: context.currentAbortController.signal,
       timeoutMs: 3600 * 1000,
       maxTurns: 20,
       runId,
       pollBusy: supervisor?.pollBusy,
     })
-      .then(async (result) => {
-        if (!result.ok) {
-          dispatchAgentEvent(session, createAgentEvent('run_error', {
-            origin: 'runtime',
-            runId,
-            payload: {
-              runId,
-              message: result.timedOut
-                ? 'Recovered runtime agentic loop timed out.'
-                : result.maxTurns
-                  ? 'Recovered runtime agentic loop reached max turns.'
-                  : 'Recovered runtime agentic loop failed.',
-            },
-          }));
-          return;
-        }
-        await finishRuntimeRun(session, run.input ?? input, {
-          runId,
-          signal: context.currentAbortController.signal,
-        });
-      })
       .catch((err) => {
         if (err?.name === 'AbortError') {
           dispatchAgentEvent(session, createAgentEvent('run_cancelled', {
@@ -545,6 +525,7 @@ async function runRuntime(argv, agent) {
     const workspace = body.workspace ? String(body.workspace).trim() : null;
     const timeoutMs = (Number.isFinite(Number(body.timeout)) ? Math.max(1, Number(body.timeout)) : 3600) * 1000;
     const maxTurns = Number.isFinite(Number(body.maxTurns)) ? Math.max(1, Number(body.maxTurns)) : 20;
+    const maxReplans = Number.isFinite(Number(body.replans)) ? Math.max(0, Math.floor(Number(body.replans))) : undefined;
     const runId = String(body.runId);
     try {
       if (workspace && session.workspace !== workspace) {
@@ -570,32 +551,14 @@ async function runRuntime(argv, agent) {
       session._abortSignal = signal ?? null;
       supervisor?.setRunSignal(signal);
       session._onStep = (message) => emitRuntimeLog(session, message);
-      const result = await runRuntimeAgenticLoop(agent, session, input, {
+      await runRuntimeAgenticWorkflow(agent, session, input, {
         signal,
         timeoutMs,
         maxTurns,
         runId,
         pollBusy: supervisor?.pollBusy,
-      });
-      if (!result.ok) {
-        dispatchAgentEvent(session, createAgentEvent('run_error', {
-          origin: 'runtime',
-          runId,
-          payload: {
-            runId,
-            message: result.timedOut
-              ? 'Runtime agentic loop timed out.'
-              : result.maxTurns
-                ? `Runtime agentic loop reached max turns (${maxTurns}).`
-                : 'Runtime agentic loop failed.',
-          },
-        }));
-        return;
-      }
-      await finishRuntimeRun(session, input, {
-        runId,
-        signal,
         evaluate: body.evaluate !== false,
+        ...(maxReplans === undefined ? {} : { maxReplans }),
       });
     } catch (err) {
       if (err?.name === 'AbortError') {

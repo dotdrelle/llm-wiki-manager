@@ -442,6 +442,12 @@ verdict is emitted as `run_evaluated` and appears in runtime state as
 `evaluation`. Disable it globally with `WIKI_MANAGER_EVALUATOR=0`, or per run by
 posting `/run` with `"evaluate": false`.
 
+When evaluation fails, or when a watched activity ends in error, the runtime can
+ask the LLM for a partial recovery plan and continue only the remaining steps.
+Each recovery is emitted as `run_replanned` and appears in runtime state as
+`replans`. Limit attempts with `WIKI_MANAGER_REPLANNER_MAX_REPLANS` or per run
+with `"replans": 1` in the `/run` body.
+
 ### Starting external agents
 
 Start CME, documents, and mailer once for all workspaces:

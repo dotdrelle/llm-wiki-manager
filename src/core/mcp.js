@@ -230,7 +230,7 @@ async function mcpRequest(endpoint, method, params, signal, options = {}) {
           params: {
             protocolVersion: '2025-06-18',
             capabilities: {},
-            clientInfo: { name: 'wiki-manager', version: '0.7.14' },
+            clientInfo: { name: 'wiki-manager', version: '0.8.0' },
           },
         }),
       });
@@ -300,16 +300,23 @@ export function formatMcpToolResult(result) {
     .trim() || 'No result.';
 }
 
+let _cachedEnvRetryPolicy = null;
+function getEnvRetryPolicy() {
+  if (!_cachedEnvRetryPolicy) {
+    _cachedEnvRetryPolicy = {
+      maxAttempts: numberFromEnv('WIKI_MANAGER_MCP_RETRY_MAX_ATTEMPTS')
+        ?? numberFromEnv('WIKI_MANAGER_MCP_RETRY_ATTEMPTS')
+        ?? DEFAULT_MCP_RETRY_POLICY.maxAttempts,
+      backoffMs: numberFromEnv('WIKI_MANAGER_MCP_RETRY_BACKOFF_MS')
+        ?? DEFAULT_MCP_RETRY_POLICY.backoffMs,
+    };
+  }
+  return _cachedEnvRetryPolicy;
+}
+
 export function resolveRetryPolicy(endpoint = {}, toolName = null, override = null) {
-  const envPolicy = {
-    maxAttempts: numberFromEnv('WIKI_MANAGER_MCP_RETRY_MAX_ATTEMPTS')
-      ?? numberFromEnv('WIKI_MANAGER_MCP_RETRY_ATTEMPTS')
-      ?? DEFAULT_MCP_RETRY_POLICY.maxAttempts,
-    backoffMs: numberFromEnv('WIKI_MANAGER_MCP_RETRY_BACKOFF_MS')
-      ?? DEFAULT_MCP_RETRY_POLICY.backoffMs,
-  };
   const toolPolicy = toolName ? endpoint.toolRetries?.[toolName] : null;
-  return normalizeRetryPolicy(envPolicy, endpoint.retry, toolPolicy, override);
+  return normalizeRetryPolicy(getEnvRetryPolicy(), endpoint.retry, toolPolicy, override);
 }
 
 function normalizeRetryPolicy(...policies) {

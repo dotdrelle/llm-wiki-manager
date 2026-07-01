@@ -234,7 +234,7 @@ export async function evaluateRuntimeRun(session, input, {
       messages: [{ role: 'user', content: buildEvaluationPrompt(input, session, { runId }) }],
       signal,
     });
-    return normalizeEvaluation(parseEvaluationJson(result.content));
+    return normalizeEvaluation(parseJsonFenced(result.content, 'evaluator response'));
   } catch (err) {
     return fallbackEvaluation(`Evaluator unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -247,11 +247,7 @@ function shouldEvaluate(value) {
 }
 
 function buildEvaluationPrompt(input, session, { runId = null } = {}) {
-  const conversation = session.agentProjection?.conversation ?? [];
-  const recentConversation = conversation
-    .slice(-12)
-    .map((message) => `${message.role}: ${message.content}`)
-    .join('\n');
+  const recentConversation = formatRecentConversation(session);
   const activities = sessionActivities(session)
     .slice(-12)
     .map((activity) => `- ${activity.label ?? activity.id}: ${activity.status}${activity.error ? ` (${activity.error})` : ''}`)
@@ -269,9 +265,9 @@ function buildEvaluationPrompt(input, session, { runId = null } = {}) {
   ].filter(Boolean).join('\n');
 }
 
-function parseEvaluationJson(content) {
+function parseJsonFenced(content, label = 'JSON response') {
   const text = String(content ?? '').trim();
-  if (!text) throw new Error('empty evaluator response');
+  if (!text) throw new Error(`empty ${label}`);
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   return JSON.parse(fenced ? fenced[1].trim() : text);
 }
@@ -314,7 +310,7 @@ export async function replanRuntimeRun(session, input, trigger, {
       messages: [{ role: 'user', content: buildReplanPrompt(input, session, trigger) }],
       signal,
     });
-    const steps = normalizeReplan(parseJsonResponse(result.content).steps);
+    const steps = normalizeReplan(parseJsonFenced(result.content, 'replan response').steps);
     if (steps.length === 0) throw new Error('empty replan');
     dispatchAgentEvent(session, createAgentEvent('run_replanned', {
       origin: 'runtime',
@@ -363,11 +359,7 @@ function runtimeLoopErrorMessage(result) {
 }
 
 function buildReplanPrompt(input, session, trigger) {
-  const conversation = session.agentProjection?.conversation ?? [];
-  const recentConversation = conversation
-    .slice(-12)
-    .map((message) => `${message.role}: ${message.content}`)
-    .join('\n');
+  const recentConversation = formatRecentConversation(session);
   return [
     'Original task:',
     input || '(unknown)',
@@ -407,11 +399,12 @@ function normalizeReplan(steps) {
     .slice(0, 12);
 }
 
-function parseJsonResponse(content) {
-  const text = String(content ?? '').trim();
-  if (!text) throw new Error('empty JSON response');
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  return JSON.parse(fenced ? fenced[1].trim() : text);
+function formatRecentConversation(session, n = 12) {
+  const conversation = session.agentProjection?.conversation ?? [];
+  return conversation
+    .slice(-n)
+    .map((message) => `${message.role}: ${message.content}`)
+    .join('\n');
 }
 
 function resolveMaxReplans(value = process.env.WIKI_MANAGER_REPLANNER_MAX_REPLANS) {

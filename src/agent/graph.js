@@ -598,21 +598,16 @@ export function createAgentGraph(options = {}) {
         if (server === 'production' && tool === 'production_start_job' && state.session.workspace && !args.callerLabel) {
           args = { ...args, callerLabel: `${state.session.workspace}/wiki-manager` };
         }
+        const runId = state.session._currentRunIdentity?.runId ?? null;
         if (isInternalWikiTool) {
           resultText = handleWikiTool(state.session, tool, args);
         } else if (server === 'shell' && tool === 'run_command') {
-          await awaitRunApproval(state.session, {
-            runId: state.session._currentRunIdentity?.runId ?? null,
-            tool: toolName,
-          });
+          await awaitRunApproval(state.session, { runId, tool: toolName });
           resultText = await runShellCommandTool(state.session, args.command);
         } else if (server !== 'shell') {
-          await awaitRunApproval(state.session, {
-            runId: state.session._currentRunIdentity?.runId ?? null,
-            tool: toolName,
-          });
+          await awaitRunApproval(state.session, { runId, tool: toolName });
           await awaitToolApproval(state.session, {
-            runId: state.session._currentRunIdentity?.runId ?? null,
+            runId,
             server,
             tool,
             args,

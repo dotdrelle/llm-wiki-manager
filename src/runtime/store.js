@@ -9,10 +9,12 @@ export { defaultRuntimeStateDir };
 
 const NON_PERSISTED_EVENT_TYPES = new Set(['runtime_log']);
 
-const RUN_STATUS_BY_TERMINAL_EVENT = {
+const RUN_STATUS_BY_EVENT = {
   run_done: 'done',
   run_error: 'error',
   run_cancelled: 'cancelled',
+  run_pending_approval: 'pending_approval',
+  run_approved: 'running',
 };
 
 const RECOVERABLE_RUN_STATUSES = ['running', 'waiting', 'pending_approval'];
@@ -79,6 +81,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     INSERT OR IGNORE INTO events (sequence, id, ts, type, run_id, turn_id, workspace, origin, payload)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const nextEventSequenceStatement = db.prepare('SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM events');
   const listEventsStatement = db.prepare(`
     SELECT sequence, id, ts, type, run_id, turn_id, workspace, origin, payload
     FROM events
@@ -90,7 +93,6 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     WHERE workspace = ?
     ORDER BY sequence ASC
   `);
-  const nextEventSequenceStatement = db.prepare('SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM events');
   const upsertRun = db.prepare(`
     INSERT INTO runs (id, workspace, status, input, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -211,32 +213,12 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
         createdAt: event.ts,
         updatedAt: event.ts,
       });
-    } else if (event.type === 'run_pending_approval') {
+    } else if (RUN_STATUS_BY_EVENT[event.type]) {
       const runId = event.runId ?? event.payload?.runId ?? null;
       if (runId) {
         persistRun({
           id: runId,
-          status: 'pending_approval',
-          workspace: ws,
-          updatedAt: event.ts,
-        });
-      }
-    } else if (event.type === 'run_approved') {
-      const runId = event.runId ?? event.payload?.runId ?? null;
-      if (runId) {
-        persistRun({
-          id: runId,
-          status: 'running',
-          workspace: ws,
-          updatedAt: event.ts,
-        });
-      }
-    } else if (RUN_STATUS_BY_TERMINAL_EVENT[event.type]) {
-      const runId = event.runId ?? event.payload?.runId ?? null;
-      if (runId) {
-        persistRun({
-          id: runId,
-          status: RUN_STATUS_BY_TERMINAL_EVENT[event.type],
+          status: RUN_STATUS_BY_EVENT[event.type],
           workspace: ws,
           updatedAt: event.ts,
         });

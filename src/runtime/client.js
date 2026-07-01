@@ -51,12 +51,7 @@ export async function postRuntimeRun(input, {
       ...runtimeHeaders(token),
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      input,
-      workspace,
-      ...(evaluate === undefined ? {} : { evaluate }),
-      ...(replans === undefined ? {} : { replans }),
-    }),
+    body: JSON.stringify(Object.assign({ input, workspace }, evaluate !== undefined && { evaluate }, replans !== undefined && { replans })),
   });
   if (!response.ok) throw new Error(`Runtime run failed: HTTP ${response.status}`);
   return response.json();

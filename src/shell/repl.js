@@ -14,6 +14,7 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { listSkills } from '../core/skills.js';
 import { listWikircProfiles } from '../core/wikirc.js';
 import { listWorkspaces } from '../core/workspaces.js';
+import { fetchRuntimeState, postRuntimeCancel, postRuntimeRun, streamRuntimeEvents } from '../runtime/client.js';
 
 marked.use(markedTerminal());
 // marked-terminal's text renderer extracts token.text (raw string) instead of
@@ -738,6 +739,45 @@ function rememberProductionActivity(session, payload) {
   return true;
 }
 
+export function applyRuntimeStateToShellSession(session, state) {
+  if (!state || typeof state !== 'object') return false;
+  session.agentProjection = {
+    conversation: Array.isArray(state.conversation) ? state.conversation.map((message) => ({ ...message })) : [],
+    chain: Array.isArray(state.chain) ? state.chain.map((step) => ({ ...step })) : [],
+    plan: Array.isArray(state.plan) ? state.plan.map((step) => ({ ...step })) : null,
+    activities: Array.isArray(state.activities) ? state.activities.map((activity) => ({ ...activity })) : [],
+    logs: Array.isArray(state.logs) ? [...state.logs] : [],
+    summary: state.summary ?? null,
+    status: state.status ?? 'idle',
+  };
+  session.headlessPlan = session.agentProjection.plan
+    ? session.agentProjection.plan.map((step) => ({ ...step }))
+    : null;
+  session.activities = Object.fromEntries(
+    session.agentProjection.activities.map((activity) => [activity.key, { ...activity }]),
+  );
+  if (Array.isArray(state.queue)) session.jobQueue = state.queue.map((item) => ({ ...item }));
+  const production = session.agentProjection.activities.filter((activity) => activity.source === 'production').at(-1);
+  if (production) {
+    session.productionActivity = {
+      jobId: production.id,
+      status: production.status,
+      label: production.label,
+      terminal: production.terminal,
+      updatedAt: production.updatedAt,
+    };
+  }
+  const runtimeConversation = session.agentProjection.conversation;
+  if (runtimeConversation.length > 0) {
+    session.conversations ??= { [GLOBAL_CONVERSATION_KEY]: [] };
+    session.conversations[conversationKey(session)] = runtimeConversation.map((message) => ({
+      role: message.role === 'assistant' ? 'donna' : message.role,
+      content: String(message.content ?? ''),
+    }));
+  }
+  return true;
+}
+
 function activityText(session) {
   const activity = sessionActivities(session).find((item) => !item.terminal)
     ?? (session.productionActivity?.label ? session.productionActivity : null);
@@ -746,6 +786,10 @@ function activityText(session) {
     ? (activity.status === 'done' || activity.status === 'success') ? styles.green : styles.red
     : styles.cyan;
   return `${color}${truncateAnsi(activity.label, 72)}${styles.reset}`;
+}
+
+function runtimeRunActive(session) {
+  return String(session.agentProjection?.status ?? '').toLowerCase() === 'running';
 }
 
 function dividerWithActivity(session, columns) {
@@ -1142,7 +1186,7 @@ async function runPipeShell({ agent, packageJson, session }) {
 let lastBodyLineCount = 0;
 let lastMiddleHeight = 5;
 
-async function runTuiShell({ agent, packageJson, session }) {
+async function runTuiShell({ agent, packageJson, session, runtime = null }) {
   const messages = conversationMessages(session);
   messages.push({
     role: 'donna',
@@ -1168,6 +1212,11 @@ async function runTuiShell({ agent, packageJson, session }) {
   let mouseSelectionTimer = null;
   let done = false;
   let processing = Promise.resolve();
+  let runtimePollingActive = false;
+  let runtimeStreamAbort = null;
+  let runtimeReconnectTimer = null;
+  let runtimeSyncTimer = null;
+  let runtimeStreamStopped = false;
   let finish;
   const finished = new Promise((resolve) => {
     finish = resolve;
@@ -1198,8 +1247,55 @@ async function runTuiShell({ agent, packageJson, session }) {
     rerender();
   }
 
+  function syncRuntimeState() {
+    if (!runtime?.url) return;
+    void fetchRuntimeState({ url: runtime.url })
+      .then((state) => {
+        runtimePollingActive = true;
+        applyRuntimeStateToShellSession(session, state);
+        rerender();
+      })
+      .catch(() => {
+        runtimePollingActive = false;
+        rerender();
+      });
+  }
+
+  function scheduleRuntimeStateSync() {
+    if (runtimeSyncTimer) clearTimeout(runtimeSyncTimer);
+    runtimeSyncTimer = setTimeout(syncRuntimeState, 200);
+  }
+
+  async function subscribeRuntimeEvents() {
+    if (!runtime?.url || runtimeStreamStopped) return;
+    runtimeStreamAbort = new AbortController();
+    try {
+      for await (const event of streamRuntimeEvents({ url: runtime.url, signal: runtimeStreamAbort.signal })) {
+        runtimePollingActive = true;
+        if (event.type === 'state') {
+          applyRuntimeStateToShellSession(session, event.data);
+          rerender();
+        } else {
+          scheduleRuntimeStateSync();
+        }
+      }
+    } catch {
+      // Runtime stream may be temporarily unavailable; the local MCP polling fallback resumes below.
+    }
+    if (runtimeStreamStopped) return;
+    runtimePollingActive = false;
+    rerender();
+    runtimeReconnectTimer = setTimeout(() => { void subscribeRuntimeEvents(); }, 1500);
+  }
+
+  if (runtime?.url) {
+    syncRuntimeState();
+    void subscribeRuntimeEvents();
+  }
+
   const pollBusy = new Set();
   const productionPollInterval = setInterval(async () => {
+    if (runtimePollingActive) return;
     const candidates = sessionActivities(session).filter((item) => item.poll && !item.terminal);
     // Legacy fallback: if no generic activities tracked yet, fall back to productionActivity.
     if (candidates.length === 0 && session.productionActivity?.jobId && !session.productionActivity.terminal) {
@@ -1336,6 +1432,18 @@ async function runTuiShell({ agent, packageJson, session }) {
         rerender();
         return;
       }
+      if (runtime?.url && runtimeRunActive(session)) {
+        void postRuntimeCancel({ url: runtime.url })
+          .then(() => {
+            activityLines = [...activityLines, 'runtime: cancel requested'].slice(-LOWER_DETAIL_ROWS);
+            rerender();
+          })
+          .catch((err) => {
+            activityLines = [...activityLines, `runtime cancel error: ${err instanceof Error ? err.message : String(err)}`].slice(-LOWER_DETAIL_ROWS);
+            rerender();
+          });
+        return;
+      }
       const now = Date.now();
       if (now - lastCtrlCAt <= 1500) {
         done = true;
@@ -1383,9 +1491,20 @@ async function runTuiShell({ agent, packageJson, session }) {
       session._abortSignal = currentAbortController.signal;
       let aborted = false;
       try {
-        const result = await runLine(line, { agent, packageJson, session, onUpdate: rerender, onStep });
-        done = result.exit;
-        aborted = result.aborted ?? false;
+        if (runtime?.url && !session.chatMode && !line.trim().startsWith('/')) {
+          await postRuntimeRun(line, {
+            url: runtime.url,
+            workspace: session.workspace ?? null,
+          });
+          conversationMessages(session).push({ role: 'user', content: line });
+          conversationMessages(session).push({ role: 'command', content: `Runtime run queued: ${runtime.url}` });
+          activityLines = [...activityLines, 'runtime: run accepted'].slice(-LOWER_DETAIL_ROWS);
+          syncRuntimeState();
+        } else {
+          const result = await runLine(line, { agent, packageJson, session, onUpdate: rerender, onStep });
+          done = result.exit;
+          aborted = result.aborted ?? false;
+        }
       } catch (err) {
         if (err.name !== 'AbortError') throw err;
         aborted = true;
@@ -1480,6 +1599,10 @@ async function runTuiShell({ agent, packageJson, session }) {
     await processing;
   } finally {
     mouseFilter.off('keypress', onKeypress);
+    runtimeStreamStopped = true;
+    runtimeStreamAbort?.abort();
+    clearTimeout(runtimeReconnectTimer);
+    clearTimeout(runtimeSyncTimer);
     clearInterval(productionPollInterval);
     clearTimeout(ctrlCTimer);
     clearTimeout(mouseSelectionTimer);
@@ -1493,11 +1616,11 @@ async function runTuiShell({ agent, packageJson, session }) {
   }
 }
 
-export async function runShell({ agent, packageJson }) {
+export async function runShell({ agent, packageJson, runtime = null }) {
   const session = createSession();
   if (!input.isTTY || !output.isTTY) {
     await runPipeShell({ agent, packageJson, session });
     return;
   }
-  throw new Error('Interactive TUI requires Bun/OpenTUI. Run: bun ./bin/wiki-manager.js');
+  await runTuiShell({ agent, packageJson, session, runtime });
 }

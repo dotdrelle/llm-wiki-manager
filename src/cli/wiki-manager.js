@@ -502,5 +502,13 @@ export async function runCli(argv) {
     return;
   }
 
-  await runShell({ agent, packageJson });
+  let runtime = null;
+  if (process.stdin.isTTY && process.stdout.isTTY) {
+    try {
+      runtime = await ensureRuntime();
+    } catch (err) {
+      console.error(`Runtime unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  await runShell({ agent, packageJson, runtime });
 }

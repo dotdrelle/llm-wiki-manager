@@ -44,7 +44,12 @@ manager directory, not in the installed npm package directory.
 - Conversation history is scoped by workspace for the current process.
 - Changing `/use` must move workspace state and conversation state together.
 - Ctrl+C aborts active work when busy and exits when idle.
-- OpenTUI requires Bun and a TTY; Node/non-TTY uses `repl.js`.
+- OpenTUI requires Bun and a TTY. Node TTY uses the legacy `repl.js` shell;
+  non-TTY uses the pipe shell in `repl.js`.
+- When a runtime is available, shell agent prompts are sent to runtime `/run`,
+  Ctrl+C sends `/cancel`, and `/events/stream` updates the displayed
+  conversation/activity state. The legacy MCP polling interval only runs while
+  no runtime stream is active.
 
 Do not route natural-language input by keyword heuristics. The user controls
 the route with `/chat`, `/agent`, and slash commands.

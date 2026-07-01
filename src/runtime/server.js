@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { runtimeTokenFromEnv } from './auth.js';
 
 export function startRuntimeServer({
@@ -69,7 +70,9 @@ export function startRuntimeServer({
             sendJson(response, 400, { error: 'Missing input.' });
             return;
           }
-          run(body, { signal: currentAbortController.signal })
+          const runId = randomUUID();
+          const runBody = { ...body, runId };
+          run(runBody, { signal: currentAbortController.signal, runId })
             .catch((err) => {
               session._onRuntimeError?.(err);
             })
@@ -77,7 +80,7 @@ export function startRuntimeServer({
               running = false;
               currentAbortController = null;
             });
-          sendJson(response, 202, { accepted: true });
+          sendJson(response, 202, { accepted: true, runId });
         } catch (err) {
           running = false;
           currentAbortController = null;

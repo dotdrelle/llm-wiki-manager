@@ -21,7 +21,13 @@ const PLAN_MUTATING_EVENTS = new Set([
   'activity_upserted',
 ]);
 
-export function createAgentEvent(type, { origin = 'system', payload = {}, runId = null, turnId = null } = {}) {
+export function createAgentEvent(type, {
+  origin = 'system',
+  payload = {},
+  runId = null,
+  turnId = null,
+  workspace = null,
+} = {}) {
   return {
     id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
     ts: new Date().toISOString(),
@@ -29,12 +35,16 @@ export function createAgentEvent(type, { origin = 'system', payload = {}, runId 
     origin,
     runId,
     turnId,
+    workspace,
     payload,
   };
 }
 
 export function dispatchAgentEvent(session, event) {
-  const normalized = event.id && event.ts ? event : createAgentEvent(event.type, event);
+  const normalized = withSessionRunIdentity(
+    event.id && event.ts ? event : createAgentEvent(event.type, event),
+    session,
+  );
   const tracksPlan = PLAN_MUTATING_EVENTS.has(normalized.type);
   const previousPlan = tracksPlan ? JSON.stringify(session.headlessPlan ?? null) : null;
   session.agentEvents ??= [];
@@ -50,6 +60,17 @@ export function dispatchAgentEvent(session, event) {
   }
   session._onAgentEvent?.(normalized, session.agentProjection);
   return normalized;
+}
+
+function withSessionRunIdentity(event, session) {
+  const identity = session?._currentRunIdentity;
+  if (!identity) return event;
+  return {
+    ...event,
+    runId: event.runId ?? identity.runId ?? null,
+    turnId: event.turnId ?? identity.turnId ?? null,
+    workspace: event.workspace ?? identity.workspace ?? null,
+  };
 }
 
 export function reduceAgentEvents(events = []) {

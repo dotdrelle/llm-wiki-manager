@@ -72,6 +72,9 @@ export async function runAgenticLoop(agent, session, initialInput, {
 
   for (let turn = 1; turn <= maxTurns; turn += 1) {
     throwIfAborted(signal, abortMessage);
+    if (session._currentRunIdentity && runId) {
+      session._currentRunIdentity.turnId = `${runId}:turn-${turn}`;
+    }
     onTurnStart?.({ turn, maxTurns });
 
     const snapshot = activitySnapshot(session);

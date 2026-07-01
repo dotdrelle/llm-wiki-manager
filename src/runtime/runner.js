@@ -50,6 +50,7 @@ export async function runRuntimeAgenticLoop(agent, session, initialInput, { sign
         dispatchAgentEvent(session, createAgentEvent('assistant_message', {
           origin: 'agent',
           runId,
+          workspace: session._currentRunIdentity?.workspace ?? null,
           payload: { content: response },
         }));
       }

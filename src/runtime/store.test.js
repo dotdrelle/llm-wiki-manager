@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { openRuntimeStore } from './store.js';
@@ -34,7 +35,9 @@ test('runtime store persists duplicate events idempotently', () => {
   const event = createAgentEvent('run_started', {
     origin: 'test',
     runId: 'run-1',
-    payload: { input: 'build wiki' },
+    turnId: 'run-1:turn-0',
+    workspace: 'juno',
+    payload: { input: 'build wiki', workspace: 'juno' },
   });
 
   store.persistEvent(event);
@@ -42,7 +45,26 @@ test('runtime store persists duplicate events idempotently', () => {
 
   assert.equal(store.listEvents().length, 1);
   assert.equal(store.listRuns()[0].id, 'run-1');
+  assert.equal(store.listRuns()[0].workspace, 'juno');
   assert.equal(store.listRuns()[0].status, 'running');
+  store.close();
+});
+
+test('runtime store persists run identity fields on events', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  store.persistEvent(createAgentEvent('assistant_message', {
+    origin: 'agent',
+    runId: 'run-2',
+    turnId: 'run-2:turn-1',
+    workspace: 'docs',
+    payload: { content: 'done' },
+  }));
+
+  const [event] = store.listEvents();
+  assert.equal(event.runId, 'run-2');
+  assert.equal(event.turnId, 'run-2:turn-1');
+  assert.equal(event.workspace, 'docs');
   store.close();
 });
 
@@ -52,15 +74,57 @@ test('runtime store persists cancelled run status', () => {
   store.persistEvent(createAgentEvent('run_started', {
     origin: 'test',
     runId: 'run-1',
-    payload: { input: 'build wiki' },
+    turnId: 'run-1:turn-0',
+    workspace: 'juno',
+    payload: { input: 'build wiki', workspace: 'juno' },
   }));
   store.persistEvent(createAgentEvent('run_cancelled', {
     origin: 'test',
     runId: 'run-1',
-    payload: { runId: 'run-1' },
+    turnId: 'run-1:turn-1',
+    workspace: 'juno',
+    payload: { runId: 'run-1', workspace: 'juno' },
   }));
 
   assert.equal(store.listRuns()[0].status, 'cancelled');
+  assert.equal(store.listRuns()[0].workspace, 'juno');
+  store.close();
+});
+
+test('runtime store migrates legacy databases without workspace columns', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const db = new DatabaseSync(join(stateDir, 'runtime.db'));
+  db.exec(`
+    CREATE TABLE events (
+      id TEXT PRIMARY KEY,
+      ts TEXT NOT NULL,
+      type TEXT NOT NULL,
+      run_id TEXT,
+      turn_id TEXT,
+      origin TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE TABLE runs (
+      id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      input TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+  db.close();
+
+  const store = openRuntimeStore({ stateDir });
+  store.persistEvent(createAgentEvent('run_started', {
+    origin: 'test',
+    runId: 'run-legacy',
+    turnId: 'run-legacy:turn-0',
+    workspace: 'legacy',
+    payload: { input: 'migrate', workspace: 'legacy' },
+  }));
+
+  assert.equal(store.listEvents()[0].workspace, 'legacy');
+  assert.equal(store.listRuns()[0].workspace, 'legacy');
   store.close();
 });
 

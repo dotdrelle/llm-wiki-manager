@@ -28,6 +28,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       type TEXT NOT NULL,
       run_id TEXT,
       turn_id TEXT,
+      workspace TEXT,
       origin TEXT,
       payload TEXT NOT NULL
     );
@@ -35,6 +36,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     CREATE INDEX IF NOT EXISTS idx_events_run_id ON events(run_id);
     CREATE TABLE IF NOT EXISTS runs (
       id TEXT PRIMARY KEY,
+      workspace TEXT,
       status TEXT NOT NULL,
       input TEXT,
       created_at TEXT NOT NULL,
@@ -58,28 +60,32 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       updated_at TEXT NOT NULL
     );
   `);
+  ensureColumn(db, 'events', 'workspace', 'TEXT');
+  ensureColumn(db, 'runs', 'workspace', 'TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_events_workspace ON events(workspace)');
 
   let lastEventId = null;
 
   const insertEvent = db.prepare(`
-    INSERT OR IGNORE INTO events (id, ts, type, run_id, turn_id, origin, payload)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO events (id, ts, type, run_id, turn_id, workspace, origin, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const listEventsStatement = db.prepare(`
-    SELECT id, ts, type, run_id, turn_id, origin, payload
+    SELECT id, ts, type, run_id, turn_id, workspace, origin, payload
     FROM events
     ORDER BY ts ASC, id ASC
   `);
   const upsertRun = db.prepare(`
-    INSERT INTO runs (id, status, input, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO runs (id, workspace, status, input, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
+      workspace = COALESCE(excluded.workspace, runs.workspace),
       status = excluded.status,
       input = COALESCE(excluded.input, runs.input),
       updated_at = excluded.updated_at
   `);
   const listRunsStatement = db.prepare(`
-    SELECT id, status, input, created_at, updated_at
+    SELECT id, workspace, status, input, created_at, updated_at
     FROM runs
     ORDER BY created_at DESC
   `);
@@ -125,6 +131,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       event.type,
       event.runId ?? null,
       event.turnId ?? null,
+      event.workspace ?? event.payload?.workspace ?? null,
       event.origin ?? null,
       JSON.stringify(event.payload ?? {}),
     );
@@ -134,6 +141,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
         id: event.runId ?? event.payload?.runId ?? event.id,
         status: 'running',
         input: event.payload?.input ?? null,
+        workspace: event.workspace ?? event.payload?.workspace ?? null,
         createdAt: event.ts,
         updatedAt: event.ts,
       });
@@ -143,6 +151,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
         persistRun({
           id: runId,
           status: RUN_STATUS_BY_TERMINAL_EVENT[event.type],
+          workspace: event.workspace ?? event.payload?.workspace ?? null,
           updatedAt: event.ts,
         });
       }
@@ -150,10 +159,10 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     return event;
   }
 
-  function persistRun({ id, status, input = null, createdAt = null, updatedAt = null }) {
+  function persistRun({ id, status, input = null, workspace = null, createdAt = null, updatedAt = null }) {
     if (!id) return;
     const now = new Date().toISOString();
-    upsertRun.run(id, status, input, createdAt ?? now, updatedAt ?? now);
+    upsertRun.run(id, workspace, status, input, createdAt ?? now, updatedAt ?? now);
   }
 
   function listEvents() {
@@ -163,6 +172,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   function listRuns() {
     return listRunsStatement.all().map((row) => ({
       id: row.id,
+      workspace: row.workspace ?? null,
       status: row.status,
       input: row.input,
       createdAt: row.created_at,
@@ -287,6 +297,13 @@ function rowToEvent(row) {
     origin: row.origin ?? 'system',
     runId: row.run_id ?? null,
     turnId: row.turn_id ?? null,
+    workspace: row.workspace ?? null,
     payload: row.payload ? JSON.parse(row.payload) : {},
   };
+}
+
+function ensureColumn(db, table, column, definition) {
+  const existing = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (existing.some((row) => row.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }

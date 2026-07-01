@@ -331,16 +331,23 @@ async function runRuntime(argv, agent) {
     const workspace = body.workspace ? String(body.workspace).trim() : null;
     const timeoutMs = (Number.isFinite(Number(body.timeout)) ? Math.max(1, Number(body.timeout)) : 3600) * 1000;
     const maxTurns = Number.isFinite(Number(body.maxTurns)) ? Math.max(1, Number(body.maxTurns)) : 20;
-    const runId = randomUUID();
+    const runId = body.runId ? String(body.runId) : randomUUID();
+    const resolvedWorkspace = workspace ?? session.workspace ?? null;
+    session._currentRunIdentity = {
+      runId,
+      turnId: `${runId}:turn-0`,
+      workspace: resolvedWorkspace,
+    };
     try {
       if (workspace && session.workspace !== workspace) {
         const result = await handleSlashCommand(`/use ${workspace}`, { packageJson, session });
         if (!session.workspacePath) throw new Error(result.output || `Workspace not loaded: ${workspace}`);
+        session._currentRunIdentity.workspace = session.workspace ?? workspace;
       }
       dispatchAgentEvent(session, createAgentEvent('run_started', {
         origin: 'runtime',
         runId,
-        payload: { input, workspace },
+        payload: { input, workspace: session._currentRunIdentity.workspace },
       }));
       dispatchAgentEvent(session, createAgentEvent('user_message', {
         origin: 'user',
@@ -401,6 +408,7 @@ async function runRuntime(argv, agent) {
       supervisor?.setRunSignal(null);
       delete session._abortSignal;
       delete session._onStep;
+      delete session._currentRunIdentity;
     }
   }
 

@@ -4,6 +4,16 @@
       "url": "http://host.docker.internal:${CME_MCP_PORT:-3336}/mcp/",
       "headers": {
         "Authorization": "Bearer ${CME_MCP_AUTH_TOKEN}"
+      },
+      "retry": {
+        "maxAttempts": 2,
+        "backoffMs": 500
+      },
+      "toolRetries": {
+        "cme_export_run": {
+          "maxAttempts": 3,
+          "backoffMs": 1000
+        }
       }
     },
     "documents": {

@@ -414,7 +414,11 @@ process environment (including the `.env` loaded at startup):
   "mcpServers": {
     "cme": {
       "url": "http://host.docker.internal:${CME_MCP_PORT:-3336}/mcp/",
-      "headers": { "Authorization": "Bearer ${CME_MCP_AUTH_TOKEN}" }
+      "headers": { "Authorization": "Bearer ${CME_MCP_AUTH_TOKEN}" },
+      "retry": { "maxAttempts": 2, "backoffMs": 500 },
+      "toolRetries": {
+        "cme_export_run": { "maxAttempts": 3, "backoffMs": 1000 }
+      }
     },
     "documents": {
       "url": "http://host.docker.internal:${DOCUMENTS_MCP_PORT:-3337}/mcp/",
@@ -426,6 +430,11 @@ process environment (including the `.env` loaded at startup):
 
 Copy `mcp.endpoints.example.json` to `mcp.endpoints.json` and set the matching
 token variables in `.env`.
+
+MCP `tools/call` requests retry transient HTTP/MCP failures before the run fails.
+Set global defaults with `WIKI_MANAGER_MCP_RETRY_MAX_ATTEMPTS` and
+`WIKI_MANAGER_MCP_RETRY_BACKOFF_MS`, or override them per endpoint with `retry`
+and per tool with `toolRetries`.
 
 ### Starting external agents
 

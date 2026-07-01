@@ -75,6 +75,11 @@ const MCP_SERVICE_MAP = {
   production: 'production-mcp',
 };
 
+const DEFAULT_MCP_RETRY_POLICY = {
+  maxAttempts: 2,
+  backoffMs: 500,
+};
+
 export function buildMcpStatus(session) {
   const workspaceEnv = session.workspaceEnv ?? {};
   const wikiMcpToken = session.wikircConfig?.mcp?.accessKey;
@@ -211,7 +216,7 @@ async function mcpRequest(endpoint, method, params, signal, options = {}) {
           params: {
             protocolVersion: '2025-06-18',
             capabilities: {},
-            clientInfo: { name: 'wiki-manager', version: '0.7.10' },
+            clientInfo: { name: 'wiki-manager', version: '0.7.11' },
           },
         }),
       });
@@ -240,7 +245,7 @@ async function mcpRequest(endpoint, method, params, signal, options = {}) {
   }
 }
 
-export async function callMcpTool(mcpStatus, serverName, toolName, args = {}, signal) {
+export async function callMcpTool(mcpStatus, serverName, toolName, args = {}, signal, options = {}) {
   const endpoint = mcpStatus?.[serverName];
   if (!endpoint) throw new Error(`Unknown MCP: ${serverName}`);
   if (endpoint.status !== 'connected') throw new Error(`MCP is not connected: ${serverName}`);
@@ -254,14 +259,17 @@ export async function callMcpTool(mcpStatus, serverName, toolName, args = {}, si
     ...(shouldInjectConfigPath ? { configPath: endpoint.activeConfigPath } : {}),
   };
   const timeoutMs = serverName === 'documents' && toolName === 'documents_convert_to_markdown' ? 600_000 : 8000;
-  const payload = await mcpRequest(endpoint, 'tools/call', {
-    name: toolName,
-    arguments: toolArgs,
-  }, signal, { timeoutMs });
-  if (payload?.result?.isError) {
-    throw new Error(formatMcpToolResult(payload.result));
-  }
-  return payload?.result ?? null;
+  const retry = resolveRetryPolicy(endpoint, toolName, options.retry);
+  return withRetry(async () => {
+    const payload = await mcpRequest(endpoint, 'tools/call', {
+      name: toolName,
+      arguments: toolArgs,
+    }, signal, { timeoutMs });
+    if (payload?.result?.isError) {
+      throw new Error(formatMcpToolResult(payload.result));
+    }
+    return payload?.result ?? null;
+  }, retry, { signal, onRetry: options.onRetry });
 }
 
 export function formatMcpToolResult(result) {
@@ -276,6 +284,87 @@ export function formatMcpToolResult(result) {
     .filter(Boolean)
     .join('\n\n')
     .trim() || 'No result.';
+}
+
+export function resolveRetryPolicy(endpoint = {}, toolName = null, override = null) {
+  const envPolicy = {
+    maxAttempts: numberFromEnv('WIKI_MANAGER_MCP_RETRY_MAX_ATTEMPTS')
+      ?? numberFromEnv('WIKI_MANAGER_MCP_RETRY_ATTEMPTS')
+      ?? DEFAULT_MCP_RETRY_POLICY.maxAttempts,
+    backoffMs: numberFromEnv('WIKI_MANAGER_MCP_RETRY_BACKOFF_MS')
+      ?? DEFAULT_MCP_RETRY_POLICY.backoffMs,
+  };
+  const toolPolicy = toolName ? endpoint.toolRetries?.[toolName] : null;
+  return normalizeRetryPolicy(envPolicy, endpoint.retry, toolPolicy, override);
+}
+
+function normalizeRetryPolicy(...policies) {
+  const merged = {};
+  for (const policy of policies) {
+    if (policy === false) {
+      merged.maxAttempts = 1;
+      continue;
+    }
+    if (!policy || typeof policy !== 'object') continue;
+    if (policy.maxAttempts != null) merged.maxAttempts = Number(policy.maxAttempts);
+    if (policy.backoffMs != null) merged.backoffMs = Number(policy.backoffMs);
+  }
+  const maxAttempts = Number.isFinite(merged.maxAttempts)
+    ? Math.max(1, Math.floor(merged.maxAttempts))
+    : DEFAULT_MCP_RETRY_POLICY.maxAttempts;
+  const backoffMs = Number.isFinite(merged.backoffMs)
+    ? Math.max(0, Math.floor(merged.backoffMs))
+    : DEFAULT_MCP_RETRY_POLICY.backoffMs;
+  return { maxAttempts, backoffMs };
+}
+
+function numberFromEnv(key) {
+  const raw = envValue(key);
+  if (raw == null || raw === '') return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
+async function withRetry(operation, policy, { signal = null, onRetry = null } = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
+    try {
+      return await operation({ attempt });
+    } catch (err) {
+      lastError = err;
+      if (attempt >= policy.maxAttempts || signal?.aborted) throw err;
+      onRetry?.({ attempt, maxAttempts: policy.maxAttempts, error: err });
+      await retryDelay(policy.backoffMs * (2 ** (attempt - 1)), signal);
+    }
+  }
+  throw lastError;
+}
+
+function retryDelay(ms, signal) {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    let timer = null;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      const err = new Error('Operation aborted.');
+      err.name = 'AbortError';
+      reject(err);
+    };
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    if (!signal) return;
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 export async function discoverMcpTools(mcpStatus) {

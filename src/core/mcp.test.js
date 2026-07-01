@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { buildMcpStatus, callMcpTool, discoverMcpTools } from './mcp.js';
+import { buildMcpStatus, callMcpTool, discoverMcpTools, resolveRetryPolicy } from './mcp.js';
 
 test('buildMcpStatus reads external MCP endpoints from mcp.endpoints.json', async () => {
   const originalCwd = process.cwd();
@@ -267,6 +267,103 @@ test('callMcpTool sends configured endpoint headers', async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('callMcpTool retries transient MCP failures', async () => {
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  const retries = [];
+  globalThis.fetch = async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      return {
+        ok: false,
+        status: 503,
+        headers: { get: () => null },
+        text: async () => 'temporarily unavailable',
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({ result: { content: [{ type: 'text', text: '{"ok":true}' }] } }),
+    };
+  };
+
+  try {
+    const result = await callMcpTool(
+      {
+        production: {
+          status: 'connected',
+          url: 'http://127.0.0.1:3000/mcp/',
+          retry: { maxAttempts: 2, backoffMs: 0 },
+        },
+      },
+      'production',
+      'production_start_job',
+      { type: 'doctor' },
+      null,
+      { onRetry: (event) => retries.push(event) },
+    );
+
+    assert.equal(attempts, 2);
+    assert.equal(retries.length, 1);
+    assert.match(retries[0].error.message, /503/);
+    assert.equal(result.content[0].text, '{"ok":true}');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('callMcpTool retries tool result errors', async () => {
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({
+        result: attempts === 1
+          ? { isError: true, content: [{ type: 'text', text: 'rate limited' }] }
+          : { content: [{ type: 'text', text: '{"ok":true}' }] },
+      }),
+    };
+  };
+
+  try {
+    const result = await callMcpTool(
+      {
+        production: {
+          status: 'connected',
+          url: 'http://127.0.0.1:3000/mcp/',
+        },
+      },
+      'production',
+      'production_start_job',
+      { type: 'doctor' },
+      null,
+      { retry: { maxAttempts: 2, backoffMs: 0 } },
+    );
+
+    assert.equal(attempts, 2);
+    assert.equal(result.content[0].text, '{"ok":true}');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('resolveRetryPolicy supports endpoint and tool overrides', () => {
+  const policy = resolveRetryPolicy({
+    retry: { maxAttempts: 2, backoffMs: 100 },
+    toolRetries: {
+      production_start_job: { maxAttempts: 4 },
+    },
+  }, 'production_start_job');
+
+  assert.deepEqual(policy, { maxAttempts: 4, backoffMs: 100 });
 });
 
 test('discoverMcpTools downgrades connected endpoint when tool discovery fails', async () => {

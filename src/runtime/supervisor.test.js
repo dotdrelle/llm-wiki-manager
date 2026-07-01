@@ -41,6 +41,71 @@ test('pollActivitiesOnce updates activity through the event reducer', async () =
   assert.ok(session.agentProjection.logs.some((line) => line.includes('activity:')));
 });
 
+test('pollActivitiesOnce retries transient MCP poll failures', async () => {
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      return {
+        ok: false,
+        status: 503,
+        headers: { get: () => null },
+        text: async () => 'temporarily unavailable',
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({
+        result: {
+          content: [{ type: 'text', text: JSON.stringify({
+            _activity: {
+              id: 'job-retry',
+              source: 'production',
+              status: 'done',
+              terminal: true,
+            },
+          }) }],
+        },
+      }),
+    };
+  };
+
+  const session = {
+    mcp: {
+      production: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3000/mcp/',
+        retry: { maxAttempts: 2, backoffMs: 0 },
+      },
+    },
+    activities: {},
+    headlessPlan: null,
+    jobQueue: [],
+  };
+  dispatchAgentEvent(session, createAgentEvent('activity_upserted', {
+    payload: {
+      activity: {
+        id: 'job-retry',
+        source: 'production',
+        status: 'running',
+        poll: { server: 'production', tool: 'production_job_status', args: { jobId: 'job-retry' }, intervalMs: 0 },
+      },
+    },
+  }));
+
+  try {
+    await pollActivitiesOnce(session);
+    const key = Object.keys(session.activities)[0];
+    assert.equal(attempts, 2);
+    assert.equal(session.activities[key].status, 'done');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('startActivitySupervisor passes the active run signal to background polls', async () => {
   const session = {
     mcp: { production: { status: 'connected' } },

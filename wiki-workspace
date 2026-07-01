@@ -505,6 +505,17 @@ runtime_command() {
   esac
 }
 
+ensure_runtime_up() {
+  if [[ "${WIKI_MANAGER_RUNTIME_AUTOSTART:-1}" == "0" ]]; then
+    return
+  fi
+  if runtime_health_check; then
+    return
+  fi
+  printf 'Starting host agent-runtime...\n'
+  runtime_command up
+}
+
 ensure_manager_endpoints_file() {
   if [[ ! -f "$MANAGER_ENDPOINTS_FILE" && -f "$ROOT_DIR/mcp.endpoints.example.json" ]]; then
     mkdir -p "$(dirname "$MANAGER_ENDPOINTS_FILE")"
@@ -886,6 +897,7 @@ up_workspace() {
   local ws_path
   ws_path="$(normalize_path "$(workspace_value "$workspace" WIKI_WORKSPACE_PATH)")"
   ensure_workspace_dirs "$ws_path"
+  ensure_runtime_up
 
   compose_for_workspace "$workspace" up -d serve mcp-http production-mcp
 
@@ -974,6 +986,7 @@ main() {
       run_wiki "$workspace" init "$@"
       ;;
     up)
+      ensure_runtime_up
       compose_for_workspace "$workspace" up -d serve mcp-http production-mcp
       local serve_port production_port
       serve_port="$(workspace_value "$workspace" WIKI_SERVE_PORT 3100)"
@@ -999,6 +1012,7 @@ main() {
         die "serve accepts only --open as optional flag; port is configured in the workspace .env"
       fi
 
+      ensure_runtime_up
       printf 'Starting mcp-http...\n'
       compose_for_workspace "$workspace" up -d mcp-http
       printf 'Starting production-mcp...\n'

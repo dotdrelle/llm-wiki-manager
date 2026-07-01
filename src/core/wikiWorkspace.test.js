@@ -13,3 +13,12 @@ test('wiki-workspace autostarts host runtime before workspace services', async (
   assert.match(script, /start_workspace_services "\$workspace"\n      local serve_port production_port/);
   assert.match(script, /ensure_runtime_up\n      printf 'Starting mcp-http/);
 });
+
+test('wiki-workspace checks runtime pid command before killing', async () => {
+  const script = await readFile(new URL('../../wiki-workspace', import.meta.url), 'utf8');
+
+  assert.match(script, /runtime_pid_command\(\) \{/);
+  assert.match(script, /runtime_pid_matches\(\) \{/);
+  assert.match(script, /if ! runtime_pid_matches; then\n        printf 'refusing to stop pid/);
+  assert.match(script, /kill "\$\(cat "\$pid_file"\)"/);
+});

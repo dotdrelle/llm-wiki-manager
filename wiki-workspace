@@ -410,6 +410,19 @@ runtime_pid_running() {
   kill -0 "$pid" >/dev/null 2>&1
 }
 
+runtime_pid_command() {
+  local pid="$1"
+  ps -p "$pid" -o command= 2>/dev/null || ps -p "$pid" -o args= 2>/dev/null || true
+}
+
+runtime_pid_matches() {
+  local pid command
+  pid="$(cat "$(runtime_pid_file)" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  command="$(runtime_pid_command "$pid")"
+  [[ "$command" == *"/bin/wiki-manager.js runtime"* || "$command" == *" bin/wiki-manager.js runtime"* ]]
+}
+
 runtime_health_url() {
   printf 'http://127.0.0.1:%s/health\n' "${WIKI_MANAGER_RUNTIME_PORT:-7788}"
 }
@@ -472,6 +485,12 @@ runtime_command() {
         printf 'agent-runtime is not running from %s\n' "$pid_file"
         rm -f "$pid_file"
         return
+      fi
+      if ! runtime_pid_matches; then
+        printf 'refusing to stop pid %s: command does not look like wiki-manager runtime\n' "$(cat "$pid_file")" >&2
+        printf 'command: %s\n' "$(runtime_pid_command "$(cat "$pid_file")")" >&2
+        rm -f "$pid_file"
+        exit 1
       fi
       kill "$(cat "$pid_file")"
       rm -f "$pid_file"

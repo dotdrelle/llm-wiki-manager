@@ -23,8 +23,10 @@ src/core/agentEvents.js     AgentRunEvent reducer/projection
 src/core/activity.js        Generic activity normalization/polling
 src/core/jobQueue.js        Workspace-scoped production queue
 src/core/mcp.js             MCP endpoint discovery/session/tool calls
+src/core/queueStore.js      QueueStore interface (memory & SQLite impls)
 src/core/skills.js          Workspace skill discovery
 src/core/workspaces.js      Workspace registry and creation
+src/runtime/                Agentic runtime HTTP/SSE server + SQLite store
 docs/                       Architecture and usage docs
 ```
 
@@ -123,6 +125,43 @@ Safe `shell__run_command` commands:
 Do not expose `/mcp call`, `/wiki run`, `/start`, `/stop`, `/logs`, `/exit`, or
 raw system commands through this tool without a separate allowlist design.
 
+## Agent Runtime
+
+`wiki-manager runtime` starts a persistent HTTP/SSE server (default port 7788)
+that shares orchestration state between the Shell UI and `llm-wiki serve`. The
+Shell sends agent runs to the runtime; serve proxies the same runs from the web.
+
+Key modules in `src/runtime/`:
+
+- **`store.js`**: SQLite persistence via `node:sqlite` `DatabaseSync`. Tables:
+  `events`, `runs`, `queue_items`. `hydrateSession` replays on startup.
+  `runtime_log` events are never persisted (unbounded — SSE-only).
+- **`server.js`**: `GET /health`, `GET /state`, `GET /events/stream` (SSE),
+  `POST /run`, `POST /cancel`. `running` flag is set before `await readJson` to
+  close the TOCTOU race on concurrent POST /run requests.
+- **`auth.js`**: Bearer token required when `--host 0.0.0.0`. Read from env
+  `WIKI_MANAGER_RUNTIME_TOKEN`, then `.wiki-manager/runtime.token`, then
+  auto-generated (32-byte hex) on first exposed-host start.
+- **`runner.js`**: `runRuntimeAgenticLoop` — agentic turns, plan extraction from
+  text, activity wait loop. Takes `pollBusy` from the supervisor to prevent
+  double-polling the same activity.
+- **`supervisor.js`**: polls non-terminal `_activity` items on an interval.
+  Exposes `pollBusy` set shared with the runner.
+- **`lifecycle.js`**: `ensureRuntime` — resolves token, health-checks an existing
+  runtime, spawns a child process if absent, injects token into both parent and
+  child env.
+- **`queueStore.js`**: SQLite-backed `QueueStore` for runtime sessions.
+
+`POST /run` body: `{ input, workspace?, timeout?, maxTurns? }`. If `workspace`
+differs from the current session, `/use <workspace>` runs before the agentic
+loop. The Shell sends its current `session.workspace`; `llm-wiki serve` injects
+`workspace: WORKSPACE_NAME` at the proxy layer (`proxyRuntimeJson` in `serve.ts`).
+
+**QueueStore** (`src/core/queueStore.js`): interface with `list()`, `replace()`,
+`changed()`. `createMemoryQueueStore` for shell/headless sessions;
+`createSqliteQueueStore` for runtime sessions. `jobQueue.js` routes through
+`queueStoreFor(session)` transparently.
+
 ## Activity, Plan, Queue
 
 All plan/activity mutations go through `dispatchAgentEvent` and the reducer in
@@ -156,10 +195,18 @@ remain the source of truth. Queue state is workspace-scoped.
 
 ## Docker And Security
 
+- `agent-runtime` runs on `127.0.0.1:7788` (loopback only). It mounts
+  `./workspaces:/workspaces` (all workspaces at once) with
+  `WIKI_WORKSPACES_DIR=/workspaces`. If a workspace `.env` has a host-absolute
+  `WIKI_WORKSPACE_PATH` that doesn't exist in the container, `workspaces.js`
+  falls back to the registry directory (the mounted path). Workspaces registered
+  outside `./workspaces/` require a manual bind-mount in a local compose override.
+- `serve` receives `WIKI_MANAGER_RUNTIME_URL=http://host.docker.internal:7788`
+  and `WIKI_MANAGER_RUNTIME_TOKEN` to connect to the runtime.
 - Prefer `wiki-workspace` over raw `docker compose`.
 - Keep `package.json`, MCP `clientInfo.version`, and external agent
   `_AGENT_VERSION` values aligned for each coordinated release. Current release
-  line: `0.6.47`.
+  line: `0.7.0`.
 - `--cacert <path>` is the supported way to trust a local proxy/private CA for
   the manager process and Docker Compose services. The file path must exist on
   the host and be readable by Docker; the certificate is mounted directly from
@@ -208,8 +255,13 @@ Also exercise relevant paths:
 printf '/use <workspace>\n/config status\n/workspaces\n/exit\n' | node ./bin/wiki-manager.js
 node ./bin/wiki-manager.js --headless --workspace __missing__ --prompt test
 wiki-manager --headless --workspace <workspace> --skill pipeline --timeout 3600 --max-turns 20
+wiki-manager runtime [--host 0.0.0.0] [--port 7788] [--state-dir .wiki-manager]
 ```
 
 Headless `--skill` uses the agentic loop: run a turn, wait for active MCP
 activities, then re-invoke with completed activity summary until the skill is
 done or limits are reached.
+
+`wiki-manager runtime` starts the HTTP/SSE runtime server. When launched by
+`ensureRuntime` (shell path), the token is resolved before spawning and injected
+via `WIKI_MANAGER_RUNTIME_TOKEN`. In Docker, the token comes from the compose env.

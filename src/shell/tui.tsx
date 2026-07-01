@@ -41,6 +41,7 @@ function copyToClipboard(text: string, renderer: unknown) {
 function App(props: {
   agent: unknown;
   packageJson: Record<string, unknown>;
+  runtime?: any;
 }) {
   const renderer = useRenderer();
   const dimensions = useTerminalDimensions();
@@ -204,11 +205,13 @@ function App(props: {
 export async function runOpenTuiShell({
   agent,
   packageJson,
+  runtime = null,
 }: {
   agent: unknown;
   packageJson: Record<string, unknown>;
+  runtime?: any;
 }) {
-  await render(() => <App agent={agent} packageJson={packageJson} />, {
+  await render(() => <App agent={agent} packageJson={packageJson} runtime={runtime} />, {
     exitOnCtrlC: false,
     useMouse: true,
     targetFps: 30,

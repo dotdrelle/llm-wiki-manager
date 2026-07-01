@@ -222,6 +222,20 @@ export function formatActivitySummary(source, action, resultText) {
   return usefulLine ? `${source}.${action}: ${usefulLine.slice(0, 120)}` : null;
 }
 
+export function activitySnapshot(session) {
+  return new Set(sessionActivities(session).map((a) => a.key));
+}
+
+export function newNonTerminalActivities(snapshotBefore, session) {
+  return sessionActivities(session).filter((a) => !snapshotBefore.has(a.key) && !a.terminal);
+}
+
+export function terminalFailures(activities) {
+  return activities.filter(
+    (a) => a.terminal && ['failed', 'error', 'cancelled', 'canceled'].includes(String(a.status).toLowerCase()),
+  );
+}
+
 export function formatActivityError(source, action, err) {
   const message = err instanceof Error ? err.message : String(err);
   const lines = message

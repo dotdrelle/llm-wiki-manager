@@ -9,7 +9,7 @@ import { managerRoot } from './workspaces.js';
 
 const execFileAsync = promisify(execFile);
 
-export const COMPOSE_SERVICES = ['serve', 'mcp-http', 'production-mcp'];
+export const COMPOSE_SERVICES = ['serve', 'mcp-http', 'agent-runtime', 'production-mcp'];
 const SERVICE_DESCRIPTION_LABEL = 'wiki-manager.description';
 
 const DEFAULT_SERVICE_ALIASES = {
@@ -17,6 +17,7 @@ const DEFAULT_SERVICE_ALIASES = {
   ui: ['serve'],
   wiki: ['mcp-http'],
   mcp: ['mcp-http'],
+  runtime: ['agent-runtime'],
   production: ['production-mcp'],
 };
 

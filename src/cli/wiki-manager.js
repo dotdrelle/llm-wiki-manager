@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -9,9 +10,16 @@ import { handleSlashCommand, printHelp, printVersion } from '../commands/slash.j
 import { runShell } from '../shell/repl.js';
 import { runChecks } from '../core/startupCheck.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
-import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
+import { activitySnapshot, extractActivity, newNonTerminalActivities, parseJsonText, sessionActivities, terminalFailures } from '../core/activity.js';
 import { extractHeadlessPlan, syncActivitiesToPlan, formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
+import { defaultRuntimeStateDir, openRuntimeStore } from '../runtime/store.js';
+import { startRuntimeServer } from '../runtime/server.js';
+import { ensureRuntime } from '../runtime/lifecycle.js';
+import { emitRuntimeLog, startActivitySupervisor } from '../runtime/supervisor.js';
+import { resolveRuntimeAuthToken } from '../runtime/auth.js';
+import { createSqliteQueueStore } from '../runtime/queueStore.js';
+import { runRuntimeAgenticLoop } from '../runtime/runner.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageJsonPath = resolve(__dirname, '../../package.json');
@@ -39,6 +47,7 @@ function createSession() {
     packageJson,
     conversations: { __global__: [] },
     activities: {},
+    jobQueue: [],
     productionActivity: null,
     headlessPlan: null,
   };
@@ -55,20 +64,6 @@ async function writeHeadlessLog(session, lines, explicitPath) {
   await mkdir(dirname(logPath), { recursive: true });
   await writeFile(logPath, `${lines.join('\n')}\n`, 'utf8');
   return logPath;
-}
-
-function activitySnapshot(session) {
-  return new Set(sessionActivities(session).map((a) => a.key));
-}
-
-function newNonTerminalActivities(snapshotBefore, session) {
-  return sessionActivities(session).filter((a) => !snapshotBefore.has(a.key) && !a.terminal);
-}
-
-function terminalFailures(activities) {
-  return activities.filter(
-    (a) => a.terminal && ['failed', 'error', 'cancelled', 'canceled'].includes(String(a.status).toLowerCase()),
-  );
 }
 
 
@@ -345,7 +340,164 @@ async function runHeadless(argv, agent) {
   }
 }
 
+async function runRuntime(argv, agent) {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    console.log([
+      'Usage: wiki-manager runtime [--host <host>] [--port <port>] [--state-dir <dir>]',
+      '',
+      'Runs the local agentic runtime used by wiki-manager Shell and llm-wiki serve.',
+      '',
+      'Defaults:',
+      '  --host 0.0.0.0',
+      '  --port 7788',
+      '  --state-dir .wiki-manager',
+    ].join('\n'));
+    return;
+  }
+  const host = valueAfter(argv, '--host') ?? process.env.WIKI_MANAGER_RUNTIME_HOST ?? '0.0.0.0';
+  const port = Number(valueAfter(argv, '--port') ?? process.env.WIKI_MANAGER_RUNTIME_PORT ?? 7788);
+  const stateDir = valueAfter(argv, '--state-dir') ?? defaultRuntimeStateDir();
+  const auth = resolveRuntimeAuthToken({ host, stateDir });
+  if (auth.token) process.env.WIKI_MANAGER_RUNTIME_TOKEN = auth.token;
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(`Invalid runtime port: ${port}`);
+  }
+
+  const session = createSession();
+  session.headless = true;
+  session.chatMode = false;
+  session.packageJson = packageJson;
+
+  const store = openRuntimeStore({ stateDir });
+  store.hydrateSession(session);
+  session.queueStore = createSqliteQueueStore(store, session);
+
+  let serverHandle = null;
+  session._onAgentEvent = (event) => {
+    store.persistEvent(event);
+    serverHandle?.publish(event);
+  };
+  session._onRuntimeError = (err) => {
+    const message = err instanceof Error ? err.message : String(err);
+    dispatchAgentEvent(session, createAgentEvent('run_error', {
+      origin: 'runtime',
+      payload: { message },
+    }));
+  };
+
+  let supervisor = null;
+
+  async function executeRun(body, { signal } = {}) {
+    const input = String(body.input ?? body.prompt ?? '').trim();
+    const workspace = body.workspace ? String(body.workspace).trim() : null;
+    const timeoutMs = (Number.isFinite(Number(body.timeout)) ? Math.max(1, Number(body.timeout)) : 3600) * 1000;
+    const maxTurns = Number.isFinite(Number(body.maxTurns)) ? Math.max(1, Number(body.maxTurns)) : 20;
+    const runId = randomUUID();
+    try {
+      if (workspace && session.workspace !== workspace) {
+        const result = await handleSlashCommand(`/use ${workspace}`, { packageJson, session });
+        if (!session.workspacePath) throw new Error(result.output || `Workspace not loaded: ${workspace}`);
+      }
+      dispatchAgentEvent(session, createAgentEvent('run_started', {
+        origin: 'runtime',
+        runId,
+        payload: { input, workspace },
+      }));
+      dispatchAgentEvent(session, createAgentEvent('user_message', {
+        origin: 'user',
+        runId,
+        payload: { content: input },
+      }));
+      session._abortSignal = signal ?? null;
+      supervisor?.setRunSignal(signal);
+      session._onStep = (message) => emitRuntimeLog(session, message);
+      const result = await runRuntimeAgenticLoop(agent, session, input, {
+        signal,
+        timeoutMs,
+        maxTurns,
+        runId,
+        pollBusy: supervisor?.pollBusy,
+      });
+      if (!result.ok) {
+        dispatchAgentEvent(session, createAgentEvent('run_error', {
+          origin: 'runtime',
+          runId,
+          payload: {
+            runId,
+            message: result.timedOut
+              ? 'Runtime agentic loop timed out.'
+              : result.maxTurns
+                ? `Runtime agentic loop reached max turns (${maxTurns}).`
+                : 'Runtime agentic loop failed.',
+          },
+        }));
+        return;
+      }
+      dispatchAgentEvent(session, createAgentEvent('run_done', {
+        origin: 'runtime',
+        runId,
+        payload: { runId },
+      }));
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        dispatchAgentEvent(session, createAgentEvent('run_cancelled', {
+          origin: 'runtime',
+          runId,
+          payload: {
+            runId,
+            message: 'Agent run cancelled.',
+          },
+        }));
+        return;
+      }
+      dispatchAgentEvent(session, createAgentEvent('run_error', {
+        origin: 'runtime',
+        runId,
+        payload: {
+          runId,
+          message: err instanceof Error ? err.message : String(err),
+        },
+      }));
+    } finally {
+      supervisor?.setRunSignal(null);
+      delete session._abortSignal;
+      delete session._onStep;
+    }
+  }
+
+  serverHandle = await startRuntimeServer({
+    host,
+    port,
+    store,
+    session,
+    run: executeRun,
+    cancel: () => emitRuntimeLog(session, 'runtime: cancel requested'),
+    token: auth.token,
+  });
+  supervisor = startActivitySupervisor(session);
+
+  console.log(`wiki-manager runtime listening on http://${host}:${port}`);
+  console.log(`runtime state: ${store.dbPath}`);
+  if (auth.tokenPath) console.log(`runtime token: ${auth.tokenPath}`);
+
+  const shutdown = async () => {
+    supervisor?.stop();
+    await serverHandle.close();
+    store.close();
+    process.exit(0);
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
+  await new Promise(() => {});
+}
+
 export async function runCli(argv) {
+  if (argv[0] === 'runtime') {
+    const agent = createAgentGraph();
+    await runRuntime(argv.slice(1), agent);
+    return;
+  }
+
   if (argv.includes('--setup-wizard')) {
     if (!process.versions.bun) {
       throw new Error('Setup wizard requires Bun. Run: bun ./bin/wiki-manager.js --setup-wizard');
@@ -396,7 +548,13 @@ export async function runCli(argv) {
     const { runOpenTuiShell, runStartupWizard } = await import('../shell/tui.tsx');
     const gaps = await runChecks();
     if (gaps.length > 0) await runStartupWizard(gaps);
-    await runOpenTuiShell({ agent, packageJson });
+    let runtime = null;
+    try {
+      runtime = await ensureRuntime();
+    } catch (err) {
+      console.error(`Runtime unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    await runOpenTuiShell({ agent, packageJson, runtime });
     return;
   }
 

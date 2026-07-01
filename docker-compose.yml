@@ -62,6 +62,8 @@ services:
       - DOCUMENT_MAX_UPLOAD_BYTES=${DOCUMENT_MAX_UPLOAD_BYTES:-52428800}
       - WIKI_MCP_PROXY_URL=http://host.docker.internal:${WIKI_MCP_PORT:-3101}/mcp
       - PRODUCTION_MCP_PROXY_URL=http://host.docker.internal:${PRODUCTION_MCP_PORT:-3102}/mcp/
+      - WIKI_MANAGER_RUNTIME_URL=http://host.docker.internal:7788
+      - WIKI_MANAGER_RUNTIME_TOKEN=${WIKI_MANAGER_RUNTIME_TOKEN:-}
       # HTTPS — set paths inside the container (e.g. /certs/server.crt) and uncomment the volume above
       #- WIKI_SERVE_TLS_CERT_PATH=/certs/server.crt
       #- WIKI_SERVE_TLS_KEY_PATH=/certs/server.key
@@ -95,6 +97,25 @@ services:
       - host.docker.internal:host-gateway
     restart: unless-stopped
 
+  # ── wiki-manager runtime ─────────────────────────────────────────────────
+
+  agent-runtime:
+    image: dotdrelle/llm-wiki-manager:latest
+    labels:
+      wiki-manager.description: "Agentic runtime — runs, plan, activities, queue."
+    command: wiki-manager runtime --host 0.0.0.0 --port 7788 --state-dir /state
+    volumes:
+      - ./.wiki-manager:/state
+      - ${WIKI_WORKSPACES_DIR:-./workspaces}:/workspaces
+    environment:
+      - WIKI_WORKSPACES_DIR=/workspaces
+      - WIKI_MANAGER_RUNTIME_TOKEN=${WIKI_MANAGER_RUNTIME_TOKEN:-}
+    ports:
+      - '127.0.0.1:7788:7788'
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    restart: unless-stopped
+
   # ── agent-wiki-production ─────────────────────────────────────────────────
 
   production-mcp:
@@ -119,7 +140,7 @@ services:
 x-wiki-manager:
   service-aliases:
     all:
-      targets: [serve, mcp-http, production-mcp]
+      targets: [serve, mcp-http, agent-runtime, production-mcp]
       description: "Full workspace service set."
     ui:
       targets: [serve]
@@ -130,6 +151,9 @@ x-wiki-manager:
     mcp:
       targets: [mcp-http]
       description: "Alias for mcp-http: wiki MCP server."
+    runtime:
+      targets: [agent-runtime]
+      description: "Alias for agent-runtime: agentic runtime."
     production:
       targets: [production-mcp]
       description: "Alias for production-mcp: production jobs."

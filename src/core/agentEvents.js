@@ -7,6 +7,18 @@ const SESSION_PROJECTION_EVENTS = new Set([
   'plan_step_updated',
   'activity_upserted',
   'run_error',
+  'run_cancelled',
+  'runtime_log',
+]);
+
+// Events that can mutate state.plan in applyEvent() — only these warrant the
+// before/after plan comparison below (runtime_log fires far more often and
+// never touches the plan).
+const PLAN_MUTATING_EVENTS = new Set([
+  'run_started',
+  'plan_set',
+  'plan_step_updated',
+  'activity_upserted',
 ]);
 
 export function createAgentEvent(type, { origin = 'system', payload = {}, runId = null, turnId = null } = {}) {
@@ -23,7 +35,8 @@ export function createAgentEvent(type, { origin = 'system', payload = {}, runId 
 
 export function dispatchAgentEvent(session, event) {
   const normalized = event.id && event.ts ? event : createAgentEvent(event.type, event);
-  const previousPlan = JSON.stringify(session.headlessPlan ?? null);
+  const tracksPlan = PLAN_MUTATING_EVENTS.has(normalized.type);
+  const previousPlan = tracksPlan ? JSON.stringify(session.headlessPlan ?? null) : null;
   session.agentEvents ??= [];
   session.agentEvents.push(normalized);
   session._agentProjectionState ??= createProjectionState();
@@ -31,10 +44,11 @@ export function dispatchAgentEvent(session, event) {
   session.agentProjection = publicProjection(session._agentProjectionState);
   if (SESSION_PROJECTION_EVENTS.has(normalized.type)) {
     applyAgentProjectionToSession(session, session.agentProjection);
-    if (JSON.stringify(session.headlessPlan ?? null) !== previousPlan) {
+    if (tracksPlan && JSON.stringify(session.headlessPlan ?? null) !== previousPlan) {
       session._onPlanUpdate?.();
     }
   }
+  session._onAgentEvent?.(normalized, session.agentProjection);
   return normalized;
 }
 
@@ -133,9 +147,17 @@ function applyEvent(state, event) {
     case 'run_done':
       state.status = 'done';
       return;
+    case 'run_cancelled':
+      state.status = 'cancelled';
+      state.logs.push(String(event.payload?.message ?? 'Agent run cancelled.'));
+      return;
     case 'run_error':
       state.status = 'error';
       state.logs.push(String(event.payload?.message ?? 'Agent run failed.'));
+      return;
+    case 'runtime_log':
+      state.logs.push(String(event.payload?.message ?? ''));
+      state.logs = state.logs.slice(-200);
       return;
     default:
       return;

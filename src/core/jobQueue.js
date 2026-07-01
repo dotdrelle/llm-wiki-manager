@@ -1,11 +1,16 @@
 import { extractActivity, parseJsonText, sessionActivities } from './activity.js';
 import { createAgentEvent, dispatchAgentEvent } from './agentEvents.js';
 import { callMcpTool, formatMcpToolResult } from './mcp.js';
+import { queueStoreFor } from './queueStore.js';
 
 const TERMINAL = new Set(['done', 'failed', 'cancelled', 'canceled', 'complete', 'completed', 'success', 'error']);
 
 function now() {
   return new Date().toISOString();
+}
+
+function notifyQueueUpdate(session) {
+  queueStoreFor(session).changed();
 }
 
 function shortId() {
@@ -17,8 +22,7 @@ function terminalStatus(status) {
 }
 
 export function ensureJobQueue(session) {
-  session.jobQueue ??= [];
-  return session.jobQueue;
+  return queueStoreFor(session).list();
 }
 
 export function productionLockBusy(session) {
@@ -41,6 +45,7 @@ export function enqueueProductionJob(session, args = {}, reason = 'waiting') {
     createdAt: now(),
   };
   ensureJobQueue(session).push(item);
+  notifyQueueUpdate(session);
   return item;
 }
 
@@ -85,10 +90,11 @@ export function formatQueue(session) {
 export function clearFinishedQueueItems(session) {
   const queue = ensureJobQueue(session);
   const before = queue.length;
-  session.jobQueue = queue.filter((item) =>
+  const next = queue.filter((item) =>
     item.workspace !== session.workspace || !terminalStatus(item.status),
   );
-  return before - session.jobQueue.length;
+  queueStoreFor(session).replace(next);
+  return before - next.length;
 }
 
 function findQueueItem(session, id) {
@@ -102,6 +108,7 @@ export async function cancelQueueItem(session, id) {
     const label = item.status === 'starting' ? 'starting' : 'queued';
     item.status = 'cancelled';
     item.finishedAt = now();
+    notifyQueueUpdate(session);
     return { ok: true, message: `Cancelled ${label} job ${id}.` };
   }
   if (item.status === 'running') {
@@ -109,6 +116,7 @@ export async function cancelQueueItem(session, id) {
       await callMcpTool(session.mcp, 'production', 'production_cancel_job', { jobId: item.jobId });
       item.status = 'cancelled';
       item.finishedAt = now();
+      notifyQueueUpdate(session);
       return { ok: true, message: `Cancellation requested for ${id} (${item.jobId}).` };
     }
     return { ok: false, message: `No cancel tool available for ${id}.` };
@@ -140,6 +148,7 @@ export async function startNextQueuedJob(session, hooks = {}) {
 
   item.status = 'starting';
   item.startedAt = now();
+  notifyQueueUpdate(session);
   hooks.refresh?.();
   hooks.addLog?.(`queue: starting ${item.id} ${queueSummary(item.args)}`);
 
@@ -154,6 +163,7 @@ export async function startNextQueuedJob(session, hooks = {}) {
     if (payload?.ok === false && payload?.error === 'workspace_busy') {
       item.status = 'waiting';
       item.reason = 'workspace_busy';
+      notifyQueueUpdate(session);
       hooks.addLog?.(`queue: ${item.id} still waiting, production lock busy`);
       hooks.refresh?.();
       return item;
@@ -164,6 +174,7 @@ export async function startNextQueuedJob(session, hooks = {}) {
       item.jobId = activity.id;
       item.activityKey = activity.key;
       item.finishedAt = activity.terminal ? now() : undefined;
+      notifyQueueUpdate(session);
       dispatchAgentEvent(session, createAgentEvent('activity_upserted', {
         origin: 'queue',
         payload: { activity },
@@ -171,6 +182,7 @@ export async function startNextQueuedJob(session, hooks = {}) {
     } else {
       item.status = 'done';
       item.finishedAt = now();
+      notifyQueueUpdate(session);
     }
     hooks.addLog?.(`queue: ${item.id} ${item.status}${item.jobId ? ` job=${item.jobId}` : ''}`);
     hooks.refresh?.();
@@ -179,6 +191,7 @@ export async function startNextQueuedJob(session, hooks = {}) {
     item.status = 'failed';
     item.error = err instanceof Error ? err.message : String(err);
     item.finishedAt = now();
+    notifyQueueUpdate(session);
     hooks.addLog?.(`queue: ${item.id} failed · ${item.error}`);
     hooks.refresh?.();
     return item;
@@ -193,5 +206,6 @@ export function syncQueueWithActivity(session, activity) {
   item.activityKey = activity.key;
   item.finishedAt = activity.terminal ? now() : item.finishedAt;
   item.error = activity.error ?? item.error;
+  notifyQueueUpdate(session);
   return item;
 }

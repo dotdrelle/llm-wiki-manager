@@ -6,6 +6,8 @@ import { extractActivity, parseJsonText, sessionActivities } from '../core/activ
 import { formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { queueCounts, startNextQueuedJob, syncQueueWithActivity } from '../core/jobQueue.js';
+import { queueStoreFor } from '../core/queueStore.js';
+import { fetchRuntimeState, streamRuntimeEvents } from '../runtime/client.js';
 import type { ActiveFileEditor } from './FileEditorDialog';
 import {
   completionContext,
@@ -14,6 +16,16 @@ import {
   createSession,
 } from './repl.js';
 import { useAgent } from './useAgent';
+
+function runtimeStatusText(status: 'disabled' | 'connected' | 'disconnected', runStatus: string): string {
+  if (status === 'connected') return `runtime ${runStatus}`;
+  if (status === 'disconnected') return 'runtime offline';
+  return 'runtime off';
+}
+
+function nonEmptyRuntimeArray<T>(value: T[] | undefined | null): T[] | null {
+  return Array.isArray(value) && value.length > 0 ? value : null;
+}
 
 function buildContinuationPrompt(session: any, completed: any[]): string {
   const originalTask = [...conversationMessages(session)]
@@ -31,10 +43,12 @@ function buildContinuationPrompt(session: any, completed: any[]): string {
   ].filter(Boolean).join('\n');
 }
 
-export function useSession(props: { agent: unknown; packageJson: Record<string, unknown> }) {
+export function useSession(props: { agent: unknown; packageJson: Record<string, unknown>; runtime?: any }) {
   const session = createSession();
   const [version, setVersion] = createSignal(0);
   const [logs, setLogs] = createSignal<string[]>([]);
+  const [runtimeState, setRuntimeState] = createSignal<any | null>(null);
+  const [runtimeStatus, setRuntimeStatus] = createSignal<'disabled' | 'connected' | 'disconnected'>(props.runtime ? 'disconnected' : 'disabled');
   const [input, setInput] = createSignal('');
   const [chatMode, setChatMode] = createSignal(true);
   (session as any).chatMode = true;
@@ -60,10 +74,45 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   const addLog = (line: string) => {
     setLogs((items) => [...items, `${new Date().toLocaleTimeString()} ${line}`].slice(-200));
   };
-  const agent = useAgent({ agent: props.agent, packageJson: props.packageJson, session, chatMode, refresh, addLog });
+  if (props.runtime?.url) addLog(`runtime: connected ${props.runtime.url}${props.runtime.started ? ' (started)' : ''}`);
+  const agent = useAgent({
+    agent: props.agent,
+    packageJson: props.packageJson,
+    session,
+    chatMode,
+    runtimeUrl: props.runtime?.url ?? null,
+    refresh,
+    addLog,
+    onRuntimeAccepted: () => {
+      setRuntimeState((state) => ({ ...(state ?? {}), status: 'running' }));
+      setRuntimeStatus('connected');
+      refresh();
+    },
+  });
+  const runtimeRunStatus = createMemo(() => String(runtimeState()?.status ?? 'idle'));
+  const agentBusy = createMemo(() =>
+    props.runtime?.url
+      ? runtimeRunStatus() === 'running' || agent.busy()
+      : agent.busy(),
+  );
+  const localFallbackActive = createMemo(() => !props.runtime?.url || runtimeStatus() === 'disconnected');
 
   const messages = createMemo(() => {
     version();
+    const runtimeConversation = runtimeState()?.conversation;
+    const localCommands = conversationMessages(session)
+      .filter((message: any) => message.role === 'command')
+      .map((message: any) => ({
+        role: 'command',
+        content: String(message.content ?? ''),
+      }));
+    if (Array.isArray(runtimeConversation) && runtimeConversation.length > 0) {
+      const runtimeMessages = runtimeConversation.map((message: any) => ({
+        role: message.role === 'assistant' ? 'donna' : message.role,
+        content: String(message.content ?? ''),
+      }));
+      return [...runtimeMessages, ...localCommands].slice(-200);
+    }
     return [...conversationMessages(session)];
   });
   const prompt = createMemo(() => {
@@ -84,6 +133,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
       session.wikirc?.profile ? session.wikirc.profile : 'no wikirc',
       session.language ? session.language : 'no language',
       session.llm ? 'llm ready' : 'llm limited',
+      runtimeStatusText(runtimeStatus(), runtimeRunStatus()),
     ].join('  ');
   });
   const matchContext = createMemo(() => {
@@ -119,37 +169,117 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   let lastVisiblePlan: Array<{ step: number; description: string; status: string }> | null = null;
   const activities = createMemo(() => {
     version();
+    const runtimeActivities = nonEmptyRuntimeArray(runtimeState()?.activities);
+    if (runtimeActivities) {
+      return runtimeActivities.map((activity: any) => ({ ...activity, _runtime: true }));
+    }
     const current = sessionActivities(session);
     if (current.length > 0) {
       lastVisibleActivities = current.map((activity) => ({ ...activity }));
       return current;
     }
-    return agent.busy() && lastVisibleActivities.length > 0
+    return agentBusy() && lastVisibleActivities.length > 0
       ? lastVisibleActivities.map((activity) => ({ ...activity }))
       : current;
   });
   const queueItems = createMemo(() => {
     version();
+    const runtimeQueue = nonEmptyRuntimeArray(runtimeState()?.queue);
+    if (runtimeQueue) return runtimeQueue.map((item: any) => ({ ...item, _runtime: true }));
     return ((session as any).jobQueue ?? []).map((item: any) => ({ ...item }));
   });
   const queueInfo = createMemo(() => {
     version();
+    const runtimeQueue = runtimeState()?.queue;
+    if (Array.isArray(runtimeQueue)) {
+      return {
+        active: runtimeQueue.filter((item: any) => ['waiting', 'starting', 'running', 'queued', 'pending'].includes(String(item.status ?? '').toLowerCase())).length,
+        current: runtimeQueue.filter((item: any) => ['starting', 'running'].includes(String(item.status ?? '').toLowerCase())).length,
+        frozen: 0,
+      };
+    }
     return queueCounts(session);
   });
   const plan = createMemo(() => {
     version();
+    const runtimePlan = nonEmptyRuntimeArray(runtimeState()?.plan);
+    if (runtimePlan) {
+      return runtimePlan.map((step: any, index: number) => ({
+        step: Number(step.step ?? index + 1),
+        description: String(step.description ?? step.label ?? step.name ?? `Step ${index + 1}`),
+        status: String(step.status ?? 'pending'),
+      }));
+    }
     const p = (session as any).headlessPlan as Array<{ step: number; description: string; status: string }> | null;
     const current = p ? p.map((s) => ({ ...s })) : null;
     if (current && current.length > 0) {
       lastVisiblePlan = current.map((step) => ({ ...step }));
       return current;
     }
-    return agent.busy() && lastVisiblePlan && lastVisiblePlan.length > 0
+    return agentBusy() && lastVisiblePlan && lastVisiblePlan.length > 0
       ? lastVisiblePlan.map((step) => ({ ...step }))
       : current;
   });
+  const visibleLogs = createMemo(() => {
+    version();
+    const runtimeLogs = runtimeState()?.logs;
+    if (!Array.isArray(runtimeLogs) || runtimeLogs.length === 0) return logs();
+    const tagged = runtimeLogs.slice(-80).map((line: any) => `runtime ${String(line)}`);
+    return [...logs(), ...tagged].slice(-200);
+  });
+
+  function syncRuntimeState() {
+    void fetchRuntimeState({ url: props.runtime.url })
+      .then((state) => {
+        setRuntimeState(state);
+        setRuntimeStatus('connected');
+        refresh();
+      })
+      .catch(() => {
+        setRuntimeStatus('disconnected');
+        refresh();
+      });
+  }
+  let runtimeStreamAbort: AbortController | null = null;
+  let runtimeSyncDebounce: ReturnType<typeof setTimeout> | null = null;
+  let runtimeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let runtimeStreamStopped = false;
+
+  function debouncedSyncRuntimeState() {
+    if (runtimeSyncDebounce) clearTimeout(runtimeSyncDebounce);
+    runtimeSyncDebounce = setTimeout(syncRuntimeState, 200);
+  }
+
+  async function subscribeRuntimeEvents() {
+    if (!props.runtime?.url || runtimeStreamStopped) return;
+    runtimeStreamAbort = new AbortController();
+    try {
+      for await (const _event of streamRuntimeEvents({ url: props.runtime.url, signal: runtimeStreamAbort.signal })) {
+        setRuntimeStatus('connected');
+        debouncedSyncRuntimeState();
+      }
+    } catch {
+      // stream dropped or errored — fall through to reconnect below
+    }
+    if (runtimeStreamStopped) return;
+    setRuntimeStatus('disconnected');
+    refresh();
+    runtimeReconnectTimer = setTimeout(() => { void subscribeRuntimeEvents(); }, 1500);
+  }
+
+  if (props.runtime?.url) {
+    syncRuntimeState();
+    void subscribeRuntimeEvents();
+  }
+  onCleanup(() => {
+    runtimeStreamStopped = true;
+    runtimeStreamAbort?.abort();
+    if (runtimeSyncDebounce) clearTimeout(runtimeSyncDebounce);
+    if (runtimeReconnectTimer) clearTimeout(runtimeReconnectTimer);
+  });
 
   const activityPollTimer = setInterval(() => {
+    if (!localFallbackActive()) return;
     for (const activity of sessionActivities(session)) {
       if (activity.terminal || !activity.poll) continue;
       const key = activity.key ?? `${activity.poll.server}:${activity.id ?? activity.label}`;
@@ -195,7 +325,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
               const plan = (session as any).headlessPlan;
               const stillRunning = sessionActivities(session).filter((a) => !a.terminal && a.poll);
               const pendingSteps = (plan ?? []).filter((s: any) => s.status === 'pending');
-              if (stillRunning.length === 0 && pendingSteps.length > 0 && !agent.busy()) {
+              if (stillRunning.length === 0 && pendingSteps.length > 0 && !agentBusy()) {
                 const completedAll = sessionActivities(session).filter((a) => a.terminal);
                 const prompt = buildContinuationPrompt(session, completedAll);
                 void agent.submit(prompt);
@@ -211,18 +341,23 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
         });
     }
   }, 1000);
-  onCleanup(() => clearInterval(activityPollTimer));
+  onCleanup(() => {
+    if (activityPollTimer) clearInterval(activityPollTimer);
+  });
 
   const queueFallbackTimer = setInterval(() => {
-    if ((session as any).jobQueue?.some((item: any) => item.status === 'waiting')) {
+    if (!localFallbackActive()) return;
+    if (queueStoreFor(session).list().some((item: any) => item.status === 'waiting')) {
       void startNextQueuedJob(session, { addLog, refresh });
     }
   }, 10000);
-  onCleanup(() => clearInterval(queueFallbackTimer));
+  onCleanup(() => {
+    if (queueFallbackTimer) clearInterval(queueFallbackTimer);
+  });
 
   async function submitInput(submittedValue?: string) {
     const line = typeof submittedValue === 'string' && submittedValue.trim() ? submittedValue : input();
-    if (agent.busy()) return { exit: false, busy: true };
+    if (agentBusy()) return { exit: false, busy: true };
     setInput('');
     setConversationScroll(0);
     if (line.trim()) {
@@ -344,7 +479,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   return {
     session,
     messages,
-    logs,
+    logs: visibleLogs,
     input,
     setInput: updateInput,
     title,
@@ -364,7 +499,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     plan,
     conversationScroll,
     scrollConversation,
-    busy: agent.busy,
+    busy: agentBusy,
     abort,
     submitInput,
     completeSelected,

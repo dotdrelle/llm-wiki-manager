@@ -33,12 +33,19 @@ export function listWorkspaces() {
       if (!existsSync(envFile)) return [];
       const env = readEnvFile(envFile);
       const workspacePath = env.WIKI_WORKSPACE_PATH || registryPath;
+      let resolvedWorkspacePath;
+      try {
+        resolvedWorkspacePath = realpathSync.native?.(workspacePath) ?? realpathSync(workspacePath);
+      } catch {
+        // Host-absolute WIKI_WORKSPACE_PATH not accessible here (e.g. inside a container); use registry dir.
+        resolvedWorkspacePath = registryPath;
+      }
       return [
         {
           name: env.WORKSPACE_NAME || entry.name,
           registryPath,
           envFile,
-          workspacePath: realpathSync.native?.(workspacePath) ?? realpathSync(workspacePath),
+          workspacePath: resolvedWorkspacePath,
           env,
         },
       ];

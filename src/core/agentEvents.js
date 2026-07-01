@@ -6,6 +6,7 @@ const SESSION_PROJECTION_EVENTS = new Set([
   'plan_set',
   'plan_step_updated',
   'activity_upserted',
+  'run_done',
   'run_error',
   'run_cancelled',
   'runtime_log',
@@ -19,6 +20,7 @@ const PLAN_MUTATING_EVENTS = new Set([
   'plan_set',
   'plan_step_updated',
   'activity_upserted',
+  'run_done',
 ]);
 
 export function createAgentEvent(type, {

@@ -371,6 +371,111 @@ async function runRuntime(argv, agent) {
     return [...new Set(gaps)];
   }
 
+  function activeNonTerminalActivities(session) {
+    return sessionActivities(session).filter((activity) => !activity.terminal);
+  }
+
+  function activePollingActivities(session) {
+    return activeNonTerminalActivities(session).filter((activity) => activity.poll);
+  }
+
+  function buildRecoveryPrompt(run, session) {
+    const conversation = session.agentProjection?.conversation ?? [];
+    const recentConversation = conversation
+      .slice(-8)
+      .map((message) => `${message.role}: ${message.content}`)
+      .join('\n');
+    return [
+      'Resume an interrupted runtime run.',
+      '',
+      'Original task:',
+      run.input ?? '(unknown)',
+      '',
+      session.headlessPlan ? `Current plan:\n${formatPlanStatus(session.headlessPlan)}` : null,
+      recentConversation ? `Recent conversation:\n${recentConversation}` : null,
+      '',
+      'Continue from the current plan state. Start only the next pending step.',
+      'If the work is already complete, provide a concise final summary.',
+    ].filter(Boolean).join('\n');
+  }
+
+  function startRecoveredAgenticRun(context, run) {
+    if (context.running) return false;
+    const session = context.session;
+    const supervisor = context.supervisor;
+    const runId = run.id;
+    const input = buildRecoveryPrompt(run, session);
+    context.running = true;
+    context.currentAbortController = new AbortController();
+    session._currentRunIdentity = {
+      runId,
+      turnId: `${runId}:resume-0`,
+      workspace: context.workspace,
+    };
+    session._abortSignal = context.currentAbortController.signal;
+    supervisor?.setRunSignal(context.currentAbortController.signal);
+    session._onStep = (message) => emitRuntimeLog(session, message);
+    emitRuntimeLog(session, `runtime: resuming interrupted run ${runId}`);
+
+    runRuntimeAgenticLoop(agent, session, input, {
+      signal: context.currentAbortController.signal,
+      timeoutMs: 3600 * 1000,
+      maxTurns: 20,
+      runId,
+      pollBusy: supervisor?.pollBusy,
+    })
+      .then((result) => {
+        if (!result.ok) {
+          dispatchAgentEvent(session, createAgentEvent('run_error', {
+            origin: 'runtime',
+            runId,
+            payload: {
+              runId,
+              message: result.timedOut
+                ? 'Recovered runtime agentic loop timed out.'
+                : result.maxTurns
+                  ? 'Recovered runtime agentic loop reached max turns.'
+                  : 'Recovered runtime agentic loop failed.',
+            },
+          }));
+          return;
+        }
+        dispatchAgentEvent(session, createAgentEvent('run_done', {
+          origin: 'runtime',
+          runId,
+          payload: { runId },
+        }));
+      })
+      .catch((err) => {
+        if (err?.name === 'AbortError') {
+          dispatchAgentEvent(session, createAgentEvent('run_cancelled', {
+            origin: 'runtime',
+            runId,
+            payload: { runId, message: 'Recovered runtime run cancelled.' },
+          }));
+          return;
+        }
+        dispatchAgentEvent(session, createAgentEvent('run_error', {
+          origin: 'runtime',
+          runId,
+          payload: {
+            runId,
+            message: err instanceof Error ? err.message : String(err),
+          },
+        }));
+      })
+      .finally(() => {
+        context.running = false;
+        context.currentAbortController = null;
+        supervisor?.setRunSignal(null);
+        delete session._abortSignal;
+        delete session._onStep;
+        delete session._currentRunIdentity;
+      });
+
+    return true;
+  }
+
   async function recoverWorkspace(workspace, { manual = false } = {}) {
     try {
       const context = await getWorkspaceContext(workspace);
@@ -385,11 +490,33 @@ async function runRuntime(argv, agent) {
           reason: `MCP unavailable: ${gaps.join(', ')}`,
         };
       }
+      const recoverableRuns = store.listRecoverableRuns({ workspace: context.workspace });
+      const runningRun = recoverableRuns.find((run) => run.status === 'running');
+      const activeActivities = activeNonTerminalActivities(context.session);
+      if (runningRun && activeActivities.length === 0) {
+        if (!runningRun.input) {
+          const interrupted = store.interruptRuns({ workspace: context.workspace });
+          return {
+            workspace: context.workspace ?? workspace ?? null,
+            resumed: false,
+            interrupted,
+            reason: 'Missing original run input.',
+          };
+        }
+        const started = startRecoveredAgenticRun(context, runningRun);
+        return {
+          workspace: context.workspace ?? workspace ?? null,
+          resumed: started,
+          interrupted: 0,
+          mode: 'agentic_loop',
+        };
+      }
       emitRuntimeLog(context.session, manual ? 'runtime: manual resume completed' : 'runtime: recovery completed');
       return {
         workspace: context.workspace ?? workspace ?? null,
         resumed: true,
         interrupted: 0,
+        mode: activePollingActivities(context.session).length > 0 ? 'activity_poll' : 'context',
       };
     } catch (err) {
       const interrupted = store.interruptRuns({ workspace });

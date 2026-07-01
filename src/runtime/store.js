@@ -27,7 +27,8 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   db.exec('PRAGMA foreign_keys = ON');
   db.exec(`
     CREATE TABLE IF NOT EXISTS events (
-      id TEXT PRIMARY KEY,
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      id TEXT NOT NULL UNIQUE,
       ts TEXT NOT NULL,
       type TEXT NOT NULL,
       run_id TEXT,
@@ -64,27 +65,32 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       updated_at TEXT NOT NULL
     );
   `);
+  ensureColumn(db, 'events', 'sequence', 'INTEGER');
   ensureColumn(db, 'events', 'workspace', 'TEXT');
   ensureColumn(db, 'runs', 'workspace', 'TEXT');
+  backfillEventSequence(db);
   db.exec('CREATE INDEX IF NOT EXISTS idx_events_workspace ON events(workspace)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_events_sequence ON events(sequence)');
 
   let lastEventId = null;
+  let lastEventSequence = null;
 
   const insertEvent = db.prepare(`
-    INSERT OR IGNORE INTO events (id, ts, type, run_id, turn_id, workspace, origin, payload)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO events (sequence, id, ts, type, run_id, turn_id, workspace, origin, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const listEventsStatement = db.prepare(`
-    SELECT id, ts, type, run_id, turn_id, workspace, origin, payload
+    SELECT sequence, id, ts, type, run_id, turn_id, workspace, origin, payload
     FROM events
-    ORDER BY ts ASC, id ASC
+    ORDER BY sequence ASC
   `);
   const listEventsByWorkspaceStatement = db.prepare(`
-    SELECT id, ts, type, run_id, turn_id, workspace, origin, payload
+    SELECT sequence, id, ts, type, run_id, turn_id, workspace, origin, payload
     FROM events
     WHERE workspace = ?
-    ORDER BY ts ASC, id ASC
+    ORDER BY sequence ASC
   `);
+  const nextEventSequenceStatement = db.prepare('SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM events');
   const upsertRun = db.prepare(`
     INSERT INTO runs (id, workspace, status, input, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -179,7 +185,9 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   function persistEvent(event) {
     if (NON_PERSISTED_EVENT_TYPES.has(event.type)) return event;
     const ws = event.workspace ?? event.payload?.workspace ?? null;
-    insertEvent.run(
+    const sequence = nextEventSequenceStatement.get().next_sequence;
+    const result = insertEvent.run(
+      sequence,
       event.id,
       event.ts,
       event.type,
@@ -189,7 +197,11 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       event.origin ?? null,
       JSON.stringify(event.payload ?? {}),
     );
-    lastEventId = event.id;
+    if (Number(result.changes ?? 0) > 0) {
+      event.sequence = sequence;
+      lastEventId = event.id;
+      lastEventSequence = sequence;
+    }
     if (event.type === 'run_started') {
       persistRun({
         id: event.runId ?? event.payload?.runId ?? event.id,
@@ -333,7 +345,10 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     for (const event of events) {
       dispatchAgentEvent(session, event);
     }
-    if (events.length > 0) lastEventId = events.at(-1).id;
+    if (events.length > 0) {
+      lastEventId = events.at(-1).id;
+      lastEventSequence = events.at(-1).sequence ?? null;
+    }
     return session.agentProjection ?? reduceAgentEvents([]);
   }
 
@@ -349,7 +364,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       ...projection,
       runs: listRuns({ workspace }),
       queue: projectQueue(projection.plan, rawQueue, { workspace }),
-      eventsCursor: session?.agentEvents?.at(-1)?.id ?? events?.at(-1)?.id ?? lastEventId,
+      eventsCursor: session?.agentEvents?.at(-1)?.sequence ?? events?.at(-1)?.sequence ?? lastEventSequence,
     };
   }
 
@@ -387,6 +402,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
 
 function rowToEvent(row) {
   return {
+    sequence: row.sequence ?? null,
     id: row.id,
     ts: row.ts,
     type: row.type,
@@ -402,4 +418,12 @@ function ensureColumn(db, table, column, definition) {
   const existing = db.prepare(`PRAGMA table_info(${table})`).all();
   if (existing.some((row) => row.name === column)) return;
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+function backfillEventSequence(db) {
+  db.exec(`
+    UPDATE events
+    SET sequence = rowid
+    WHERE sequence IS NULL
+  `);
 }

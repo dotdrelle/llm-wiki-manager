@@ -128,6 +128,15 @@ test('reduceAgentEvents: run_done finalizes running and pending plan steps', () 
   assert.equal(projection.status, 'done');
 });
 
+test('dispatchAgentEvent: run_done finalizes session plan', () => {
+  const session = {};
+  dispatchAgentEvent(session, createAgentEvent('run_started', { origin: 'runtime' }));
+  dispatchAgentEvent(session, createAgentEvent('run_done', { origin: 'runtime' }));
+
+  assert.deepEqual(session.headlessPlan.map((step) => step.status), ['done', 'done', 'done']);
+  assert.equal(session.agentProjection.status, 'done');
+});
+
 test('reduceAgentEvents: activity-owned plan is used when no orchestrator plan exists', () => {
   const projection = reduceAgentEvents([
     createAgentEvent('activity_upserted', {

@@ -25,7 +25,7 @@ test('runtime store persists and replays agent events into a projection', () => 
   reopened.hydrateSession(replayedSession);
   assert.equal(replayedSession.headlessPlan.length, 1);
   assert.equal(replayedSession.headlessPlan[0].description, 'Ingest');
-  assert.equal(reopened.getState(replayedSession).eventsCursor, event.id);
+  assert.equal(reopened.getState(replayedSession).eventsCursor, 1);
   reopened.close();
 });
 
@@ -44,6 +44,8 @@ test('runtime store persists duplicate events idempotently', () => {
   store.persistEvent(event);
 
   assert.equal(store.listEvents().length, 1);
+  assert.equal(store.listEvents()[0].sequence, 1);
+  assert.equal(store.getState().eventsCursor, 1);
   assert.equal(store.listRuns()[0].id, 'run-1');
   assert.equal(store.listRuns()[0].workspace, 'juno');
   assert.equal(store.listRuns()[0].status, 'running');
@@ -65,6 +67,49 @@ test('runtime store persists run identity fields on events', () => {
   assert.equal(event.runId, 'run-2');
   assert.equal(event.turnId, 'run-2:turn-1');
   assert.equal(event.workspace, 'docs');
+  store.close();
+});
+
+test('runtime store orders events by durable sequence', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  const ts = '2026-01-01T00:00:00.000Z';
+
+  store.persistEvent({
+    id: 'event-b',
+    ts,
+    type: 'user_message',
+    origin: 'test',
+    runId: 'run-seq',
+    turnId: 'run-seq:turn-0',
+    workspace: 'docs',
+    payload: { content: 'first' },
+  });
+  store.persistEvent({
+    id: 'event-a',
+    ts,
+    type: 'assistant_message',
+    origin: 'test',
+    runId: 'run-seq',
+    turnId: 'run-seq:turn-1',
+    workspace: 'docs',
+    payload: { content: 'second' },
+  });
+  store.persistEvent({
+    id: 'event-c',
+    ts,
+    type: 'assistant_message',
+    origin: 'test',
+    runId: 'run-other',
+    turnId: 'run-other:turn-1',
+    workspace: 'other',
+    payload: { content: 'third' },
+  });
+
+  const events = store.listEvents({ workspace: 'docs' });
+  assert.deepEqual(events.map((event) => event.id), ['event-b', 'event-a']);
+  assert.deepEqual(events.map((event) => event.sequence), [1, 2]);
+  assert.equal(store.getState(null, { workspace: 'docs' }).eventsCursor, 2);
   store.close();
 });
 
@@ -124,7 +169,45 @@ test('runtime store migrates legacy databases without workspace columns', () => 
   }));
 
   assert.equal(store.listEvents()[0].workspace, 'legacy');
+  assert.equal(store.listEvents()[0].sequence, 1);
   assert.equal(store.listRuns()[0].workspace, 'legacy');
+  store.close();
+});
+
+test('runtime store backfills sequence for legacy event rows', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const db = new DatabaseSync(join(stateDir, 'runtime.db'));
+  db.exec(`
+    CREATE TABLE events (
+      id TEXT PRIMARY KEY,
+      ts TEXT NOT NULL,
+      type TEXT NOT NULL,
+      run_id TEXT,
+      turn_id TEXT,
+      workspace TEXT,
+      origin TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE TABLE runs (
+      id TEXT PRIMARY KEY,
+      workspace TEXT,
+      status TEXT NOT NULL,
+      input TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    INSERT INTO events (id, ts, type, run_id, turn_id, workspace, origin, payload)
+    VALUES
+      ('legacy-b', '2026-01-01T00:00:00.000Z', 'user_message', 'run-legacy', 'run-legacy:turn-0', 'docs', 'test', '{"content":"first"}'),
+      ('legacy-a', '2026-01-01T00:00:00.000Z', 'assistant_message', 'run-legacy', 'run-legacy:turn-1', 'docs', 'test', '{"content":"second"}');
+  `);
+  db.close();
+
+  const store = openRuntimeStore({ stateDir });
+  const events = store.listEvents({ workspace: 'docs' });
+
+  assert.deepEqual(events.map((event) => event.id), ['legacy-b', 'legacy-a']);
+  assert.deepEqual(events.map((event) => event.sequence), [1, 2]);
   store.close();
 });
 

@@ -1,24 +1,18 @@
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { sessionActivities, terminalFailures } from '../core/activity.js';
-import { runAgentTurn, runAgenticLoop, throwIfAborted } from '../core/agentLoop.js';
+import { runAgenticLoop, throwIfAborted } from '../core/agentLoop.js';
 import { emitRuntimeLog, pollActivitiesOnce } from './supervisor.js';
-
-async function runRuntimeAgentTurn(agent, session, input, messages = []) {
-  return runAgentTurn(agent, session, input, {
-    messages,
-    signal: session._abortSignal,
-  });
-}
 
 async function waitForRuntimeActivities(session, startedActivities, { timeoutMs, signal, pollBusy }) {
   const deadline = Date.now() + timeoutMs;
   const trackedKeys = new Set(startedActivities.map((activity) => activity.key));
   emitRuntimeLog(session, `activity-loop: tracking ${trackedKeys.size} activity(s)`);
 
+  let tracked = [];
   while (Date.now() < deadline) {
     throwIfAborted(signal, 'Runtime run cancelled.');
     await pollActivitiesOnce(session, { pollBusy, signal });
-    const tracked = sessionActivities(session).filter((activity) => trackedKeys.has(activity.key));
+    tracked = sessionActivities(session).filter((activity) => trackedKeys.has(activity.key));
     const active = tracked.filter((activity) => !activity.terminal);
     if (active.length === 0) {
       const failures = terminalFailures(tracked);
@@ -35,11 +29,7 @@ async function waitForRuntimeActivities(session, startedActivities, { timeoutMs,
   }
 
   emitRuntimeLog(session, 'activity-loop: timeout');
-  return {
-    ok: false,
-    timedOut: true,
-    completed: sessionActivities(session).filter((activity) => trackedKeys.has(activity.key)),
-  };
+  return { ok: false, timedOut: true, completed: tracked };
 }
 
 export async function runRuntimeAgenticLoop(agent, session, initialInput, { signal, timeoutMs, maxTurns, runId, pollBusy }) {
@@ -49,14 +39,8 @@ export async function runRuntimeAgenticLoop(agent, session, initialInput, { sign
     maxTurns,
     runId,
     abortMessage: 'Runtime run cancelled.',
-    runTurn: (agentInstance, turnSession, input, { messages }) =>
-      runRuntimeAgentTurn(agentInstance, turnSession, input, messages),
     waitForActivities: (turnSession, startedActivities, waitOptions) =>
-      waitForRuntimeActivities(turnSession, startedActivities, {
-        timeoutMs: waitOptions.timeoutMs,
-        signal: waitOptions.signal,
-        pollBusy,
-      }),
+      waitForRuntimeActivities(turnSession, startedActivities, { ...waitOptions, pollBusy }),
     onTurnStart: ({ turn, maxTurns: totalTurns }) => {
       emitRuntimeLog(session, `agentic-loop: turn ${turn}/${totalTurns}`);
     },

@@ -146,17 +146,10 @@ async function runHeadlessActivityLoop(session, log, { wait, timeoutMs }) {
   return { exitCode: 1, completed, timedOut: true };
 }
 
-async function runHeadlessAgentTurn(agent, session, input, log, messages = []) {
-  session.packageJson = packageJson;
-  return runAgentTurn(agent, session, input, { messages });
-}
-
 async function runHeadlessAgenticLoop(agent, session, initialInput, log, { timeoutMs, maxTurns }) {
   const result = await runAgenticLoop(agent, session, initialInput, {
     timeoutMs,
     maxTurns,
-    runTurn: (agentInstance, turnSession, input, { messages }) =>
-      runHeadlessAgentTurn(agentInstance, turnSession, input, log, messages),
     waitForActivities: async (turnSession, _startedActivities, waitOptions) => {
       const waitResult = await runHeadlessActivityLoop(turnSession, log, { wait: true, timeoutMs: waitOptions.timeoutMs });
       return {
@@ -265,7 +258,7 @@ async function runHeadless(argv, agent) {
     if (useAgenticLoop) {
       ({ exitCode } = await runHeadlessAgenticLoop(agent, session, input, log, { timeoutMs, maxTurns }));
     } else {
-      const response = await runHeadlessAgentTurn(agent, session, input, log);
+      const response = await runAgentTurn(agent, session, input);
       log.push('response:');
       log.push(response);
       console.log(response);

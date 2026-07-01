@@ -1,13 +1,14 @@
 import { createInterface } from 'node:readline';
 import { emitKeypressEvents } from 'node:readline';
 import { Transform } from 'node:stream';
+import { execFileSync } from 'node:child_process';
 import { stdin as input, stdout as output } from 'node:process';
 import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
 import { buildAgentSystemPrompt, buildLimitedAgentResponse } from '../agent/graph.js';
 import { handleSlashCommand } from '../commands/slash.js';
 import { serviceDescription, serviceNames as composeServiceNames } from '../core/compose.js';
-import { extractActivity, sessionActivities } from '../core/activity.js';
+import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { syncActivitiesToPlan } from '../core/plan.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
@@ -669,14 +670,6 @@ function renderBannerWithMcpPanel(columns, session) {
 }
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-function parseJsonText(text) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
 
 function pathBaseName(value) {
   return String(value ?? '').split('/').filter(Boolean).pop() ?? '';
@@ -1403,14 +1396,12 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
     }
 
     if (key?.ctrl && key.name === 'y') {
-      const messages = conversationMessages(session);
       const lastDonna = [...messages].reverse().find((m) => isDonnaRole(m.role));
       if (lastDonna) {
         const text = stripAnsi(colorizeStatus(lastDonna.content)).replace(/\[[0-9;]*m/g, '');
         const clipCmd = process.platform === 'darwin'
           ? { command: 'pbcopy', args: [] }
           : { command: 'xclip', args: ['-selection', 'clipboard'] };
-        const { execFileSync } = await import('node:child_process');
         const prevLabel = spinnerLabel;
         const prevBusy = busy;
         try {

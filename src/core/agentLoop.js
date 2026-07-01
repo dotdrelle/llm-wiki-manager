@@ -87,18 +87,20 @@ export async function runAgenticLoop(agent, session, initialInput, {
       { role: 'assistant', content: response },
     );
 
-    if (turn === 1 && session.headlessPlan === null) {
-      const extractedPlan = extractHeadlessPlan(response);
-      if (extractedPlan) {
-        dispatchAgentEvent(session, createAgentEvent('plan_set', {
-          origin: planOrigin,
-          runId,
-          payload: { steps: extractedPlan },
-        }));
-        onPlanExtracted?.({ steps: session.headlessPlan ?? extractedPlan, fallback: true });
+    if (turn === 1) {
+      if (session.headlessPlan === null) {
+        const extractedPlan = extractHeadlessPlan(response);
+        if (extractedPlan) {
+          dispatchAgentEvent(session, createAgentEvent('plan_set', {
+            origin: planOrigin,
+            runId,
+            payload: { steps: extractedPlan },
+          }));
+          onPlanExtracted?.({ steps: session.headlessPlan ?? extractedPlan, fallback: true });
+        }
+      } else {
+        onPlanAlreadySet?.({ steps: session.headlessPlan });
       }
-    } else if (turn === 1 && session.headlessPlan) {
-      onPlanAlreadySet?.({ steps: session.headlessPlan });
     }
 
     const newPending = newNonTerminalActivities(snapshot, session);
@@ -124,8 +126,9 @@ export async function runAgenticLoop(agent, session, initialInput, {
       };
     }
 
-    const summary = formatCompletedActivities(waitResult.completed ?? []);
-    onActivitiesCompleted?.({ completed: waitResult.completed ?? [], summary });
+    const completed = waitResult.completed ?? [];
+    const summary = formatCompletedActivities(completed);
+    onActivitiesCompleted?.({ completed, summary });
     currentInput = completedActivitiesPrompt(initialInput, session.headlessPlan, summary);
   }
 

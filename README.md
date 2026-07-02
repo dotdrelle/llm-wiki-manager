@@ -460,6 +460,21 @@ or the shell command `/approve item <id>`. The approval timeout defaults to 10
 minutes and can be changed with `WIKI_MANAGER_APPROVAL_TIMEOUT_MS` or
 `approvalTimeoutMs` in the `/run` body.
 
+While a run is active, `GET`/`POST /control` still answers without waiting for
+it to finish: `{"action":"status"}` returns the current run/plan/queue state,
+`{"action":"explain"}` adds a one-line plain-language summary, and
+`{"action":"enqueue","input":"..."}` accepts a new request without touching the
+active plan. A queued request starts automatically as soon as the workspace
+goes idle — either because the enqueue call itself found the workspace free,
+or because the run in progress finished and drained the next queued item.
+
+`GET /config/profiles` lists the `.wikirc` profiles for a workspace and
+`POST /config/use {"profile":"..."}` switches the active one — the same
+switch as the shell's `/config use`, rejected with 409 while a run is active.
+The manager is the source of truth for which profile is active; `llm-wiki
+serve`'s config-profile picker mirrors whatever the manager reports rather
+than tracking its own state.
+
 ### Starting external agents
 
 Start CME, documents, and mailer once for all workspaces:

@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { runtimeTokenFromEnv } from './auth.js';
 
 export function startRuntimeServer({
@@ -13,6 +14,8 @@ export function startRuntimeServer({
   cancel,
   resume,
   approve,
+  configProfiles,
+  useConfigProfile,
 } = {}) {
   const clients = new Set();
   const defaultContext = { workspace: null, session, running: false, currentAbortController: null };
@@ -56,6 +59,72 @@ export function startRuntimeServer({
         sendJson(response, 200, { events: store.listEvents({ workspace }) });
         return;
       }
+      if (request.method === 'GET' && url.pathname === '/control') {
+        const workspace = workspaceFromUrl(url);
+        const context = await resolveContext({ workspace });
+        sendJson(response, 200, controlStatus(context, store));
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/control') {
+        const { body, context } = await resolveBodyContext(request, url);
+        const action = String(body.action ?? 'status').trim().toLowerCase();
+        if (action === 'status') {
+          sendJson(response, 200, controlStatus(context, store));
+          return;
+        }
+        if (action === 'explain') {
+          const status = controlStatus(context, store);
+          sendJson(response, 200, { ...status, explanation: explainControlState(status) });
+          return;
+        }
+        if (action === 'enqueue') {
+          const input = String(body.input ?? body.prompt ?? body.request ?? '').trim();
+          if (!input) {
+            sendJson(response, 400, { error: 'Missing input.' });
+            return;
+          }
+          const item = enqueueControlRequest(context, input);
+          void startNextControlRequest(context);
+          sendJson(response, 202, {
+            accepted: true,
+            item,
+            ...controlStatus(context, store),
+          });
+          return;
+        }
+        sendJson(response, 400, { error: 'Unsupported control action.' });
+        return;
+      }
+      if (request.method === 'GET' && url.pathname === '/config/profiles') {
+        if (typeof configProfiles !== 'function') {
+          sendJson(response, 501, { error: 'Config profiles are not supported.' });
+          return;
+        }
+        const workspace = workspaceFromUrl(url);
+        const context = await resolveContext({ workspace });
+        const result = await configProfiles(context);
+        sendJson(response, 200, result);
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/config/use') {
+        if (typeof useConfigProfile !== 'function') {
+          sendJson(response, 501, { error: 'Config profile switching is not supported.' });
+          return;
+        }
+        const { body, context } = await resolveBodyContext(request, url);
+        if (context.running) {
+          sendJson(response, 409, { error: 'Cannot switch config while a runtime run is active.' });
+          return;
+        }
+        const profile = String(body.profile ?? '').trim();
+        if (!profile) {
+          sendJson(response, 400, { error: 'Missing profile.' });
+          return;
+        }
+        const result = await useConfigProfile(context, profile);
+        sendJson(response, 200, result);
+        return;
+      }
       if (request.method === 'GET' && url.pathname === '/events/stream') {
         const workspace = workspaceFromUrl(url);
         const context = workspace ? await resolveContext({ workspace }) : null;
@@ -72,9 +141,7 @@ export function startRuntimeServer({
         return;
       }
       if (request.method === 'POST' && url.pathname === '/run') {
-        const body = await readJson(request);
-        const workspace = workspaceFromBody(body) ?? workspaceFromUrl(url);
-        const context = await resolveContext({ workspace });
+        const { body, context } = await resolveBodyContext(request, url);
         if (context.running) {
           sendJson(response, 409, { error: 'A runtime run is already active.' });
           return;
@@ -85,21 +152,8 @@ export function startRuntimeServer({
             sendJson(response, 400, { error: 'Missing input.' });
             return;
           }
-          const runId = randomUUID();
-          const runWorkspace = context.workspace ?? workspace ?? null;
-          context.running = true;
-          context.currentAbortController = new AbortController();
-          const runBody = { ...body, workspace: runWorkspace, runId };
-          const runPromise = run(context, runBody, { signal: context.currentAbortController.signal, runId });
-          runPromise
-            .catch((err) => {
-              context.session?._onRuntimeError?.(err);
-            })
-            .finally(() => {
-              context.running = false;
-              context.currentAbortController = null;
-            });
-          sendJson(response, 202, { accepted: true, runId, workspace: runWorkspace });
+          const accepted = startRuntimeRun(context, body);
+          sendJson(response, 202, accepted);
         } catch (err) {
           context.running = false;
           context.currentAbortController = null;
@@ -153,6 +207,7 @@ export function startRuntimeServer({
         host,
         port: typeof address === 'object' && address ? address.port : port,
         publish,
+        drainControl: (context) => startNextControlRequest(context),
         close: () => new Promise((closeResolve, closeReject) => {
           for (const client of clients) client.response.end();
           clients.clear();
@@ -165,6 +220,54 @@ export function startRuntimeServer({
   async function resolveContext({ workspace = null } = {}) {
     return resolvedGetContext(workspace);
   }
+
+  // Shared by POST handlers that take a JSON body carrying an optional
+  // `workspace` field: read the body, resolve the target workspace (body
+  // wins over the `?workspace=` query param), then resolve its context.
+  async function resolveBodyContext(request, url) {
+    const body = await readJson(request);
+    const workspace = workspaceFromBody(body) ?? workspaceFromUrl(url);
+    const context = await resolveContext({ workspace });
+    return { body, workspace, context };
+  }
+
+  function startRuntimeRun(context, body, { controlItemId = null } = {}) {
+    const runId = randomUUID();
+    const runWorkspace = context.workspace ?? body.workspace ?? null;
+    context.running = true;
+    context.currentAbortController = new AbortController();
+    const runBody = { ...body, workspace: runWorkspace, runId };
+    if (controlItemId) {
+      dispatchAgentEvent(context.session, createAgentEvent('control_started', {
+        origin: 'runtime',
+        runId,
+        workspace: runWorkspace,
+        payload: { id: controlItemId, runId },
+      }));
+    }
+    const runPromise = run(context, runBody, { signal: context.currentAbortController.signal, runId });
+    runPromise
+      .catch((err) => {
+        context.session?._onRuntimeError?.(err);
+      })
+      .finally(() => {
+        context.running = false;
+        context.currentAbortController = null;
+        void startNextControlRequest(context);
+      });
+    return { accepted: true, runId, workspace: runWorkspace };
+  }
+
+  function startNextControlRequest(context) {
+    if (!context?.session || context.running) return false;
+    const item = controlQueueFor(context.session).find((entry) => entry.status === 'queued');
+    if (!item) return false;
+    startRuntimeRun(context, {
+      input: item.input,
+      workspace: item.workspace ?? context.workspace ?? null,
+    }, { controlItemId: item.id });
+    return true;
+  }
 }
 
 function workspaceFromUrl(url) {
@@ -175,6 +278,66 @@ function workspaceFromUrl(url) {
 function workspaceFromBody(body) {
   const workspace = body?.workspace;
   return workspace == null ? null : String(workspace).trim() || null;
+}
+
+function controlStatus(context, store) {
+  const workspace = context?.workspace ?? context?.session?.workspace ?? null;
+  const state = store.getState(context?.session ?? null, { workspace });
+  return {
+    ok: true,
+    workspace,
+    status: context?.running ? 'running' : state.status ?? 'idle',
+    running: Boolean(context?.running),
+    plan: Array.isArray(state.plan) ? state.plan : [],
+    queue: Array.isArray(state.queue) ? state.queue : [],
+    controlQueue: controlQueueFor(context?.session),
+    approvals: Array.isArray(state.approvals) ? state.approvals : [],
+    summary: state.summary ?? null,
+  };
+}
+
+function explainControlState(status) {
+  if (status.running) {
+    const runningStep = status.plan.find((step) => step.status === 'running');
+    return runningStep
+      ? `Runtime run is active. Current step: ${runningStep.description ?? runningStep.label ?? runningStep.step}.`
+      : 'Runtime run is active. No current plan step is available yet.';
+  }
+  const pendingApproval = status.approvals.find((approval) => approval.status === 'pending_approval');
+  if (pendingApproval) {
+    return `Runtime is waiting for approval: ${pendingApproval.reason ?? pendingApproval.id}.`;
+  }
+  const queued = status.controlQueue.filter((item) => item.status === 'queued');
+  if (queued.length > 0) {
+    return `${queued.length} control request${queued.length === 1 ? '' : 's'} queued. They are not applied to the active plan automatically.`;
+  }
+  if (status.plan.some((step) => step.status === 'pending')) {
+    return 'Runtime is idle with pending plan steps visible from the last run.';
+  }
+  return 'Runtime is idle.';
+}
+
+function controlQueueFor(session) {
+  return Array.isArray(session?.controlQueue) ? session.controlQueue : [];
+}
+
+function enqueueControlRequest(context, input) {
+  const now = new Date().toISOString();
+  const item = {
+    id: `control-${randomUUID()}`,
+    workspace: context?.workspace ?? context?.session?.workspace ?? null,
+    type: 'run_request',
+    input,
+    status: 'queued',
+    createdAt: now,
+    updatedAt: now,
+  };
+  dispatchAgentEvent(context.session, createAgentEvent('control_enqueued', {
+    origin: 'runtime',
+    workspace: item.workspace,
+    payload: item,
+  }));
+  return item;
 }
 
 function isAuthorized(request, token) {

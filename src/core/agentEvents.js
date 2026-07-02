@@ -12,6 +12,8 @@ const SESSION_PROJECTION_EVENTS = new Set([
   'run_approved',
   'tool_pending_approval',
   'tool_approved',
+  'control_enqueued',
+  'control_started',
   'run_done',
   'run_error',
   'run_cancelled',
@@ -101,6 +103,7 @@ function createProjectionState() {
     evaluation: null,
     replans: [],
     approvals: [],
+    controlQueue: [],
     summary: null,
     status: 'idle',
   };
@@ -116,6 +119,7 @@ function publicProjection(state) {
     evaluation: state.evaluation ? { ...state.evaluation } : null,
     replans: state.replans.map((replan) => ({ ...replan, plan: [...(replan.plan ?? [])] })),
     approvals: state.approvals.map((approval) => ({ ...approval })),
+    controlQueue: state.controlQueue.map((item) => ({ ...item })),
     summary: state.summary,
     status: state.status,
   };
@@ -124,6 +128,7 @@ function publicProjection(state) {
 export function applyAgentProjectionToSession(session, projection) {
   session.headlessPlan = projection.plan ? projection.plan.map((step) => ({ ...step })) : null;
   session.activities = Object.fromEntries((projection.activities ?? []).map((activity) => [activity.key, { ...activity }]));
+  session.controlQueue = (projection.controlQueue ?? []).map((item) => ({ ...item }));
   const production = (projection.activities ?? []).filter((activity) => activity.source === 'production').at(-1);
   session.productionActivity = production ? {
     jobId: production.id,
@@ -226,14 +231,36 @@ function applyEvent(state, event) {
     case 'run_done':
       state.status = 'done';
       finishPendingPlanSteps(state.plan);
+      finishControlByRun(state.controlQueue, event.runId ?? event.payload?.runId ?? null, 'done', event.ts);
       return;
     case 'run_cancelled':
       state.status = 'cancelled';
       state.logs.push(String(event.payload?.message ?? 'Agent run cancelled.'));
+      finishControlByRun(state.controlQueue, event.runId ?? event.payload?.runId ?? null, 'cancelled', event.ts);
       return;
     case 'run_error':
       state.status = 'error';
       state.logs.push(String(event.payload?.message ?? 'Agent run failed.'));
+      finishControlByRun(state.controlQueue, event.runId ?? event.payload?.runId ?? null, 'failed', event.ts);
+      return;
+    case 'control_enqueued':
+      upsertControlItem(state.controlQueue, {
+        id: event.payload?.id ?? event.id,
+        workspace: event.workspace ?? event.payload?.workspace ?? null,
+        input: String(event.payload?.input ?? ''),
+        status: 'queued',
+        createdAt: event.payload?.createdAt ?? event.ts,
+        updatedAt: event.ts,
+      });
+      return;
+    case 'control_started':
+      upsertControlItem(state.controlQueue, {
+        id: event.payload?.id ?? null,
+        runId: event.runId ?? event.payload?.runId ?? null,
+        status: 'running',
+        startedAt: event.payload?.startedAt ?? event.ts,
+        updatedAt: event.ts,
+      });
       return;
     case 'runtime_log':
       state.logs.push(String(event.payload?.message ?? ''));
@@ -242,6 +269,32 @@ function applyEvent(state, event) {
     default:
       return;
   }
+}
+
+function upsertById(list, next) {
+  const index = list.findIndex((item) => item.id === next.id);
+  if (index === -1) {
+    list.push(next);
+    return;
+  }
+  list[index] = {
+    ...list[index],
+    ...next,
+  };
+}
+
+function upsertControlItem(queue, next) {
+  if (!next.id) return;
+  upsertById(queue, next);
+}
+
+function finishControlByRun(queue, runId, status, finishedAt) {
+  if (!runId) return;
+  const item = queue.find((entry) => entry.runId === runId && entry.status === 'running');
+  if (!item) return;
+  item.status = status;
+  item.finishedAt = finishedAt;
+  item.updatedAt = finishedAt;
 }
 
 function appendAssistantDelta(state, delta) {
@@ -279,15 +332,7 @@ function finishToolCall(state, payload = {}) {
 }
 
 function upsertApproval(state, next) {
-  const index = state.approvals.findIndex((approval) => approval.id === next.id);
-  if (index === -1) {
-    state.approvals.push(next);
-    return;
-  }
-  state.approvals[index] = {
-    ...state.approvals[index],
-    ...next,
-  };
+  upsertById(state.approvals, next);
 }
 
 function finishPendingPlanSteps(plan) {

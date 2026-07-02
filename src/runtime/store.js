@@ -366,6 +366,9 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       ...projection,
       runs: listRuns({ workspace }),
       queue: projectQueue(projection.plan, rawQueue, { workspace }),
+      controlQueue: Array.isArray(projection.controlQueue)
+        ? projection.controlQueue.filter((item) => !workspace || item.workspace === workspace || !item.workspace).map((item) => ({ ...item }))
+        : [],
       eventsCursor: session?.agentEvents?.at(-1)?.sequence ?? events?.at(-1)?.sequence ?? lastEventSequence,
     };
   }

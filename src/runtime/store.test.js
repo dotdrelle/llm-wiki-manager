@@ -412,6 +412,31 @@ test('runtime state exposes queue as blocked jobs and pending plan steps', () =>
   store.close();
 });
 
+test('runtime store persists and replays control queue events without mixing MCP queue', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  store.persistEvent(createAgentEvent('control_enqueued', {
+    origin: 'runtime',
+    workspace: 'docs',
+    payload: { id: 'control-docs', workspace: 'docs', input: 'later' },
+  }));
+  store.persistEvent(createAgentEvent('control_enqueued', {
+    origin: 'runtime',
+    workspace: 'juno',
+    payload: { id: 'control-juno', workspace: 'juno', input: 'other' },
+  }));
+  store.close();
+
+  const reopened = openRuntimeStore({ stateDir });
+  const session = { activities: {}, headlessPlan: null };
+  reopened.hydrateSession(session, { workspace: 'docs' });
+  const state = reopened.getState(session, { workspace: 'docs' });
+  assert.deepEqual(state.controlQueue.map((item) => item.id), ['control-docs']);
+  assert.deepEqual(state.queue, []);
+  assert.deepEqual(session.controlQueue.map((item) => item.id), ['control-docs']);
+  reopened.close();
+});
+
 test('runtime store identifies recoverable workspaces and interrupts stale runs', () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
   const store = openRuntimeStore({ stateDir });

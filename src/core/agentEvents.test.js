@@ -210,6 +210,37 @@ test('reduceAgentEvents: approvals move from pending to approved', () => {
   assert.deepEqual(projection.approvals[0].plan, ['Build']);
 });
 
+test('reduceAgentEvents: control queue is event sourced and follows run status', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('control_enqueued', {
+      origin: 'runtime',
+      workspace: 'docs',
+      payload: {
+        id: 'control-1',
+        workspace: 'docs',
+        input: 'Run after current task',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    }),
+    createAgentEvent('control_started', {
+      origin: 'runtime',
+      runId: 'run-control-1',
+      workspace: 'docs',
+      payload: { id: 'control-1', runId: 'run-control-1' },
+    }),
+    createAgentEvent('run_done', {
+      origin: 'runtime',
+      runId: 'run-control-1',
+      workspace: 'docs',
+    }),
+  ]);
+
+  assert.equal(projection.controlQueue.length, 1);
+  assert.equal(projection.controlQueue[0].id, 'control-1');
+  assert.equal(projection.controlQueue[0].status, 'done');
+  assert.equal(projection.controlQueue[0].runId, 'run-control-1');
+});
+
 test('reduceAgentEvents: activity-owned plan is used when no orchestrator plan exists', () => {
   const projection = reduceAgentEvents([
     createAgentEvent('activity_upserted', {

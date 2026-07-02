@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { createLlmClientFromWikiConfig } from '../agent/llm.js';
 import { composeServices, listServices, runWikiCli, serviceLogs, serviceStates, startService, stopService } from '../core/compose.js';
 import {
   applyMcpRuntimeStatus,
@@ -26,10 +25,10 @@ import {
 } from '../core/jobQueue.js';
 import {
   listWikircProfiles,
-  loadWikircProfile,
   resolveWikircProfile,
   summarizeWikircConfig,
 } from '../core/wikirc.js';
+import { applySessionWikircProfile } from '../core/sessionConfig.js';
 import { deleteWorkspaceAndFiles, startAgents, stopAgents } from '../core/wikiSetup.js';
 import {
   cleanDocumentUploads,
@@ -546,25 +545,6 @@ function loadWorkspaceSystemPrompt(workspacePath) {
   return existsSync(promptPath) ? readFileSync(promptPath, 'utf8').trim() || null : null;
 }
 
-function loadSessionWikirc(session, profileName = 'default') {
-  if (!session.workspacePath) {
-    throw new Error('No workspace loaded. Use /use <workspace>.');
-  }
-  const loaded = loadWikircProfile(session.workspacePath, profileName);
-  session.wikirc = {
-    profile: loaded.profile.name,
-    fileName: loaded.profile.fileName,
-    path: loaded.profile.path,
-  };
-  session.wikircConfig = loaded.config;
-  session.language = loaded.config?.language ?? null;
-  session.llm = createLlmClientFromWikiConfig(loaded.config);
-  if (session.mcp?.production) {
-    session.mcp.production.activeConfigPath = loaded.profile.fileName;
-  }
-  return summarizeWikircConfig(loaded.profile, loaded.config);
-}
-
 function clearWorkspaceSession(session) {
   session.workspace = null;
   session.workspacePath = null;
@@ -720,7 +700,7 @@ export async function handleSlashCommand(line, context) {
       context.session.systemPrompt = loadWorkspaceSystemPrompt(workspace.workspacePath);
       try {
         step(`Workspace: loading ${workspace.name} config…`);
-        const summary = loadSessionWikirc(context.session, 'default');
+        const { summary } = applySessionWikircProfile(context.session, 'default');
         step(`Workspace: discovering ${workspace.name} MCP tools…`);
         await refreshMcpRuntimeStatus(context.session);
         return {
@@ -759,7 +739,7 @@ export async function handleSlashCommand(line, context) {
           return { output: 'Usage: /config use <default|name>' };
         }
         try {
-          const summary = loadSessionWikirc(context.session, profileName);
+          const { summary } = applySessionWikircProfile(context.session, profileName);
           await refreshMcpRuntimeStatus(context.session);
           return {
             output: [

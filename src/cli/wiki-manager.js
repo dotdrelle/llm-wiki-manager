@@ -8,6 +8,8 @@ import { createAgentGraph } from '../agent/graph.js';
 import { handleSlashCommand, printHelp, printVersion, refreshMcpRuntimeStatus } from '../commands/slash.js';
 import { runShell } from '../shell/repl.js';
 import { runChecks } from '../core/startupCheck.js';
+import { applySessionWikircProfile } from '../core/sessionConfig.js';
+import { listWikircProfiles } from '../core/wikirc.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { extractActivity, parseJsonText, sessionActivities, terminalFailures } from '../core/activity.js';
 import { syncActivitiesToPlan, formatPlanStatus } from '../core/plan.js';
@@ -512,11 +514,14 @@ async function runRuntime(argv, agent) {
         };
       }
       emitRuntimeLog(context.session, manual ? 'runtime: manual resume completed' : 'runtime: recovery completed');
+      const controlStarted = pollingActivities.length === 0
+        ? serverHandle?.drainControl?.(context) === true
+        : false;
       return {
         workspace: context.workspace ?? workspace ?? null,
         resumed: true,
         interrupted: 0,
-        mode: pollingActivities.length > 0 ? 'activity_poll' : 'context',
+        mode: controlStarted ? 'control_queue' : pollingActivities.length > 0 ? 'activity_poll' : 'context',
       };
     } catch (err) {
       const interrupted = store.interruptRuns({ workspace });
@@ -628,6 +633,33 @@ async function runRuntime(argv, agent) {
     approve: async ({ workspace, runId, itemId, approvalId }) => {
       const context = await getWorkspaceContext(workspace);
       return context.approvalManager?.approve({ runId, itemId, approvalId }) ?? { approved: false };
+    },
+    configProfiles: async (context) => {
+      const profiles = listWikircProfiles(context.session.workspacePath);
+      return {
+        profiles: profiles.map((profile) => profile.name),
+        active: context.session.wikirc?.profile ?? null,
+        items: profiles.map((profile) => ({
+          name: profile.name,
+          fileName: profile.fileName,
+          default: Boolean(profile.default),
+        })),
+      };
+    },
+    useConfigProfile: async (context, profile) => {
+      const { summary, config } = applySessionWikircProfile(context.session, profile);
+      await refreshMcpRuntimeStatus(context.session);
+      dispatchAgentEvent(context.session, createAgentEvent('runtime_log', {
+        origin: 'runtime',
+        payload: { message: `runtime: config profile switched to ${context.session.wikirc?.profile ?? profile}` },
+      }));
+      return {
+        ok: true,
+        active: context.session.wikirc?.profile ?? profile,
+        fileName: context.session.wikirc?.fileName ?? null,
+        summary,
+        config,
+      };
     },
     token: auth.token,
   });

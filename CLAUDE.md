@@ -27,9 +27,10 @@ src/core/mcp.js             MCP endpoint discovery/session/tool calls
 src/core/queueStore.js      QueueStore interface (memory & SQLite impls)
 src/core/skills.js          Workspace skill discovery
 src/core/workspaces.js      Workspace registry and creation
+src/core/sessionConfig.js   Shared .wikirc profile application (shell + runtime)
 src/runtime/                Agentic runtime HTTP/SSE server + SQLite store
   store.js                  SQLite persistence (events, runs, queue_items)
-  server.js                 HTTP/SSE endpoints: /health /state /events/stream /run /cancel /resume /approve
+  server.js                 HTTP/SSE endpoints: /health /state /events/stream /run /cancel /resume /approve /control /config/profiles /config/use
   runner.js                 runRuntimeAgenticWorkflow: loop → evaluate → replan; finishRuntimeRun; evaluateRuntimeRun; replanRuntimeRun
   approvals.js              Run-level and tool-level approval gate; POST /approve handler
   supervisor.js             Background activity poller; pollBusy set shared with runner
@@ -160,9 +161,12 @@ Key modules in `src/runtime/`:
   maps all run-affecting event types to their run status (including
   `run_pending_approval` and `run_approved`).
 - **`server.js`**: `GET /health`, `GET /state`, `GET /events/stream` (SSE),
-  `POST /run`, `POST /cancel`, `POST /resume`, `POST /approve`. `running` flag
+  `POST /run`, `POST /cancel`, `POST /resume`, `POST /approve`, `GET`/`POST
+  /control`, `GET /config/profiles`, `POST /config/use`. `running` flag
   is set before `await readJson` to close the TOCTOU race on concurrent
-  `POST /run` requests.
+  `POST /run` requests. `resolveBodyContext(request, url)` centralizes the
+  read-body → resolve-workspace → resolve-context sequence shared by the
+  POST handlers that carry a JSON body.
 - **`runner.js`**: `runRuntimeAgenticWorkflow` — the full runtime run sequence:
   agentic loop → optional evaluator (`evaluateRuntimeRun`) → optional replanner
   (`replanRuntimeRun`) if evaluation fails or a tracked activity ends in error,
@@ -190,12 +194,43 @@ Key modules in `src/runtime/`:
 - **`client.js`**: HTTP client for `/run`, `/cancel`, `/resume`, `/approve`,
   `/state`, `/events/stream`.
 - **`queueStore.js`**: SQLite-backed `QueueStore` for runtime sessions.
+- **`sessionConfig.js`**: `applySessionWikircProfile(session, profileName)` —
+  the single place that loads a `.wikirc` profile, rebuilds the session's LLM
+  client, and updates `session.wikirc`/`session.wikircConfig`. Shared by the
+  shell's `/config use` (`commands/slash.js`) and the runtime's
+  `POST /config/use` handler; do not reimplement this in either caller.
 
 `POST /run` body: `{ input, workspace?, timeout?, maxTurns?, evaluate?, replans?,
 requireApproval?, approvalTimeoutMs? }`. If `workspace` differs from the current
 session, `/use <workspace>` runs before the agentic loop. The Shell sends its
 current `session.workspace`; `llm-wiki serve` injects `workspace: WORKSPACE_NAME`
 at the proxy layer (`proxyRuntimeJson` in `serve.ts`).
+
+**Control lane** (`/control`): a side channel for interacting with a workspace
+while a run is active, without touching the active plan. `GET /control` or
+`POST /control {action:"status"}` returns run/plan/queue/approvals status plus
+`controlQueue`. `POST /control {action:"explain"}` adds a one-line natural
+language summary. `POST /control {action:"enqueue", input}` appends a
+`control_enqueued` event; if the workspace is idle it starts a real run
+immediately (emitting `control_started`, tagging the item with the new
+`runId`); if a run is active, the item stays `queued` and does not touch the
+active plan. Every run's completion (`run_done`/`run_error`/`run_cancelled`)
+calls `finishControlByRun`, which closes out the control item that shares that
+`runId`, and then drains the next `queued` item if any. `controlQueue` is
+fully event-sourced (`control_enqueued`/`control_started` in
+`core/agentEvents.js`, replayed by `hydrateSession` like everything else) —
+do not go back to a plain in-memory array. Note: a control item left `queued`
+across a manager restart is rehydrated but not auto-resumed by
+`recoverWorkspace`; it only restarts when another item is enqueued or another
+run completes.
+
+**Config profile switching** (`/config/profiles`, `/config/use`): lists and
+switches the active `.wikirc` profile for a workspace via
+`applySessionWikircProfile`. `POST /config/use` is rejected with 409 while a
+run is active. `llm-wiki serve` treats the manager as the canonical source for
+which profile is active — see `llm-wiki/CLAUDE.md`'s Agent Runtime Integration
+section for how serve re-derives its own config instead of trusting the raw
+payload.
 
 MCP `tools/call` retries transient HTTP/MCP failures. Configure globally with
 `WIKI_MANAGER_MCP_RETRY_MAX_ATTEMPTS` and `WIKI_MANAGER_MCP_RETRY_BACKOFF_MS`,
@@ -264,7 +299,7 @@ remain the source of truth. Queue state is workspace-scoped.
 - Prefer `wiki-workspace` over raw `docker compose`.
 - Keep `package.json`, MCP `clientInfo.version`, and external agent
   `_AGENT_VERSION` values aligned for each coordinated release. Current release
-  line: `0.8.2`.
+  line: `0.9.2`.
 - `--cacert <path>` is the supported way to trust a local proxy/private CA for
   the manager process and Docker Compose services. The file path must exist on
   the host and be readable by Docker; the certificate is mounted directly from

@@ -1,6 +1,6 @@
 import { createSignal } from 'solid-js';
-import { postRuntimeCancel, postRuntimeRun } from '../runtime/client.js';
-import { conversationMessages, runLine } from './repl.js';
+import { postRuntimeCancel } from '../runtime/client.js';
+import { conversationMessages, runLine, submitRuntimeRun } from './repl.js';
 
 export function useAgent(props: { agent: unknown; packageJson: Record<string, unknown>; session: Record<string, any>; chatMode: () => boolean; runtimeUrl?: string | null; refresh: () => void; addLog: (line: string) => void; onRuntimeAccepted?: () => void }) {
   const [busy, setBusy] = createSignal(false);
@@ -19,14 +19,22 @@ export function useAgent(props: { agent: unknown; packageJson: Record<string, un
 
     try {
       if (props.runtimeUrl && !props.chatMode() && !trimmed.startsWith('/')) {
-        await postRuntimeRun(trimmed, {
-          url: props.runtimeUrl,
-          workspace: props.session.workspace ?? null,
-        });
         conversationMessages(props.session).push({ role: 'user', content: trimmed });
-        conversationMessages(props.session).push({ role: 'command', content: `Runtime run queued: ${props.runtimeUrl}` });
-        props.onRuntimeAccepted?.();
-        props.addLog('runtime: run accepted');
+        const outcome = await submitRuntimeRun(trimmed, {
+          runtime: { url: props.runtimeUrl },
+          session: props.session,
+        });
+        if (outcome.kind === 'accepted') {
+          conversationMessages(props.session).push({ role: 'command', content: `Runtime run queued: ${props.runtimeUrl}` });
+          props.onRuntimeAccepted?.();
+          props.addLog('runtime: run accepted');
+        } else if (outcome.kind === 'queued') {
+          conversationMessages(props.session).push({ role: 'command', content: 'Runtime is busy — request added to the control queue, it will start automatically.' });
+          props.addLog('runtime: control queued');
+        } else {
+          conversationMessages(props.session).push({ role: 'command', content: `Runtime error: ${outcome.message}` });
+          props.addLog(`runtime error: ${outcome.message}`);
+        }
         props.refresh();
         return { exit: false, runtime: true };
       }

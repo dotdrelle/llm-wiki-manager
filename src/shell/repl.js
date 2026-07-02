@@ -15,7 +15,7 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { listSkills } from '../core/skills.js';
 import { listWikircProfiles } from '../core/wikirc.js';
 import { listWorkspaces } from '../core/workspaces.js';
-import { fetchRuntimeState, postRuntimeApprove, postRuntimeCancel, postRuntimeRun, streamRuntimeEvents } from '../runtime/client.js';
+import { fetchRuntimeState, postRuntimeApprove, postRuntimeCancel, postRuntimeControl, postRuntimeRun, streamRuntimeEvents } from '../runtime/client.js';
 
 marked.use(markedTerminal());
 // marked-terminal's text renderer extracts token.text (raw string) instead of
@@ -772,6 +772,29 @@ export function applyRuntimeStateToShellSession(session, state) {
   return true;
 }
 
+// Submits a prompt to the shared runtime. If the workspace is already busy
+// (HTTP 409 from POST /run), falls back to POST /control { action: 'enqueue' }
+// instead of letting the error propagate — a caller-visible error here would
+// otherwise break the caller's keypress/event processing chain instead of
+// just reporting "runtime busy" to the user.
+export async function submitRuntimeRun(line, { runtime, session }) {
+  const workspace = session.workspace ?? null;
+  try {
+    await postRuntimeRun(line, { url: runtime.url, workspace });
+    return { kind: 'accepted' };
+  } catch (err) {
+    if (err?.status !== 409) {
+      return { kind: 'error', message: err instanceof Error ? err.message : String(err) };
+    }
+    try {
+      const result = await postRuntimeControl('enqueue', { url: runtime.url, workspace, input: line });
+      return { kind: 'queued', item: result?.item ?? null };
+    } catch (queueErr) {
+      return { kind: 'error', message: queueErr instanceof Error ? queueErr.message : String(queueErr) };
+    }
+  }
+}
+
 function activityText(session) {
   const activity = sessionActivities(session).find((item) => !item.terminal)
     ?? (session.productionActivity?.label ? session.productionActivity : null);
@@ -1499,13 +1522,18 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
             syncRuntimeState();
           }
         } else if (runtime?.url && !session.chatMode && !line.trim().startsWith('/')) {
-          await postRuntimeRun(line, {
-            url: runtime.url,
-            workspace: session.workspace ?? null,
-          });
           conversationMessages(session).push({ role: 'user', content: line });
-          conversationMessages(session).push({ role: 'command', content: `Runtime run queued: ${runtime.url}` });
-          activityLines = [...activityLines, 'runtime: run accepted'].slice(-LOWER_DETAIL_ROWS);
+          const outcome = await submitRuntimeRun(line, { runtime, session });
+          if (outcome.kind === 'accepted') {
+            conversationMessages(session).push({ role: 'command', content: `Runtime run queued: ${runtime.url}` });
+            activityLines = [...activityLines, 'runtime: run accepted'].slice(-LOWER_DETAIL_ROWS);
+          } else if (outcome.kind === 'queued') {
+            conversationMessages(session).push({ role: 'command', content: 'Runtime is busy — request added to the control queue, it will start automatically.' });
+            activityLines = [...activityLines, 'runtime: control queued'].slice(-LOWER_DETAIL_ROWS);
+          } else {
+            conversationMessages(session).push({ role: 'command', content: `Runtime error: ${outcome.message}` });
+            activityLines = [...activityLines, `runtime error: ${outcome.message}`].slice(-LOWER_DETAIL_ROWS);
+          }
           syncRuntimeState();
         } else {
           const result = await runLine(line, { agent, packageJson, session, onUpdate: rerender, onStep });

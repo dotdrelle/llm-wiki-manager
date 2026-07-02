@@ -1,6 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyRuntimeStateToShellSession, createSession, conversationMessages } from './repl.js';
+import { applyRuntimeStateToShellSession, createSession, conversationMessages, submitRuntimeRun } from './repl.js';
+
+function stubFetch(handler) {
+  const original = globalThis.fetch;
+  globalThis.fetch = handler;
+  return () => { globalThis.fetch = original; };
+}
+
+function jsonResponse(status, body) {
+  return { ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(body), json: async () => body };
+}
+
+function pathOf(url) {
+  return new URL(String(url)).pathname;
+}
 
 test('applyRuntimeStateToShellSession projects runtime state into shell session', () => {
   const session = createSession();
@@ -35,4 +49,54 @@ test('applyRuntimeStateToShellSession projects runtime state into shell session'
     { role: 'user', content: 'Build docs' },
     { role: 'donna', content: 'Working.' },
   ]);
+});
+
+test('submitRuntimeRun reports acceptance without throwing', async () => {
+  const restore = stubFetch(async (url) => {
+    assert.equal(pathOf(url), '/run');
+    return jsonResponse(202, { accepted: true, runId: 'run-1' });
+  });
+  try {
+    const session = createSession();
+    const outcome = await submitRuntimeRun('build the doc', { runtime: { url: 'http://runtime.test' }, session });
+    assert.deepEqual(outcome, { kind: 'accepted' });
+  } finally {
+    restore();
+  }
+});
+
+test('submitRuntimeRun falls back to the control queue on 409 instead of throwing', async () => {
+  const restore = stubFetch(async (url) => {
+    const path = pathOf(url);
+    if (path === '/run') return jsonResponse(409, { error: 'A runtime run is already active.' });
+    if (path === '/control') {
+      return jsonResponse(202, { accepted: true, item: { id: 'control-1', status: 'queued' } });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+  try {
+    const session = createSession();
+    const outcome = await submitRuntimeRun('build the doc', { runtime: { url: 'http://runtime.test' }, session });
+    assert.equal(outcome.kind, 'queued');
+    assert.equal(outcome.item.id, 'control-1');
+  } finally {
+    restore();
+  }
+});
+
+test('submitRuntimeRun reports a non-409 error without throwing or calling /control', async () => {
+  let controlCalled = false;
+  const restore = stubFetch(async (url) => {
+    if (pathOf(url) === '/control') controlCalled = true;
+    return jsonResponse(503, { error: 'runtime unavailable' });
+  });
+  try {
+    const session = createSession();
+    const outcome = await submitRuntimeRun('build the doc', { runtime: { url: 'http://runtime.test' }, session });
+    assert.equal(outcome.kind, 'error');
+    assert.match(outcome.message, /503/);
+    assert.equal(controlCalled, false);
+  } finally {
+    restore();
+  }
 });

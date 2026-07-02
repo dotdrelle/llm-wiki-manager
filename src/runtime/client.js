@@ -53,7 +53,33 @@ export async function postRuntimeRun(input, {
     },
     body: JSON.stringify(Object.assign({ input, workspace }, evaluate !== undefined && { evaluate }, replans !== undefined && { replans })),
   });
-  if (!response.ok) throw new Error(`Runtime run failed: HTTP ${response.status}`);
+  if (!response.ok) {
+    const err = new Error(`Runtime run failed: HTTP ${response.status}`);
+    err.status = response.status;
+    throw err;
+  }
+  return response.json();
+}
+
+export async function postRuntimeControl(action, {
+  url = runtimeUrlFromEnv(),
+  token = runtimeToken(),
+  workspace = null,
+  input = undefined,
+} = {}) {
+  const response = await fetch(runtimeEndpoint(url, '/control', workspace), {
+    method: 'POST',
+    headers: {
+      ...runtimeHeaders(token),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(Object.assign({ action }, input !== undefined && { input })),
+  });
+  if (!response.ok) {
+    const err = new Error(`Runtime control failed: HTTP ${response.status}`);
+    err.status = response.status;
+    throw err;
+  }
   return response.json();
 }
 

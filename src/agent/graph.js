@@ -66,8 +66,25 @@ const WIKI_PLAN_SET_TOOL = {
       properties: {
         steps: {
           type: 'array',
-          items: { type: 'string' },
-          description: 'Ordered step descriptions, e.g. ["CME export", "Production ingest", "Build", "Polish", "Email report"].',
+          items: {
+            anyOf: [
+              { type: 'string' },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  id: { type: 'string' },
+                  description: { type: 'string' },
+                  status: { type: 'string', enum: ['pending', 'queued', 'running', 'waiting', 'pending_approval', 'done', 'failed', 'cancelled', 'stalled', 'added_during_run'] },
+                  dependsOn: { type: 'array', items: { type: 'string' } },
+                  executor: { type: ['string', 'null'] },
+                  outputRefs: { type: 'array', items: { type: 'string' } },
+                },
+                required: ['description'],
+              },
+            ],
+          },
+          description: 'Ordered steps. Backward-compatible strings are accepted; structured steps may include id, dependsOn, executor, outputRefs.',
         },
       },
       required: ['steps'],
@@ -344,11 +361,7 @@ function handleWikiTool(session, tool, args) {
   if (tool === 'plan_set') {
     const steps = Array.isArray(args.steps) ? args.steps : [];
     emitAgentEvent(session, 'plan_set', 'tool', {
-      steps: steps.map((description, i) => ({
-        step: i + 1,
-        description: String(description),
-        status: 'pending',
-      })),
+      steps: steps.map((raw, i) => normalizeDeclaredPlanStep(raw, i, session)),
     });
     return `Plan registered: ${steps.length} step${steps.length !== 1 ? 's' : ''}.`;
   }
@@ -362,6 +375,50 @@ function handleWikiTool(session, tool, args) {
     return `Step ${args.step} marked as ${status}.`;
   }
   return `Unknown wiki tool: ${tool}`;
+}
+
+function normalizeDeclaredPlanStep(raw, index, session) {
+  const item = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw
+    : { description: String(raw) };
+  const description = String(item.description ?? item.label ?? item.name ?? item.id ?? `Step ${index + 1}`);
+  return {
+    step: Number(item.step ?? index + 1),
+    id: item.id ? String(item.id) : slugStepId(description, index),
+    description,
+    status: item.status ?? 'pending',
+    dependsOn: Array.isArray(item.dependsOn) ? item.dependsOn.map(String) : [],
+    executor: item.executor ?? selectExecutorForStep(description, session),
+    outputRefs: Array.isArray(item.outputRefs) ? item.outputRefs.map(String) : [],
+  };
+}
+
+function slugStepId(description, index) {
+  const slug = String(description)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  return slug || `task-${index + 1}`;
+}
+
+function selectExecutorForStep(description, session) {
+  const text = String(description ?? '').toLowerCase();
+  let fallback = null;
+  for (const [serverName, value] of Object.entries(session.mcp ?? {})) {
+    if (value.status !== 'connected') continue;
+    for (const tool of value.tools ?? []) {
+      const executor = `${serverName}.${tool.name}`;
+      fallback ??= executor;
+      const haystack = `${serverName} ${tool.name} ${tool.description ?? ''}`.toLowerCase();
+      if (text.split(/[^a-z0-9]+/).filter((token) => token.length >= 4).some((token) => haystack.includes(token))) {
+        return executor;
+      }
+    }
+  }
+  return fallback;
 }
 
 export function buildAgentSystemPrompt(state) {
@@ -401,8 +458,8 @@ export function buildAgentSystemPrompt(state) {
       '',
       'Task startup:',
       '  1. If the next MCP tool returns _activity.plan.steps, call that tool directly; the shell will create the visible plan from the returned activity.',
-      '  2. If the tool cannot declare its own plan, call wiki__plan_set(steps=["Step description", ...]) before executing the first step.',
-      '     Multi-tool example: wiki__plan_set(steps=["CME export", "Production pipeline", "Email report"])',
+      '  2. If the tool cannot declare its own plan, call wiki__plan_set before executing the first step. Prefer structured steps: {id, description, dependsOn, executor, outputRefs}; a legacy list of strings is still accepted.',
+      '     Multi-tool example: wiki__plan_set(steps=[{id:"cme-export",description:"CME export",dependsOn:[],executor:"cme.cme_export_run",outputRefs:["raw/untracked"]},{id:"production",description:"Production pipeline",dependsOn:["cme-export"],executor:"production.production_start_job",outputRefs:["deliverables"]}])',
       '  3. Immediately execute the first step using the appropriate MCP tool. Do not start step 2 in the same turn unless one async pipeline tool owns and declares the whole sequence.',
       '  For synchronous steps (result is immediate, no _activity polling), call wiki__plan_done(step=1) after confirming success.',
       '  For async MCP jobs (returns _activity with poll), the orchestrator tracks completion automatically.',

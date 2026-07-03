@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { applyAgentProjectionToSession, dispatchAgentEvent, reduceAgentEvents } from '../core/agentEvents.js';
 import { defaultRuntimeStateDir } from '../core/env.js';
 import { projectQueue } from '../core/jobQueue.js';
+import { projectWorkflow } from '../core/workflow.js';
 
 export { defaultRuntimeStateDir };
 
@@ -362,14 +363,21 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     const events = session?.agentProjection ? null : listEvents({ workspace });
     const projection = session?.agentProjection ?? reduceAgentEvents(events);
     const rawQueue = session?.queueStore?.list() ?? listQueue({ workspace });
-    return {
+    const queue = projectQueue(projection.plan, rawQueue, { workspace });
+    const controlQueue = Array.isArray(projection.controlQueue)
+      ? projection.controlQueue.filter((item) => !workspace || item.workspace === workspace || !item.workspace).map((item) => ({ ...item }))
+      : [];
+    const baseState = {
       ...projection,
-      runs: listRuns({ workspace }),
-      queue: projectQueue(projection.plan, rawQueue, { workspace }),
-      controlQueue: Array.isArray(projection.controlQueue)
-        ? projection.controlQueue.filter((item) => !workspace || item.workspace === workspace || !item.workspace).map((item) => ({ ...item }))
-        : [],
+      queue,
+      controlQueue,
       eventsCursor: session?.agentEvents?.at(-1)?.sequence ?? events?.at(-1)?.sequence ?? lastEventSequence,
+    };
+    const runs = listRuns({ workspace });
+    return {
+      ...baseState,
+      runs,
+      workflow: projectWorkflow({ ...baseState, runs, workspace }, events ?? session?.agentEvents ?? []),
     };
   }
 

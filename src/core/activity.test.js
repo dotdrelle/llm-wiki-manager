@@ -12,8 +12,8 @@ test('normalizeActivity: plan.steps preserved with id and label', () => {
     progress: {},
   });
   assert.deepEqual(a.plan.steps, [
-    { id: 'extract', label: 'Extraction' },
-    { id: 'build', label: 'Build' },
+    { id: 'extract', label: 'Extraction', dependsOn: [], executor: null, outputRefs: [] },
+    { id: 'build', label: 'Build', dependsOn: [], executor: null, outputRefs: [] },
   ]);
 });
 

@@ -169,6 +169,18 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   let lastVisiblePlan: Array<{ step: number; description: string; status: string }> | null = null;
   const activities = createMemo(() => {
     version();
+    const workflowActivities = nonEmptyRuntimeArray(runtimeState()?.workflow?.nodes?.filter((node: any) => node.type === 'activity'));
+    if (workflowActivities) {
+      return workflowActivities.map((node: any) => ({
+        ...(node.raw ?? {}),
+        key: node.key,
+        label: node.label,
+        status: node.status,
+        terminal: ['done', 'failed', 'cancelled'].includes(String(node.status)),
+        _runtime: true,
+        _workflow: true,
+      }));
+    }
     const runtimeActivities = nonEmptyRuntimeArray(runtimeState()?.activities);
     if (runtimeActivities) {
       return runtimeActivities.map((activity: any) => ({ ...activity, _runtime: true }));
@@ -184,6 +196,10 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   });
   const queueItems = createMemo(() => {
     version();
+    const workflowQueue = nonEmptyRuntimeArray(runtimeState()?.workflow?.nodes?.filter((node: any) => node.type === 'queue'));
+    if (workflowQueue) {
+      return workflowQueue.map((node: any) => ({ ...(node.raw ?? {}), id: node.itemId ?? node.id, label: node.label, status: node.status, _runtime: true, _workflow: true }));
+    }
     const runtimeQueue = nonEmptyRuntimeArray(runtimeState()?.queue);
     if (runtimeQueue) return runtimeQueue.map((item: any) => ({ ...item, _runtime: true }));
     return projectQueue((session as any).headlessPlan, (session as any).jobQueue ?? [], { workspace: (session as any).workspace ?? null })
@@ -191,6 +207,14 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   });
   const queueInfo = createMemo(() => {
     version();
+    const workflowQueue = runtimeState()?.workflow?.nodes?.filter((node: any) => node.type === 'queue');
+    if (Array.isArray(workflowQueue)) {
+      return {
+        active: workflowQueue.filter((item: any) => ['waiting', 'starting', 'running', 'queued', 'pending', 'pending_approval'].includes(String(item.status ?? '').toLowerCase())).length,
+        current: workflowQueue.filter((item: any) => ['starting', 'running'].includes(String(item.status ?? '').toLowerCase())).length,
+        frozen: 0,
+      };
+    }
     const runtimeQueue = runtimeState()?.queue;
     if (Array.isArray(runtimeQueue)) {
       return {
@@ -203,6 +227,16 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   });
   const plan = createMemo(() => {
     version();
+    const workflowTasks = nonEmptyRuntimeArray(runtimeState()?.workflow?.nodes?.filter((node: any) => node.type === 'task'));
+    if (workflowTasks) {
+      return workflowTasks
+        .sort((a: any, b: any) => Number(a.step ?? 0) - Number(b.step ?? 0))
+        .map((node: any, index: number) => ({
+          step: Number(node.step ?? index + 1),
+          description: String(node.description ?? node.label ?? `Step ${index + 1}`),
+          status: String(node.status ?? 'pending'),
+        }));
+    }
     const runtimePlan = nonEmptyRuntimeArray(runtimeState()?.plan);
     if (runtimePlan) {
       return runtimePlan.map((step: any, index: number) => ({

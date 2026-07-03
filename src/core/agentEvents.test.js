@@ -22,9 +22,7 @@ test('reduceAgentEvents: run_started clears stale plan', () => {
     }),
     createAgentEvent('run_started', { origin: 'user' }),
   ]);
-  assert.equal(projection.plan.length, 3);
-  assert.equal(projection.plan[0].description, 'Analyze the request');
-  assert.equal(projection.plan[0].owner, 'orchestrator');
+  assert.equal(projection.plan, null);
   assert.equal(projection.activities.length, 0);
   assert.equal(projection.status, 'running');
 });
@@ -95,7 +93,7 @@ test('reduceAgentEvents: activity attaches to orchestrator plan without replacin
   assert.equal(projection.plan[0].ownerActivityKey, 'cme:export-1');
 });
 
-test('reduceAgentEvents: run activity attaches to execution step of default plan', () => {
+test('reduceAgentEvents: run activity creates activity-owned plan when no explicit plan exists', () => {
   const projection = reduceAgentEvents([
     createAgentEvent('run_started', { origin: 'runtime' }),
     createAgentEvent('activity_upserted', {
@@ -112,28 +110,34 @@ test('reduceAgentEvents: run activity attaches to execution step of default plan
     }),
   ]);
 
-  assert.equal(projection.plan[0].status, 'done');
-  assert.equal(projection.plan[1].status, 'running');
-  assert.equal(projection.plan[1].activityKey, 'production:build-1');
-  assert.equal(projection.plan[2].status, 'pending');
+  assert.equal(projection.plan.length, 1);
+  assert.equal(projection.plan[0].description, 'Production build');
+  assert.equal(projection.plan[0].status, 'running');
+  assert.equal(projection.plan[0].owner, 'activity');
 });
 
 test('reduceAgentEvents: run_done finalizes running and pending plan steps', () => {
   const projection = reduceAgentEvents([
-    createAgentEvent('run_started', { origin: 'runtime' }),
+    createAgentEvent('plan_set', {
+      origin: 'tool',
+      payload: { steps: ['Analyze', 'Execute'] },
+    }),
     createAgentEvent('run_done', { origin: 'runtime' }),
   ]);
 
-  assert.deepEqual(projection.plan.map((step) => step.status), ['done', 'done', 'done']);
+  assert.deepEqual(projection.plan.map((step) => step.status), ['done', 'done']);
   assert.equal(projection.status, 'done');
 });
 
 test('dispatchAgentEvent: run_done finalizes session plan', () => {
   const session = {};
-  dispatchAgentEvent(session, createAgentEvent('run_started', { origin: 'runtime' }));
+  dispatchAgentEvent(session, createAgentEvent('plan_set', {
+    origin: 'tool',
+    payload: { steps: ['Analyze', 'Execute'] },
+  }));
   dispatchAgentEvent(session, createAgentEvent('run_done', { origin: 'runtime' }));
 
-  assert.deepEqual(session.headlessPlan.map((step) => step.status), ['done', 'done', 'done']);
+  assert.deepEqual(session.headlessPlan.map((step) => step.status), ['done', 'done']);
   assert.equal(session.agentProjection.status, 'done');
 });
 

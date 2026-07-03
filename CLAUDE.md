@@ -15,7 +15,9 @@ It sequences 0.9.3 → 0.11.0 across all six service repos; sections referenced
 below (e.g. "plan §4.2") point into that document. As of this writing, 0.9.3
 and 0.9.4 (`serve.ts`/`chatHtml.ts` module extraction, this repo untouched by
 that lot) are released; 0.9.5 (single orchestrator, non-blocking control-lane
-conversation — see Agent Runtime below) is in progress.
+conversation — see Agent Runtime below) and 0.9.6 (structured plan +
+`projectWorkflow` canonical projection — see Activity, Plan, Queue below) are
+implemented in the working tree, not yet released/tagged.
 
 ## Layout
 
@@ -281,20 +283,46 @@ The env-based defaults are resolved once and cached in `getEnvRetryPolicy()`.
 All plan/activity mutations go through `dispatchAgentEvent` and the reducer in
 `src/core/agentEvents.js`.
 
-- `run_started` clears stale plan/activity state; injects a default 3-step plan
-  (Analyze / Execute / Verify) owned by the orchestrator.
+- `run_started` clears stale plan/activity state; `state.plan` starts `null`
+  (0.9.6 — no fictional plan is injected; a run without a tool call or a
+  `wiki__plan_set`/`_activity.plan.steps` completes without a fake plan
+  driving it).
 - `run_done` finalizes all running/pending plan steps to `done`.
 - `run_evaluated` sets `state.evaluation { ok, reason, suggestedAction }`.
 - `run_replanned` records `state.replans[]` entries and resets the plan.
 - `run_pending_approval` sets run status to `pending_approval` in SQLite.
 - `run_approved` restores run status to `running` in SQLite.
 - `tool_pending_approval` / `tool_approved` track tool-level approval lifecycle.
-- `plan_set` replaces the current plan.
-- `activity_upserted` syncs activity and may create/replace the plan.
+- `plan_set` replaces the current plan. Steps accept the legacy string form or
+  the structured `{id, description, dependsOn, executor, outputRefs}` form
+  (`wiki__plan_set` in `src/agent/graph.js`); `executor` is picked dynamically
+  from `tools/list` by `selectExecutorForStep` when the LLM omits it — never
+  hardcoded per server.
+- `activity_upserted` syncs activity and may create/replace the plan;
+  `dependsOn`/`executor`/`outputRefs` on `_activity.plan.steps` are preserved
+  through `ensurePlanFromActivityProjection`.
 - `plan_step_updated` patches one step.
+- The free-text plan extraction fallback (`onPlanExtracted` /
+  `startRuntimeAgenticWorkflow` text parsing) is marked `deprecated fallback`
+  in its own log line; prefer structured `wiki__plan_set` or `_activity`.
+
+**`projectWorkflow(state, events)`** (`src/core/workflow.js`, 0.9.6): the
+canonical read model consumed by both Serve (`chatHtml.ts`'s
+`runtimeTaskPanelHTML`) and ShellTUI (`useSession.ts`/`repl.js`) — do not add
+a second UI-side projection. Outputs `nodes` (`run`, `task`, `activity`,
+`queue`, `approval`, `executor`, `output`, `replan` types), `relations`
+(`contains`, `depends_on`, `executed_by`, `produces`, `approves`, `replaces`),
+`current`, `next`, `progress`, `waitingReasons`, `warnings`. Decision (recorded
+in the module itself): `projectWorkflow` *consumes* the existing event-sourced
+`agentProjection`/reducer rather than replacing it — `agentProjection` stays
+the compatibility hydration format, `workflow` is the canonical UI read model.
+An old run with a flat plan (no `dependsOn`) still projects as a readable
+sequential chain. `applyAgentProjectionToSession` stores the result on
+`session.workflow`; `runtime/store.js`'s `getState()` exposes it queue-aware in
+`/state` as `workflow`.
 
 `/state` exposes: `status`, `plan`, `activities`, `conversation`, `evaluation`,
-`replans`, `approvals`, `runs`, `queue`, `eventsCursor`.
+`replans`, `approvals`, `runs`, `queue`, `workflow`, `eventsCursor`.
 
 Any MCP can opt into manager monitoring by returning additive `_activity`
 metadata with `id`, `source`, `kind`, `label`, `status`, optional `progress`,

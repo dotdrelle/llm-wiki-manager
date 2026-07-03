@@ -25,6 +25,9 @@ function normalizePlanSteps(steps) {
   return steps.map((s, i) => ({
     id: s != null && s.id != null ? String(s.id) : String(i + 1),
     label: s != null ? String(s.label ?? s.description ?? s.name ?? s.id ?? (i + 1)) : String(i + 1),
+    dependsOn: Array.isArray(s?.dependsOn) ? s.dependsOn.map(String) : [],
+    executor: s?.executor ?? null,
+    outputRefs: Array.isArray(s?.outputRefs) ? s.outputRefs.map(String) : [],
   }));
 }
 

@@ -1,5 +1,6 @@
 import { normalizeActivity } from './activity.js';
 import { attachActivityToExistingPlan, syncActivitiesToPlan } from './plan.js';
+import { projectWorkflow } from './workflow.js';
 
 const SESSION_PROJECTION_EVENTS = new Set([
   'run_started',
@@ -110,7 +111,7 @@ function createProjectionState() {
 }
 
 function publicProjection(state) {
-  return {
+  const projection = {
     conversation: state.conversation.map((message) => ({ ...message })),
     chain: state.chain.map((step) => ({ ...step })),
     plan: state.plan ? state.plan.map((step) => ({ ...step })) : null,
@@ -123,12 +124,17 @@ function publicProjection(state) {
     summary: state.summary,
     status: state.status,
   };
+  return {
+    ...projection,
+    workflow: projectWorkflow(projection),
+  };
 }
 
 export function applyAgentProjectionToSession(session, projection) {
   session.headlessPlan = projection.plan ? projection.plan.map((step) => ({ ...step })) : null;
   session.activities = Object.fromEntries((projection.activities ?? []).map((activity) => [activity.key, { ...activity }]));
   session.controlQueue = (projection.controlQueue ?? []).map((item) => ({ ...item }));
+  session.workflow = projection.workflow ? { ...projection.workflow } : null;
   const production = (projection.activities ?? []).filter((activity) => activity.source === 'production').at(-1);
   session.productionActivity = production ? {
     jobId: production.id,
@@ -143,7 +149,7 @@ function applyEvent(state, event) {
   switch (event.type) {
     case 'run_started':
       state.status = 'running';
-      state.plan = defaultRunPlan();
+      state.plan = null;
       state.chain = [];
       state.activities = {};
       state.logs = [];
@@ -368,6 +374,9 @@ function ensurePlanFromActivityProjection(state, activity) {
       id: step.id ?? null,
       description: step.label,
       status: 'pending',
+      dependsOn: Array.isArray(step.dependsOn) ? step.dependsOn.map(String) : [],
+      executor: step.executor ?? null,
+      outputRefs: Array.isArray(step.outputRefs) ? step.outputRefs.map(String) : [],
       owner: 'activity',
       ownerActivityKey: activity.key,
       _activityKey: activity.key,
@@ -396,19 +405,14 @@ function normalizePlan(steps, payload = {}) {
       id: item.id ?? null,
       description: String(item.description ?? item.label ?? item.name ?? `Step ${i + 1}`),
       status: item.status ?? 'pending',
+      dependsOn: Array.isArray(item.dependsOn) ? item.dependsOn.map(String) : [],
+      executor: item.executor ?? null,
+      outputRefs: Array.isArray(item.outputRefs) ? item.outputRefs.map(String) : [],
       owner: item.owner ?? owner,
       ownerActivityKey: item.ownerActivityKey ?? ownerActivityKey,
       _activityKey: item._activityKey ?? payload.activityKey ?? null,
     };
   });
-}
-
-function defaultRunPlan() {
-  return [
-    { step: 1, id: 'analyze', description: 'Analyze the request', status: 'running', owner: 'orchestrator', ownerActivityKey: null, _activityKey: null },
-    { step: 2, id: 'execute', description: 'Execute the required actions', status: 'pending', owner: 'orchestrator', ownerActivityKey: null, _activityKey: null },
-    { step: 3, id: 'verify', description: 'Verify the result', status: 'pending', owner: 'orchestrator', ownerActivityKey: null, _activityKey: null },
-  ];
 }
 
 function updatePlanStep(plan, payload) {

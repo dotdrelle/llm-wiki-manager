@@ -143,3 +143,67 @@ test('agent graph waits for tool-level approval configured on endpoint', async (
   }
 });
 
+test('agent graph accepts structured wiki plan steps and selects MCP executors', async () => {
+  let calls = 0;
+  const session = sessionBase({
+    mcp: {
+      cme: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3001/mcp/',
+        tools: [{
+          name: 'cme_export_run',
+          description: 'Export CME pages',
+          inputSchema: { type: 'object', properties: {} },
+        }],
+      },
+      production: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3000/mcp/',
+        tools: [{
+          name: 'production_start_job',
+          description: 'Start production job',
+          inputSchema: { type: 'object', properties: { type: { type: 'string' } } },
+        }],
+      },
+    },
+    llm: {
+      async completeWithTools() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: 'plan-call',
+              type: 'function',
+              function: {
+                name: 'wiki__plan_set',
+                arguments: JSON.stringify({
+                  steps: [
+                    { id: 'cme-export', description: 'Export CME pages', outputRefs: ['raw/untracked'] },
+                    { id: 'build', description: 'Run production build', dependsOn: ['cme-export'] },
+                  ],
+                }),
+              },
+            }],
+          };
+        }
+        return {
+          content: 'Plan ready.',
+          message: { role: 'assistant', content: 'Plan ready.' },
+          tool_calls: null,
+        };
+      },
+    },
+  });
+
+  const agent = createAgentGraph();
+  const result = await agent.invoke({ input: 'Plan export then build', session });
+
+  assert.equal(result.response, 'Plan ready.');
+  assert.deepEqual(session.headlessPlan.map((step) => step.id), ['cme-export', 'build']);
+  assert.equal(session.headlessPlan[0].executor, 'cme.cme_export_run');
+  assert.equal(session.headlessPlan[1].executor, 'production.production_start_job');
+  assert.deepEqual(session.headlessPlan[1].dependsOn, ['cme-export']);
+  assert.deepEqual(session.headlessPlan[0].outputRefs, ['raw/untracked']);
+});

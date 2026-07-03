@@ -58,7 +58,7 @@ export async function runRuntimeAgenticLoop(agent, session, initialInput, { sign
       }
     },
     onPlanExtracted: ({ steps }) => {
-      emitRuntimeLog(session, `agentic-loop: plan extracted from text (${steps.length} steps)`);
+      emitRuntimeLog(session, `agentic-loop: plan extracted from text (${steps.length} steps, deprecated fallback)`);
     },
     onComplete: () => {
       emitRuntimeLog(session, 'agentic-loop: no pending activity or plan step');

@@ -46,7 +46,7 @@ for (const [relativePath, pattern, label] of [
   ['llm-wiki-manager/src/core/mcp.js', /WIKI_MANAGER_VERSION\s*=\s*'([^']+)'/, 'wiki-manager MCP clientInfo'],
   ['llm-wiki/src/commands/serve.ts', /LLM_WIKI_VERSION\s*=\s*'([^']+)'/, 'llm-wiki serve MCP clientInfo'],
   ['llm-wiki/src/services/mcpServer.ts', /LLM_WIKI_VERSION\s*=\s*'([^']+)'/, 'llm-wiki MCP serverInfo'],
-  ['llm-wiki/src/chat/chatHtml.ts', /clientInfo:\s*\{name:\s*'MCPChat',\s*version:\s*'([^']+)'\}/, 'MCPChat clientInfo'],
+  ['llm-wiki/src/chat/runtime/mcpClientScript.ts', /clientInfo:\s*\{name:\s*'MCPChat',\s*version:\s*'([^']+)'\}/, 'MCPChat clientInfo'],
 ]) {
   matchVersion(relativePath, pattern, label);
 }

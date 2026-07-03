@@ -36,6 +36,12 @@ test('applyRuntimeStateToShellSession projects runtime state into shell session'
       terminal: false,
     }],
     queue: [{ id: 'q-1', status: 'waiting' }],
+    workflow: {
+      nodes: [{ id: 'task:build', type: 'task', label: 'Build', status: 'running' }],
+      relations: [{ type: 'contains', from: 'run:run-1', to: 'task:build' }],
+      waitingReasons: ['queue:q-1'],
+      warnings: ['legacy_sequential_plan'],
+    },
     logs: ['agentic-loop: turn 1/20'],
   });
 
@@ -45,6 +51,9 @@ test('applyRuntimeStateToShellSession projects runtime state into shell session'
   assert.equal(session.activities['production:job-1'].status, 'running');
   assert.equal(session.productionActivity.jobId, 'job-1');
   assert.equal(session.jobQueue[0].id, 'q-1');
+  assert.equal(session.workflow.nodes[0].id, 'task:build');
+  assert.equal(session.workflow.relations[0].type, 'contains');
+  assert.deepEqual(session.workflow.waitingReasons, ['queue:q-1']);
   assert.deepEqual(conversationMessages(session), [
     { role: 'user', content: 'Build docs' },
     { role: 'donna', content: 'Working.' },

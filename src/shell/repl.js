@@ -744,6 +744,15 @@ export function applyRuntimeStateToShellSession(session, state) {
     summary: state.summary ?? null,
     status: state.status ?? 'idle',
   };
+  session.workflow = state.workflow && typeof state.workflow === 'object'
+    ? {
+        ...state.workflow,
+        nodes: Array.isArray(state.workflow.nodes) ? state.workflow.nodes.map((node) => ({ ...node })) : [],
+        relations: Array.isArray(state.workflow.relations) ? state.workflow.relations.map((relation) => ({ ...relation })) : [],
+        waitingReasons: Array.isArray(state.workflow.waitingReasons) ? [...state.workflow.waitingReasons] : [],
+        warnings: Array.isArray(state.workflow.warnings) ? [...state.workflow.warnings] : [],
+      }
+    : null;
   session.headlessPlan = session.agentProjection.plan
     ? session.agentProjection.plan.map((step) => ({ ...step }))
     : null;

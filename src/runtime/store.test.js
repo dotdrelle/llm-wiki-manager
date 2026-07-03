@@ -404,11 +404,15 @@ test('runtime state exposes queue as blocked jobs and pending plan steps', () =>
     { id: 'q-done', workspace: 'docs', status: 'done', args: { type: 'done' } },
   ], { workspace: 'docs' });
 
-  const queue = store.getState(session, { workspace: 'docs' }).queue;
+  const state = store.getState(session, { workspace: 'docs' });
+  const queue = state.queue;
   assert.deepEqual(queue.map((item) => item.id), ['q-wait', 'plan-2', 'plan-3']);
   assert.equal(queue[0].queueType, 'blocked_job');
   assert.equal(queue[1].queueType, 'pending_step');
   assert.equal(queue[1].args.type, 'Build');
+  assert.ok(state.workflow.nodes.some((node) => node.id === 'task:2'));
+  assert.ok(state.workflow.nodes.some((node) => node.id === 'queue:q-wait'));
+  assert.ok(state.workflow.waitingReasons.includes('queue:q-wait'));
   store.close();
 });
 

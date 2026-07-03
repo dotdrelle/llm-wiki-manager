@@ -299,7 +299,7 @@ remain the source of truth. Queue state is workspace-scoped.
 - Prefer `wiki-workspace` over raw `docker compose`.
 - Keep `package.json`, MCP `clientInfo.version`, and external agent
   `_AGENT_VERSION` values aligned for each coordinated release. Current release
-  line: `0.9.2`.
+  line: `0.9.3`.
 - `--cacert <path>` is the supported way to trust a local proxy/private CA for
   the manager process and Docker Compose services. The file path must exist on
   the host and be readable by Docker; the certificate is mounted directly from

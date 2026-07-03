@@ -527,12 +527,16 @@ The shared `docker-compose.yml` starts one workspace stack:
 
 | Service | Role | Port variable |
 | --- | --- | --- |
-| `serve` | Wiki web UI and browser chat | `WIKI_SERVE_PORT` |
-| `mcp-http` | llm-wiki MCP endpoint | `WIKI_MCP_PORT` |
-| `production-mcp` | Production job MCP endpoint | `PRODUCTION_MCP_PORT` |
+| `serve` | Wiki web UI and browser chat, container port `3000` | `WIKI_SERVE_PORT` |
+| `mcp-http` | llm-wiki MCP endpoint, container port `3333` | `WIKI_MCP_PORT` |
+| `production-mcp` | Production job MCP endpoint, container port `8080` | `PRODUCTION_MCP_PORT` |
 
 Use `wiki-workspace` whenever possible so Compose receives the right project
 name, env file, ports, and volume mounts.
+
+Runtime split: the host manager/runtime uses Node.js 22+ for `node:sqlite`; the
+interactive OpenTUI shell uses Bun 1.2+; workspace Docker services run from the
+published images and do not depend on host `node_modules`.
 
 ```bash
 wiki-workspace list
@@ -799,12 +803,23 @@ Files matching `docker-compose*.local.yml` are ignored by Git.
 ```bash
 pnpm install
 pnpm start
+pnpm run check-versions
 pnpm run check
 ```
 
-When bumping the package version, update both `package.json` and the Streamable
-HTTP MCP `clientInfo.version` in `src/core/mcp.js`. They are kept explicit so
-remote MCP server logs show the manager build that initiated the handshake.
+When bumping a coordinated release, keep `llm-wiki`, `llm-wiki-manager`, Python
+agent `_AGENT_VERSION` values, MCP `clientInfo.version` / server versions, Git
+tags, and Docker image tags aligned. Run:
+
+```bash
+pnpm run check-versions
+CHECK_GIT_TAG=1 pnpm run check-versions          # pre-release tag check
+CHECK_DOCKER_IMAGES=1 pnpm run check-versions    # after local image build
+```
+
+`build-and-push.sh` synchronizes the coordinated version, runs
+`pnpm run check-versions`, builds images tagged with that version, and can push
+the matching `latest` tags.
 
 `pnpm run check` verifies the CLI version, help output, and limited `--once` mode.
 For headless changes, also test a controlled error path, for example:

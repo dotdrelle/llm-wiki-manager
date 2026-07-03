@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
 
+const WIKI_MANAGER_VERSION = '0.9.3';
+
 function envValue(key) {
   const filePath = managerEnvFile();
   if (existsSync(filePath)) {
@@ -230,7 +232,7 @@ async function mcpRequest(endpoint, method, params, signal, options = {}) {
           params: {
             protocolVersion: '2025-06-18',
             capabilities: {},
-            clientInfo: { name: 'wiki-manager', version: '0.9.3' },
+            clientInfo: { name: 'wiki-manager', version: WIKI_MANAGER_VERSION },
           },
         }),
       });

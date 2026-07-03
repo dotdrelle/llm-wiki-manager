@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { runtimeTokenFromEnv } from './auth.js';
 
@@ -343,8 +343,21 @@ function enqueueControlRequest(context, input) {
 function isAuthorized(request, token) {
   if (!token) return true;
   const authorization = request.headers.authorization ?? '';
-  if (authorization === `Bearer ${token}`) return true;
-  return request.headers['x-runtime-token'] === token;
+  const bearer = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+  if (constantTimeEqual(bearer, token)) return true;
+  return constantTimeEqual(headerValue(request.headers['x-runtime-token']), token);
+}
+
+function headerValue(value) {
+  if (Array.isArray(value)) return value[0] ?? '';
+  return typeof value === 'string' ? value : '';
+}
+
+function constantTimeEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left), 'utf8');
+  const rightBuffer = Buffer.from(String(right), 'utf8');
+  if (leftBuffer.length !== rightBuffer.length) return false;
+  return timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 function sendJson(response, statusCode, value) {

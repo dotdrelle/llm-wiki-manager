@@ -2,6 +2,49 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { startRuntimeServer } from './server.js';
 
+test('runtime server checks bearer and x-runtime-token credentials', async (t) => {
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      token: 'runtime-secret',
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'idle' }),
+        listEvents: () => [],
+      },
+      session: {},
+      run: async () => {},
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const url = `http://127.0.0.1:${handle.port}/health`;
+
+    const missing = await fetch(url);
+    assert.equal(missing.status, 401);
+
+    const bearer = await fetch(url, {
+      headers: { authorization: 'Bearer runtime-secret' },
+    });
+    assert.equal(bearer.status, 200);
+
+    const legacy = await fetch(url, {
+      headers: { 'x-runtime-token': 'runtime-secret' },
+    });
+    assert.equal(legacy.status, 200);
+  } finally {
+    await handle.close();
+  }
+});
+
 test('runtime server accepts only one active run', async (t) => {
   let releaseRun;
   let runCount = 0;

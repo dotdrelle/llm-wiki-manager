@@ -18,7 +18,7 @@ export function startRuntimeServer({
   useConfigProfile,
 } = {}) {
   const clients = new Set();
-  const defaultContext = { workspace: null, session, running: false, currentAbortController: null };
+  const defaultContext = { workspace: null, session, running: false, currentAbortController: null, currentRunId: null };
   const resolvedGetContext = getContext ?? (() => defaultContext);
 
   function publish(event) {
@@ -51,7 +51,7 @@ export function startRuntimeServer({
       if (request.method === 'GET' && url.pathname === '/state') {
         const workspace = workspaceFromUrl(url);
         const context = workspace ? await resolveContext({ workspace }) : null;
-        sendJson(response, 200, store.getState(context?.session ?? session, { workspace }));
+        sendJson(response, 200, runtimeState(context, store, { workspace, session }));
         return;
       }
       if (request.method === 'GET' && url.pathname === '/events') {
@@ -75,6 +75,19 @@ export function startRuntimeServer({
         if (action === 'explain') {
           const status = controlStatus(context, store);
           sendJson(response, 200, { ...status, explanation: explainControlState(status) });
+          return;
+        }
+        if (action === 'message') {
+          const input = String(body.input ?? body.message ?? body.prompt ?? body.request ?? '').trim();
+          if (!input) {
+            sendJson(response, 400, { error: 'Missing input.' });
+            return;
+          }
+          const result = handleControlMessage(context, store, input, {
+            intent: body.intent,
+            startNextControlRequest,
+          });
+          sendJson(response, result.statusCode, result.body);
           return;
         }
         if (action === 'enqueue') {
@@ -134,7 +147,7 @@ export function startRuntimeServer({
           Connection: 'keep-alive',
           'X-Accel-Buffering': 'no',
         });
-        response.write(`event: state\ndata: ${JSON.stringify(store.getState(context?.session ?? session, { workspace }))}\n\n`);
+        response.write(`event: state\ndata: ${JSON.stringify(runtimeState(context, store, { workspace, session }))}\n\n`);
         const client = { response, workspace };
         clients.add(client);
         request.on('close', () => clients.delete(client));
@@ -236,6 +249,8 @@ export function startRuntimeServer({
     const runWorkspace = context.workspace ?? body.workspace ?? null;
     context.running = true;
     context.currentAbortController = new AbortController();
+    context.currentRunId = runId;
+    context.currentRunWorkspace = runWorkspace;
     const runBody = { ...body, workspace: runWorkspace, runId };
     if (controlItemId) {
       dispatchAgentEvent(context.session, createAgentEvent('control_started', {
@@ -253,6 +268,8 @@ export function startRuntimeServer({
       .finally(() => {
         context.running = false;
         context.currentAbortController = null;
+        context.currentRunId = null;
+        context.currentRunWorkspace = null;
         void startNextControlRequest(context);
       });
     return { accepted: true, runId, workspace: runWorkspace };
@@ -282,17 +299,25 @@ function workspaceFromBody(body) {
 
 function controlStatus(context, store) {
   const workspace = context?.workspace ?? context?.session?.workspace ?? null;
-  const state = store.getState(context?.session ?? null, { workspace });
+  const state = runtimeState(context, store, { workspace });
   return {
     ok: true,
-    workspace,
+    ...state,
+    workspace: state.workspace ?? workspace,
+    running: Boolean(context?.running),
+    controlQueue: controlQueueFor(context?.session),
+    controlProposals: controlProposalsFor(context?.session),
+  };
+}
+
+function runtimeState(context, store, { workspace = null, session = null } = {}) {
+  const state = store.getState(context?.session ?? session ?? null, { workspace });
+  return {
+    ...state,
     status: context?.running ? 'running' : state.status ?? 'idle',
     running: Boolean(context?.running),
-    plan: Array.isArray(state.plan) ? state.plan : [],
-    queue: Array.isArray(state.queue) ? state.queue : [],
-    controlQueue: controlQueueFor(context?.session),
-    approvals: Array.isArray(state.approvals) ? state.approvals : [],
-    summary: state.summary ?? null,
+    runId: context?.currentRunId ?? state.runId ?? null,
+    workspace: context?.currentRunWorkspace ?? context?.workspace ?? state.workspace ?? workspace ?? null,
   };
 }
 
@@ -321,6 +346,74 @@ function controlQueueFor(session) {
   return Array.isArray(session?.controlQueue) ? session.controlQueue : [];
 }
 
+function controlProposalsFor(session) {
+  return Array.isArray(session?.controlProposals) ? session.controlProposals : [];
+}
+
+function readOnlyControlResponse(kind, classification, status, explanation, { accepted = true, extra = {} } = {}) {
+  return {
+    statusCode: 200,
+    body: { accepted, kind, classification, ...status, explanation, ...extra },
+  };
+}
+
+function handleControlMessage(context, store, input, { intent = null, startNextControlRequest = () => false } = {}) {
+  const status = controlStatus(context, store);
+  const classification = classifyControlMessage(input, status, intent);
+  if (classification.kind === 'observe') {
+    return readOnlyControlResponse('observe', classification, status, explainControlState(status));
+  }
+  if (classification.kind === 'mutate') {
+    const proposal = storeControlProposal(context, input, classification);
+    // storeControlProposal only appends to session.controlProposals; nothing else
+    // in `status` can have changed, so avoid re-querying runs/plan/queue/approvals.
+    return {
+      statusCode: 202,
+      body: {
+        accepted: true,
+        kind: 'mutate',
+        classification,
+        proposal,
+        ...status,
+        controlProposals: controlProposalsFor(context?.session),
+        explanation: 'Plan change recorded as a proposal. It is not applied automatically in this release.',
+      },
+    };
+  }
+  if (classification.kind === 'enqueue') {
+    const item = enqueueControlRequest(context, input);
+    // Unlike `mutate`, this may synchronously start a queued run (see
+    // startNextControlRequest), which can change running/plan/status — a full
+    // controlStatus() recompute is required here, not just controlQueue.
+    void startNextControlRequest(context);
+    return {
+      statusCode: 202,
+      body: {
+        accepted: true,
+        kind: 'enqueue',
+        classification,
+        item,
+        ...controlStatus(context, store),
+      },
+    };
+  }
+  if (classification.kind === 'ambiguous') {
+    return readOnlyControlResponse('ambiguous', classification, status, 'The runtime cannot safely classify this message.', {
+      accepted: false,
+      extra: {
+        choices: [
+          { action: 'message', intent: 'observe', label: 'Ask about this run' },
+          { action: 'message', intent: 'mutate', label: 'Propose a change to this run' },
+          { action: 'enqueue', intent: 'enqueue', label: 'Queue as a future run' },
+        ],
+      },
+    });
+  }
+  return readOnlyControlResponse('converse', classification, status, status.running
+    ? 'Runtime run is still active. This message was treated as conversation and did not create a queued run.'
+    : 'Runtime is idle. This message was treated as conversation and did not create a run.');
+}
+
 function enqueueControlRequest(context, input) {
   const now = new Date().toISOString();
   const item = {
@@ -338,6 +431,56 @@ function enqueueControlRequest(context, input) {
     payload: item,
   }));
   return item;
+}
+
+function storeControlProposal(context, input, classification) {
+  const now = new Date().toISOString();
+  const proposal = {
+    id: `proposal-${randomUUID()}`,
+    workspace: context?.workspace ?? context?.session?.workspace ?? null,
+    type: 'active_plan_mutation',
+    input,
+    status: 'proposed',
+    reason: classification.reason,
+    createdAt: now,
+    updatedAt: now,
+  };
+  context.session.controlProposals ??= [];
+  context.session.controlProposals.push(proposal);
+  dispatchAgentEvent(context.session, createAgentEvent('runtime_log', {
+    origin: 'runtime',
+    workspace: proposal.workspace,
+    payload: { message: `Control proposal recorded: ${input}` },
+  }));
+  return proposal;
+}
+
+// Interim classifier for control §4.2 of the plan directeur: the plan expects
+// an LLM-backed classification eventually ("la classification LLM se
+// trompera" — the plan's own fallback-UX rule presupposes an LLM). This is a
+// synchronous keyword/regex stand-in with the same {kind, confidence, reason}
+// contract, so swapping in an LLM call later shouldn't require touching
+// handleControlMessage.
+function classifyControlMessage(input, status, forcedIntent = null) {
+  // Caller (the /control message route) already trims and rejects empty input.
+  const lower = String(input ?? '').toLowerCase();
+  const intent = forcedIntent ? String(forcedIntent).toLowerCase() : null;
+  if (['observe', 'converse', 'mutate', 'enqueue'].includes(intent)) {
+    return { kind: intent, confidence: 1, reason: 'explicit_intent' };
+  }
+  if (/\b(o[uù] en est|status|statut|progress|progression|build|run|job|queue|file|logs?|explique|explain|inspect|show|montre|quoi de neuf)\b/i.test(lower)) {
+    return { kind: 'observe', confidence: 0.86, reason: 'status_or_explanation_request' };
+  }
+  if (status.running && /\b(ajoute|add|change|modifie|modify|remplace|replace|retire|remove|skip|ignore|apr[eè]s|before|after|chaque|each|plan|step|t[aâ]che)\b/i.test(lower)) {
+    return { kind: 'mutate', confidence: 0.78, reason: 'active_run_change_request' };
+  }
+  if (/\b(plus tard|later|ensuite|apr[eè]s ce run|apr[eè]s|enqueue|queue|mets en file|met en file|futur|next run|future run)\b/i.test(lower)) {
+    return { kind: 'enqueue', confidence: 0.8, reason: 'future_run_request' };
+  }
+  if (status.running && /\b(lance|run|g[eé]n[eè]re|build|export|cr[eé]e|create|send|envoie|ingest|convert|importe|import)\b/i.test(lower)) {
+    return { kind: 'ambiguous', confidence: 0.45, reason: 'active_run_action_is_ambiguous' };
+  }
+  return { kind: 'converse', confidence: 0.62, reason: 'plain_conversation' };
 }
 
 function isAuthorized(request, token) {

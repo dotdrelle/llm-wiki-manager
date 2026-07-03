@@ -65,20 +65,23 @@ test('submitRuntimeRun reports acceptance without throwing', async () => {
   }
 });
 
-test('submitRuntimeRun falls back to the control queue on 409 instead of throwing', async () => {
-  const restore = stubFetch(async (url) => {
+test('submitRuntimeRun routes busy runtime input through the control lane', async () => {
+  let controlBody = null;
+  const restore = stubFetch(async (url, init) => {
     const path = pathOf(url);
     if (path === '/run') return jsonResponse(409, { error: 'A runtime run is already active.' });
     if (path === '/control') {
-      return jsonResponse(202, { accepted: true, item: { id: 'control-1', status: 'queued' } });
+      controlBody = JSON.parse(String(init.body));
+      return jsonResponse(200, { accepted: true, kind: 'observe', explanation: 'Runtime run is active.' });
     }
     throw new Error(`unexpected fetch: ${url}`);
   });
   try {
     const session = createSession();
-    const outcome = await submitRuntimeRun('build the doc', { runtime: { url: 'http://runtime.test' }, session });
-    assert.equal(outcome.kind, 'queued');
-    assert.equal(outcome.item.id, 'control-1');
+    const outcome = await submitRuntimeRun('Où en est le build ?', { runtime: { url: 'http://runtime.test' }, session });
+    assert.equal(outcome.kind, 'observe');
+    assert.equal(outcome.result.explanation, 'Runtime run is active.');
+    assert.deepEqual(controlBody, { action: 'message', input: 'Où en est le build ?' });
   } finally {
     restore();
   }

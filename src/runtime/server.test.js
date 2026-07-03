@@ -145,6 +145,58 @@ test('runtime server returns the accepted run id and passes it to the runner', a
   }
 });
 
+test('runtime server state exposes active run identity while running', async (t) => {
+  let releaseRun;
+  const context = {
+    workspace: 'juno',
+    session: { workspace: 'juno' },
+    running: false,
+    currentAbortController: null,
+    currentRunId: null,
+  };
+  let acceptedRun;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'idle', plan: [] }),
+        listEvents: () => [],
+      },
+      getContext: async () => context,
+      run: async () => {
+        await new Promise((resolve) => { releaseRun = resolve; });
+      },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const runResponse = await fetch(`http://127.0.0.1:${handle.port}/run?workspace=juno`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: 'build' }),
+    });
+    acceptedRun = await runResponse.json();
+    const stateResponse = await fetch(`http://127.0.0.1:${handle.port}/state?workspace=juno`);
+    const state = await stateResponse.json();
+    assert.equal(state.status, 'running');
+    assert.equal(state.running, true);
+    assert.equal(state.runId, acceptedRun.runId);
+    assert.equal(state.workspace, 'juno');
+  } finally {
+    releaseRun?.();
+    await handle.close();
+  }
+});
+
 test('runtime server isolates active runs by workspace', async (t) => {
   const releases = new Map();
   const runWorkspaces = [];
@@ -463,6 +515,172 @@ test('runtime server control enqueue emits events but does not patch an active p
     assert.equal(body.plan[0].description, 'Active step');
     assert.equal(session.controlQueue[0].input, 'run this after current work');
     assert.equal(events.filter((event) => event.type === 'control_enqueued').length, 1);
+    assert.equal(runCount, 0);
+  } finally {
+    await handle.close();
+  }
+});
+
+test('runtime server control message observes an active run without enqueueing', async (t) => {
+  const session = {
+    workspace: 'juno',
+    controlQueue: [],
+  };
+  let runCount = 0;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({
+          status: 'running',
+          plan: [{ step: 1, description: 'Build documents', status: 'running' }],
+          queue: [],
+          approvals: [],
+          summary: null,
+        }),
+        listEvents: () => [],
+      },
+      getContext: async () => ({
+        workspace: 'juno',
+        session,
+        running: true,
+        currentAbortController: new AbortController(),
+      }),
+      run: async () => { runCount += 1; },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=juno`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'message', input: 'Où en est le build ?' }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.kind, 'observe');
+    assert.match(body.explanation, /Build documents/);
+    assert.equal(session.controlQueue.length, 0);
+    assert.equal(runCount, 0);
+  } finally {
+    await handle.close();
+  }
+});
+
+test('runtime server control message records active plan mutation as a proposal', async (t) => {
+  const session = {
+    workspace: 'juno',
+    controlQueue: [],
+  };
+  let runCount = 0;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({
+          status: 'running',
+          plan: [{ step: 1, description: 'Generate', status: 'running' }],
+          queue: [],
+          approvals: [],
+          summary: null,
+        }),
+        listEvents: () => [],
+      },
+      getContext: async () => ({
+        workspace: 'juno',
+        session,
+        running: true,
+        currentAbortController: new AbortController(),
+      }),
+      run: async () => { runCount += 1; },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=juno`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'message', input: 'Ajoute un envoi après chaque génération' }),
+    });
+    assert.equal(response.status, 202);
+    const body = await response.json();
+    assert.equal(body.kind, 'mutate');
+    assert.equal(body.proposal.status, 'proposed');
+    assert.equal(session.controlProposals[0].input, 'Ajoute un envoi après chaque génération');
+    assert.equal(session.controlQueue.length, 0);
+    assert.equal(runCount, 0);
+  } finally {
+    await handle.close();
+  }
+});
+
+test('runtime server control message reports ambiguity without starting a run', async (t) => {
+  const session = {
+    workspace: 'juno',
+    controlQueue: [],
+  };
+  let runCount = 0;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({
+          status: 'running',
+          plan: [{ step: 1, description: 'Generate', status: 'running' }],
+          queue: [],
+          approvals: [],
+          summary: null,
+        }),
+        listEvents: () => [],
+      },
+      getContext: async () => ({
+        workspace: 'juno',
+        session,
+        running: true,
+        currentAbortController: new AbortController(),
+      }),
+      run: async () => { runCount += 1; },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=juno`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'message', input: 'Lance aussi la publication' }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.kind, 'ambiguous');
+    assert.equal(body.choices.length, 3);
+    assert.equal(session.controlQueue.length, 0);
     assert.equal(runCount, 0);
   } finally {
     await handle.close();

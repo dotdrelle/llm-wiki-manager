@@ -773,10 +773,8 @@ export function applyRuntimeStateToShellSession(session, state) {
 }
 
 // Submits a prompt to the shared runtime. If the workspace is already busy
-// (HTTP 409 from POST /run), falls back to POST /control { action: 'enqueue' }
-// instead of letting the error propagate — a caller-visible error here would
-// otherwise break the caller's keypress/event processing chain instead of
-// just reporting "runtime busy" to the user.
+// (HTTP 409 from POST /run), route the input through the runtime control lane
+// so status questions and plan-change proposals do not become future runs.
 export async function submitRuntimeRun(line, { runtime, session }) {
   const workspace = session.workspace ?? null;
   try {
@@ -787,8 +785,8 @@ export async function submitRuntimeRun(line, { runtime, session }) {
       return { kind: 'error', message: err instanceof Error ? err.message : String(err) };
     }
     try {
-      const result = await postRuntimeControl('enqueue', { url: runtime.url, workspace, input: line });
-      return { kind: 'queued', item: result?.item ?? null };
+      const result = await postRuntimeControl('message', { url: runtime.url, workspace, input: line });
+      return { kind: result?.kind ?? 'control', result };
     } catch (queueErr) {
       return { kind: 'error', message: queueErr instanceof Error ? queueErr.message : String(queueErr) };
     }
@@ -1530,6 +1528,13 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
           } else if (outcome.kind === 'queued') {
             conversationMessages(session).push({ role: 'command', content: 'Runtime is busy — request added to the control queue, it will start automatically.' });
             activityLines = [...activityLines, 'runtime: control queued'].slice(-LOWER_DETAIL_ROWS);
+          } else if (outcome.kind === 'observe' || outcome.kind === 'converse' || outcome.kind === 'mutate') {
+            const explanation = outcome.result?.explanation ?? 'Runtime control message accepted.';
+            conversationMessages(session).push({ role: 'command', content: explanation });
+            activityLines = [...activityLines, `runtime: ${outcome.kind}`].slice(-LOWER_DETAIL_ROWS);
+          } else if (outcome.kind === 'ambiguous') {
+            conversationMessages(session).push({ role: 'command', content: 'Runtime could not classify that message. Use /queue for a future run, or ask/status more explicitly.' });
+            activityLines = [...activityLines, 'runtime: ambiguous control'].slice(-LOWER_DETAIL_ROWS);
           } else {
             conversationMessages(session).push({ role: 'command', content: `Runtime error: ${outcome.message}` });
             activityLines = [...activityLines, `runtime error: ${outcome.message}`].slice(-LOWER_DETAIL_ROWS);

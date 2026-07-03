@@ -9,6 +9,14 @@ the `donna` agent shell.
 Keep it a manager. Do not absorb responsibilities from `llm-wiki`,
 `agent-cme`, `agent-wiki-production`, or other external agents.
 
+The multi-repo roadmap driving current work lives in `plan-directeur-revise.md`
+at the wikiLLM workspace root (one level above this repo, not versioned here).
+It sequences 0.9.3 → 0.11.0 across all six service repos; sections referenced
+below (e.g. "plan §4.2") point into that document. As of this writing, 0.9.3
+and 0.9.4 (`serve.ts`/`chatHtml.ts` module extraction, this repo untouched by
+that lot) are released; 0.9.5 (single orchestrator, non-blocking control-lane
+conversation — see Agent Runtime below) is in progress.
+
 ## Layout
 
 ```text
@@ -62,7 +70,10 @@ manager directory, not in the installed npm package directory.
   no runtime stream is active.
 
 Do not route natural-language input by keyword heuristics. The user controls
-the route with `/chat`, `/agent`, and slash commands.
+the route with `/chat`, `/agent`, and slash commands. This is about the
+top-level Chat/Agent mode switch, not the `/control {action:"message"}`
+classifier described under Agent Runtime below — that one *is* currently
+keyword-based, by design as an interim step (see that section).
 
 Shell UI, deterministic command output, MCP status labels, and orchestration
 activity text must stay in English. The active workspace language is forwarded
@@ -209,10 +220,10 @@ at the proxy layer (`proxyRuntimeJson` in `serve.ts`).
 **Control lane** (`/control`): a side channel for interacting with a workspace
 while a run is active, without touching the active plan. `GET /control` or
 `POST /control {action:"status"}` returns run/plan/queue/approvals status plus
-`controlQueue`. `POST /control {action:"explain"}` adds a one-line natural
-language summary. `POST /control {action:"enqueue", input}` appends a
-`control_enqueued` event; if the workspace is idle it starts a real run
-immediately (emitting `control_started`, tagging the item with the new
+`controlQueue` and `controlProposals`. `POST /control {action:"explain"}` adds
+a one-line natural language summary. `POST /control {action:"enqueue", input}`
+appends a `control_enqueued` event; if the workspace is idle it starts a real
+run immediately (emitting `control_started`, tagging the item with the new
 `runId`); if a run is active, the item stays `queued` and does not touch the
 active plan. Every run's completion (`run_done`/`run_error`/`run_cancelled`)
 calls `finishControlByRun`, which closes out the control item that shares that
@@ -223,6 +234,29 @@ do not go back to a plain in-memory array. Note: a control item left `queued`
 across a manager restart is rehydrated but not auto-resumed by
 `recoverWorkspace`; it only restarts when another item is enqueued or another
 run completes.
+
+`POST /control {action:"message", input, intent?}` (added for plan directeur
+§4.2, "conversation non bloquante") classifies free-text input via
+`classifyControlMessage` — a synchronous keyword/regex classifier (interim
+stand-in for the plan's eventual LLM-backed classification; French+English
+patterns) — into `observe | converse | mutate | enqueue | ambiguous`, or trusts
+an explicit `intent` when the caller already knows the answer (e.g. the
+ambiguous-choice UI resubmitting with a chosen intent). Status/explanation
+questions ("où en est le build ?") always classify `observe` and never create a
+run. `mutate` (a request to change the *active* run's plan) is recorded as a
+`controlProposals` entry (`storeControlProposal`) but **not applied**
+automatically — application lands in plan directeur 0.10.0's plan-patch
+mechanism. **Known gap:** unlike `controlQueue`, `controlProposals` is a plain
+session array, not event-sourced — it does not survive a manager restart. Bring
+it in line with `controlQueue` (a `control_proposal_recorded` event + reducer
+case + `store.js` persistence) before or alongside the 0.10.0 work that makes
+proposals actually applicable — do not leave it as a second, lesser mechanism.
+`enqueue` behaves like the existing `action:"enqueue"` path above. `ambiguous`
+returns `choices` (`observe`/`mutate`/`enqueue`) instead of guessing — required
+by the plan's fallback-UX rule. ShellTUI (`repl.js`) routes a busy-runtime
+prompt through `action:"message"` instead of unconditionally enqueueing;
+`llm-wiki`'s Agent mode chat does the same via `/api/runtime/control` (see
+`llm-wiki/CLAUDE.md`).
 
 **Config profile switching** (`/config/profiles`, `/config/use`): lists and
 switches the active `.wikirc` profile for a workspace via
@@ -299,7 +333,10 @@ remain the source of truth. Queue state is workspace-scoped.
 - Prefer `wiki-workspace` over raw `docker compose`.
 - Keep `package.json`, MCP `clientInfo.version`, and external agent
   `_AGENT_VERSION` values aligned for each coordinated release. Current release
-  line: `0.9.3`.
+  line: `0.9.4`. `scripts/check-versions.js` verifies this (wired to `prepack`
+  and `prepublishOnly`; `CHECK_GIT_TAG=1` and `CHECK_DOCKER_IMAGES=1` add
+  optional pre-release gates). The root `build-and-push.sh` (outside this
+  package) syncs versions across all six service repos before building.
 - `--cacert <path>` is the supported way to trust a local proxy/private CA for
   the manager process and Docker Compose services. The file path must exist on
   the host and be readable by Docker; the certificate is mounted directly from

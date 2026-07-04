@@ -6,7 +6,7 @@ import { validateContractInDev } from '../contracts/schemas.js';
 import { runtimeTokenFromEnv } from './auth.js';
 
 export function startRuntimeServer({
-  host = '0.0.0.0',
+  host = '127.0.0.1',
   port = 7788,
   token = runtimeTokenFromEnv(),
   store,

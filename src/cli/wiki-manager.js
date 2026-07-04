@@ -281,7 +281,7 @@ async function runRuntime(argv, agent) {
       'Runs the local agentic runtime used by wiki-manager Shell and llm-wiki serve.',
       '',
       'Defaults:',
-      '  --host 0.0.0.0',
+      '  --host 127.0.0.1',
       '  --port 7788',
       '  --state-dir .wiki-manager',
     ].join('\n'));
@@ -295,7 +295,7 @@ async function runRuntime(argv, agent) {
   const { createApprovalManager } = await import('../runtime/approvals.js');
   const { runRuntimeAgenticWorkflow } = await import('../runtime/runner.js');
 
-  const host = valueAfter(argv, '--host') ?? process.env.WIKI_MANAGER_RUNTIME_HOST ?? '0.0.0.0';
+  const host = valueAfter(argv, '--host') ?? process.env.WIKI_MANAGER_RUNTIME_HOST ?? '127.0.0.1';
   const port = Number(valueAfter(argv, '--port') ?? process.env.WIKI_MANAGER_RUNTIME_PORT ?? 7788);
   const stateDir = valueAfter(argv, '--state-dir') ?? defaultRuntimeStateDir();
   const auth = resolveRuntimeAuthToken({ host, stateDir });

@@ -29,6 +29,10 @@ audit) is partially implemented in this repo: versioned contract schemas
 Python agent auth/scope/rate-limiting hardening landed in each agent repo
 (not this one) — see their own `CLAUDE.md` files.
 
+0.11.0 is an industrialized single-user deployment baseline. Multi-user support
+is specified in `llm-wiki/docs/industrialisation.md` and planned for 0.12.0; do
+not expose the runtime as a shared write surface before that work lands.
+
 ## Layout
 
 ```text
@@ -166,9 +170,11 @@ raw system commands through this tool without a separate allowlist design.
 
 ## Agent Runtime
 
-`wiki-manager runtime` starts a persistent HTTP/SSE server (default port 7788)
-that shares orchestration state between the Shell UI and `llm-wiki serve`. The
-Shell sends agent runs to the runtime; serve proxies the same runs from the web.
+`wiki-manager runtime` starts a persistent HTTP/SSE server (default
+`127.0.0.1:7788`) that shares orchestration state between the Shell UI and
+`llm-wiki serve`. The Shell sends agent runs to the runtime; serve proxies the
+same runs from the web. `--host 0.0.0.0` is an explicit exposed-host mode and
+requires bearer-token protection.
 
 The multi-turn orchestration loop is shared in `src/core/agentLoop.js`.
 Headless and runtime provide different callbacks for logging/events and
@@ -416,8 +422,9 @@ remain the source of truth. Queue state is workspace-scoped.
   `ensureRuntime` from the shell. It requires Node.js 22+ for `node:sqlite`.
   When the shell runs under Bun, lifecycle code starts the runtime with
   `WIKI_MANAGER_NODE_BIN` or `node`, never Bun.
-- The host runtime listens on `127.0.0.1:7788`/`0.0.0.0:7788` depending on
-  launch options and uses state under `.wiki-manager/`.
+- The host runtime listens on `127.0.0.1:7788` by default and uses state under
+  `.wiki-manager/`. `0.0.0.0:7788` requires an explicit `--host 0.0.0.0` or
+  `WIKI_MANAGER_RUNTIME_HOST=0.0.0.0` deployment choice.
 - `serve` receives `WIKI_MANAGER_RUNTIME_URL=http://host.docker.internal:7788`
   and `WIKI_MANAGER_RUNTIME_TOKEN` to connect to the runtime.
 - Prefer `wiki-workspace` over raw `docker compose`.
@@ -478,7 +485,7 @@ node ./bin/wiki-manager.js --headless --workspace __missing__ --prompt test
 wiki-manager --headless --workspace <workspace> --skill pipeline --timeout 3600 --max-turns 20
 wiki-workspace runtime up
 wiki-workspace runtime status
-wiki-manager runtime [--host 0.0.0.0] [--port 7788] [--state-dir .wiki-manager]
+wiki-manager runtime [--host 127.0.0.1] [--port 7788] [--state-dir .wiki-manager]
 # approve a pending run or tool approval from the shell:
 /approve run <runId>
 /approve item <itemId>

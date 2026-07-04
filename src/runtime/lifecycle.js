@@ -33,7 +33,7 @@ export async function assertRuntimeNode(executable = runtimeNodeExecutable()) {
 }
 
 export async function ensureRuntime({
-  host = process.env.WIKI_MANAGER_RUNTIME_HOST ?? '0.0.0.0',
+  host = process.env.WIKI_MANAGER_RUNTIME_HOST ?? '127.0.0.1',
   port = Number(process.env.WIKI_MANAGER_RUNTIME_PORT ?? 7788),
   stateDir = process.env.WIKI_MANAGER_STATE_DIR ?? defaultRuntimeStateDir(),
   url = process.env.WIKI_MANAGER_RUNTIME_URL ?? `http://127.0.0.1:${port}`,

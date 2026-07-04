@@ -11,6 +11,12 @@ jobs, and run one-shot headless tasks.
 The manager does not implement the wiki engine or the external agents. It
 **orchestrates** them.
 
+Scope note: 0.11.0 is an industrialized single-user deployment baseline. The
+multi-user model is specified in `llm-wiki/docs/industrialisation.md` and
+planned for 0.12.0. Until then, do not expose the runtime as a shared write
+surface; it binds to `127.0.0.1` by default, and `--host 0.0.0.0` must be an
+explicit deployment choice with bearer-token and network protection.
+
 ---
 
 ## What it's for, in one sentence

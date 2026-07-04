@@ -2,6 +2,7 @@ import { normalizeActivity } from './activity.js';
 import { attachActivityToExistingPlan, syncActivitiesToPlan } from './plan.js';
 import { applyPlanPatch, normalizePlanPatch, normalizePlanRevision, rebasePlanPatch } from './planPatch.js';
 import { projectWorkflow } from './workflow.js';
+import { validateContractInDev } from '../contracts/schemas.js';
 
 const SESSION_PROJECTION_EVENTS = new Set([
   'run_started',
@@ -48,7 +49,7 @@ export function createAgentEvent(type, {
   taskId = null,
   workspace = null,
 } = {}) {
-  return {
+  return validateContractInDev('agentRunEvent', {
     id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
     ts: new Date().toISOString(),
     type,
@@ -58,7 +59,7 @@ export function createAgentEvent(type, {
     taskId,
     workspace,
     payload,
-  };
+  });
 }
 
 export function dispatchAgentEvent(session, event) {
@@ -66,6 +67,7 @@ export function dispatchAgentEvent(session, event) {
     event.id && event.ts ? event : createAgentEvent(event.type, event),
     session,
   );
+  validateContractInDev('agentRunEvent', normalized);
   const tracksPlan = PLAN_MUTATING_EVENTS.has(normalized.type);
   const previousPlan = tracksPlan ? JSON.stringify(session.headlessPlan ?? null) : null;
   session.agentEvents ??= [];
@@ -508,6 +510,10 @@ function ensurePlanFromActivityProjection(state, activity) {
     id: null,
     description: activity.label,
     status: 'pending',
+    dependsOn: [],
+    executor: null,
+    executorQuery: null,
+    outputRefs: [],
     owner: 'activity',
     ownerActivityKey: activity.key,
     _activityKey: activity.key,
@@ -518,7 +524,7 @@ function normalizePlan(steps, payload = {}) {
   if (!Array.isArray(steps)) return null;
   const owner = payload.owner ?? 'orchestrator';
   const ownerActivityKey = payload.ownerActivityKey ?? payload.activityKey ?? null;
-  return steps.map((raw, i) => {
+  const plan = steps.map((raw, i) => {
     const item = typeof raw === 'string' ? { description: raw } : (raw ?? {});
     return {
       step: Number(item.step ?? i + 1),
@@ -539,6 +545,7 @@ function normalizePlan(steps, payload = {}) {
       _activityKey: item._activityKey ?? payload.activityKey ?? null,
     };
   });
+  return validateContractInDev('plan', plan);
 }
 
 function updatePlanStep(plan, payload) {

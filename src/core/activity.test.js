@@ -11,6 +11,8 @@ test('normalizeActivity: plan.steps preserved with id and label', () => {
     plan: { steps: [{ id: 'extract', label: 'Extraction' }, { id: 'build', label: 'Build' }] },
     progress: {},
   });
+  assert.equal(a.schemaVersion, '1');
+  assert.deepEqual(a.outputRefs, []);
   assert.deepEqual(a.plan.steps, [
     { id: 'extract', label: 'Extraction', dependsOn: [], executor: null, executorQuery: null, outputRefs: [] },
     { id: 'build', label: 'Build', dependsOn: [], executor: null, executorQuery: null, outputRefs: [] },

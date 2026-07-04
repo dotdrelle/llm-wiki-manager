@@ -1,3 +1,5 @@
+import { validateContractInDev } from '../contracts/schemas.js';
+
 const PATCH_OPS = new Set([
   'add_task',
   'add_dependency',
@@ -14,13 +16,13 @@ export function normalizePlanRevision(value) {
 
 export function normalizePlanPatch(raw = {}, { targetRunId = null, basePlanRevision = 0 } = {}) {
   const operations = Array.isArray(raw.operations) ? raw.operations : [];
-  return {
+  return validateContractInDev('planPatch', {
     id: raw.id ?? null,
     targetRunId: raw.targetRunId ?? targetRunId ?? null,
     basePlanRevision: normalizePlanRevision(raw.basePlanRevision ?? basePlanRevision),
     operations: operations.map(normalizePatchOperation).filter(Boolean),
     reason: raw.reason ?? null,
-  };
+  });
 }
 
 export function applyPlanPatch(plan, patch, { currentRevision = 0 } = {}) {

@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { normalizePlanPatch, rebasePlanPatch } from '../core/planPatch.js';
+import { validateContractInDev } from '../contracts/schemas.js';
 import { runtimeTokenFromEnv } from './auth.js';
 
 export function startRuntimeServer({
@@ -70,10 +71,12 @@ export function startRuntimeServer({
         const { body, context } = await resolveBodyContext(request, url);
         const action = String(body.action ?? 'status').trim().toLowerCase();
         if (action === 'status') {
+          validateContractInDev('controlMessage', { ...body, action });
           sendJson(response, 200, controlStatus(context, store));
           return;
         }
         if (action === 'explain') {
+          validateContractInDev('controlMessage', { ...body, action });
           const status = controlStatus(context, store);
           sendJson(response, 200, { ...status, explanation: explainControlState(status) });
           return;
@@ -84,6 +87,7 @@ export function startRuntimeServer({
             sendJson(response, 400, { error: 'Missing input.' });
             return;
           }
+          validateContractInDev('controlMessage', { ...body, action, input });
           const result = handleControlMessage(context, store, input, {
             intent: body.intent,
             startNextControlRequest,
@@ -94,6 +98,7 @@ export function startRuntimeServer({
         if (action === 'approve_patch') {
           const patchId = readRequiredPatchId(body, response);
           if (!patchId) return;
+          validateContractInDev('controlMessage', { ...body, action, patchId });
           const result = approvePlanPatch(context, store, patchId);
           sendJson(response, result.statusCode, result.body);
           return;
@@ -102,6 +107,7 @@ export function startRuntimeServer({
           const patchId = readRequiredPatchId(body, response);
           if (!patchId) return;
           const reason = String(body.reason ?? 'rejected_by_user');
+          validateContractInDev('controlMessage', { ...body, action, patchId, reason });
           const result = rejectPlanPatch(context, store, patchId, reason);
           sendJson(response, result.statusCode, result.body);
           return;
@@ -112,6 +118,7 @@ export function startRuntimeServer({
             sendJson(response, 400, { error: 'Missing input.' });
             return;
           }
+          validateContractInDev('controlMessage', { ...body, action, input });
           const item = enqueueControlRequest(context, input);
           void startNextControlRequest(context);
           sendJson(response, 202, {
@@ -181,6 +188,7 @@ export function startRuntimeServer({
             sendJson(response, 400, { error: 'Missing input.' });
             return;
           }
+          validateContractInDev('runRequest', { ...body, input });
           const accepted = startRuntimeRun(context, body);
           sendJson(response, 202, accepted);
         } catch (err) {

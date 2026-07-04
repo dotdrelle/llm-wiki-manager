@@ -1,3 +1,5 @@
+import { validateContractInDev } from '../contracts/schemas.js';
+
 export function parseJsonText(text) {
   try {
     return JSON.parse(text);
@@ -66,9 +68,13 @@ export function normalizeActivity(activity, fallback = {}) {
     kind,
     step,
   ].filter(Boolean).join(' ');
+  const outputRefs = Array.isArray(activity.outputRefs)
+    ? activity.outputRefs.map((ref) => (ref && typeof ref === 'object' ? { ...ref } : String(ref)))
+    : [];
   const normalized = {
     key: null,
-    id,
+    schemaVersion: String(activity.schemaVersion ?? '1'),
+    id: String(id ?? kind ?? 'activity'),
     source: String(source),
     kind: String(kind),
     label: String(label || `${source} ${kind}`),
@@ -83,12 +89,14 @@ export function normalizeActivity(activity, fallback = {}) {
     },
     plan: planSteps ? { steps: planSteps } : null,
     poll: normalizePoll(activity.poll ?? fallback.poll),
+    outputRefs,
     startedAt: activity.startedAt ?? fallback.startedAt ?? null,
     updatedAt: activity.updatedAt ?? new Date().toISOString(),
     error: activity.error ?? null,
     terminal: Boolean(activity.terminal ?? terminalStatus(status)),
   };
   normalized.key = activityKey(normalized);
+  validateContractInDev('activity', normalized);
   return normalized;
 }
 

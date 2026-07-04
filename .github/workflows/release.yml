@@ -1,0 +1,52 @@
+name: Release Gate
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: llm-wiki-manager
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/llm-wiki
+          path: llm-wiki
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/agent-wiki-production
+          path: agent-wiki-production
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/agent-cme
+          path: agent-external/agent-cme
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/agent-mailer-api
+          path: agent-external/agent-mailer-api
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/agent-wiki-documents
+          path: agent-external/agent-wiki-documents
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.2
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: llm-wiki-manager/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: llm-wiki-manager
+      - run: npm test
+        working-directory: llm-wiki-manager
+      - run: CHECK_GIT_TAG=1 npm run check-versions
+        working-directory: llm-wiki-manager

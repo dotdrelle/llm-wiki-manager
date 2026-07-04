@@ -12,6 +12,9 @@ workspaces/*
 !workspaces/.env.example
 *.yaml
 *.yml
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
 
 !docker-compose.yml
 docker-compose*.local.yml

@@ -337,6 +337,80 @@ test('runRuntimeParallelPlan executes ready tasks concurrently in one parent run
   assert.ok(session.agentEvents.some((event) => event.taskId === 'b'));
 });
 
+test('runRuntimeParallelPlan schedules a plan patch applied during an active parallel run', async () => {
+  const started = [];
+  const release = {};
+  const session = {
+    activities: {},
+    headlessPlan: [
+      { step: 1, id: 'a', description: 'Task A', status: 'pending', dependsOn: [] },
+      { step: 2, id: 'b', description: 'Task B', status: 'pending', dependsOn: [] },
+    ],
+  };
+  const agent = {
+    async invoke({ input }) {
+      const id = input.match(/Task id: ([^\n]+)/)?.[1];
+      started.push(id);
+      if (id === 'a' || id === 'b') {
+        await new Promise((resolve) => { release[id] = resolve; });
+      }
+      return { response: `done ${id}` };
+    },
+  };
+
+  const running = runRuntimeParallelPlan(agent, session, 'Do patched work', {
+    runId: 'run-patch-active',
+    timeoutMs: 1000,
+    maxTurns: 1,
+    concurrency: 2,
+  });
+  await waitFor(() => started.includes('a') && started.includes('b'));
+  const patch = {
+    targetRunId: 'run-patch-active',
+    basePlanRevision: session.agentProjection.planRevision,
+    operations: [
+      {
+        op: 'add_task',
+        task: {
+          id: 'c',
+          description: 'Task C added during run',
+          status: 'pending',
+          dependsOn: ['a'],
+          executor: null,
+          outputRefs: [],
+        },
+      },
+    ],
+  };
+  dispatchAgentEvent(session, createAgentEvent('plan_patch_proposed', {
+    origin: 'runtime',
+    runId: 'run-patch-active',
+    payload: { id: 'patch-active', patch },
+  }));
+  dispatchAgentEvent(session, createAgentEvent('plan_patch_approved', {
+    origin: 'runtime',
+    runId: 'run-patch-active',
+    payload: { patchId: 'patch-active' },
+  }));
+  dispatchAgentEvent(session, createAgentEvent('plan_patch_applied', {
+    origin: 'runtime',
+    runId: 'run-patch-active',
+    payload: { patchId: 'patch-active', patch },
+  }));
+
+  assert.deepEqual(session.headlessPlan.map((step) => step.id), ['a', 'b', 'c']);
+  release.a();
+  await waitFor(() => started.includes('c'));
+  release.b();
+
+  const result = await running;
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(started, ['a', 'b', 'c']);
+  assert.deepEqual(session.headlessPlan.map((step) => step.status), ['done', 'done', 'done']);
+  assert.equal(session.headlessPlan.find((step) => step.id === 'c').dependsOn[0], 'a');
+});
+
 test('runRuntimeParallelPlan serializes conflicting write locks', async () => {
   let active = 0;
   let maxActive = 0;

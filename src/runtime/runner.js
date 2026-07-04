@@ -199,10 +199,15 @@ export async function runRuntimeParallelPlan(agent, session, input, {
   const locks = new Set();
   const failures = [];
   const previousIdentity = session._currentRunIdentity;
+  const previousPlanUpdate = session._onPlanUpdate;
   session._currentRunIdentity = {
     ...(previousIdentity ?? {}),
     runId,
     workspace: session.workspace ?? previousIdentity?.workspace ?? null,
+  };
+  session._onPlanUpdate = () => {
+    previousPlanUpdate?.();
+    abortCancelledActiveTasks(session, active);
   };
   ensurePlanProjection(session, runId);
   emitRuntimeLog(session, `scheduler: parallel plan enabled (concurrency ${limit})`);
@@ -238,11 +243,15 @@ export async function runRuntimeParallelPlan(agent, session, input, {
       }
 
       const settled = await Promise.race([...active.values()].map((entry) => entry.promise));
+      const activeEntry = active.get(settled.taskId);
       active.delete(settled.taskId);
+      activeEntry?.cleanup?.();
       for (const lock of settled.locks) locks.delete(lock);
       if (settled.cancelled) {
-        await drainActive(active, locks);
-        throwIfAborted(signal, 'Runtime run cancelled.');
+        if (signal?.aborted) {
+          await drainActive(active, locks);
+          throwIfAborted(signal, 'Runtime run cancelled.');
+        }
         continue;
       }
       if (!settled.ok) failures.push(settled);
@@ -250,14 +259,27 @@ export async function runRuntimeParallelPlan(agent, session, input, {
   } finally {
     if (previousIdentity) session._currentRunIdentity = previousIdentity;
     else delete session._currentRunIdentity;
+    if (previousPlanUpdate) session._onPlanUpdate = previousPlanUpdate;
+    else delete session._onPlanUpdate;
   }
 }
 
 async function drainActive(active, locks) {
   if (active.size === 0) return;
-  await Promise.all([...active.values()].map((entry) => entry.promise));
+  const entries = [...active.values()];
+  await Promise.all(entries.map((entry) => entry.promise));
+  for (const entry of entries) entry.cleanup?.();
   active.clear();
   locks.clear();
+}
+
+function abortCancelledActiveTasks(session, active) {
+  for (const [taskId, entry] of active.entries()) {
+    const current = (session.headlessPlan ?? []).find((step) => planTaskId(step) === taskId);
+    if (current?.status === 'cancelled' && !entry.signal?.aborted) {
+      entry.controller?.abort();
+    }
+  }
 }
 
 // Scope the evaluator/replanner's view of "completed" activities to the
@@ -323,18 +345,42 @@ function startReadyTasks(agent, session, input, {
       payload: { taskId, status: 'running' },
     }));
     emitRuntimeLog(session, `scheduler: starting task ${taskId}`);
+    const taskAbort = createTaskAbortSignal(signal);
     const promise = runParallelTask(agent, session, input, task, {
-      signal,
+      signal: taskAbort.signal,
       timeoutMs,
       maxTurns,
       runId,
       pollBusy,
       locks: taskLocks,
     });
-    active.set(taskId, { taskId, locks: taskLocks, promise });
+    active.set(taskId, {
+      taskId,
+      locks: taskLocks,
+      promise,
+      controller: taskAbort.controller,
+      signal: taskAbort.signal,
+      cleanup: taskAbort.cleanup,
+    });
     started += 1;
   }
   return started;
+}
+
+function createTaskAbortSignal(parentSignal) {
+  const controller = new AbortController();
+  if (!parentSignal) return { controller, signal: controller.signal, cleanup: null };
+  if (parentSignal.aborted) {
+    controller.abort();
+    return { controller, signal: controller.signal, cleanup: null };
+  }
+  const abort = () => controller.abort();
+  parentSignal.addEventListener('abort', abort, { once: true });
+  return {
+    controller,
+    signal: controller.signal,
+    cleanup: () => parentSignal.removeEventListener('abort', abort),
+  };
 }
 
 async function runParallelTask(agent, parentSession, input, task, {
@@ -363,6 +409,9 @@ async function runParallelTask(agent, parentSession, input, task, {
         payload: { taskId, status: 'failed' },
       }));
       return { ok: false, taskId, locks, result };
+    }
+    if ((parentSession.headlessPlan ?? []).find((step) => planTaskId(step) === taskId)?.status === 'cancelled') {
+      return { ok: false, taskId, locks, cancelled: true };
     }
     dispatchAgentEvent(parentSession, createAgentEvent('plan_step_updated', {
       origin: 'runtime',

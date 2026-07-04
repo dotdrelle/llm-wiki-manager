@@ -483,6 +483,118 @@ test('runtime store persists and replays control queue events without mixing MCP
   reopened.close();
 });
 
+test('runtime store replays a parallel run into a deterministic workflow projection', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  const events = [
+    createAgentEvent('run_started', {
+      origin: 'runtime',
+      runId: 'run-parallel-replay',
+      workspace: 'docs',
+      payload: { input: 'parallel build', workspace: 'docs' },
+    }),
+    createAgentEvent('plan_set', {
+      origin: 'runtime',
+      runId: 'run-parallel-replay',
+      workspace: 'docs',
+      payload: {
+        steps: [
+          { step: 1, id: 'a', description: 'Task A', status: 'pending', dependsOn: [] },
+          { step: 2, id: 'b', description: 'Task B', status: 'pending', dependsOn: [] },
+          { step: 3, id: 'join', description: 'Join', status: 'pending', dependsOn: ['a', 'b'] },
+        ],
+      },
+    }),
+    createAgentEvent('plan_step_updated', {
+      origin: 'runtime',
+      runId: 'run-parallel-replay',
+      taskId: 'a',
+      workspace: 'docs',
+      payload: { taskId: 'a', status: 'running' },
+    }),
+    createAgentEvent('plan_step_updated', {
+      origin: 'runtime',
+      runId: 'run-parallel-replay',
+      taskId: 'b',
+      workspace: 'docs',
+      payload: { taskId: 'b', status: 'running' },
+    }),
+    createAgentEvent('activity_upserted', {
+      origin: 'tool',
+      runId: 'run-parallel-replay',
+      taskId: 'a',
+      workspace: 'docs',
+      payload: {
+        activity: {
+          id: 'job-a',
+          source: 'production',
+          label: 'Task A job',
+          status: 'done',
+          terminal: true,
+          startedAt: '2026-07-04T10:00:00.000Z',
+          updatedAt: '2026-07-04T10:00:01.000Z',
+          progress: {},
+          outputRefs: ['deliverables/a.md'],
+        },
+      },
+    }),
+    createAgentEvent('plan_step_updated', {
+      origin: 'runtime',
+      runId: 'run-parallel-replay',
+      taskId: 'a',
+      workspace: 'docs',
+      payload: { taskId: 'a', status: 'done' },
+    }),
+    createAgentEvent('plan_step_updated', {
+      origin: 'runtime',
+      runId: 'run-parallel-replay',
+      taskId: 'b',
+      workspace: 'docs',
+      payload: { taskId: 'b', status: 'done' },
+    }),
+    createAgentEvent('plan_step_updated', {
+      origin: 'runtime',
+      runId: 'run-parallel-replay',
+      taskId: 'join',
+      workspace: 'docs',
+      payload: { taskId: 'join', status: 'running' },
+    }),
+    createAgentEvent('plan_step_updated', {
+      origin: 'runtime',
+      runId: 'run-parallel-replay',
+      taskId: 'join',
+      workspace: 'docs',
+      payload: { taskId: 'join', status: 'done' },
+    }),
+    createAgentEvent('run_done', {
+      origin: 'runtime',
+      runId: 'run-parallel-replay',
+      workspace: 'docs',
+      payload: { runId: 'run-parallel-replay' },
+    }),
+  ];
+  for (const event of events) store.persistEvent(event);
+  store.close();
+
+  const first = openRuntimeStore({ stateDir });
+  const firstSession = { activities: {}, headlessPlan: null };
+  first.hydrateSession(firstSession, { workspace: 'docs' });
+  const firstWorkflow = first.getState(firstSession, { workspace: 'docs' }).workflow;
+  first.close();
+
+  const second = openRuntimeStore({ stateDir });
+  const secondSession = { activities: {}, headlessPlan: null };
+  second.hydrateSession(secondSession, { workspace: 'docs' });
+  const secondWorkflow = second.getState(secondSession, { workspace: 'docs' }).workflow;
+
+  assert.deepEqual(secondWorkflow, firstWorkflow);
+  assert.deepEqual(secondWorkflow.relations.filter((relation) => relation.type === 'depends_on'), [
+    { type: 'depends_on', from: 'task:join', to: 'task:a' },
+    { type: 'depends_on', from: 'task:join', to: 'task:b' },
+  ]);
+  second.close();
+});
+
 test('runtime store identifies recoverable workspaces and interrupts stale runs', () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
   const store = openRuntimeStore({ stateDir });

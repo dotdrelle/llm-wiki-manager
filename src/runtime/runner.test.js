@@ -411,6 +411,158 @@ test('runRuntimeParallelPlan schedules a plan patch applied during an active par
   assert.equal(session.headlessPlan.find((step) => step.id === 'c').dependsOn[0], 'a');
 });
 
+test('runRuntimeParallelPlan rejects a stale patch during an active parallel run without silently applying it', async () => {
+  const release = {};
+  const session = {
+    activities: {},
+    headlessPlan: [
+      { step: 1, id: 'a', description: 'Task A', status: 'pending', dependsOn: [] },
+      { step: 2, id: 'b', description: 'Task B', status: 'pending', dependsOn: [] },
+    ],
+  };
+  const agent = {
+    async invoke({ input }) {
+      const id = input.match(/Task id: ([^\n]+)/)?.[1];
+      await new Promise((resolve) => { release[id] = resolve; });
+      return { response: `done ${id}` };
+    },
+  };
+
+  const running = runRuntimeParallelPlan(agent, session, 'Do stale patch work', {
+    runId: 'run-stale-patch',
+    timeoutMs: 1000,
+    maxTurns: 1,
+    concurrency: 2,
+  });
+  await waitFor(() => release.a && release.b);
+  const patch = {
+    targetRunId: 'run-stale-patch',
+    basePlanRevision: session.agentProjection.planRevision + 99,
+    operations: [
+      { op: 'add_task', task: { id: 'c', description: 'Should not apply', dependsOn: ['a'] } },
+    ],
+  };
+  dispatchAgentEvent(session, createAgentEvent('plan_patch_proposed', {
+    origin: 'runtime',
+    runId: 'run-stale-patch',
+    payload: { id: 'patch-stale', patch },
+  }));
+  dispatchAgentEvent(session, createAgentEvent('plan_patch_applied', {
+    origin: 'runtime',
+    runId: 'run-stale-patch',
+    payload: { patchId: 'patch-stale', patch },
+  }));
+
+  assert.deepEqual(session.headlessPlan.map((step) => step.id), ['a', 'b']);
+  assert.equal(session.agentProjection.planPatches.find((item) => item.id === 'patch-stale').status, 'rejected');
+  assert.equal(session.agentProjection.planPatches.find((item) => item.id === 'patch-stale').rejectionReason, 'revision_mismatch');
+  release.a();
+  release.b();
+
+  const result = await running;
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(session.headlessPlan.map((step) => step.status), ['done', 'done']);
+});
+
+test('runRuntimeParallelPlan aborts a running child task cancelled by plan patch without stopping siblings', async () => {
+  const started = [];
+  let bAborted = false;
+  const session = {
+    activities: {},
+    headlessPlan: [
+      { step: 1, id: 'a', description: 'Task A', status: 'pending', dependsOn: [] },
+      { step: 2, id: 'b', description: 'Task B', status: 'pending', dependsOn: [] },
+    ],
+  };
+  const agent = {
+    async invoke({ input, signal }) {
+      const id = input.match(/Task id: ([^\n]+)/)?.[1];
+      started.push(id);
+      if (id === 'b') {
+        await new Promise((resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            bAborted = true;
+            const err = new Error('cancelled');
+            err.name = 'AbortError';
+            reject(err);
+          }, { once: true });
+        });
+      }
+      return { response: `done ${id}` };
+    },
+  };
+
+  const running = runRuntimeParallelPlan(agent, session, 'Cancel one child', {
+    runId: 'run-cancel-task',
+    timeoutMs: 1000,
+    maxTurns: 1,
+    concurrency: 2,
+  });
+  await waitFor(() => started.includes('a') && started.includes('b'));
+  await waitFor(() => session.headlessPlan.find((step) => step.id === 'a')?.status === 'done');
+  const patch = {
+    targetRunId: 'run-cancel-task',
+    basePlanRevision: session.agentProjection.planRevision,
+    operations: [{ op: 'cancel_task', taskId: 'b' }],
+  };
+  dispatchAgentEvent(session, createAgentEvent('plan_patch_applied', {
+    origin: 'runtime',
+    runId: 'run-cancel-task',
+    payload: { patchId: 'patch-cancel-b', patch },
+  }));
+
+  const result = await running;
+
+  assert.equal(result.ok, true);
+  assert.equal(bAborted, true);
+  assert.deepEqual(session.headlessPlan.map((step) => step.status), ['done', 'cancelled']);
+  assert.equal(session.agentProjection.planPatches.find((item) => item.id === 'patch-cancel-b').status, 'applied');
+});
+
+test('runRuntimeParallelPlan never exceeds the configured concurrency with twice the limit ready', async () => {
+  let active = 0;
+  let maxActive = 0;
+  const release = {};
+  const session = {
+    activities: {},
+    headlessPlan: Array.from({ length: 6 }, (_, index) => ({
+      step: index + 1,
+      id: `task-${index + 1}`,
+      description: `Task ${index + 1}`,
+      status: 'pending',
+      dependsOn: [],
+    })),
+  };
+  const agent = {
+    async invoke({ input }) {
+      const id = input.match(/Task id: ([^\n]+)/)?.[1];
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => { release[id] = resolve; });
+      active -= 1;
+      return { response: `done ${id}` };
+    },
+  };
+
+  const running = runRuntimeParallelPlan(agent, session, 'Respect limit', {
+    runId: 'run-limit',
+    timeoutMs: 1000,
+    maxTurns: 1,
+    concurrency: 3,
+  });
+  for (let batch = 0; batch < 2; batch += 1) {
+    await waitFor(() => Object.keys(release).length >= (batch + 1) * 3);
+    for (const id of Object.keys(release).slice(batch * 3, (batch + 1) * 3)) release[id]();
+  }
+
+  const result = await running;
+
+  assert.equal(result.ok, true);
+  assert.equal(maxActive, 3);
+  assert.deepEqual(session.headlessPlan.map((step) => step.status), ['done', 'done', 'done', 'done', 'done', 'done']);
+});
+
 test('runRuntimeParallelPlan serializes conflicting write locks', async () => {
   let active = 0;
   let maxActive = 0;
@@ -513,6 +665,52 @@ test('runRuntimeParallelPlan propagates parent cancellation to child tasks', asy
 
   await assert.rejects(running, { name: 'AbortError' });
   assert.equal(session.headlessPlan[0].status, 'cancelled');
+});
+
+test('runRuntimeParallelPlan aborts every active child on parent cancellation and records terminal updates after running updates', async () => {
+  const controller = new AbortController();
+  const aborted = [];
+  const session = {
+    activities: {},
+    headlessPlan: [
+      { step: 1, id: 'a', description: 'Task A', status: 'pending', dependsOn: [] },
+      { step: 2, id: 'b', description: 'Task B', status: 'pending', dependsOn: [] },
+      { step: 3, id: 'c', description: 'Task C', status: 'pending', dependsOn: [] },
+    ],
+  };
+  const agent = {
+    async invoke({ input, signal }) {
+      const id = input.match(/Task id: ([^\n]+)/)?.[1];
+      await new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          aborted.push(id);
+          const err = new Error('cancelled');
+          err.name = 'AbortError';
+          reject(err);
+        }, { once: true });
+      });
+      return { response: `done ${id}` };
+    },
+  };
+
+  const running = runRuntimeParallelPlan(agent, session, 'Cancel all children', {
+    runId: 'run-cancel-all',
+    signal: controller.signal,
+    timeoutMs: 1000,
+    maxTurns: 1,
+    concurrency: 3,
+  });
+  await waitFor(() => session.headlessPlan.every((step) => step.status === 'running'));
+  controller.abort();
+
+  await assert.rejects(running, { name: 'AbortError' });
+  assert.deepEqual(aborted.sort(), ['a', 'b', 'c']);
+  assert.deepEqual(session.headlessPlan.map((step) => step.status), ['cancelled', 'cancelled', 'cancelled']);
+  const updates = session.agentEvents
+    .filter((event) => event.type === 'plan_step_updated')
+    .map((event) => `${event.taskId}:${event.payload.status}`);
+  assert.deepEqual(updates.slice(0, 3).sort(), ['a:running', 'b:running', 'c:running']);
+  assert.deepEqual(updates.slice(3).sort(), ['a:cancelled', 'b:cancelled', 'c:cancelled']);
 });
 
 test('runRuntimeAgenticWorkflow hands off to the parallel scheduler when turn 1 sets a multi-task ready plan', async () => {

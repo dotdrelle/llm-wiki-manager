@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
+import { normalizePlanPatch, rebasePlanPatch } from '../core/planPatch.js';
 import { runtimeTokenFromEnv } from './auth.js';
 
 export function startRuntimeServer({
@@ -87,6 +88,21 @@ export function startRuntimeServer({
             intent: body.intent,
             startNextControlRequest,
           });
+          sendJson(response, result.statusCode, result.body);
+          return;
+        }
+        if (action === 'approve_patch') {
+          const patchId = readRequiredPatchId(body, response);
+          if (!patchId) return;
+          const result = approvePlanPatch(context, store, patchId);
+          sendJson(response, result.statusCode, result.body);
+          return;
+        }
+        if (action === 'reject_patch') {
+          const patchId = readRequiredPatchId(body, response);
+          if (!patchId) return;
+          const reason = String(body.reason ?? 'rejected_by_user');
+          const result = rejectPlanPatch(context, store, patchId, reason);
           sendJson(response, result.statusCode, result.body);
           return;
         }
@@ -306,7 +322,6 @@ function controlStatus(context, store) {
     workspace: state.workspace ?? workspace,
     running: Boolean(context?.running),
     controlQueue: controlQueueFor(context?.session),
-    controlProposals: controlProposalsFor(context?.session),
   };
 }
 
@@ -322,8 +337,9 @@ function runtimeState(context, store, { workspace = null, session = null } = {})
 }
 
 function explainControlState(status) {
+  const plan = Array.isArray(status.plan) ? status.plan : [];
   if (status.running) {
-    const runningStep = status.plan.find((step) => step.status === 'running');
+    const runningStep = plan.find((step) => step.status === 'running');
     return runningStep
       ? `Runtime run is active. Current step: ${runningStep.description ?? runningStep.label ?? runningStep.step}.`
       : 'Runtime run is active. No current plan step is available yet.';
@@ -336,7 +352,7 @@ function explainControlState(status) {
   if (queued.length > 0) {
     return `${queued.length} control request${queued.length === 1 ? '' : 's'} queued. They are not applied to the active plan automatically.`;
   }
-  if (status.plan.some((step) => step.status === 'pending')) {
+  if (plan.some((step) => step.status === 'pending')) {
     return 'Runtime is idle with pending plan steps visible from the last run.';
   }
   return 'Runtime is idle.';
@@ -344,10 +360,6 @@ function explainControlState(status) {
 
 function controlQueueFor(session) {
   return Array.isArray(session?.controlQueue) ? session.controlQueue : [];
-}
-
-function controlProposalsFor(session) {
-  return Array.isArray(session?.controlProposals) ? session.controlProposals : [];
 }
 
 function readOnlyControlResponse(kind, classification, status, explanation, { accepted = true, extra = {} } = {}) {
@@ -364,9 +376,7 @@ function handleControlMessage(context, store, input, { intent = null, startNextC
     return readOnlyControlResponse('observe', classification, status, explainControlState(status));
   }
   if (classification.kind === 'mutate') {
-    const proposal = storeControlProposal(context, input, classification);
-    // storeControlProposal only appends to session.controlProposals; nothing else
-    // in `status` can have changed, so avoid re-querying runs/plan/queue/approvals.
+    const proposal = storeControlProposal(context, input, classification, status);
     return {
       statusCode: 202,
       body: {
@@ -374,9 +384,8 @@ function handleControlMessage(context, store, input, { intent = null, startNextC
         kind: 'mutate',
         classification,
         proposal,
-        ...status,
-        controlProposals: controlProposalsFor(context?.session),
-        explanation: 'Plan change recorded as a proposal. It is not applied automatically in this release.',
+        ...controlStatus(context, store),
+        explanation: 'Plan patch proposed. Approve it explicitly to apply it to the active plan.',
       },
     };
   }
@@ -433,8 +442,9 @@ function enqueueControlRequest(context, input) {
   return item;
 }
 
-function storeControlProposal(context, input, classification) {
+function storeControlProposal(context, input, classification, status) {
   const now = new Date().toISOString();
+  const patch = buildPlanPatchFromInput(input, status);
   const proposal = {
     id: `proposal-${randomUUID()}`,
     workspace: context?.workspace ?? context?.session?.workspace ?? null,
@@ -442,17 +452,128 @@ function storeControlProposal(context, input, classification) {
     input,
     status: 'proposed',
     reason: classification.reason,
+    patch,
     createdAt: now,
     updatedAt: now,
   };
-  context.session.controlProposals ??= [];
-  context.session.controlProposals.push(proposal);
-  dispatchAgentEvent(context.session, createAgentEvent('runtime_log', {
+  dispatchAgentEvent(context.session, createAgentEvent('control_message_received', {
     origin: 'runtime',
+    runId: context.currentRunId ?? status.runId ?? null,
     workspace: proposal.workspace,
-    payload: { message: `Control proposal recorded: ${input}` },
+    payload: { input, intent: 'mutate', classification },
+  }));
+  dispatchAgentEvent(context.session, createAgentEvent('plan_patch_proposed', {
+    origin: 'runtime',
+    runId: context.currentRunId ?? status.runId ?? null,
+    workspace: proposal.workspace,
+    payload: {
+      id: proposal.id,
+      input,
+      patch,
+    },
   }));
   return proposal;
+}
+
+function buildPlanPatchFromInput(input, status) {
+  const plan = Array.isArray(status.plan) ? status.plan : [];
+  const doneIds = plan.filter((step) => step.status === 'done').map((step) => String(step.id ?? step.step));
+  const active = plan.find((step) => step.status === 'running')
+    ?? plan.find((step) => step.status === 'pending')
+    ?? plan.at(-1);
+  const dependsOn = active ? [String(active.id ?? active.step)] : doneIds.slice(-1);
+  const description = String(input).replace(/\s+/g, ' ').trim();
+  return normalizePlanPatch({
+    targetRunId: status.runId ?? null,
+    basePlanRevision: status.planRevision ?? 0,
+    reason: 'control_mutate',
+    operations: [{
+      op: 'add_task',
+      task: {
+        id: `task-${randomUUID().slice(0, 8)}`,
+        description,
+        dependsOn: dependsOn.filter(Boolean),
+        executorQuery: { capability: description },
+      },
+    }],
+  });
+}
+
+function approvePlanPatch(context, store, patchId) {
+  const status = controlStatus(context, store);
+  const proposal = status.planPatches.find((patch) => patch.id === patchId);
+  if (!proposal) {
+    return { statusCode: 404, body: { accepted: false, error: 'Plan patch proposal not found.' } };
+  }
+  if (proposal.status === 'applied' || proposal.status === 'rejected') {
+    // Idempotency guard: re-running applyPlanPatch here would hit
+    // duplicate_task_id for an already-applied add_task patch, and the
+    // plan_patch_applied reducer would then overwrite status back to
+    // 'rejected' even though the original application is still in effect.
+    return {
+      statusCode: 409,
+      body: { accepted: false, error: `Plan patch already ${proposal.status}.`, patchId, status: proposal.status },
+    };
+  }
+  const currentRevision = status.planRevision ?? 0;
+  let patch = proposal.patch;
+  if (!patch) {
+    return { statusCode: 400, body: { accepted: false, error: 'Plan patch proposal has no patch.' } };
+  }
+  if (patch.basePlanRevision !== currentRevision) {
+    patch = rebasePlanPatch(patch, { currentRevision });
+    dispatchAgentEvent(context.session, createAgentEvent('plan_patch_rebased', {
+      origin: 'runtime',
+      runId: context.currentRunId ?? status.runId ?? null,
+      workspace: status.workspace ?? context.workspace ?? null,
+      payload: { patchId, patch },
+    }));
+  }
+  dispatchAgentEvent(context.session, createAgentEvent('plan_patch_approved', {
+    origin: 'runtime',
+    runId: context.currentRunId ?? status.runId ?? null,
+    workspace: status.workspace ?? context.workspace ?? null,
+    payload: { patchId },
+  }));
+  dispatchAgentEvent(context.session, createAgentEvent('plan_patch_applied', {
+    origin: 'runtime',
+    runId: context.currentRunId ?? status.runId ?? null,
+    workspace: status.workspace ?? context.workspace ?? null,
+    payload: { patchId, patch },
+  }));
+  return {
+    statusCode: 202,
+    body: {
+      accepted: true,
+      kind: 'approve_patch',
+      patchId,
+      ...controlStatus(context, store),
+    },
+  };
+}
+
+function rejectPlanPatch(context, store, patchId, reason) {
+  const status = controlStatus(context, store);
+  const proposal = status.planPatches.find((patch) => patch.id === patchId);
+  if (!proposal) {
+    return { statusCode: 404, body: { accepted: false, error: 'Plan patch proposal not found.' } };
+  }
+  if (proposal.status === 'applied' || proposal.status === 'rejected') {
+    return {
+      statusCode: 409,
+      body: { accepted: false, error: `Plan patch already ${proposal.status}.`, patchId, status: proposal.status },
+    };
+  }
+  dispatchAgentEvent(context.session, createAgentEvent('plan_patch_rejected', {
+    origin: 'runtime',
+    runId: context.currentRunId ?? status.runId ?? null,
+    workspace: status.workspace ?? context.workspace ?? null,
+    payload: { patchId, reason },
+  }));
+  return {
+    statusCode: 200,
+    body: { accepted: true, kind: 'reject_patch', patchId, ...controlStatus(context, store) },
+  };
 }
 
 // Interim classifier for control §4.2 of the plan directeur: the plan expects
@@ -506,6 +627,15 @@ function constantTimeEqual(left, right) {
 function sendJson(response, statusCode, value) {
   response.writeHead(statusCode, { 'Content-Type': 'application/json' });
   response.end(`${JSON.stringify(value)}\n`);
+}
+
+function readRequiredPatchId(body, response) {
+  const patchId = String(body.patchId ?? body.id ?? '').trim();
+  if (!patchId) {
+    sendJson(response, 400, { error: 'Missing patchId.' });
+    return null;
+  }
+  return patchId;
 }
 
 function readJson(request) {

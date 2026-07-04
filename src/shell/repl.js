@@ -743,6 +743,8 @@ export function applyRuntimeStateToShellSession(session, state) {
     logs: Array.isArray(state.logs) ? [...state.logs] : [],
     summary: state.summary ?? null,
     status: state.status ?? 'idle',
+    planRevision: state.planRevision ?? 0,
+    planPatches: Array.isArray(state.planPatches) ? state.planPatches.map((patch) => ({ ...patch })) : [],
   };
   session.workflow = state.workflow && typeof state.workflow === 'object'
     ? {

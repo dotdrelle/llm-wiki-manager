@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { startRuntimeServer } from './server.js';
 
 test('runtime server checks bearer and x-runtime-token credentials', async (t) => {
@@ -581,6 +582,19 @@ test('runtime server control message records active plan mutation as a proposal'
     workspace: 'juno',
     controlQueue: [],
   };
+  dispatchAgentEvent(session, createAgentEvent('run_started', {
+    origin: 'runtime',
+    runId: 'run-mutate',
+    workspace: 'juno',
+  }));
+  dispatchAgentEvent(session, createAgentEvent('plan_set', {
+    origin: 'tool',
+    runId: 'run-mutate',
+    workspace: 'juno',
+    payload: {
+      steps: [{ step: 1, id: 'generate', description: 'Generate', status: 'running' }],
+    },
+  }));
   let runCount = 0;
   let handle;
   try {
@@ -590,11 +604,11 @@ test('runtime server control message records active plan mutation as a proposal'
       store: {
         dbPath: ':memory:',
         getState: () => ({
-          status: 'running',
-          plan: [{ step: 1, description: 'Generate', status: 'running' }],
+          ...session.agentProjection,
+          status: session.agentProjection?.status ?? 'running',
           queue: [],
-          approvals: [],
-          summary: null,
+          runs: [{ id: 'run-mutate', workspace: 'juno', status: 'running' }],
+          runId: 'run-mutate',
         }),
         listEvents: () => [],
       },
@@ -603,6 +617,7 @@ test('runtime server control message records active plan mutation as a proposal'
         session,
         running: true,
         currentAbortController: new AbortController(),
+        currentRunId: 'run-mutate',
       }),
       run: async () => { runCount += 1; },
     });
@@ -624,7 +639,24 @@ test('runtime server control message records active plan mutation as a proposal'
     const body = await response.json();
     assert.equal(body.kind, 'mutate');
     assert.equal(body.proposal.status, 'proposed');
-    assert.equal(session.controlProposals[0].input, 'Ajoute un envoi après chaque génération');
+    assert.equal(body.proposal.input, 'Ajoute un envoi après chaque génération');
+    assert.equal(session.agentProjection.planPatches[0].status, 'proposed');
+    assert.ok(session.agentEvents.some((event) => event.type === 'control_message_received'));
+    assert.ok(session.agentEvents.some((event) => event.type === 'plan_patch_proposed'));
+    const approveResponse = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=juno`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'approve_patch', patchId: body.proposal.id }),
+    });
+    assert.equal(approveResponse.status, 202);
+    const approved = await approveResponse.json();
+    assert.equal(approved.kind, 'approve_patch');
+    // plan_set (revision 0->1) then the approved patch application (1->2).
+    assert.equal(session.agentProjection.planRevision, 2);
+    assert.deepEqual(session.agentProjection.plan.map((step) => step.id), ['generate', session.agentProjection.plan[1].id]);
+    assert.deepEqual(session.agentProjection.plan[1].dependsOn, ['generate']);
+    assert.ok(session.agentEvents.some((event) => event.type === 'plan_patch_approved'));
+    assert.ok(session.agentEvents.some((event) => event.type === 'plan_patch_applied'));
     assert.equal(session.controlQueue.length, 0);
     assert.equal(runCount, 0);
   } finally {

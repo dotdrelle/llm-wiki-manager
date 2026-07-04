@@ -308,3 +308,41 @@ test('dispatchAgentEvent: assistant deltas do not rewrite session plan or activi
   assert.equal(planUpdates, updatesAfterActivity);
   assert.equal(session.agentProjection.conversation.at(-1).content, 'bonjour');
 });
+
+test('reduceAgentEvents: plan patches are proposed, approved and applied with revisions', () => {
+  // plan_set bumps planRevision (it wholesale-replaces the plan), so a patch
+  // proposed after it must target that new revision (1), not 0.
+  const patch = {
+    targetRunId: 'run-patch',
+    basePlanRevision: 1,
+    operations: [{ op: 'add_task', task: { id: 'task-b', description: 'B', dependsOn: ['task-a'] } }],
+  };
+  const projection = reduceAgentEvents([
+    createAgentEvent('run_started', { origin: 'runtime', runId: 'run-patch' }),
+    createAgentEvent('plan_set', {
+      origin: 'tool',
+      runId: 'run-patch',
+      payload: { steps: [{ id: 'task-a', description: 'A', status: 'done' }] },
+    }),
+    createAgentEvent('plan_patch_proposed', {
+      origin: 'runtime',
+      runId: 'run-patch',
+      payload: { id: 'patch-1', patch },
+    }),
+    createAgentEvent('plan_patch_approved', {
+      origin: 'runtime',
+      runId: 'run-patch',
+      payload: { patchId: 'patch-1' },
+    }),
+    createAgentEvent('plan_patch_applied', {
+      origin: 'runtime',
+      runId: 'run-patch',
+      payload: { patchId: 'patch-1', patch },
+    }),
+  ]);
+
+  assert.equal(projection.planRevision, 2);
+  assert.deepEqual(projection.plan.map((step) => step.id), ['task-a', 'task-b']);
+  assert.equal(projection.plan[1].status, 'pending');
+  assert.equal(projection.planPatches[0].status, 'applied');
+});

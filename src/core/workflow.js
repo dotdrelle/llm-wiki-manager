@@ -132,6 +132,7 @@ function taskNode(step, index) {
     status: normalizeStatus(step.status ?? 'pending'),
     dependsOn: Array.isArray(step.dependsOn) ? step.dependsOn.map(String) : [],
     executor: step.executor ?? null,
+    executorQuery: step.executorQuery ?? null,
     outputRefs: Array.isArray(step.outputRefs) ? step.outputRefs.map(String) : [],
     activityKey: step.activityKey ?? null,
     ownerActivityKey: step.ownerActivityKey ?? null,

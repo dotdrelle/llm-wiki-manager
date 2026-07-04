@@ -1,11 +1,18 @@
 import { normalizeActivity } from './activity.js';
 import { attachActivityToExistingPlan, syncActivitiesToPlan } from './plan.js';
+import { applyPlanPatch, normalizePlanPatch, normalizePlanRevision, rebasePlanPatch } from './planPatch.js';
 import { projectWorkflow } from './workflow.js';
 
 const SESSION_PROJECTION_EVENTS = new Set([
   'run_started',
   'plan_set',
   'plan_step_updated',
+  'control_message_received',
+  'plan_patch_proposed',
+  'plan_patch_approved',
+  'plan_patch_applied',
+  'plan_patch_rebased',
+  'plan_patch_rejected',
   'activity_upserted',
   'run_evaluated',
   'run_replanned',
@@ -27,6 +34,7 @@ const SESSION_PROJECTION_EVENTS = new Set([
 const PLAN_MUTATING_EVENTS = new Set([
   'run_started',
   'plan_set',
+  'plan_patch_applied',
   'plan_step_updated',
   'activity_upserted',
   'run_done',
@@ -37,6 +45,7 @@ export function createAgentEvent(type, {
   payload = {},
   runId = null,
   turnId = null,
+  taskId = null,
   workspace = null,
 } = {}) {
   return {
@@ -46,6 +55,7 @@ export function createAgentEvent(type, {
     origin,
     runId,
     turnId,
+    taskId,
     workspace,
     payload,
   };
@@ -80,6 +90,7 @@ function withSessionRunIdentity(event, session) {
     ...event,
     runId: event.runId ?? identity.runId ?? null,
     turnId: event.turnId ?? identity.turnId ?? null,
+    taskId: event.taskId ?? identity.taskId ?? null,
     workspace: event.workspace ?? identity.workspace ?? null,
   };
 }
@@ -104,6 +115,8 @@ function createProjectionState() {
     evaluation: null,
     replans: [],
     approvals: [],
+    planRevision: 0,
+    planPatches: [],
     controlQueue: [],
     summary: null,
     status: 'idle',
@@ -120,6 +133,12 @@ function publicProjection(state) {
     evaluation: state.evaluation ? { ...state.evaluation } : null,
     replans: state.replans.map((replan) => ({ ...replan, plan: [...(replan.plan ?? [])] })),
     approvals: state.approvals.map((approval) => ({ ...approval })),
+    planRevision: state.planRevision,
+    planPatches: state.planPatches.map((patch) => ({
+      ...patch,
+      operations: (patch.operations ?? []).map((operation) => ({ ...operation })),
+      patch: patch.patch ? { ...patch.patch, operations: (patch.patch.operations ?? []).map((operation) => ({ ...operation })) } : null,
+    })),
     controlQueue: state.controlQueue.map((item) => ({ ...item })),
     summary: state.summary,
     status: state.status,
@@ -134,6 +153,8 @@ export function applyAgentProjectionToSession(session, projection) {
   session.headlessPlan = projection.plan ? projection.plan.map((step) => ({ ...step })) : null;
   session.activities = Object.fromEntries((projection.activities ?? []).map((activity) => [activity.key, { ...activity }]));
   session.controlQueue = (projection.controlQueue ?? []).map((item) => ({ ...item }));
+  session.planRevision = projection.planRevision ?? 0;
+  session.planPatches = (projection.planPatches ?? []).map((patch) => ({ ...patch }));
   session.workflow = projection.workflow ? { ...projection.workflow } : null;
   const production = (projection.activities ?? []).filter((activity) => activity.source === 'production').at(-1);
   session.productionActivity = production ? {
@@ -156,6 +177,8 @@ function applyEvent(state, event) {
       state.evaluation = null;
       state.replans = [];
       state.approvals = [];
+      state.planRevision = 0;
+      state.planPatches = [];
       state.summary = null;
       return;
     case 'user_message':
@@ -185,9 +208,96 @@ function applyEvent(state, event) {
       return;
     case 'plan_set':
       state.plan = normalizePlan(event.payload?.steps, event.payload ?? {});
+      // A plan_set always replaces the plan wholesale (initial declaration,
+      // fallback extraction, or a full replan) — bump the revision so any
+      // patch proposed against the prior plan is detected as stale and
+      // rebased instead of silently applying against a structure that no
+      // longer matches what it was built for. An explicit payload.planRevision
+      // still wins, for callers that manage revisions themselves.
+      state.planRevision = event.payload?.planRevision != null
+        ? normalizePlanRevision(event.payload.planRevision)
+        : state.planRevision + 1;
       return;
     case 'plan_step_updated':
       updatePlanStep(state.plan, event.payload ?? {});
+      return;
+    case 'control_message_received':
+      state.logs.push(`Control message: ${String(event.payload?.input ?? '')}`);
+      state.logs = state.logs.slice(-200);
+      return;
+    case 'plan_patch_proposed':
+      upsertPlanPatch(state, {
+        id: patchIdFromEvent(event),
+        status: 'proposed',
+        runId: event.runId ?? event.payload?.targetRunId ?? null,
+        workspace: event.workspace ?? null,
+        input: event.payload?.input ?? null,
+        patch: normalizePlanPatch(event.payload?.patch ?? {}, {
+          targetRunId: event.runId ?? event.payload?.targetRunId ?? null,
+          basePlanRevision: state.planRevision,
+        }),
+        createdAt: event.ts,
+        updatedAt: event.ts,
+      });
+      return;
+    case 'plan_patch_approved':
+      upsertPlanPatch(state, {
+        id: patchIdFromEvent(event),
+        status: 'approved',
+        approvedAt: event.ts,
+        updatedAt: event.ts,
+      });
+      return;
+    case 'plan_patch_rebased': {
+      const existing = state.planPatches.find((patch) => patch.id === patchIdFromEvent(event));
+      const rebased = normalizePlanPatch(event.payload?.patch ?? rebasePlanPatch(existing?.patch ?? {}, { currentRevision: state.planRevision }), {
+        targetRunId: event.runId ?? null,
+        basePlanRevision: state.planRevision,
+      });
+      upsertPlanPatch(state, {
+        id: patchIdFromEvent(event),
+        status: 'rebased',
+        patch: rebased,
+        updatedAt: event.ts,
+      });
+      return;
+    }
+    case 'plan_patch_applied': {
+      const patchId = patchIdFromEvent(event);
+      const patch = normalizePlanPatch(event.payload?.patch ?? {}, {
+        targetRunId: event.runId ?? event.payload?.targetRunId ?? null,
+        basePlanRevision: state.planRevision,
+      });
+      const applied = applyPlanPatch(state.plan, patch, { currentRevision: state.planRevision });
+      if (!applied.ok) {
+        upsertPlanPatch(state, {
+          id: patchId,
+          status: 'rejected',
+          rejectionReason: applied.reason,
+          currentRevision: applied.currentRevision,
+          updatedAt: event.ts,
+        });
+        return;
+      }
+      state.plan = applied.plan;
+      state.planRevision = applied.planRevision;
+      upsertPlanPatch(state, {
+        id: patchId,
+        status: 'applied',
+        patch,
+        appliedAt: event.ts,
+        planRevision: state.planRevision,
+        updatedAt: event.ts,
+      });
+      return;
+    }
+    case 'plan_patch_rejected':
+      upsertPlanPatch(state, {
+        id: patchIdFromEvent(event),
+        status: 'rejected',
+        rejectionReason: event.payload?.reason ?? null,
+        updatedAt: event.ts,
+      });
       return;
     case 'run_summary':
       state.summary = String(event.payload?.content ?? '');
@@ -294,6 +404,15 @@ function upsertControlItem(queue, next) {
   upsertById(queue, next);
 }
 
+function upsertPlanPatch(state, next) {
+  if (!next.id) return;
+  upsertById(state.planPatches, next);
+}
+
+function patchIdFromEvent(event) {
+  return event.payload?.id ?? event.payload?.patchId ?? event.id;
+}
+
 function finishControlByRun(queue, runId, status, finishedAt) {
   if (!runId) return;
   const item = queue.find((entry) => entry.runId === runId && entry.status === 'running');
@@ -376,6 +495,7 @@ function ensurePlanFromActivityProjection(state, activity) {
       status: 'pending',
       dependsOn: Array.isArray(step.dependsOn) ? step.dependsOn.map(String) : [],
       executor: step.executor ?? null,
+      executorQuery: step.executorQuery ?? null,
       outputRefs: Array.isArray(step.outputRefs) ? step.outputRefs.map(String) : [],
       owner: 'activity',
       ownerActivityKey: activity.key,
@@ -407,7 +527,13 @@ function normalizePlan(steps, payload = {}) {
       status: item.status ?? 'pending',
       dependsOn: Array.isArray(item.dependsOn) ? item.dependsOn.map(String) : [],
       executor: item.executor ?? null,
+      executorQuery: item.executorQuery ?? null,
       outputRefs: Array.isArray(item.outputRefs) ? item.outputRefs.map(String) : [],
+      locks: Array.isArray(item.locks) ? item.locks.map(String) : item.locks ?? null,
+      writeLocks: Array.isArray(item.writeLocks) ? item.writeLocks.map(String) : item.writeLocks ?? null,
+      deliverableWrites: Array.isArray(item.deliverableWrites) ? item.deliverableWrites.map(String) : [],
+      wikiPageWrites: Array.isArray(item.wikiPageWrites) ? item.wikiPageWrites.map(String) : [],
+      workspaceWrite: item.workspaceWrite === true,
       owner: item.owner ?? owner,
       ownerActivityKey: item.ownerActivityKey ?? ownerActivityKey,
       _activityKey: item._activityKey ?? payload.activityKey ?? null,
@@ -417,9 +543,15 @@ function normalizePlan(steps, payload = {}) {
 
 function updatePlanStep(plan, payload) {
   if (!plan) return;
-  const step = plan.find((item) => item.step === Number(payload.step));
+  const requestedTaskId = payload.taskId ?? payload.id ?? payload.targetTaskId;
+  const step = requestedTaskId != null
+    ? plan.find((item) => String(item.id ?? item.step) === String(requestedTaskId))
+    : plan.find((item) => item.step === Number(payload.step));
   if (!step) return;
-  step.status = payload.status === 'failed' ? 'failed' : payload.status === 'running' ? 'running' : 'done';
+  if (payload.status === 'failed') step.status = 'failed';
+  else if (payload.status === 'running') step.status = 'running';
+  else if (payload.status === 'cancelled') step.status = 'cancelled';
+  else step.status = 'done';
   if (payload.activityKey) step.activityKey = payload.activityKey;
 }
 

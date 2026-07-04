@@ -17,6 +17,7 @@ export function ensurePlanFromActivity(session, activity) {
       status: 'pending',
       dependsOn: Array.isArray(s.dependsOn) ? s.dependsOn.map(String) : [],
       executor: s.executor ?? null,
+      executorQuery: s.executorQuery ?? null,
       outputRefs: Array.isArray(s.outputRefs) ? s.outputRefs.map(String) : [],
       owner: 'activity',
       ownerActivityKey: activity.key,

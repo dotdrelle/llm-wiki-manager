@@ -14,7 +14,7 @@ function terminalStatus(status) {
   return ['done', 'failed', 'cancelled', 'canceled', 'complete', 'completed', 'success', 'error'].includes(String(status ?? '').toLowerCase());
 }
 
-function activityKey(activity) {
+export function activityKey(activity) {
   const id = activity?.id ?? activity?.jobId ?? activity?.job_id;
   const source = activity?.source ?? activity?.agent ?? activity?.poll?.server ?? 'mcp';
   return `${source}:${id ?? activity?.kind ?? activity?.label ?? 'activity'}`;
@@ -27,6 +27,7 @@ function normalizePlanSteps(steps) {
     label: s != null ? String(s.label ?? s.description ?? s.name ?? s.id ?? (i + 1)) : String(i + 1),
     dependsOn: Array.isArray(s?.dependsOn) ? s.dependsOn.map(String) : [],
     executor: s?.executor ?? null,
+    executorQuery: s?.executorQuery ?? null,
     outputRefs: Array.isArray(s?.outputRefs) ? s.outputRefs.map(String) : [],
   }));
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { finishRuntimeRun, runRuntimeAgenticWorkflow } from './runner.js';
+import { finishRuntimeRun, replanRuntimeRun, runRuntimeAgenticWorkflow, runRuntimeParallelPlan } from './runner.js';
 
 test('finishRuntimeRun emits evaluation before run_done', async () => {
   const events = [];
@@ -150,6 +150,31 @@ test('runRuntimeAgenticWorkflow replans after negative evaluation', async () => 
   assert.equal(session.agentProjection.status, 'done');
 });
 
+test('replanRuntimeRun preserves completed outputs when replacing remaining work', async () => {
+  const session = {
+    activities: {},
+    headlessPlan: [
+      { step: 1, id: 'export', description: 'Export', status: 'done', outputRefs: ['raw/export.json'] },
+      { step: 2, id: 'build', description: 'Build', status: 'failed' },
+    ],
+    llm: {
+      async completeWithTools() {
+        return { content: '{"steps":["Retry build"]}' };
+      },
+    },
+  };
+
+  const result = await replanRuntimeRun(session, 'Build deliverable', {
+    kind: 'activity_error',
+    reason: 'Build failed.',
+  }, { runId: 'run-replan-preserve', replansLeft: 1 });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(session.headlessPlan.map((step) => step.id), ['export', 'replan-1']);
+  assert.deepEqual(session.headlessPlan[0].outputRefs, ['raw/export.json']);
+  assert.deepEqual(session.headlessPlan[1].dependsOn, ['export']);
+});
+
 test('runRuntimeAgenticWorkflow replans after terminal activity error', async () => {
   const originalFetch = globalThis.fetch;
   let pollAttempts = 0;
@@ -268,3 +293,250 @@ test('runRuntimeAgenticWorkflow stops after replan budget is exhausted', async (
   assert.equal(session.agentProjection.status, 'error');
   assert.equal(session.agentProjection.replans.length, 0);
 });
+
+test('runRuntimeParallelPlan executes ready tasks concurrently in one parent run', async () => {
+  const started = [];
+  const release = {};
+  const session = {
+    activities: {},
+    headlessPlan: [
+      { step: 1, id: 'a', description: 'Task A', status: 'pending', dependsOn: [] },
+      { step: 2, id: 'b', description: 'Task B', status: 'pending', dependsOn: [] },
+      { step: 3, id: 'join', description: 'Join', status: 'pending', dependsOn: ['a', 'b'] },
+    ],
+  };
+  const agent = {
+    async invoke({ input }) {
+      const id = input.match(/Task id: ([^\n]+)/)?.[1];
+      started.push(id);
+      if (id !== 'join') {
+        await new Promise((resolve) => { release[id] = resolve; });
+      }
+      return { response: `done ${id}` };
+    },
+  };
+
+  const running = runRuntimeParallelPlan(agent, session, 'Do work', {
+    runId: 'run-parallel',
+    timeoutMs: 1000,
+    maxTurns: 1,
+    concurrency: 2,
+  });
+  await waitFor(() => started.includes('a') && started.includes('b'));
+  assert.deepEqual(session.headlessPlan.slice(0, 2).map((step) => step.status), ['running', 'running']);
+  release.a();
+  release.b();
+
+  const result = await running;
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(started, ['a', 'b', 'join']);
+  assert.deepEqual(session.headlessPlan.map((step) => step.status), ['done', 'done', 'done']);
+  assert.ok(session.agentEvents.every((event) => event.runId === 'run-parallel'));
+  assert.ok(session.agentEvents.some((event) => event.taskId === 'a'));
+  assert.ok(session.agentEvents.some((event) => event.taskId === 'b'));
+});
+
+test('runRuntimeParallelPlan serializes conflicting write locks', async () => {
+  let active = 0;
+  let maxActive = 0;
+  const session = {
+    activities: {},
+    headlessPlan: [
+      { step: 1, id: 'a', description: 'Write A', status: 'pending', dependsOn: [], locks: ['workspace:write'] },
+      { step: 2, id: 'b', description: 'Write B', status: 'pending', dependsOn: [], locks: ['workspace:write'] },
+    ],
+  };
+  const agent = {
+    async invoke() {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+      return { response: 'done' };
+    },
+  };
+
+  const result = await runRuntimeParallelPlan(agent, session, 'Write safely', {
+    runId: 'run-locks',
+    timeoutMs: 1000,
+    maxTurns: 1,
+    concurrency: 2,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(maxActive, 1);
+  assert.deepEqual(session.headlessPlan.map((step) => step.status), ['done', 'done']);
+});
+
+test('runRuntimeParallelPlan keeps independent child running after sibling failure', async () => {
+  const releaseB = {};
+  const session = {
+    activities: {},
+    headlessPlan: [
+      { step: 1, id: 'a', description: 'Failing branch', status: 'pending', dependsOn: [] },
+      { step: 2, id: 'b', description: 'Independent branch', status: 'pending', dependsOn: [] },
+      { step: 3, id: 'join', description: 'Converge', status: 'pending', dependsOn: ['a', 'b'] },
+    ],
+  };
+  const agent = {
+    async invoke({ input }) {
+      const id = input.match(/Task id: ([^\n]+)/)?.[1];
+      if (id === 'a') throw new Error('branch failed');
+      if (id === 'b') await new Promise((resolve) => { releaseB.resolve = resolve; });
+      return { response: `done ${id}` };
+    },
+  };
+
+  const running = runRuntimeParallelPlan(agent, session, 'Parallel failure', {
+    runId: 'run-failure',
+    timeoutMs: 1000,
+    maxTurns: 1,
+    concurrency: 2,
+  });
+  await waitFor(() => session.headlessPlan.find((step) => step.id === 'a')?.status === 'failed');
+  assert.equal(session.headlessPlan.find((step) => step.id === 'b')?.status, 'running');
+  releaseB.resolve();
+
+  const result = await running;
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'no_ready_plan_task');
+  assert.deepEqual(session.headlessPlan.map((step) => step.status), ['failed', 'done', 'pending']);
+});
+
+test('runRuntimeParallelPlan propagates parent cancellation to child tasks', async () => {
+  const controller = new AbortController();
+  const session = {
+    activities: {},
+    headlessPlan: [
+      { step: 1, id: 'a', description: 'Long task', status: 'pending', dependsOn: [] },
+    ],
+  };
+  const agent = {
+    async invoke({ session: childSession, signal }) {
+      assert.equal(childSession._abortSignal, signal);
+      await new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          const err = new Error('cancelled');
+          err.name = 'AbortError';
+          reject(err);
+        }, { once: true });
+      });
+      return { response: 'unreachable' };
+    },
+  };
+
+  const running = runRuntimeParallelPlan(agent, session, 'Cancel work', {
+    runId: 'run-cancel',
+    signal: controller.signal,
+    timeoutMs: 1000,
+    maxTurns: 1,
+    concurrency: 1,
+  });
+  await waitFor(() => session.headlessPlan[0]?.status === 'running');
+  controller.abort();
+
+  await assert.rejects(running, { name: 'AbortError' });
+  assert.equal(session.headlessPlan[0].status, 'cancelled');
+});
+
+test('runRuntimeAgenticWorkflow hands off to the parallel scheduler when turn 1 sets a multi-task ready plan', async () => {
+  const session = {
+    activities: {},
+    headlessPlan: null,
+    llm: {
+      async completeWithTools() {
+        return { content: '{"ok":true,"reason":"Done.","suggestedAction":null}' };
+      },
+    },
+  };
+  const started = [];
+  const agent = {
+    async invoke({ session: turnSession, input }) {
+      if (turnSession.headlessPlan === null) {
+        dispatchAgentEvent(turnSession, createAgentEvent('plan_set', {
+          origin: 'tool',
+          payload: {
+            steps: [
+              { id: 'a', description: 'Task A', dependsOn: [] },
+              { id: 'b', description: 'Task B', dependsOn: [] },
+            ],
+          },
+        }));
+        return { response: 'Plan set.' };
+      }
+      const id = input.match(/Task id: ([^\n]+)/)?.[1];
+      started.push(id);
+      return { response: `done ${id}` };
+    },
+  };
+
+  const result = await runRuntimeAgenticWorkflow(agent, session, 'Do two independent things', {
+    runId: 'run-handoff',
+    timeoutMs: 1000,
+    maxTurns: 3,
+    maxReplans: 0,
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(started.sort(), ['a', 'b']);
+  assert.deepEqual(session.headlessPlan.map((step) => step.status), ['done', 'done']);
+});
+
+test('runRuntimeParallelPlan drains other active tasks before rejecting on cancellation', async () => {
+  const controller = new AbortController();
+  let bSettled = false;
+  const session = {
+    activities: {},
+    headlessPlan: [
+      { step: 1, id: 'a', description: 'Task A', status: 'pending', dependsOn: [] },
+      { step: 2, id: 'b', description: 'Task B', status: 'pending', dependsOn: [] },
+    ],
+  };
+  const agent = {
+    async invoke({ input, signal }) {
+      const id = input.match(/Task id: ([^\n]+)/)?.[1];
+      if (id === 'a') {
+        await new Promise((resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            const err = new Error('cancelled');
+            err.name = 'AbortError';
+            reject(err);
+          }, { once: true });
+        });
+      }
+      if (id === 'b') {
+        await new Promise((resolve) => {
+          signal.addEventListener('abort', () => {
+            setTimeout(() => { bSettled = true; resolve(); }, 20);
+          }, { once: true });
+        });
+      }
+      return { response: `done ${id}` };
+    },
+  };
+
+  const running = runRuntimeParallelPlan(agent, session, 'Cancel work', {
+    runId: 'run-cancel-drain',
+    signal: controller.signal,
+    timeoutMs: 1000,
+    maxTurns: 1,
+    concurrency: 2,
+  });
+  await waitFor(() => session.headlessPlan.every((step) => step.status === 'running'));
+  controller.abort();
+
+  await assert.rejects(running, { name: 'AbortError' });
+  assert.equal(bSettled, true);
+  assert.equal(session.headlessPlan.find((step) => step.id === 'b').status, 'done');
+});
+
+async function waitFor(predicate, timeoutMs = 500) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  assert.fail('condition was not met before timeout');
+}

@@ -615,8 +615,8 @@ ${helpPair('/workspace list', 'Workspaces', '/new <n> [path]', 'New workspace')}
 ${helpPair('/use <workspace>', 'Use workspace', '/status', 'Session status')}
 ${helpPair('/config list', 'Config profiles', '/config use <n>', 'Use config')}
 ${helpPair('/config edit <n>', 'Edit config', '/workspace delete <n>', 'Delete workspace')}
-${helpPair('/services', 'Services', '/start [service|agents]', 'Start service(s)')}
-${helpPair('/stop [service|agents]', 'Stop service(s)', '/logs <service>', 'Service logs')}
+${helpPair('/services', 'Services', '/start [all|service|agents]', 'Start service(s)')}
+${helpPair('/stop [all|service|agents]', 'Stop service(s)', '/logs <service>', 'Service logs')}
 ${helpPair('/skills', 'List skills', '/skills show <n>', 'Show skill')}
 ${helpPair('/skills run <n>', 'Run skill guide', '/skills edit <n>', 'Edit skill')}
 ${helpPair('/mcp status', 'MCP status', '/mcp endpoints', 'MCP endpoints')}
@@ -810,6 +810,10 @@ export async function handleSlashCommand(line, context) {
       }
     }
     case 'start': {
+      // 'all' already resolves correctly through serviceAliases() (DEFAULT_SERVICE_ALIASES.all
+      // = COMPOSE_SERVICES, overridable via docker-compose.yml's service-aliases.all.targets) —
+      // do not remap it to undefined, that bypasses any custom "all" target list and always
+      // falls back to the hardcoded COMPOSE_SERVICES constant instead.
       const service = args[1];
       if (service === 'agents') return runAgentCommand(startAgents, 'start');
       try {

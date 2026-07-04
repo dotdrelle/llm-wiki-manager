@@ -17,7 +17,12 @@ and 0.9.4 (`serve.ts`/`chatHtml.ts` module extraction, this repo untouched by
 that lot) are released; 0.9.5 (single orchestrator, non-blocking control-lane
 conversation — see Agent Runtime below) and 0.9.6 (structured plan +
 `projectWorkflow` canonical projection — see Activity, Plan, Queue below) are
-implemented in the working tree, not yet released/tagged.
+implemented in the working tree, not yet released/tagged. 0.10.0 (structured
+plan patches + sequential topological scheduler — the plan's own
+highest-risk lot, de-risking the model before 0.10.1's real parallelism — see
+the Control lane and this section) is also implemented, not yet
+released/tagged. (0.9.7, the Wiki graph, landed in `llm-wiki` only — see that
+repo's `CLAUDE.md`.)
 
 ## Layout
 
@@ -222,7 +227,7 @@ at the proxy layer (`proxyRuntimeJson` in `serve.ts`).
 **Control lane** (`/control`): a side channel for interacting with a workspace
 while a run is active, without touching the active plan. `GET /control` or
 `POST /control {action:"status"}` returns run/plan/queue/approvals status plus
-`controlQueue` and `controlProposals`. `POST /control {action:"explain"}` adds
+`controlQueue` and `planPatches`. `POST /control {action:"explain"}` adds
 a one-line natural language summary. `POST /control {action:"enqueue", input}`
 appends a `control_enqueued` event; if the workspace is idle it starts a real
 run immediately (emitting `control_started`, tagging the item with the new
@@ -245,20 +250,45 @@ patterns) — into `observe | converse | mutate | enqueue | ambiguous`, or trust
 an explicit `intent` when the caller already knows the answer (e.g. the
 ambiguous-choice UI resubmitting with a chosen intent). Status/explanation
 questions ("où en est le build ?") always classify `observe` and never create a
-run. `mutate` (a request to change the *active* run's plan) is recorded as a
-`controlProposals` entry (`storeControlProposal`) but **not applied**
-automatically — application lands in plan directeur 0.10.0's plan-patch
-mechanism. **Known gap:** unlike `controlQueue`, `controlProposals` is a plain
-session array, not event-sourced — it does not survive a manager restart. Bring
-it in line with `controlQueue` (a `control_proposal_recorded` event + reducer
-case + `store.js` persistence) before or alongside the 0.10.0 work that makes
-proposals actually applicable — do not leave it as a second, lesser mechanism.
-`enqueue` behaves like the existing `action:"enqueue"` path above. `ambiguous`
-returns `choices` (`observe`/`mutate`/`enqueue`) instead of guessing — required
-by the plan's fallback-UX rule. ShellTUI (`repl.js`) routes a busy-runtime
-prompt through `action:"message"` instead of unconditionally enqueueing;
-`llm-wiki`'s Agent mode chat does the same via `/api/runtime/control` (see
-`llm-wiki/CLAUDE.md`).
+run. `enqueue` behaves like the existing `action:"enqueue"` path above.
+`ambiguous` returns `choices` (`observe`/`mutate`/`enqueue`) instead of
+guessing — required by the plan's fallback-UX rule. ShellTUI (`repl.js`)
+routes a busy-runtime prompt through `action:"message"` instead of
+unconditionally enqueueing; `llm-wiki`'s Agent mode chat does the same via
+`/api/runtime/control` (see `llm-wiki/CLAUDE.md`).
+
+`mutate` (0.10.0) is now a real, event-sourced plan-patch proposal, not a
+dead-end note: `storeControlProposal` builds a patch via
+`buildPlanPatchFromInput` (`src/core/planPatch.js`) and dispatches
+`control_message_received` + `plan_patch_proposed`; `POST /control
+{action:"approve_patch", patchId}` dispatches `plan_patch_approved` +
+`plan_patch_applied` (rebasing first via `plan_patch_rebased` if
+`state.planRevision` moved since the proposal's `basePlanRevision`).
+`state.planPatches`/`state.planRevision` are reducer-owned
+(`src/core/agentEvents.js`) and persisted like every other event
+(`NON_PERSISTED_EVENT_TYPES` only excludes `runtime_log`) — this is the fix for
+the gap noted above through 0.9.5. The old plain-array `controlProposals`
+(session field, non-persisted, response field, `approvePlanPatch` fallback
+lookup) has been removed — `planPatches` is the only mechanism now. Do not
+reintroduce a second, session-local proposal list; extend `planPatches`
+instead.
+
+`applyPlanPatch`/`rebasePlanPatch`/`readyPlanTasks`/`nextReadyPlanTask`
+(`src/core/planPatch.js`, pure, no I/O) implement the 6 patch ops from plan
+§7.2 (`add_task`, `add_dependency`, `remove_dependency`, `cancel_task`,
+`replace_executor`, `request_approval`) with dependency-cycle rejection, and
+the "ready = pending + all `dependsOn` done" rule from §7.4.
+`src/core/agentLoop.js` uses `nextReadyPlanTask`/`readyPlanTasks` to prompt the
+LLM with exactly one ready task per turn ("Start exactly this next ready task
+only. Do not start tasks whose dependencies are not done.") — this is
+LLM-cooperative sequencing via the prompt, not code-enforced; hard enforcement
+(rejecting tool calls for non-ready tasks) is not built yet and may be needed
+for 0.10.1's real parallelism. A legacy plan with no `dependsOn` still executes
+in step order: every pending step is vacuously "ready" (empty `dependsOn`
+array), and `nextReadyPlanTask` always returns the lowest `step` number among
+them, so behavior is unchanged from before 0.10.0. `runner.js`'s
+`mergeReplanWithCompleted` keeps `done` steps (with their `outputRefs`) ahead
+of newly replanned steps, which all depend on them.
 
 **Config profile switching** (`/config/profiles`, `/config/use`): lists and
 switches the active `.wikirc` profile for a workspace via

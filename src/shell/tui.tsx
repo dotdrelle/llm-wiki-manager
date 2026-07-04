@@ -7,9 +7,69 @@ import { LeftPane } from './LeftPane';
 import { RightPane } from './RightPane';
 import { SlashDialog } from './SlashDialog';
 import { SetupWizard } from './SetupWizard';
+import { StartupScreen, type StartupAction } from './StartupScreen';
 import { useSession } from './useSession';
+import { buildMcpStatus } from '../core/mcp.js';
+import { loadWikircProfile, summarizeWikircConfig } from '../core/wikirc.js';
+import { listWorkspaces } from '../core/workspaces.js';
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+function emptyStartupInfo(version: string, workspace: { name: string } | null, workspaces: { name: string }[]) {
+  return {
+    version,
+    model: '',
+    connectedMcpServers: 0,
+    wikiReady: false,
+    workspaceName: workspace?.name ?? null,
+    profileName: 'default',
+    workspaces: workspaces.map((item) => item.name),
+    hasWorkspace: workspace != null,
+  };
+}
+
+function startupInfo(packageJson: Record<string, unknown>) {
+  // listWorkspaces() order is filesystem-dependent (readdirSync), not stable —
+  // sort so "the default workspace" is deterministic across runs/platforms.
+  const workspaces = [...listWorkspaces()].sort((a, b) => a.name.localeCompare(b.name));
+  const workspace = workspaces[0] ?? null;
+  const version = String(packageJson.version ?? '');
+  if (!workspace) return emptyStartupInfo(version, null, []);
+
+  try {
+    const loaded = loadWikircProfile(workspace.workspacePath, 'default');
+    const summary = summarizeWikircConfig(loaded.profile, loaded.config);
+    const session = {
+      workspace: workspace.name,
+      workspacePath: workspace.workspacePath,
+      workspaceEnv: workspace.env,
+      wikirc: {
+        profile: loaded.profile.name,
+        fileName: loaded.profile.fileName,
+        path: loaded.profile.path,
+      },
+      wikircConfig: loaded.config,
+    };
+    const mcp = buildMcpStatus(session);
+    const connectedMcpServers = Object.values(mcp)
+      .filter((server: any) => server?.status && server.status !== 'missing')
+      .length;
+    const provider = summary.provider ? String(summary.provider) : '';
+    const model = summary.model ? String(summary.model) : '';
+    return {
+      version,
+      model: [provider, model].filter(Boolean).join(' / '),
+      connectedMcpServers,
+      wikiReady: true,
+      workspaceName: workspace.name,
+      profileName: loaded.profile.name,
+      workspaces: workspaces.map((item) => item.name),
+      hasWorkspace: true,
+    };
+  } catch {
+    return emptyStartupInfo(version, workspace, workspaces);
+  }
+}
 
 function copyToClipboard(text: string, renderer: unknown) {
   try {
@@ -49,11 +109,16 @@ function App(props: {
   const [exitHint, setExitHint] = createSignal(false);
   const [copyHint, setCopyHint] = createSignal<string | null>(null);
   const [chatInputHeight, setChatInputHeight] = createSignal(3);
+  // The app has exactly three mutually exclusive screens; one signal makes
+  // that invariant structural instead of relying on two booleans staying in
+  // sync at every call site.
+  const [screen, setScreen] = createSignal<'startup' | 'setup' | 'main'>('startup');
   let ctrlCTimer: ReturnType<typeof setTimeout> | null = null;
   let copyHintTimer: ReturnType<typeof setTimeout> | null = null;
   let selectionCopyTimer: ReturnType<typeof setTimeout> | null = null;
   let lastCopiedSelection = '';
   const state = useSession(props);
+  const startup = createMemo(() => startupInfo(props.packageJson));
   const conversationRows = createMemo(() => Math.max(4, dimensions().height - 5 - chatInputHeight()));
   const rightColumns = createMemo(() => {
     const width = dimensions().width;
@@ -71,6 +136,71 @@ function App(props: {
     void state.submitInput(value).then((result) => {
       if (result?.exit) renderer.destroy();
     });
+  };
+
+  const loadWorkspace = async (workspaceName?: string | null) => {
+    if (!workspaceName) return false;
+    if ((state.session as any).workspace === workspaceName) return true;
+    await state.submitInput(`/use ${workspaceName}`);
+    // /use does not throw on failure (e.g. a stale/deleted workspace) — it
+    // just returns an error message without switching session.workspace, so
+    // callers must check the actual post-await state rather than assume success.
+    return (state.session as any).workspace === workspaceName;
+  };
+
+  // `startup` is a memo over non-reactive fs reads (listWorkspaces() etc.),
+  // so it only ever reflects state at first mount. Action handlers that
+  // decide *which* workspace to load must re-read current state directly
+  // (startupInfo(...)) rather than trust the frozen memo, the same way
+  // closeSetup() already does.
+  const loadDefaultWorkspace = async () => loadWorkspace(startupInfo(props.packageJson).workspaceName);
+
+  // "Open a workspace" is really one composite action (load it, then bring
+  // its services up) — named here so it has one definition instead of being
+  // inlined as three sequential submitInput calls in openAction.
+  const openWorkspaceAndStartServices = async (workspaceName?: string | null) => {
+    const loaded = await loadWorkspace(workspaceName);
+    if (loaded) {
+      await state.submitInput('/start agents');
+      await state.submitInput('/start all');
+    }
+    return loaded;
+  };
+
+  const openAction = (action: StartupAction, workspaceName?: string) => {
+    if (action === 'init-workspace') {
+      setScreen('setup');
+      return;
+    }
+    setScreen('main');
+    void (async () => {
+      try {
+        if (action === 'open-workspace') {
+          await openWorkspaceAndStartServices(workspaceName ?? startupInfo(props.packageJson).workspaceName);
+        } else if (action === 'new-conversation' || action === 'run-workflow') {
+          const loaded = await loadDefaultWorkspace();
+          if (action === 'run-workflow' && loaded) {
+            await state.submitInput('/agent');
+          }
+        }
+      } catch {
+        // Individual submitInput failures already surface their own error
+        // text in the conversation transcript; just stop the sequence here
+        // instead of leaving an unhandled rejection.
+      }
+    })();
+  };
+
+  const closeSetup = () => {
+    const info = startupInfo(props.packageJson);
+    if (!info.hasWorkspace) {
+      setScreen('startup');
+      return;
+    }
+    setScreen('main');
+    // Reuse loadWorkspace (not a bare /use dispatch) so the "already on this
+    // workspace" short-circuit applies here too.
+    void loadWorkspace(info.workspaceName);
   };
 
   const showCopyHint = (message: string) => {
@@ -106,6 +236,7 @@ function App(props: {
 
   useKeyboard((key) => {
     const keyName = String(key.name ?? '').toLowerCase();
+    if (screen() !== 'main') return;
     if (state.activeEditor()) {
       if (keyName === 'escape') state.closeEditor();
       return;
@@ -150,6 +281,26 @@ function App(props: {
     if (exitHint()) return 'Press Ctrl+C again to exit.';
     return null;
   };
+
+  if (screen() === 'startup') {
+    const info = startup();
+    return (
+      <StartupScreen
+        version={info.version}
+        model={info.model}
+        connectedMcpServers={info.connectedMcpServers}
+        wikiReady={info.wikiReady}
+        workspaceName={info.workspaceName}
+        profileName={info.profileName}
+        workspaces={info.workspaces}
+        hasWorkspace={info.hasWorkspace}
+        width={dimensions().width}
+        height={dimensions().height}
+        onSelect={openAction}
+        onQuit={() => renderer.destroy()}
+      />
+    );
+  }
 
   return (
     <box width="100%" height="100%" flexDirection="row">
@@ -198,6 +349,18 @@ function App(props: {
         onSave={state.saveEditor}
         onCancel={state.closeEditor}
       />
+      {screen() === 'setup' ? (
+        <SetupWizard
+          mode="setup"
+          session={state.session}
+          width={dimensions().width}
+          height={dimensions().height}
+          initialRoute="workspace-name"
+          closeOnDone
+          onComplete={closeSetup}
+          onClose={closeSetup}
+        />
+      ) : null}
     </box>
   );
 }

@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { createMemo, Index, Show } from 'solid-js';
+import { fit } from './textFit';
 
 type PlanStep = { step: number; description: string; status: string };
 type QueueItem = {
@@ -43,13 +44,6 @@ function wrapLine(value: string, width: number) {
   }
   if (rest) lines.push(rest);
   return lines;
-}
-
-function fit(value: string, width: number) {
-  const max = Math.max(1, width);
-  if (value.length <= max) return value;
-  if (max <= 1) return '…';
-  return value.slice(0, max - 1) + '…';
 }
 
 function logLineParts(line: string): LogLineParts {

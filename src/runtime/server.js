@@ -61,6 +61,19 @@ export function startRuntimeServer({
         sendJson(response, 200, { events: store.listEvents({ workspace }) });
         return;
       }
+      if (request.method === 'GET' && url.pathname === '/audit') {
+        const workspace = workspaceFromUrl(url);
+        const runId = url.searchParams.get('runId') ?? null;
+        sendJson(response, 200, {
+          ok: true,
+          workspace,
+          runId,
+          audit: typeof store.listAuditTrail === 'function'
+            ? store.listAuditTrail({ workspace, runId })
+            : [],
+        });
+        return;
+      }
       if (request.method === 'GET' && url.pathname === '/control') {
         const workspace = workspaceFromUrl(url);
         const context = await resolveContext({ workspace });

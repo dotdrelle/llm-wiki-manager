@@ -36,6 +36,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       type TEXT NOT NULL,
       run_id TEXT,
       turn_id TEXT,
+      task_id TEXT,
       workspace TEXT,
       origin TEXT,
       payload TEXT NOT NULL
@@ -70,6 +71,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   `);
   ensureColumn(db, 'events', 'sequence', 'INTEGER');
   ensureColumn(db, 'events', 'workspace', 'TEXT');
+  ensureColumn(db, 'events', 'task_id', 'TEXT');
   ensureColumn(db, 'runs', 'workspace', 'TEXT');
   backfillEventSequence(db);
   db.exec('CREATE INDEX IF NOT EXISTS idx_events_workspace ON events(workspace)');
@@ -79,17 +81,17 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   let lastEventSequence = null;
 
   const insertEvent = db.prepare(`
-    INSERT OR IGNORE INTO events (sequence, id, ts, type, run_id, turn_id, workspace, origin, payload)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO events (sequence, id, ts, type, run_id, turn_id, task_id, workspace, origin, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const nextEventSequenceStatement = db.prepare('SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM events');
   const listEventsStatement = db.prepare(`
-    SELECT sequence, id, ts, type, run_id, turn_id, workspace, origin, payload
+    SELECT sequence, id, ts, type, run_id, turn_id, task_id, workspace, origin, payload
     FROM events
     ORDER BY sequence ASC
   `);
   const listEventsByWorkspaceStatement = db.prepare(`
-    SELECT sequence, id, ts, type, run_id, turn_id, workspace, origin, payload
+    SELECT sequence, id, ts, type, run_id, turn_id, task_id, workspace, origin, payload
     FROM events
     WHERE workspace = ?
     ORDER BY sequence ASC
@@ -196,6 +198,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       event.type,
       event.runId ?? null,
       event.turnId ?? null,
+      event.taskId ?? event.payload?.taskId ?? null,
       ws,
       event.origin ?? null,
       JSON.stringify(event.payload ?? {}),
@@ -239,6 +242,12 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       ? listEventsByWorkspaceStatement.all(workspace)
       : listEventsStatement.all();
     return rows.map(rowToEvent);
+  }
+
+  function listAuditTrail({ workspace = null, runId = null } = {}) {
+    return listEvents({ workspace })
+      .filter((event) => !runId || event.runId === runId || event.payload?.runId === runId)
+      .map(eventToAuditEntry);
   }
 
   function listRuns({ workspace = null } = {}) {
@@ -399,6 +408,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     persistEvent,
     persistRun,
     listEvents,
+    listAuditTrail,
     listRuns,
     listRecoverableRuns,
     listRecoverableWorkspaces,
@@ -422,9 +432,40 @@ function rowToEvent(row) {
     origin: row.origin ?? 'system',
     runId: row.run_id ?? null,
     turnId: row.turn_id ?? null,
+    taskId: row.task_id ?? null,
     workspace: row.workspace ?? null,
     payload: row.payload ? JSON.parse(row.payload) : {},
   };
+}
+
+function eventToAuditEntry(event) {
+  const payload = event.payload ?? {};
+  const activity = payload.activity ?? {};
+  return {
+    sequence: event.sequence ?? null,
+    ts: event.ts,
+    type: event.type,
+    runId: event.runId ?? payload.runId ?? null,
+    turnId: event.turnId ?? payload.turnId ?? null,
+    taskId: event.taskId ?? payload.taskId ?? activity.taskId ?? null,
+    activityId: payload.activityId ?? activity.id ?? activity.key ?? null,
+    toolCallId: payload.toolCallId ?? payload.callId ?? null,
+    workspace: event.workspace ?? payload.workspace ?? null,
+    caller: event.origin ?? payload.caller ?? 'system',
+    status: payload.status ?? activity.status ?? null,
+    tool: payload.tool ?? payload.name ?? activity.tool ?? null,
+    summary: auditSummary(event),
+  };
+}
+
+function auditSummary(event) {
+  const payload = event.payload ?? {};
+  if (typeof payload.message === 'string') return payload.message;
+  if (typeof payload.summary === 'string') return payload.summary;
+  if (typeof payload.input === 'string') return payload.input;
+  if (typeof payload.content === 'string') return payload.content.slice(0, 240);
+  if (payload.activity?.label) return payload.activity.label;
+  return event.type;
 }
 
 function ensureColumn(db, table, column, definition) {

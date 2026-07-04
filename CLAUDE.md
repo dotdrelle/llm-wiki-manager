@@ -15,14 +15,19 @@ It sequences 0.9.3 → 0.11.0 across all six service repos; sections referenced
 below (e.g. "plan §4.2") point into that document. As of this writing, 0.9.3
 and 0.9.4 (`serve.ts`/`chatHtml.ts` module extraction, this repo untouched by
 that lot) are released; 0.9.5 (single orchestrator, non-blocking control-lane
-conversation — see Agent Runtime below) and 0.9.6 (structured plan +
-`projectWorkflow` canonical projection — see Activity, Plan, Queue below) are
-implemented in the working tree, not yet released/tagged. 0.10.0 (structured
-plan patches + sequential topological scheduler — the plan's own
-highest-risk lot, de-risking the model before 0.10.1's real parallelism — see
-the Control lane and this section) is also implemented, not yet
-released/tagged. (0.9.7, the Wiki graph, landed in `llm-wiki` only — see that
-repo's `CLAUDE.md`.)
+conversation — see Agent Runtime below), 0.9.6 (structured plan +
+`projectWorkflow` canonical projection — see Activity, Plan, Queue below),
+0.10.0 (structured plan patches + sequential topological scheduler — the
+plan's own highest-risk lot, de-risking the model before 0.10.1's real
+parallelism — see the Control lane and this section), and 0.10.1 (real
+parallel task execution, `runRuntimeParallelPlan` — see Agent Runtime below)
+are all implemented and committed, not yet tagged/released. (0.9.7, the Wiki
+graph, and 0.10.2, the Run/Task graph, landed in `llm-wiki` only — see that
+repo's `CLAUDE.md`.) 0.10.3 (contracts, MCP write guards, MCP HTTP hardening,
+audit) is partially implemented in this repo: versioned contract schemas
+(see Contracts below) and the audit trail (see Agent Runtime below) are done;
+Python agent auth/scope/rate-limiting hardening landed in each agent repo
+(not this one) — see their own `CLAUDE.md` files.
 
 ## Layout
 
@@ -174,17 +179,27 @@ Key modules in `src/runtime/`:
 
 - **`store.js`**: SQLite persistence via `node:sqlite` `DatabaseSync`. Tables:
   `events` (sequence AUTOINCREMENT primary key, replayed ORDER BY sequence),
-  `runs`, `queue_items`. `hydrateSession` replays on startup. `runtime_log`
-  events are never persisted (unbounded — SSE-only). `RUN_STATUS_BY_EVENT`
-  maps all run-affecting event types to their run status (including
-  `run_pending_approval` and `run_approved`).
+  `runs`, `queue_items`. `events.task_id` (0.10.3, migrated in via
+  `ensureColumn` like `sequence`/`workspace` before it) persists the same
+  `taskId` already carried by `AgentRunEvent` (populated for parallel-scheduler
+  child tasks via `_currentRunIdentity`, see runner.js). `hydrateSession`
+  replays on startup. `runtime_log` events are never persisted (unbounded —
+  SSE-only). `RUN_STATUS_BY_EVENT` maps all run-affecting event types to their
+  run status (including `run_pending_approval` and `run_approved`).
+  `listAuditTrail({workspace, runId})` (0.10.3) reshapes `listEvents` into a
+  correlated audit view (`sequence, runId, turnId, taskId, activityId,
+  toolCallId, workspace, caller, status, tool, summary`) — derived from the
+  same persisted events, not a second storage mechanism.
 - **`server.js`**: `GET /health`, `GET /state`, `GET /events/stream` (SSE),
+  `GET /audit` (0.10.3, `listAuditTrail`, filterable by `workspace`/`runId`),
   `POST /run`, `POST /cancel`, `POST /resume`, `POST /approve`, `GET`/`POST
   /control`, `GET /config/profiles`, `POST /config/use`. `running` flag
   is set before `await readJson` to close the TOCTOU race on concurrent
   `POST /run` requests. `resolveBodyContext(request, url)` centralizes the
   read-body → resolve-workspace → resolve-context sequence shared by the
-  POST handlers that carry a JSON body.
+  POST handlers that carry a JSON body. `/run` and every `/control` action
+  validate their body against `contracts/schemas.js`'s `runRequest`/
+  `controlMessage` (see Contracts below).
 - **`runner.js`**: `runRuntimeAgenticWorkflow` — the full runtime run sequence:
   agentic loop → optional evaluator (`evaluateRuntimeRun`) → optional replanner
   (`replanRuntimeRun`) if evaluation fails or a tracked activity ends in error,
@@ -308,6 +323,23 @@ The env-based defaults are resolved once and cached in `getEnvRetryPolicy()`.
 `createSqliteQueueStore` for runtime sessions. `jobQueue.js` routes through
 `queueStoreFor(session)` transparently.
 
+## Contracts
+
+`src/contracts/schemas.js` (0.10.3): versioned (`v1`) JSON-schema-like
+contracts for `_activity`, `AgentRunEvent`, `plan`, `planPatch`, `runRequest`,
+`controlMessage`, `outputReference` — a small hand-rolled validator, not a
+JSON Schema library, since this repo stays plain JavaScript (plan §10.1). All
+schemas tolerate additional properties so an older or newer agent can extend
+payloads without breaking. `validateContractInDev(name, value)` only
+validates when `WIKI_MANAGER_VALIDATE_CONTRACTS=1`, `CI=true`, or `NODE_ENV`
+is a non-production value — off in production so a malformed-but-tolerated
+extra field from an older agent doesn't hard-fail a real run. Wired in at
+`core/activity.js` (`normalizeActivity`), `core/agentEvents.js`
+(`createAgentEvent`/`dispatchAgentEvent`/`normalizePlan`), `core/planPatch.js`
+(`normalizePlanPatch`), and `runtime/server.js` (`/run`, every `/control`
+action). Extend `contractSchemas` here rather than validating ad hoc
+elsewhere.
+
 ## Activity, Plan, Queue
 
 All plan/activity mutations go through `dispatchAgentEvent` and the reducer in
@@ -391,7 +423,7 @@ remain the source of truth. Queue state is workspace-scoped.
 - Prefer `wiki-workspace` over raw `docker compose`.
 - Keep `package.json`, MCP `clientInfo.version`, and external agent
   `_AGENT_VERSION` values aligned for each coordinated release. Current release
-  line: `0.9.4`. `scripts/check-versions.js` verifies this (wired to `prepack`
+  line: `0.10.1`. `scripts/check-versions.js` verifies this (wired to `prepack`
   and `prepublishOnly`; `CHECK_GIT_TAG=1` and `CHECK_DOCKER_IMAGES=1` add
   optional pre-release gates). The root `build-and-push.sh` (outside this
   package) syncs versions across all six service repos before building.

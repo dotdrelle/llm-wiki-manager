@@ -318,6 +318,52 @@ test('runtime server filters state and events by workspace', async (t) => {
   }
 });
 
+test('runtime server exposes a correlated audit trail endpoint', async (t) => {
+  let auditArgs = null;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'idle' }),
+        listEvents: () => [],
+        listAuditTrail: (options) => {
+          auditArgs = options;
+          return [{ sequence: 1, type: 'tool_call_started', runId: options.runId, taskId: 'task-a' }];
+        },
+      },
+      getContext: async (workspace) => ({
+        workspace,
+        session: { workspace },
+        running: false,
+        currentAbortController: null,
+      }),
+      run: async () => {},
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/audit?workspace=docs&runId=run-1`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.workspace, 'docs');
+    assert.equal(body.runId, 'run-1');
+    assert.deepEqual(body.audit, [{ sequence: 1, type: 'tool_call_started', runId: 'run-1', taskId: 'task-a' }]);
+    assert.deepEqual(auditArgs, { workspace: 'docs', runId: 'run-1' });
+  } finally {
+    await handle.close();
+  }
+});
+
 test('runtime server exposes manual resume endpoint', async (t) => {
   let resumedWorkspace = null;
   let handle;

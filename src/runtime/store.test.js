@@ -59,6 +59,7 @@ test('runtime store persists run identity fields on events', () => {
     origin: 'agent',
     runId: 'run-2',
     turnId: 'run-2:turn-1',
+    taskId: 'task-1',
     workspace: 'docs',
     payload: { content: 'done' },
   }));
@@ -66,7 +67,48 @@ test('runtime store persists run identity fields on events', () => {
   const [event] = store.listEvents();
   assert.equal(event.runId, 'run-2');
   assert.equal(event.turnId, 'run-2:turn-1');
+  assert.equal(event.taskId, 'task-1');
   assert.equal(event.workspace, 'docs');
+  store.close();
+});
+
+test('runtime store exposes a correlated audit trail', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  store.persistEvent(createAgentEvent('tool_call_started', {
+    origin: 'agent',
+    runId: 'run-audit',
+    turnId: 'run-audit:turn-1',
+    taskId: 'task-a',
+    workspace: 'docs',
+    payload: { callId: 'call-1', name: 'production_start_job' },
+  }));
+  store.persistEvent(createAgentEvent('activity_upserted', {
+    origin: 'tool',
+    runId: 'run-audit',
+    turnId: 'run-audit:turn-1',
+    taskId: 'task-a',
+    workspace: 'docs',
+    payload: {
+      activity: {
+        id: 'job-1',
+        source: 'production',
+        kind: 'job',
+        label: 'Production job',
+        status: 'running',
+        progress: {},
+        poll: null,
+        outputRefs: [],
+      },
+    },
+  }));
+
+  const audit = store.listAuditTrail({ workspace: 'docs', runId: 'run-audit' });
+  assert.equal(audit.length, 2);
+  assert.equal(audit[0].toolCallId, 'call-1');
+  assert.equal(audit[0].taskId, 'task-a');
+  assert.equal(audit[1].activityId, 'job-1');
+  assert.equal(audit[1].workspace, 'docs');
   store.close();
 });
 

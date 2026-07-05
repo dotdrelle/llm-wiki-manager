@@ -69,12 +69,17 @@ export async function stopAgents(options = {}) {
 export async function createNewWorkspace(name, targetPath) {
   try {
     const output = await createWorkspace(name, targetPath, { timeout: 600_000 });
-    const workspace = findWorkspace(name);
-    if (workspace) initializeWorkspaceWikirc(workspace);
+    const workspace = finalizeCreatedWorkspace(name);
     return { output, workspace };
   } catch (err) {
     throw wrapDockerError(err);
   }
+}
+
+export function finalizeCreatedWorkspace(name) {
+  const workspace = findWorkspace(name);
+  if (workspace) initializeWorkspaceWikirc(workspace);
+  return workspace;
 }
 
 export function initializeWorkspaceWikirc(workspace) {

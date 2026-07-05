@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import YAML from 'yaml';
 import { patchWikircProfile } from './wikirc.js';
-import { writeVectorConfig } from './wikiSetup.js';
+import { finalizeCreatedWorkspace, writeVectorConfig } from './wikiSetup.js';
 
 test('patchWikircProfile merges keys and preserves existing values', () => {
   const root = mkdtempSync(join(tmpdir(), 'wikirc-patch-'));
@@ -108,4 +108,42 @@ test('writeVectorConfig removes commented vector placeholders it replaces', () =
   assert.doesNotMatch(raw, /^\s*#\s*apiKey:/m);
   assert.equal(parsed.retrieval.vector.baseUrl, 'http://localhost:7997/v1');
   assert.equal(parsed.retrieval.vector.apiKey, 'vector-key');
+});
+
+test('finalizeCreatedWorkspace copies generated wiki token into default wikirc', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wikirc-workspace-token-'));
+  const registryRoot = join(root, 'registry');
+  const registryPath = join(registryRoot, 'demo');
+  const workspacePath = join(root, 'workspace');
+  const token = 'a'.repeat(64);
+  mkdirSync(registryPath, { recursive: true });
+  mkdirSync(workspacePath, { recursive: true });
+  writeFileSync(
+    join(registryPath, '.env'),
+    [
+      'WORKSPACE_NAME=demo',
+      `WIKI_WORKSPACE_PATH=${workspacePath}`,
+      `WIKI_MCP_AUTH_TOKEN=${token}`,
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  writeFileSync(
+    join(workspacePath, '.wikirc.yaml'),
+    ['language: en', 'mcp:', '  # accessKey: your-secret-key', ''].join('\n'),
+    'utf8',
+  );
+
+  const previousDir = process.env.WIKI_WORKSPACES_DIR;
+  process.env.WIKI_WORKSPACES_DIR = registryRoot;
+  try {
+    const workspace = finalizeCreatedWorkspace('demo');
+    const parsed = YAML.parse(readFileSync(join(workspacePath, '.wikirc.yaml'), 'utf8'));
+
+    assert.equal(workspace.name, 'demo');
+    assert.equal(parsed.mcp.accessKey, token);
+  } finally {
+    if (previousDir === undefined) delete process.env.WIKI_WORKSPACES_DIR;
+    else process.env.WIKI_WORKSPACES_DIR = previousDir;
+  }
 });

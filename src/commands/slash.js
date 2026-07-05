@@ -29,7 +29,12 @@ import {
   summarizeWikircConfig,
 } from '../core/wikirc.js';
 import { applySessionWikircProfile } from '../core/sessionConfig.js';
-import { deleteWorkspaceAndFiles, startAgents, stopAgents } from '../core/wikiSetup.js';
+import {
+  deleteWorkspaceAndFiles,
+  finalizeCreatedWorkspace,
+  startAgents,
+  stopAgents,
+} from '../core/wikiSetup.js';
 import {
   cleanDocumentUploads,
   convertPendingDocumentUploads,
@@ -454,6 +459,7 @@ async function createWorkspaceCommand(context, workspaceName, targetPath) {
   try {
     context.onStep?.(`Workspace: creating ${workspaceName}…`);
     const output = await createWorkspace(workspaceName, targetPath, { timeout: 600_000 });
+    finalizeCreatedWorkspace(workspaceName);
     return {
       output: [
         output,

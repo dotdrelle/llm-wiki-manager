@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
 
-const WIKI_MANAGER_VERSION = '0.11.3';
+const WIKI_MANAGER_VERSION = '0.11.4';
 
 function envValue(key) {
   const filePath = managerEnvFile();

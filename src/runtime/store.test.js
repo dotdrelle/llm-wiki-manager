@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { openRuntimeStore } from './store.js';
+
+function runtimeStateDir() {
+  return join(mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-')), '.wiki-manager');
+}
 
 test('runtime store persists and replays agent events into a projection', () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
@@ -29,6 +33,43 @@ test('runtime store persists and replays agent events into a projection', () => 
   reopened.close();
 });
 
+test('runtime store writes schema versions to sqlite and meta file', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const stateDir = join(root, '.wiki-manager');
+  const store = openRuntimeStore({ stateDir });
+  const version = store.db.prepare('PRAGMA user_version').get().user_version;
+  const meta = JSON.parse(readFileSync(join(root, '.wiki', 'meta.json'), 'utf8'));
+
+  assert.equal(version, 1);
+  assert.equal(meta.schemaVersion, 1);
+  store.close();
+});
+
+test('runtime store refuses unknown sqlite schema versions', () => {
+  const stateDir = runtimeStateDir();
+  mkdirSync(stateDir, { recursive: true });
+  const db = new DatabaseSync(join(stateDir, 'runtime.db'));
+  db.exec('PRAGMA user_version = 99');
+  db.close();
+
+  assert.throws(
+    () => openRuntimeStore({ stateDir }),
+    /Unsupported runtime store schema version 99/,
+  );
+});
+
+test('runtime store refuses unknown runtime metadata versions', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const stateDir = join(root, '.wiki-manager');
+  mkdirSync(join(root, '.wiki'), { recursive: true });
+  writeFileSync(join(root, '.wiki', 'meta.json'), '{"schemaVersion":99}\n', 'utf8');
+
+  assert.throws(
+    () => openRuntimeStore({ stateDir }),
+    /Unsupported runtime metadata schemaVersion 99/,
+  );
+});
+
 test('runtime store persists duplicate events idempotently', () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
   const store = openRuntimeStore({ stateDir });
@@ -50,6 +91,50 @@ test('runtime store persists duplicate events idempotently', () => {
   assert.equal(store.listRuns()[0].workspace, 'juno');
   assert.equal(store.listRuns()[0].status, 'running');
   store.close();
+});
+
+test('runtime store purges terminal runs older than thirty days on open', () => {
+  const stateDir = runtimeStateDir();
+  const first = openRuntimeStore({ stateDir });
+  for (const runId of ['old-done', 'recent-done', 'old-running']) {
+    first.persistEvent(createAgentEvent('run_started', {
+      origin: 'test',
+      runId,
+      turnId: `${runId}:turn-0`,
+      workspace: 'docs',
+      payload: { input: runId, workspace: 'docs' },
+    }));
+  }
+  first.persistEvent(createAgentEvent('run_done', {
+    origin: 'test',
+    runId: 'old-done',
+    workspace: 'docs',
+    payload: { runId: 'old-done', workspace: 'docs' },
+  }));
+  first.persistEvent(createAgentEvent('assistant_message', {
+    origin: 'test',
+    runId: 'old-done',
+    workspace: 'docs',
+    payload: { runId: 'old-done', content: 'old related event' },
+  }));
+  first.persistEvent(createAgentEvent('run_done', {
+    origin: 'test',
+    runId: 'recent-done',
+    workspace: 'docs',
+    payload: { runId: 'recent-done', workspace: 'docs' },
+  }));
+  first.close();
+
+  const db = new DatabaseSync(join(stateDir, 'runtime.db'));
+  db.prepare("UPDATE runs SET updated_at = '2000-01-01T00:00:00.000Z' WHERE id IN ('old-done', 'old-running')").run();
+  db.close();
+
+  const reopened = openRuntimeStore({ stateDir });
+  assert.deepEqual(reopened.listRuns().map((run) => run.id).sort(), ['old-running', 'recent-done']);
+  assert.equal(reopened.listEvents().some((event) => event.runId === 'old-done'), false);
+  assert.equal(reopened.listEvents().some((event) => event.runId === 'recent-done'), true);
+  assert.equal(reopened.listEvents().some((event) => event.runId === 'old-running'), true);
+  reopened.close();
 });
 
 test('runtime store persists run identity fields on events', () => {

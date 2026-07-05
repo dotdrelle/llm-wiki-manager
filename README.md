@@ -544,6 +544,14 @@ Runtime split: the host manager/runtime uses Node.js 22+ for `node:sqlite`; the
 interactive OpenTUI shell uses Bun 1.2+; workspace Docker services run from the
 published images and do not depend on host `node_modules`.
 
+As of 0.11.4, the host runtime store carries a minimal format guard:
+`PRAGMA user_version = 1` in SQLite plus `.wiki/meta.json` with
+`schemaVersion: 1`. Unknown future versions stop startup with a clear error.
+On startup, terminal runs older than 30 days are deleted with their events and
+the database is vacuumed. The runtime test suite also includes a fixed-latency
+parallel scheduler guard asserting that two independent build tasks run under
+65% of the sequential duration.
+
 ```bash
 wiki-workspace list
 wiki-workspace agents up

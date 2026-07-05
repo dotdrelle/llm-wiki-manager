@@ -213,6 +213,13 @@ Key modules in `src/runtime/`:
   restarts the loop on the partial plan. `finishRuntimeRun` provides the same
   evaluate-and-finish tail for legacy/external callers. Takes `pollBusy` from
   the supervisor to prevent double-polling.
+  `runner.e2e.test.js` (plan 0.11.4 §3 exit criterion) runs the same
+  `runRuntimeParallelPlan` code path against a 2-task plan with a fixed
+  simulated per-task latency, once at `concurrency: 1` and once at
+  `concurrency: 2`, and asserts the parallel run finishes under 65% of the
+  sequential run's wall time — a CI guard against the scheduler itself
+  regressing, not proof that a real llm-wiki build/provider round-trip shows
+  the same margin.
 - **`approvals.js`**: run-level and tool-level approval gate. Run-level:
   `requireApproval: true` in the `/run` body suspends execution after the first
   plan is formed and emits `run_pending_approval`; `POST /approve?runId=...`
@@ -430,7 +437,7 @@ remain the source of truth. Queue state is workspace-scoped.
 - Prefer `wiki-workspace` over raw `docker compose`.
 - Keep `package.json`, MCP `clientInfo.version`, and external agent
   `_AGENT_VERSION` values aligned for each coordinated release. Current release
-  line: `0.10.1`. `scripts/check-versions.js` verifies this (wired to `prepack`
+  line: `0.11.4`. `scripts/check-versions.js` verifies this (wired to `prepack`
   and `prepublishOnly`; `CHECK_GIT_TAG=1` and `CHECK_DOCKER_IMAGES=1` add
   optional pre-release gates). The root `build-and-push.sh` (outside this
   package) syncs versions across all six service repos before building.

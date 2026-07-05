@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { applyAgentProjectionToSession, dispatchAgentEvent, reduceAgentEvents } from '../core/agentEvents.js';
@@ -9,6 +9,9 @@ import { projectWorkflow } from '../core/workflow.js';
 export { defaultRuntimeStateDir };
 
 const NON_PERSISTED_EVENT_TYPES = new Set(['runtime_log']);
+export const RUNTIME_STORE_SCHEMA_VERSION = 1;
+const RUNTIME_RETENTION_DAYS = 30;
+const TERMINAL_RUN_STATUSES = ['done', 'error', 'cancelled', 'interrupted'];
 
 const RUN_STATUS_BY_EVENT = {
   run_done: 'done',
@@ -21,13 +24,20 @@ const RUN_STATUS_BY_EVENT = {
 const RECOVERABLE_RUN_STATUSES = ['running', 'waiting', 'pending_approval'];
 export const RECOVERABLE_QUEUE_STATUSES = ['waiting', 'queued', 'starting', 'running', 'blocked', 'pending_approval'];
 
-export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName = 'runtime.db' } = {}) {
+export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName = 'runtime.db', metaPath = null } = {}) {
   const resolvedStateDir = resolve(stateDir);
   mkdirSync(resolvedStateDir, { recursive: true });
   const dbPath = join(resolvedStateDir, fileName);
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');
+  try {
+    ensureKnownStoreVersion(db, dbPath);
+    ensureRuntimeMeta(metaPath ?? defaultRuntimeMetaPath(resolvedStateDir));
+  } catch (error) {
+    db.close();
+    throw error;
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS events (
       sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,6 +86,8 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   backfillEventSequence(db);
   db.exec('CREATE INDEX IF NOT EXISTS idx_events_workspace ON events(workspace)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_events_sequence ON events(sequence)');
+  db.exec(`PRAGMA user_version = ${RUNTIME_STORE_SCHEMA_VERSION}`);
+  purgeOldTerminalRuns(db);
 
   let lastEventId = null;
   let lastEventSequence = null;
@@ -421,6 +433,64 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     getState,
     close,
   };
+}
+
+function defaultRuntimeMetaPath(stateDir) {
+  return join(dirname(stateDir), '.wiki', 'meta.json');
+}
+
+function ensureKnownStoreVersion(db, dbPath) {
+  const row = db.prepare('PRAGMA user_version').get();
+  const version = Number(row?.user_version ?? 0);
+  if (version > RUNTIME_STORE_SCHEMA_VERSION) {
+    throw new Error(`Unsupported runtime store schema version ${version} in ${dbPath}; this manager supports version ${RUNTIME_STORE_SCHEMA_VERSION}. Upgrade llm-wiki-manager before opening this runtime store.`);
+  }
+}
+
+function ensureRuntimeMeta(metaPath) {
+  mkdirSync(dirname(metaPath), { recursive: true });
+  if (!existsSync(metaPath)) {
+    writeFileSync(metaPath, `${JSON.stringify({ schemaVersion: RUNTIME_STORE_SCHEMA_VERSION }, null, 2)}\n`, 'utf8');
+    return;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(metaPath, 'utf8'));
+  } catch (error) {
+    throw new Error(`Invalid runtime metadata file ${metaPath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const version = Number(parsed?.schemaVersion ?? 0);
+  if (version > RUNTIME_STORE_SCHEMA_VERSION) {
+    throw new Error(`Unsupported runtime metadata schemaVersion ${version} in ${metaPath}; this manager supports version ${RUNTIME_STORE_SCHEMA_VERSION}. Upgrade llm-wiki-manager before opening this runtime state.`);
+  }
+  if (!version) {
+    writeFileSync(metaPath, `${JSON.stringify({ ...parsed, schemaVersion: RUNTIME_STORE_SCHEMA_VERSION }, null, 2)}\n`, 'utf8');
+  }
+}
+
+function purgeOldTerminalRuns(db, now = new Date()) {
+  const cutoff = new Date(now.getTime() - RUNTIME_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const placeholders = TERMINAL_RUN_STATUSES.map(() => '?').join(', ');
+  const oldRuns = db
+    .prepare(`SELECT id FROM runs WHERE status IN (${placeholders}) AND updated_at < ?`)
+    .all(...TERMINAL_RUN_STATUSES, cutoff)
+    .map((row) => row.id);
+  if (oldRuns.length === 0) return 0;
+  db.exec('BEGIN');
+  try {
+    const deleteEvents = db.prepare('DELETE FROM events WHERE run_id = ? OR json_extract(payload, \'$.runId\') = ?');
+    const deleteRun = db.prepare('DELETE FROM runs WHERE id = ?');
+    for (const runId of oldRuns) {
+      deleteEvents.run(runId, runId);
+      deleteRun.run(runId);
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  db.exec('VACUUM');
+  return oldRuns.length;
 }
 
 function rowToEvent(row) {

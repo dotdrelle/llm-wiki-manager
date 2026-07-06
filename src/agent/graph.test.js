@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAgentGraph } from './graph.js';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { buildAgentSystemPrompt, createAgentGraph } from './graph.js';
 
 function sessionBase(overrides = {}) {
   return {
@@ -178,6 +181,78 @@ test('agent graph binds read-only tools for config questions without plan tools'
   assert.equal(seenTools.includes('wiki__plan_set'), false);
   assert.equal(seenTools.includes('production__production_start_job'), false);
   assert.equal(seenTools.includes('shell__run_command'), false);
+});
+
+test('agent graph binds the full toolset for a "remember my preference" request, not just read-only tools', async () => {
+  const seenTools = [];
+  const session = sessionBase({
+    mcp: {
+      wiki: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3001/mcp/',
+        tools: [
+          {
+            name: 'profile_read',
+            description: 'Read the workspace profile from .wiki/profile.md.',
+            inputSchema: { type: 'object', properties: {} },
+          },
+          {
+            name: 'profile_update',
+            description: 'Write the workspace profile to .wiki/profile.md.',
+            inputSchema: { type: 'object', properties: { content: { type: 'string' } } },
+          },
+        ],
+      },
+    },
+    llm: {
+      async completeWithTools({ tools }) {
+        seenTools.push(...tools.map((tool) => tool.function.name));
+        return {
+          content: 'Noté, je retiens cette préférence.',
+          message: { role: 'assistant', content: 'Noté, je retiens cette préférence.' },
+          tool_calls: null,
+        };
+      },
+    },
+  });
+
+  const agent = createAgentGraph();
+  const result = await agent.invoke({ input: 'retiens que je préfère des réponses courtes', session });
+
+  assert.equal(result.response, 'Noté, je retiens cette préférence.');
+  // profile_update is a write tool (doesn't match the read-only name pattern)
+  // and "retiens" doesn't appear in the config/status read-only phrasing —
+  // without action-intent coverage for remember/save/update requests, this
+  // tool would silently never be offered to the LLM at all.
+  assert.ok(seenTools.includes('wiki__profile_update'));
+  assert.ok(seenTools.includes('wiki__profile_read'));
+});
+
+test('buildAgentSystemPrompt includes .wiki/profile.md content so preferences apply without a tool call', () => {
+  const workspacePath = mkdtempSync(join(tmpdir(), 'donna-profile-'));
+  mkdirSync(join(workspacePath, '.wiki'), { recursive: true });
+  writeFileSync(
+    join(workspacePath, '.wiki', 'profile.md'),
+    '# Workspace Profile\n\n## User Preferences\n\n- Tutoiement : me tutoyer\n',
+  );
+  try {
+    const prompt = buildAgentSystemPrompt({
+      session: sessionBase({ workspacePath }),
+    });
+    assert.match(prompt, /Tutoiement : me tutoyer/);
+  } finally {
+    rmSync(workspacePath, { recursive: true, force: true });
+  }
+});
+
+test('buildAgentSystemPrompt omits the profile section when profile.md is missing or empty', () => {
+  const workspacePath = mkdtempSync(join(tmpdir(), 'donna-profile-empty-'));
+  try {
+    const prompt = buildAgentSystemPrompt({ session: sessionBase({ workspacePath }) });
+    assert.doesNotMatch(prompt, /Workspace profile \(\.wiki\/profile\.md\)/);
+  } finally {
+    rmSync(workspacePath, { recursive: true, force: true });
+  }
 });
 
 test('agent graph waits for tool-level approval configured on endpoint', async () => {

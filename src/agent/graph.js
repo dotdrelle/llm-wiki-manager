@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 import {
   buildLlmTools,
@@ -13,6 +15,25 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
 
 const MAX_TOOL_ITERATIONS = 80;
+const MAX_PROFILE_CHARS = 4000;
+
+// The manager runs on the same host filesystem as the workspace directory
+// (this is the same local file wiki__profile_update writes to via its
+// volume-mounted container), so read it fresh on every turn instead of
+// relying on the model proactively calling wiki__profile_read — profile
+// content (tutoiement, formatting preferences, etc.) is meant to shape every
+// reply, not just ones where the model happens to think to check it.
+function loadWorkspaceProfile(workspacePath) {
+  if (!workspacePath) return null;
+  const profilePath = join(workspacePath, '.wiki', 'profile.md');
+  if (!existsSync(profilePath)) return null;
+  try {
+    const content = readFileSync(profilePath, 'utf8').trim();
+    return content ? content.slice(0, MAX_PROFILE_CHARS) : null;
+  } catch {
+    return null;
+  }
+}
 const MAX_SPINNER_ARG_LENGTH = 96;
 
 // Deterministic guard: on the first turn of a fresh /agent input, only bind
@@ -20,7 +41,7 @@ const MAX_SPINNER_ARG_LENGTH = 96;
 // action request. Plain chat (greetings, thanks, small talk) never sees those
 // tools bound, so the LLM cannot start a production job/plan from a "salut" —
 // prompting alone was not reliable enough (see plan-directeur history).
-const ACTION_INTENT_RE = /\b(lance|lancer|lancez|d[ée]marre|d[ée]marrer|d[ée]marrez|ex[ée]cute|ex[ée]cuter|exporte|exporter|export|importe|importer|import|g[ée]n[èe]re|g[ée]n[ée]rer|g[ée]n[ée]ration|cr[ée]e|cr[ée]er|construis|build|run|start|launch|deploy|d[ée]ploie|d[ée]ployer|d[ée]ploiement|publie|publier|publish|publication|synchronise|synchroniser|sync|convertis|convertir|convert|envoie|envoyer|send|configure|configurer|ajoute|ajouter|add|planifie|planifier|schedule|ingest|ing[èe]re|ing[èe]rer|ingestion|polish|pipeline|skill|job|t[âa]che|workflow|refais|relance|retente|retry)\b/i;
+const ACTION_INTENT_RE = /\b(lance|lancer|lancez|d[ée]marre|d[ée]marrer|d[ée]marrez|ex[ée]cute|ex[ée]cuter|exporte|exporter|export|importe|importer|import|g[ée]n[èe]re|g[ée]n[ée]rer|g[ée]n[ée]ration|cr[ée]e|cr[ée]er|construis|build|run|start|launch|deploy|d[ée]ploie|d[ée]ployer|d[ée]ploiement|publie|publier|publish|publication|synchronise|synchroniser|sync|convertis|convertir|convert|envoie|envoyer|send|configure|configurer|ajoute|ajouter|add|planifie|planifier|schedule|ingest|ing[èe]re|ing[èe]rer|ingestion|polish|pipeline|skill|job|t[âa]che|workflow|refais|relance|retente|retry|retiens|retenir|m[ée]morise|m[ée]moriser|souviens|souvenir|note|noter|sauvegarde|sauvegarder|enregistre|enregistrer|remember|persist|met[s]? [àa] jour|mise [àa] jour)\b/i;
 const READ_ONLY_TOOL_NAME_RE = /(^|_)(list|status|get|read|describe|show|search|find)(_|$)/i;
 
 function isReadOnlyToolName(name) {
@@ -517,6 +538,7 @@ export function buildAgentSystemPrompt(state) {
   const mcpTools = formatMcpToolsForAgent(state.session.mcp);
   const skills = formatSkillsForAgent(state.session);
   const customPrompt = state.session.systemPrompt ?? null;
+  const workspaceProfile = loadWorkspaceProfile(state.session.workspacePath);
 
   const agentContext = [
     'You are Donna, the terminal orchestrator agent for llm-wiki-manager.',
@@ -576,7 +598,11 @@ export function buildAgentSystemPrompt(state) {
     'If production_start_job is returned as queued/waiting by the manager, report that it is waiting in the local queue and return control. Do not continue as if the production job has started.',
     'For diagnostics, use /wiki run doctor when the user asks for doctor. Use /workspace init <name> [path] for low-level non-interactive workspace creation. In the interactive TUI, /new <name> opens the setup wizard. Use /wiki for index, or /wiki run index through the explicit backup hatch. Use /wiki run init only for explicit current-workspace llm-wiki init.',
     'If an action requires tools or skills not available yet, explain the limitation and name the expected primitive.',
-  ].join('\n');
+    workspaceProfile
+      ? `Workspace profile (.wiki/profile.md) — durable user preferences, apply these to every reply (tone, tutoiement/vouvoiement, formatting, etc.):\n${workspaceProfile}`
+      : null,
+    'When the user explicitly asks you to remember, persist, or update durable preference/profile information, call wiki__profile_update (do not just acknowledge in text without calling it).',
+  ].filter(Boolean).join('\n');
 
   return customPrompt ? `${customPrompt}\n\n${agentContext}` : agentContext;
 }

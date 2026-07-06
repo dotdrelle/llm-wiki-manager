@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -125,7 +125,7 @@ test('submitRuntimeRun reports a non-409 error without throwing or calling /cont
   }
 });
 
-test('runLine updates workspace profile directly in chat mode', async () => {
+test('runLine does not update workspace profile before Donna handles the request', async () => {
   const workspacePath = mkdtempSync(join(tmpdir(), 'donna-profile-shell-'));
   mkdirSync(join(workspacePath, '.wiki'), { recursive: true });
   try {
@@ -140,9 +140,8 @@ test('runLine updates workspace profile directly in chat mode', async () => {
     });
 
     assert.equal(result.exit, false);
-    const profile = readFileSync(join(workspacePath, '.wiki', 'profile.md'), 'utf8');
-    assert.match(profile, /Les statuts Docker sont rendus en tableau/);
-    assert.deepEqual(conversationMessages(session).map((message) => message.role), ['user', 'donna']);
+    assert.equal(existsSync(join(workspacePath, '.wiki', 'profile.md')), false);
+    assert.notDeepEqual(conversationMessages(session).map((message) => message.role), ['user', 'donna']);
   } finally {
     rmSync(workspacePath, { recursive: true, force: true });
   }

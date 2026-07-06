@@ -18,20 +18,6 @@ No profile summary yet.
 Keep this file concise. Do not store secrets, tokens, passwords, API keys, or temporary information.
 `;
 
-const PROFILE_UPDATE_RE = /^\s*(?:ajoute|ajouter|note|noter|retiens|retenir|m[ée]morise|m[ée]moriser|souviens-toi|souviens|enregistre|enregistrer|remember|save|persist)\b\s+(.+?)\s*$/i;
-
-export function extractProfilePreference(input) {
-  const text = String(input ?? '').trim();
-  const match = text.match(PROFILE_UPDATE_RE);
-  if (!match) return null;
-  const preference = String(match[1] ?? '')
-    .replace(/^(?:(?:dans|sur|a|à)\s+)?(?:mon|ma|le|la|ce|cette)?\s*(?:profil|profile)\s+(?:que\s+)?/i, '')
-    .replace(/^que\s+/i, '')
-    .trim()
-    .replace(/[.。]\s*$/, '');
-  return preference.length >= 3 ? preference : null;
-}
-
 function profilePathForWorkspace(workspacePath) {
   return join(workspacePath, '.wiki', 'profile.md');
 }
@@ -122,22 +108,4 @@ export async function updateWorkspaceProfilePreference(session, preference) {
       ? `Profil mis à jour : ${inserted.line.replace(/^- /, '')}`
       : `Profil déjà à jour : ${inserted.line.replace(/^- /, '')}`,
   };
-}
-
-export async function handleProfileUpdateRequest(input, { session, messages, onUpdate } = {}) {
-  const preference = extractProfilePreference(input);
-  if (!preference) return null;
-  const targetMessages = messages ?? session?.conversation ?? [];
-  targetMessages.push({ role: 'user', content: input });
-  try {
-    const result = await updateWorkspaceProfilePreference(session, preference);
-    targetMessages.push({ role: 'donna', content: result.message });
-    onUpdate?.();
-    return result;
-  } catch (err) {
-    const message = `Profil non modifié : ${err instanceof Error ? err.message : String(err)}`;
-    targetMessages.push({ role: 'donna', content: message });
-    onUpdate?.();
-    return { ok: false, message };
-  }
 }

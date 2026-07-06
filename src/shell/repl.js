@@ -15,7 +15,6 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { listSkills } from '../core/skills.js';
 import { listWikircProfiles } from '../core/wikirc.js';
 import { listWorkspaces } from '../core/workspaces.js';
-import { handleProfileUpdateRequest } from '../core/profile.js';
 import { fetchRuntimeState, postRuntimeApprove, postRuntimeCancel, postRuntimeControl, postRuntimeRun, postRuntimeShutdown, streamRuntimeEvents } from '../runtime/client.js';
 
 marked.use(markedTerminal());
@@ -962,22 +961,22 @@ function renderScreen({ packageJson, session, messages, inputBuffer, busy = fals
   output.write(buf);
 }
 
-async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
+async function runAgentTurn(input, { agent, session, onUpdate, onStep, displayInput = input }) {
   const messages = conversationMessages(session);
   const history = toConversationHistory(messages);
   session._onStep = onStep ?? null;
   session.packageJson = session.packageJson ?? {};
   dispatchAgentEvent(session, createAgentEvent('run_started', {
     origin: 'user',
-    payload: { input },
+    payload: { input: displayInput },
   }));
   dispatchAgentEvent(session, createAgentEvent('user_message', {
     origin: 'user',
-    payload: { content: input },
+    payload: { content: displayInput },
   }));
 
   // Show the user's input in the conversation (mirrors runDirectChatTurn).
-  messages.push({ role: 'user', content: input });
+  messages.push({ role: 'user', content: displayInput });
   onUpdate?.();
 
   // Create the donna bubble immediately so "Thinking…" is visible during TTFT.
@@ -1174,16 +1173,6 @@ export async function runLine(line, { agent, packageJson, session, onUpdate, onS
   const trimmed = stripHtml(line).trim();
   if (!trimmed) return { exit: false };
 
-  const profileUpdate = await handleProfileUpdateRequest(trimmed, {
-    session,
-    messages: conversationMessages(session),
-    onUpdate,
-  });
-  if (profileUpdate) {
-    onStep?.(profileUpdate.ok ? 'Profile: updated' : 'Profile: not updated');
-    return { exit: false };
-  }
-
   if (/^\/chat(?:\s|$)/.test(trimmed) && trimmed.replace(/^\/chat(?:\s+|$)/, '').trim()) {
     conversationMessages(session).push({ role: 'command', content: 'Usage: /chat\nThen type your message in chat mode.' });
     return { exit: false };
@@ -1193,6 +1182,7 @@ export async function runLine(line, { agent, packageJson, session, onUpdate, onS
     onStep?.(`Shell: ${trimmed}`);
     const result = await handleSlashCommand(trimmed, { packageJson, session, onStep });
     const messages = conversationMessages(session);
+    const handoffRawToAgent = Boolean(result.rawOutput && result.agentTrigger && agent);
     if (result.output) {
       const parts = trimmed.split(/\s+/);
       if (parts[0] === '/mcp' && parts[1] === 'call' && parts[2]) {
@@ -1207,10 +1197,15 @@ export async function runLine(line, { agent, packageJson, session, onUpdate, onS
           rememberProductionActivity(session, payload);
         }
       }
+    }
+    if (result.output && !handoffRawToAgent) {
       messages.push({ role: 'command', content: result.output });
       onUpdate?.();
     }
-    if (result.agentTrigger && agent) {
+    if (handoffRawToAgent) {
+      const agentResult = await runAgentTurn(result.agentTrigger, { agent, session, onUpdate, onStep, displayInput: trimmed });
+      if (agentResult.aborted) return { exit: false, aborted: true };
+    } else if (result.agentTrigger && agent) {
       const agentResult = await runAgentTurn(result.agentTrigger, { agent, session, onUpdate, onStep });
       if (agentResult.aborted) return { exit: false, aborted: true };
     }
@@ -1584,14 +1579,7 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
             syncRuntimeState();
           }
         } else {
-          const profileUpdate = await handleProfileUpdateRequest(line.trim(), {
-            session,
-            messages: conversationMessages(session),
-            onUpdate: rerender,
-          });
-          if (profileUpdate) {
-            activityLines = [...activityLines, profileUpdate.ok ? 'profile: updated' : 'profile: not updated'].slice(-LOWER_DETAIL_ROWS);
-          } else if (runtime?.url && !session.chatMode && !line.trim().startsWith('/')) {
+          if (runtime?.url && !session.chatMode && !line.trim().startsWith('/')) {
             conversationMessages(session).push({ role: 'user', content: line });
             const outcome = await submitRuntimeRun(line, { runtime, session });
             if (outcome.kind === 'accepted') {

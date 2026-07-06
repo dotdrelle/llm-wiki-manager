@@ -110,7 +110,7 @@ test('agent graph reports LLM unavailable without Donna active boilerplate', asy
   assert.doesNotMatch(result.response, /Donna is active/);
 });
 
-test('agent graph binds only the minimal read-only tool set for plain discussion, never an empty array', async () => {
+test('agent graph binds the full toolset and lets Donna decide whether to call tools', async () => {
   const seenTools = [];
   const session = sessionBase({
     llm: {
@@ -129,17 +129,17 @@ test('agent graph binds only the minimal read-only tool set for plain discussion
   const result = await agent.invoke({ input: 'salut', session });
 
   assert.equal(result.response, 'Salut, je suis là.');
-  // Never literally empty: the system prompt unconditionally describes the
-  // connected MCP tools, and sending zero tools while the prompt talks about
-  // them risks an empty/malformed completion from some models instead of a
-  // plain reply — this is what actually broke plain "salut" discussion.
   assert.ok(seenTools.length > 0);
-  assert.deepEqual(seenTools, ['shell__read_command']);
+  assert.ok(seenTools.includes('shell__read_command'));
+  assert.ok(seenTools.includes('shell__run_command'));
+  assert.ok(seenTools.includes('shell__profile_update'));
+  assert.ok(seenTools.includes('wiki__plan_set'));
+  assert.ok(seenTools.includes('wiki__plan_done'));
   assert.equal(session.headlessPlan ?? null, null);
   assert.equal(Object.keys(session.activities ?? {}).length, 0);
 });
 
-test('agent graph binds read-only tools for config questions without plan tools', async () => {
+test('agent graph does not pre-filter mutating MCP tools for config questions', async () => {
   const seenTools = [];
   const session = sessionBase({
     mcp: {
@@ -178,9 +178,9 @@ test('agent graph binds read-only tools for config questions without plan tools'
   assert.equal(result.response, 'Le profil actif est docs.');
   assert.ok(seenTools.includes('shell__read_command'));
   assert.ok(seenTools.includes('production__production_job_status'));
-  assert.equal(seenTools.includes('wiki__plan_set'), false);
-  assert.equal(seenTools.includes('production__production_start_job'), false);
-  assert.equal(seenTools.includes('shell__run_command'), false);
+  assert.ok(seenTools.includes('wiki__plan_set'));
+  assert.ok(seenTools.includes('production__production_start_job'));
+  assert.ok(seenTools.includes('shell__run_command'));
 });
 
 test('agent graph binds the full toolset for a "remember my preference" request, not just read-only tools', async () => {

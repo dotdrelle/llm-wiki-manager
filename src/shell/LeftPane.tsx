@@ -662,6 +662,7 @@ export function LeftPane(props: {
 }) {
   const modeColor = () => props.chatMode ? '#22C55E' : '#06B6D4';
   const modeLabel = () => props.chatMode ? 'CHAT MODE  direct LLM, no tools' : 'AGENTIC MODE  LangGraph + MCP tools';
+  const showWelcome = () => props.showWelcome && props.messages.length === 0;
   return (
     <box width={props.width} height="100%" flexDirection="column" padding={1} overflow="hidden">
       <box height={3} flexDirection="column">
@@ -676,7 +677,7 @@ export function LeftPane(props: {
           {props.hintLine ? <text fg="#FBBF24">[ {props.hintLine} ]</text> : null}
         </box>
       </box>
-      {props.showWelcome ? (
+      {showWelcome() ? (
         <WelcomeHelpPanels width={props.conversationColumns} />
       ) : (
         <ConversationView

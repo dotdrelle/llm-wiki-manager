@@ -1,6 +1,6 @@
 import { writeFileSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
-import { createMemo, createSignal, onCleanup } from 'solid-js';
+import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import { formatMcpToolResult, callMcpTool } from '../core/mcp.js';
 import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
@@ -123,6 +123,13 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
       return [...runtimeMessages, ...localCommands].slice(-200);
     }
     return [...conversationMessages(session)];
+  });
+  createEffect(() => {
+    const runtimeConversation = runtimeState()?.conversation;
+    if (Array.isArray(runtimeConversation) && runtimeConversation.length > 0) {
+      setShowWelcome(false);
+      setConversationScroll(0);
+    }
   });
   const prompt = createMemo(() => {
     version();

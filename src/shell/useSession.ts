@@ -106,23 +106,15 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   );
   const localFallbackActive = createMemo(() => !props.runtime?.url || runtimeStatus() === 'disconnected');
 
+  // Runtime conversation entries are merged into conversationMessages(session)
+  // (see mergeRuntimeConversation below) as they arrive, so they land in true
+  // chronological order alongside local command output (/status, /use, ...)
+  // instead of being reconstructed as two separately-ordered blocks at render
+  // time — that used to put every local command before the whole runtime
+  // history regardless of when each one actually happened.
   const messages = createMemo(() => {
     version();
-    const runtimeConversation = runtimeState()?.conversation;
-    const localCommands = conversationMessages(session)
-      .filter((message: any) => message.role === 'command')
-      .map((message: any) => ({
-        role: 'command',
-        content: String(message.content ?? ''),
-      }));
-    if (!chatMode() && Array.isArray(runtimeConversation) && runtimeConversation.length > 0) {
-      const runtimeMessages = runtimeConversation.map((message: any) => ({
-        role: message.role === 'assistant' ? 'donna' : message.role,
-        content: String(message.content ?? ''),
-      }));
-      return [...localCommands, ...runtimeMessages].slice(-200);
-    }
-    return [...conversationMessages(session)];
+    return [...conversationMessages(session)].slice(-200);
   });
   createEffect(() => {
     const runtimeConversation = runtimeState()?.conversation;
@@ -284,10 +276,54 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     return [...logs(), ...tagged].slice(-200);
   });
 
+  // Index-aligned with each workspace's runtimeConversation array — not just
+  // a length count. The server sometimes finalizes a streaming placeholder
+  // (queued during a tool-calling turn, never closed out because that turn's
+  // reply had no final text) by overwriting the *same* conversation entry's
+  // content on a later turn, without the array growing. A length-based diff
+  // would miss that update entirely and leave the stale placeholder text
+  // shown forever; tracking local entry references per index picks it up.
+  const runtimeConversationRefsByWorkspace = new Map<string, any[]>();
+  function mergeRuntimeConversation(state: any) {
+    const workspace = (session as any).workspace || '__global__';
+    const runtimeConversation = Array.isArray(state?.conversation) ? state.conversation : [];
+    if (runtimeConversation.length === 0) return;
+    const target = conversationMessages(session);
+    const backed = runtimeConversationRefsByWorkspace.get(workspace) ?? [];
+    runtimeConversationRefsByWorkspace.set(workspace, backed);
+    for (let i = 0; i < runtimeConversation.length; i += 1) {
+      const message = runtimeConversation[i];
+      const content = String(message.content ?? '');
+      const role = message.role === 'assistant' ? 'donna' : message.role;
+      if (i < backed.length) {
+        const entry = backed[i];
+        if (entry.content !== content) entry.content = content;
+        if (entry.role !== role) entry.role = role;
+        continue;
+      }
+      if (role === 'user') {
+        // The user's own message was already pushed optimistically (see
+        // useAgent.ts) and marked _pending — confirm that entry instead of
+        // adding a second copy. No matching pending entry (e.g. history
+        // restored after a fresh reconnect) falls through to a normal push.
+        const pendingIndex = target.findIndex((entry: any) => entry._pending && entry.role === 'user' && entry.content === content);
+        if (pendingIndex !== -1) {
+          delete target[pendingIndex]._pending;
+          backed.push(target[pendingIndex]);
+          continue;
+        }
+      }
+      const entry = { role, content };
+      target.push(entry);
+      backed.push(entry);
+    }
+  }
+
   function syncRuntimeState() {
     void fetchRuntimeState({ url: props.runtime.url, workspace: (session as any).workspace ?? null })
       .then((state) => {
         setRuntimeState(state);
+        mergeRuntimeConversation(state);
         setRuntimeStatus('connected');
         refresh();
       })

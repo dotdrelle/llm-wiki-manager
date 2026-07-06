@@ -19,7 +19,10 @@ export function useAgent(props: { agent: unknown; packageJson: Record<string, un
 
     try {
       if (props.runtimeUrl && !props.chatMode() && !trimmed.startsWith('/')) {
-        conversationMessages(props.session).push({ role: 'user', content: trimmed });
+        // Marked _pending so mergeRuntimeConversation (useSession.ts) can
+        // confirm this exact entry instead of pushing a second copy once the
+        // same user message comes back from the runtime's own /state.
+        conversationMessages(props.session).push({ role: 'user', content: trimmed, _pending: true });
         const outcome = await submitRuntimeRun(trimmed, {
           runtime: { url: props.runtimeUrl },
           session: props.session,

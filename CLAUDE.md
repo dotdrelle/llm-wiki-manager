@@ -33,6 +33,20 @@ Python agent auth/scope/rate-limiting hardening landed in each agent repo
 is specified in `llm-wiki/docs/industrialisation.md` and planned for 0.12.0; do
 not expose the runtime as a shared write surface before that work lands.
 
+## Release recipe gate
+
+`src/runtime/donna-contract.test.js` is the executable form of
+`plan-0.11.5-hotfix-final.md` §3 (the Donna contract recipe) and runs in
+`npm test`/`ci.yml`. No release ships while it is red.
+
+Any lot touching `runner.js`, `agentLoop.js`, `plan.js`, `graph.js`, or the
+agent prompts additionally requires the **manual** §3 recipe — 8 scenarios,
+run by hand once in Serve (Agent mode) and once in ShellTUI (`/agent`) — before
+tagging. This is written down because the 0.9.5→0.11.4 lots were validated on
+technical criteria (the scheduler parallelizes, the plan is structured) and
+never replayed against the actual user scenario ("I say hello, she answers"),
+which is how the 0.11.5 regression shipped in the first place.
+
 ## Layout
 
 ```text
@@ -219,14 +233,9 @@ Key modules in `src/runtime/`:
   `concurrency: 2`, and asserts the parallel run finishes under 65% of the
   sequential run's wall time — a CI guard against the scheduler itself
   regressing, not proof that a real llm-wiki build/provider round-trip shows
-  the same margin.
-  `donna-contract.test.js` (plan 0.11.5 §3/§4.1 exit criterion) is the
-  executable form of the manual recipe: one test per recipe row, driving
-  `runRuntimeAgenticWorkflow`/the real parallel scheduler with a mocked
-  per-turn agent for rows 1-3 and 8, and the real `/control` HTTP endpoint for
-  row 7. No release ships while it is red; a lot touching `runner.js`,
-  `agentLoop.js`, `plan.js`, `graph.js`, or the prompts still requires the
-  manual recipe once in Serve and once in ShellTUI before tagging.
+  the same margin. `donna-contract.test.js` (see Release recipe gate above)
+  drives this same code path with a mocked per-turn agent for rows 1-3 and 8,
+  and the real `/control` HTTP endpoint for row 7.
 - **`approvals.js`**: run-level and tool-level approval gate. Run-level:
   `requireApproval: true` in the `/run` body suspends execution after the first
   plan is formed and emits `run_pending_approval`; `POST /approve?runId=...`

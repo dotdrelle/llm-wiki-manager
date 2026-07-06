@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
+import { activeCacertPath } from '../core/cacert.js';
 import { normalizePlanPatch, rebasePlanPatch } from '../core/planPatch.js';
 import { validateContractInDev } from '../contracts/schemas.js';
 import { runtimeTokenFromEnv } from './auth.js';
@@ -55,6 +56,8 @@ export function startRuntimeServer({
           status: context?.running ? 'running' : 'idle',
           workspace: context?.workspace ?? workspace ?? null,
           dbPath: store.dbPath,
+          cacertPath: activeCacertPath(),
+          nodeExtraCaCerts: process.env.NODE_EXTRA_CA_CERTS ?? null,
         });
         return;
       }

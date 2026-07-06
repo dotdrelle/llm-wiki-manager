@@ -1,7 +1,8 @@
 import { execFile, spawn } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkRuntimeHealth, runtimeUrlFromEnv } from './client.js';
+import { activeCacertPath } from '../core/cacert.js';
+import { checkRuntimeHealth, postRuntimeShutdown, runtimeUrlFromEnv } from './client.js';
 import { defaultRuntimeStateDir } from '../core/env.js';
 import { resolveRuntimeAuthToken, runtimeTokenFromEnv } from './auth.js';
 
@@ -42,7 +43,15 @@ export async function ensureRuntime({
   const auth = resolveRuntimeAuthToken({ host, stateDir });
   if (auth.token) process.env.WIKI_MANAGER_RUNTIME_TOKEN = auth.token;
   const existing = await runtimeHealthOrNull(url, auth.token);
-  if (existing) return { url, started: false, health: existing, token: auth.token, tokenPath: auth.tokenPath };
+  if (existing) {
+    const expectedCacertPath = activeCacertPath();
+    const actualCacertPath = existing.cacertPath ? resolve(existing.cacertPath) : null;
+    if (actualCacertPath === expectedCacertPath) {
+      return { url, started: false, health: existing, token: auth.token, tokenPath: auth.tokenPath };
+    }
+    await postRuntimeShutdown({ url, token: auth.token });
+    await waitForRuntimeShutdown(url, auth.token, 2500);
+  }
 
   const runtimeNode = await assertRuntimeNode();
   const child = spawn(runtimeNode.executable, [
@@ -73,6 +82,14 @@ export async function ensureRuntime({
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
   }
   throw new Error(`Runtime did not become healthy at ${url}`);
+}
+
+async function waitForRuntimeShutdown(url, token, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!await runtimeHealthOrNull(url, token)) return;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+  }
 }
 
 export async function runtimeHealthOrNull(url = runtimeUrlFromEnv(), token = runtimeTokenFromEnv()) {

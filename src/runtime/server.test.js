@@ -46,6 +46,50 @@ test('runtime server checks bearer and x-runtime-token credentials', async (t) =
   }
 });
 
+test('runtime health exposes active CA certificate environment', async (t) => {
+  const previousCacert = process.env.WIKI_MANAGER_CACERT_PATH;
+  const previousNodeExtraCaCerts = process.env.NODE_EXTRA_CA_CERTS;
+  process.env.WIKI_MANAGER_CACERT_PATH = '/tmp/wiki-manager-test-ca.pem';
+  process.env.NODE_EXTRA_CA_CERTS = '/tmp/wiki-manager-test-ca.pem';
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      token: 'runtime-secret',
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'idle' }),
+        listEvents: () => [],
+      },
+      session: {},
+      run: async () => {},
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/health`, {
+      headers: { authorization: 'Bearer runtime-secret' },
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.cacertPath, '/tmp/wiki-manager-test-ca.pem');
+    assert.equal(body.nodeExtraCaCerts, '/tmp/wiki-manager-test-ca.pem');
+  } finally {
+    await handle.close();
+    if (previousCacert === undefined) delete process.env.WIKI_MANAGER_CACERT_PATH;
+    else process.env.WIKI_MANAGER_CACERT_PATH = previousCacert;
+    if (previousNodeExtraCaCerts === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+    else process.env.NODE_EXTRA_CA_CERTS = previousNodeExtraCaCerts;
+  }
+});
+
 test('runtime server shutdown endpoint closes the listener', async (t) => {
   let handle;
   try {

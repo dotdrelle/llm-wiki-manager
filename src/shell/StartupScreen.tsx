@@ -260,11 +260,16 @@ export function StartupScreen(props: {
         </box>
         <text height={1} fg="#7F8C8D" content={fit(subtitle(), innerWidth())} />
         <text height={1}>{''}</text>
-        <box height={8} flexDirection="column" alignItems="center" overflow="hidden">
-          <For each={DONNA_LOGO.split('\n')}>
-            {(line) => <text height={1} fg="#d6a85f">{line}</text>}
-          </For>
-          <text height={1} fg="#888888" content="Intelligent workspace" />
+        <box
+          height={8}
+          flexDirection="column"
+          justifyContent="center"
+          alignItems="center"
+          gap={1}
+          overflow="hidden"
+        >
+          <text fg="#d6a85f">{DONNA_LOGO}</text>
+          <text fg="#888888">Intelligent workspace</text>
         </box>
         <text height={1}>{''}</text>
         <text height={1} fg="#7F8C8D" content={menuTitle()} />

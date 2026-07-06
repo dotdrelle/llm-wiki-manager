@@ -1,4 +1,3 @@
-import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 import {
@@ -8,33 +7,16 @@ import {
   formatMcpToolsForAgent,
   parseToolCallName,
 } from '../core/mcp.js';
-import { formatSkillsForAgent } from '../core/skills.js';
+import { formatSkillsForAgent, readOptionalText } from '../core/skills.js';
 import { handleSlashCommand } from '../commands/slash.js';
 import { extractActivity, formatActivitySummary, parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
+import { updateWorkspaceProfilePreference } from '../core/profile.js';
 
 const MAX_TOOL_ITERATIONS = 80;
-const MAX_PROFILE_CHARS = 4000;
-
-// The manager runs on the same host filesystem as the workspace directory
-// (this is the same local file wiki__profile_update writes to via its
-// volume-mounted container), so read it fresh on every turn instead of
-// relying on the model proactively calling wiki__profile_read — profile
-// content (tutoiement, formatting preferences, etc.) is meant to shape every
-// reply, not just ones where the model happens to think to check it.
-function loadWorkspaceProfile(workspacePath) {
-  if (!workspacePath) return null;
-  const profilePath = join(workspacePath, '.wiki', 'profile.md');
-  if (!existsSync(profilePath)) return null;
-  try {
-    const content = readFileSync(profilePath, 'utf8').trim();
-    return content ? content.slice(0, MAX_PROFILE_CHARS) : null;
-  } catch {
-    return null;
-  }
-}
 const MAX_SPINNER_ARG_LENGTH = 96;
+const MAX_PROFILE_CHARS = 4000;
 
 // Deterministic guard: on the first turn of a fresh /agent input, only bind
 // job-starting/mutating MCP tools when the raw text actually looks like an
@@ -122,6 +104,28 @@ const SHELL_READ_COMMAND_TOOL = {
         },
       },
       required: ['command'],
+    },
+  },
+};
+
+const SHELL_PROFILE_UPDATE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'shell__profile_update',
+    description: [
+      'Append one explicit durable user preference to the current workspace .wiki/profile.md.',
+      'Use when the user explicitly asks to remember, persist, note, or update profile information and wiki__profile_update is not available.',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        preference: {
+          type: 'string',
+          description: 'The durable preference to append, without Markdown bullet syntax.',
+        },
+      },
+      required: ['preference'],
     },
   },
 };
@@ -531,6 +535,18 @@ function selectExecutorForStep(description, session) {
   return fallback;
 }
 
+// The manager runs on the same host filesystem as the workspace directory
+// (this is the same local file wiki__profile_update writes to via its
+// volume-mounted container), so read it fresh on every turn instead of
+// relying on the model proactively calling wiki__profile_read — profile
+// content (tutoiement, formatting preferences, etc.) is meant to shape every
+// reply, not just ones where the model happens to think to check it.
+function loadWorkspaceProfile(workspacePath) {
+  if (!workspacePath) return null;
+  const content = readOptionalText(join(workspacePath, '.wiki', 'profile.md'));
+  return content ? content.slice(0, MAX_PROFILE_CHARS) : null;
+}
+
 export function buildAgentSystemPrompt(state) {
   const workspace = state.session.workspace ?? 'no workspace selected';
   const wikirc = state.session.wikirc?.profile ?? 'no profile loaded';
@@ -601,7 +617,7 @@ export function buildAgentSystemPrompt(state) {
     workspaceProfile
       ? `Workspace profile (.wiki/profile.md) — durable user preferences, apply these to every reply (tone, tutoiement/vouvoiement, formatting, etc.):\n${workspaceProfile}`
       : null,
-    'When the user explicitly asks you to remember, persist, or update durable preference/profile information, call wiki__profile_update (do not just acknowledge in text without calling it).',
+    'When the user explicitly asks you to remember, persist, or update durable preference/profile information, call wiki__profile_update when it is available; otherwise call shell__profile_update. Do not just acknowledge in text without calling a profile update tool.',
   ].filter(Boolean).join('\n');
 
   return customPrompt ? `${customPrompt}\n\n${agentContext}` : agentContext;
@@ -656,6 +672,7 @@ export function createAgentGraph(options = {}) {
 
     const allTools = [
       SHELL_RUN_COMMAND_TOOL,
+      SHELL_PROFILE_UPDATE_TOOL,
       WIKI_PLAN_SET_TOOL,
       WIKI_PLAN_DONE_TOOL,
       ...buildLlmTools(state.session.mcp),
@@ -785,6 +802,9 @@ export function createAgentGraph(options = {}) {
           resultText = await runShellCommandTool(state.session, args.command);
         } else if (server === 'shell' && tool === 'read_command') {
           resultText = await runShellReadCommandTool(state.session, args.command);
+        } else if (server === 'shell' && tool === 'profile_update') {
+          const result = await updateWorkspaceProfilePreference(state.session, args.preference);
+          resultText = JSON.stringify(result, null, 2);
         } else if (server !== 'shell') {
           await awaitRunApproval(state.session, { runId, tool: toolName });
           await awaitToolApproval(state.session, {

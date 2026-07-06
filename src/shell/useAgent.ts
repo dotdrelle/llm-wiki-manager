@@ -1,4 +1,5 @@
 import { createSignal } from 'solid-js';
+import { handleProfileUpdateRequest } from '../core/profile.js';
 import { postRuntimeCancel } from '../runtime/client.js';
 import { conversationMessages, recordRuntimeUnavailableAgentInput, runLine, submitRuntimeRun } from './repl.js';
 
@@ -18,6 +19,17 @@ export function useAgent(props: { agent: unknown; packageJson: Record<string, un
     props.addLog(`input: ${trimmed}`);
 
     try {
+      const profileUpdate = await handleProfileUpdateRequest(trimmed, {
+        session: props.session,
+        messages: conversationMessages(props.session),
+        onUpdate: props.refresh,
+      });
+      if (profileUpdate) {
+        props.addLog(profileUpdate.ok ? 'profile: updated' : 'profile: not updated');
+        props.refresh();
+        return { exit: false, profile: true };
+      }
+
       if (props.runtimeUrl && !props.chatMode() && !trimmed.startsWith('/')) {
         // Marked _pending so mergeRuntimeConversation (useSession.ts) can
         // confirm this exact entry instead of pushing a second copy once the

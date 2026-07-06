@@ -15,6 +15,7 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { listSkills } from '../core/skills.js';
 import { listWikircProfiles } from '../core/wikirc.js';
 import { listWorkspaces } from '../core/workspaces.js';
+import { handleProfileUpdateRequest } from '../core/profile.js';
 import { fetchRuntimeState, postRuntimeApprove, postRuntimeCancel, postRuntimeControl, postRuntimeRun, postRuntimeShutdown, streamRuntimeEvents } from '../runtime/client.js';
 
 marked.use(markedTerminal());
@@ -1173,6 +1174,16 @@ export async function runLine(line, { agent, packageJson, session, onUpdate, onS
   const trimmed = stripHtml(line).trim();
   if (!trimmed) return { exit: false };
 
+  const profileUpdate = await handleProfileUpdateRequest(trimmed, {
+    session,
+    messages: conversationMessages(session),
+    onUpdate,
+  });
+  if (profileUpdate) {
+    onStep?.(profileUpdate.ok ? 'Profile: updated' : 'Profile: not updated');
+    return { exit: false };
+  }
+
   if (/^\/chat(?:\s|$)/.test(trimmed) && trimmed.replace(/^\/chat(?:\s+|$)/, '').trim()) {
     conversationMessages(session).push({ role: 'command', content: 'Usage: /chat\nThen type your message in chat mode.' });
     return { exit: false };
@@ -1572,33 +1583,42 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
             conversationMessages(session).push({ role: 'command', content: `Approval ${result.approved ? 'accepted' : 'not found'}: ${id}` });
             syncRuntimeState();
           }
-        } else if (runtime?.url && !session.chatMode && !line.trim().startsWith('/')) {
-          conversationMessages(session).push({ role: 'user', content: line });
-          const outcome = await submitRuntimeRun(line, { runtime, session });
-          if (outcome.kind === 'accepted') {
-            activityLines = [...activityLines, 'runtime: run accepted'].slice(-LOWER_DETAIL_ROWS);
-          } else if (outcome.kind === 'queued') {
-            conversationMessages(session).push({ role: 'command', content: 'Runtime is busy — request added to the control queue, it will start automatically.' });
-            activityLines = [...activityLines, 'runtime: control queued'].slice(-LOWER_DETAIL_ROWS);
-          } else if (outcome.kind === 'observe' || outcome.kind === 'converse' || outcome.kind === 'mutate') {
-            const explanation = outcome.result?.explanation ?? 'Runtime control message accepted.';
-            conversationMessages(session).push({ role: 'command', content: explanation });
-            activityLines = [...activityLines, `runtime: ${outcome.kind}`].slice(-LOWER_DETAIL_ROWS);
-          } else if (outcome.kind === 'ambiguous') {
-            conversationMessages(session).push({ role: 'command', content: 'Runtime could not classify that message. Use /queue for a future run, or ask/status more explicitly.' });
-            activityLines = [...activityLines, 'runtime: ambiguous control'].slice(-LOWER_DETAIL_ROWS);
-          } else {
-            conversationMessages(session).push({ role: 'command', content: `Runtime error: ${outcome.message}` });
-            activityLines = [...activityLines, `runtime error: ${outcome.message}`].slice(-LOWER_DETAIL_ROWS);
-          }
-          syncRuntimeState();
-        } else if (!session.chatMode && !line.trim().startsWith('/')) {
-          const message = recordRuntimeUnavailableAgentInput(session, line, runtime);
-          activityLines = [...activityLines, message ?? 'runtime: disconnected'].slice(-LOWER_DETAIL_ROWS);
         } else {
-          const result = await runLine(line, { agent, packageJson, session, onUpdate: rerender, onStep });
-          done = result.exit;
-          aborted = result.aborted ?? false;
+          const profileUpdate = await handleProfileUpdateRequest(line.trim(), {
+            session,
+            messages: conversationMessages(session),
+            onUpdate: rerender,
+          });
+          if (profileUpdate) {
+            activityLines = [...activityLines, profileUpdate.ok ? 'profile: updated' : 'profile: not updated'].slice(-LOWER_DETAIL_ROWS);
+          } else if (runtime?.url && !session.chatMode && !line.trim().startsWith('/')) {
+            conversationMessages(session).push({ role: 'user', content: line });
+            const outcome = await submitRuntimeRun(line, { runtime, session });
+            if (outcome.kind === 'accepted') {
+              activityLines = [...activityLines, 'runtime: run accepted'].slice(-LOWER_DETAIL_ROWS);
+            } else if (outcome.kind === 'queued') {
+              conversationMessages(session).push({ role: 'command', content: 'Runtime is busy — request added to the control queue, it will start automatically.' });
+              activityLines = [...activityLines, 'runtime: control queued'].slice(-LOWER_DETAIL_ROWS);
+            } else if (outcome.kind === 'observe' || outcome.kind === 'converse' || outcome.kind === 'mutate') {
+              const explanation = outcome.result?.explanation ?? 'Runtime control message accepted.';
+              conversationMessages(session).push({ role: 'command', content: explanation });
+              activityLines = [...activityLines, `runtime: ${outcome.kind}`].slice(-LOWER_DETAIL_ROWS);
+            } else if (outcome.kind === 'ambiguous') {
+              conversationMessages(session).push({ role: 'command', content: 'Runtime could not classify that message. Use /queue for a future run, or ask/status more explicitly.' });
+              activityLines = [...activityLines, 'runtime: ambiguous control'].slice(-LOWER_DETAIL_ROWS);
+            } else {
+              conversationMessages(session).push({ role: 'command', content: `Runtime error: ${outcome.message}` });
+              activityLines = [...activityLines, `runtime error: ${outcome.message}`].slice(-LOWER_DETAIL_ROWS);
+            }
+            syncRuntimeState();
+          } else if (!session.chatMode && !line.trim().startsWith('/')) {
+            const message = recordRuntimeUnavailableAgentInput(session, line, runtime);
+            activityLines = [...activityLines, message ?? 'runtime: disconnected'].slice(-LOWER_DETAIL_ROWS);
+          } else {
+            const result = await runLine(line, { agent, packageJson, session, onUpdate: rerender, onStep });
+            done = result.exit;
+            aborted = result.aborted ?? false;
+          }
         }
       } catch (err) {
         if (err.name !== 'AbortError') throw err;

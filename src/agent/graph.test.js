@@ -226,6 +226,7 @@ test('agent graph binds the full toolset for a "remember my preference" request,
   // tool would silently never be offered to the LLM at all.
   assert.ok(seenTools.includes('wiki__profile_update'));
   assert.ok(seenTools.includes('wiki__profile_read'));
+  assert.ok(seenTools.includes('shell__profile_update'));
 });
 
 test('buildAgentSystemPrompt includes .wiki/profile.md content so preferences apply without a tool call', () => {

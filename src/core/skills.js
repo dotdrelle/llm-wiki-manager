@@ -46,7 +46,7 @@ function readSkillFile(filePath, fallbackName, scope) {
   };
 }
 
-function readOptionalText(filePath) {
+export function readOptionalText(filePath) {
   if (!existsSync(filePath)) return '';
   return readFileSync(filePath, 'utf8').trim();
 }

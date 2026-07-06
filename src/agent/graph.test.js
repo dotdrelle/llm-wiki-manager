@@ -107,6 +107,30 @@ test('agent graph reports LLM unavailable without Donna active boilerplate', asy
   assert.doesNotMatch(result.response, /Donna is active/);
 });
 
+test('agent graph binds no tools for plain discussion in agent mode', async () => {
+  const seenTools = [];
+  const session = sessionBase({
+    llm: {
+      async completeWithTools({ tools }) {
+        seenTools.push(...tools.map((tool) => tool.function.name));
+        return {
+          content: 'Salut, je suis là.',
+          message: { role: 'assistant', content: 'Salut, je suis là.' },
+          tool_calls: null,
+        };
+      },
+    },
+  });
+
+  const agent = createAgentGraph();
+  const result = await agent.invoke({ input: 'salut', session });
+
+  assert.equal(result.response, 'Salut, je suis là.');
+  assert.deepEqual(seenTools, []);
+  assert.equal(session.headlessPlan ?? null, null);
+  assert.equal(Object.keys(session.activities ?? {}).length, 0);
+});
+
 test('agent graph waits for tool-level approval configured on endpoint', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => ({

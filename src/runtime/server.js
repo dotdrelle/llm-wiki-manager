@@ -31,6 +31,13 @@ export function startRuntimeServer({
     }
   }
 
+  function publishState(workspace = null, context = null) {
+    for (const client of clients) {
+      if (client.workspace && client.workspace !== workspace) continue;
+      client.response.write(`event: state\ndata: ${JSON.stringify(runtimeState(context, store, { workspace, session }))}\n\n`);
+    }
+  }
+
   const server = createServer(async (request, response) => {
     try {
       if (!isAuthorized(request, token)) {
@@ -307,6 +314,7 @@ export function startRuntimeServer({
         context.currentAbortController = null;
         context.currentRunId = null;
         context.currentRunWorkspace = null;
+        publishState(runWorkspace, context);
         void startNextControlRequest(context);
       });
     return { accepted: true, runId, workspace: runWorkspace };

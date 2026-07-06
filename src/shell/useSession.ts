@@ -120,7 +120,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
         role: message.role === 'assistant' ? 'donna' : message.role,
         content: String(message.content ?? ''),
       }));
-      return [...runtimeMessages, ...localCommands].slice(-200);
+      return [...localCommands, ...runtimeMessages].slice(-200);
     }
     return [...conversationMessages(session)];
   });

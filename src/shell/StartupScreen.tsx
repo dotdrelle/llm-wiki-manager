@@ -101,7 +101,7 @@ export function StartupScreen(props: {
   const [mode, setMode] = createSignal<'home' | 'workspace-select'>('home');
   const [selected, setSelected] = createSignal(0);
   let lastKeyboardEventId = 0;
-  const panelWidth = createMemo(() => Math.max(54, Math.min(86, props.width - 4)));
+  const panelWidth = createMemo(() => Math.max(70, Math.min(96, props.width - 4)));
   const panelHeight = createMemo(() => Math.max(27, Math.min(35, props.height - 2)));
   const left = createMemo(() => Math.max(1, Math.floor((props.width - panelWidth()) / 2)));
   const top = createMemo(() => Math.max(1, Math.floor((props.height - panelHeight()) / 2)));
@@ -262,7 +262,7 @@ export function StartupScreen(props: {
         <text height={1}>{''}</text>
         <box height={8} flexDirection="column" alignItems="center" overflow="hidden">
           <For each={DONNA_LOGO.split('\n')}>
-            {(line) => <text height={1} fg="#d6a85f" content={fit(line, innerWidth())} />}
+            {(line) => <text height={1} fg="#d6a85f">{line}</text>}
           </For>
           <text height={1} fg="#888888" content="Intelligent workspace" />
         </box>

@@ -29,7 +29,10 @@ function isReadOnlyToolName(name) {
 }
 
 function filterToolsForChatOnlyTurn(tools) {
-  return tools.filter((tool) => isReadOnlyToolName(tool?.function?.name ?? ''));
+  return [
+    SHELL_READ_COMMAND_TOOL,
+    ...tools.filter((tool) => isReadOnlyToolName(tool?.function?.name ?? '')),
+  ];
 }
 
 function toolsForDonnaTurn(input, tools, iterations) {
@@ -69,6 +72,29 @@ const SHELL_RUN_COMMAND_TOOL = {
         command: {
           type: 'string',
           description: 'Slash command to run, for example "/workspace list", "/workspace init <name>", or "/use <workspace>".',
+        },
+      },
+      required: ['command'],
+    },
+  },
+};
+
+const SHELL_READ_COMMAND_TOOL = {
+  type: 'function',
+  function: {
+    name: 'shell__read_command',
+    description: [
+      'Run a read-only deterministic wiki-manager slash command inside the current shell session.',
+      'Allowed commands: /help, /version, /config, /config list, /config status, /status, /services, /skills, /skills list, /skills show <name>, /uploads, /uploads list, /queue.',
+      'Do not use for workspace creation/deletion, uploads conversion, service start/stop, MCP calls, wiki runs, or any mutation.',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        command: {
+          type: 'string',
+          description: 'Read-only slash command to run, for example "/status", "/config status", or "/services".',
         },
       },
       required: ['command'],
@@ -263,6 +289,24 @@ function assertAgentSlashCommandAllowed(commandLine) {
   }
 }
 
+function assertAgentReadSlashCommandAllowed(commandLine) {
+  const parts = commandLine.slice(1).trim().split(/\s+/).filter(Boolean);
+  const command = parts[0] ?? '';
+  const subcommand = parts[1] ?? '';
+  const allowed =
+    command === 'help' ||
+    command === 'version' ||
+    command === 'status' ||
+    command === 'services' ||
+    command === 'queue' ||
+    (command === 'config' && ['', 'list', 'status'].includes(subcommand)) ||
+    (command === 'skills' && ['', 'list', 'show'].includes(subcommand)) ||
+    (command === 'uploads' && ['', 'list'].includes(subcommand));
+  if (!allowed) {
+    throw new Error(`Read-only command is not available to the agent: /${parts.join(' ')}`);
+  }
+}
+
 function withActiveWorkspaceForExternalTool(session, server, tool, args) {
   const needsWorkspace =
     (server === 'documents' && tool.startsWith('documents_') && tool !== 'documents_status') ||
@@ -282,6 +326,21 @@ function withActiveWorkspaceForExternalTool(session, server, tool, args) {
 async function runShellCommandTool(session, commandLine) {
   const command = normalizeShellCommand(commandLine);
   assertAgentSlashCommandAllowed(command);
+  session._onStep?.(`Shell: ${command}`);
+  const result = await handleSlashCommand(command, {
+    packageJson: session.packageJson ?? { version: '0.0.0' },
+    session,
+    onStep: session._onStep,
+  });
+  if (result.exit) {
+    throw new Error('/exit is not available to the agent.');
+  }
+  return result.output ?? 'Command completed.';
+}
+
+async function runShellReadCommandTool(session, commandLine) {
+  const command = normalizeShellCommand(commandLine);
+  assertAgentReadSlashCommandAllowed(command);
   session._onStep?.(`Shell: ${command}`);
   const result = await handleSlashCommand(command, {
     packageJson: session.packageJson ?? { version: '0.0.0' },
@@ -695,6 +754,8 @@ export function createAgentGraph(options = {}) {
         } else if (server === 'shell' && tool === 'run_command') {
           await awaitRunApproval(state.session, { runId, tool: toolName });
           resultText = await runShellCommandTool(state.session, args.command);
+        } else if (server === 'shell' && tool === 'read_command') {
+          resultText = await runShellReadCommandTool(state.session, args.command);
         } else if (server !== 'shell') {
           await awaitRunApproval(state.session, { runId, tool: toolName });
           await awaitToolApproval(state.session, {

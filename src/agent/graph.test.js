@@ -131,6 +131,50 @@ test('agent graph binds no tools for plain discussion in agent mode', async () =
   assert.equal(Object.keys(session.activities ?? {}).length, 0);
 });
 
+test('agent graph binds read-only tools for config questions without plan tools', async () => {
+  const seenTools = [];
+  const session = sessionBase({
+    mcp: {
+      production: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3000/mcp/',
+        tools: [
+          {
+            name: 'production_start_job',
+            description: 'Start production job',
+            inputSchema: { type: 'object', properties: { type: { type: 'string' } } },
+          },
+          {
+            name: 'production_job_status',
+            description: 'Read production job status',
+            inputSchema: { type: 'object', properties: { jobId: { type: 'string' } } },
+          },
+        ],
+      },
+    },
+    llm: {
+      async completeWithTools({ tools }) {
+        seenTools.push(...tools.map((tool) => tool.function.name));
+        return {
+          content: 'Le profil actif est docs.',
+          message: { role: 'assistant', content: 'Le profil actif est docs.' },
+          tool_calls: null,
+        };
+      },
+    },
+  });
+
+  const agent = createAgentGraph();
+  const result = await agent.invoke({ input: 'quel est le profil actif ?', session });
+
+  assert.equal(result.response, 'Le profil actif est docs.');
+  assert.ok(seenTools.includes('shell__read_command'));
+  assert.ok(seenTools.includes('production__production_job_status'));
+  assert.equal(seenTools.includes('wiki__plan_set'), false);
+  assert.equal(seenTools.includes('production__production_start_job'), false);
+  assert.equal(seenTools.includes('shell__run_command'), false);
+});
+
 test('agent graph waits for tool-level approval configured on endpoint', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => ({

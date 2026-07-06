@@ -512,12 +512,17 @@ export function buildLimitedAgentResponse(state, reason = 'no workspace loaded w
   ].join('\n');
 }
 
+export function formatLlmUnavailableMessage(reason) {
+  const clean = String(reason ?? 'raison inconnue').replace(/\s+/g, ' ').trim();
+  return `⚠ LLM injoignable : ${clean || 'raison inconnue'}`;
+}
+
 export function createAgentGraph(options = {}) {
   async function orchestratorNode(state) {
     const llm = state.session.llm ?? options.llm ?? null;
 
     if (!llm) {
-      return { response: buildLimitedAgentResponse(state), pendingToolCalls: null, readyToStream: false };
+      return { response: formatLlmUnavailableMessage('aucun client LLM configure'), pendingToolCalls: null, readyToStream: false };
     }
 
     const iterations = state.toolIterations ?? 0;
@@ -619,7 +624,7 @@ export function createAgentGraph(options = {}) {
     } catch (err) {
       if (err.name === 'AbortError') throw err;
       const message = err instanceof Error ? err.message : String(err);
-      return { response: buildLimitedAgentResponse(state, `LLM unavailable: ${message}`), pendingToolCalls: null, readyToStream: false };
+      return { response: formatLlmUnavailableMessage(message), pendingToolCalls: null, readyToStream: false };
     }
   }
 

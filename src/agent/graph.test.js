@@ -99,6 +99,14 @@ test('agent graph waits for run-level approval before first MCP action', async (
   }
 });
 
+test('agent graph reports LLM unavailable without Donna active boilerplate', async () => {
+  const agent = createAgentGraph();
+  const result = await agent.invoke({ input: 'salut', session: sessionBase({ llm: null }) });
+
+  assert.equal(result.response, '⚠ LLM injoignable : aucun client LLM configure');
+  assert.doesNotMatch(result.response, /Donna is active/);
+});
+
 test('agent graph waits for tool-level approval configured on endpoint', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => ({

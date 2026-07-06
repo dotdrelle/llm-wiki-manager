@@ -2,7 +2,7 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { activityKey, sessionActivities, terminalFailures } from '../core/activity.js';
 import { runAgenticLoop, throwIfAborted } from '../core/agentLoop.js';
 import { formatPlanStatus } from '../core/plan.js';
-import { formatReadyTaskPrompt, readyPlanTasks } from '../core/planPatch.js';
+import { formatReadyTaskPrompt, readyPlanTasks, sanitizePlanForExecution } from '../core/planPatch.js';
 import { emitRuntimeLog, pollActivitiesOnce } from './supervisor.js';
 
 const DEFAULT_MAX_REPLANS = 2;
@@ -92,6 +92,7 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
   let replansLeft = Math.max(0, Math.floor(Number(maxReplans) || 0));
 
   while (true) {
+    sanitizeSessionPlanForExecution(session, runId);
     const result = shouldUseParallelScheduler(session.headlessPlan)
       ? await runRuntimeParallelPlan(agent, session, input, {
         signal,
@@ -134,7 +135,9 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
       return { ok: false, result };
     }
 
-    const evaluation = await evaluateRuntimeRun(session, input, { runId, signal, evaluate });
+    const evaluation = session.headlessPlan
+      ? await evaluateRuntimeRun(session, input, { runId, signal, evaluate })
+      : null;
     if (evaluation) {
       dispatchAgentEvent(session, createAgentEvent('run_evaluated', {
         origin: 'runtime',
@@ -147,6 +150,19 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
         },
       }));
       if (!evaluation.ok) {
+        if (isUndefinedObjectiveEvaluation(evaluation)) {
+          dispatchAgentEvent(session, createAgentEvent('assistant_message', {
+            origin: 'runtime',
+            runId,
+            payload: { content: clarificationMessageForEvaluation(evaluation) },
+          }));
+          dispatchAgentEvent(session, createAgentEvent('run_done', {
+            origin: 'runtime',
+            runId,
+            payload: { runId },
+          }));
+          return { ok: true, evaluation, clarified: true };
+        }
         if (replansLeft > 0) {
           const trigger = {
             kind: 'evaluation',
@@ -209,6 +225,7 @@ export async function runRuntimeParallelPlan(agent, session, input, {
     previousPlanUpdate?.();
     abortCancelledActiveTasks(session, active);
   };
+  sanitizeSessionPlanForExecution(session, runId);
   ensurePlanProjection(session, runId);
   emitRuntimeLog(session, `scheduler: parallel plan enabled (concurrency ${limit})`);
 
@@ -262,6 +279,20 @@ export async function runRuntimeParallelPlan(agent, session, input, {
     if (previousPlanUpdate) session._onPlanUpdate = previousPlanUpdate;
     else delete session._onPlanUpdate;
   }
+}
+
+function sanitizeSessionPlanForExecution(session, runId = null) {
+  if (!session.headlessPlan) return;
+  const sanitized = sanitizePlanForExecution(session.headlessPlan);
+  if (sanitized.warnings.length === 0) return;
+  session.headlessPlan = sanitized.plan;
+  dispatchAgentEvent(session, createAgentEvent('runtime_log', {
+    origin: 'runtime',
+    runId,
+    payload: {
+      message: `plan warning: ${sanitized.warnings.join('; ')}`,
+    },
+  }));
 }
 
 async function drainActive(active, locks) {
@@ -570,7 +601,9 @@ export async function finishRuntimeRun(session, input, {
   signal = null,
   evaluate = true,
 } = {}) {
-  const evaluation = await evaluateRuntimeRun(session, input, { runId, signal, evaluate });
+  const evaluation = session.headlessPlan
+    ? await evaluateRuntimeRun(session, input, { runId, signal, evaluate })
+    : null;
   if (evaluation) {
     dispatchAgentEvent(session, createAgentEvent('run_evaluated', {
       origin: 'runtime',
@@ -583,6 +616,19 @@ export async function finishRuntimeRun(session, input, {
       },
     }));
     if (!evaluation.ok) {
+      if (isUndefinedObjectiveEvaluation(evaluation)) {
+        dispatchAgentEvent(session, createAgentEvent('assistant_message', {
+          origin: 'runtime',
+          runId,
+          payload: { content: clarificationMessageForEvaluation(evaluation) },
+        }));
+        dispatchAgentEvent(session, createAgentEvent('run_done', {
+          origin: 'runtime',
+          runId,
+          payload: { runId },
+        }));
+        return { ok: true, evaluation, clarified: true };
+      }
       dispatchAgentEvent(session, createAgentEvent('run_error', {
         origin: 'runtime',
         runId,
@@ -672,6 +718,21 @@ function normalizeEvaluation(value) {
   };
 }
 
+function isUndefinedObjectiveEvaluation(evaluation) {
+  const text = `${evaluation?.reason ?? ''} ${evaluation?.suggestedAction ?? ''}`
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  return /\b(vague|undefined|indefini|unclear|clarif|ambiguous|missing objective|no objective)\b/.test(text);
+}
+
+function clarificationMessageForEvaluation(evaluation) {
+  const reason = String(evaluation?.reason ?? '').trim();
+  return reason
+    ? `Je dois clarifier la demande avant d'agir : ${reason}`
+    : "Je dois clarifier la demande avant d'agir.";
+}
+
 function fallbackEvaluation(reason) {
   return {
     ok: true,
@@ -723,6 +784,10 @@ export async function replanRuntimeRun(session, input, trigger, {
         steps: mergedSteps,
       },
     }));
+    if (hasMutatingReplanStep(steps)) {
+      session._runApprovalRequired = true;
+      session._runApprovalResolved = false;
+    }
     return { ok: true, steps };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };
@@ -809,6 +874,10 @@ function normalizeReplan(steps) {
     .map((step) => String(step ?? '').trim())
     .filter(Boolean)
     .slice(0, 12);
+}
+
+function hasMutatingReplanStep(steps) {
+  return steps.some((step) => /\b(build|copy|ingest|import|export|polish|pipeline|write|create|delete|update|send|deploy|publish|generate|construire|copier|importer|exporter|publier|envoyer|supprimer|modifier|creer|générer|generer)\b/i.test(step));
 }
 
 function mergeReplanWithCompleted(plan, steps) {

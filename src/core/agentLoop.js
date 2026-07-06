@@ -1,8 +1,8 @@
-import { buildAgentSystemPrompt, buildLimitedAgentResponse } from '../agent/graph.js';
+import { buildAgentSystemPrompt, formatLlmUnavailableMessage } from '../agent/graph.js';
 import { createAgentEvent, dispatchAgentEvent } from './agentEvents.js';
 import { activitySnapshot, newNonTerminalActivities } from './activity.js';
 import { extractHeadlessPlan, formatCompletedActivities, formatPlanStatus } from './plan.js';
-import { formatReadyTaskPrompt, nextReadyPlanTask, readyPlanTasks } from './planPatch.js';
+import { formatReadyTaskPrompt, nextReadyPlanTask, readyPlanTasks, sanitizePlanForExecution } from './planPatch.js';
 
 export function abortError(message = 'Agent run cancelled.') {
   const err = new Error(message);
@@ -31,7 +31,7 @@ export async function runAgentTurn(agent, session, input, {
     if (session._abortSignal === signal) delete session._abortSignal;
   }
   if (result.streamedInline) {
-    return streamedContent.trim() || buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
+    return streamedContent.trim() || formatLlmUnavailableMessage('flux vide');
   }
   if (result.response != null) return result.response;
   if (result.readyToStream && session.llm?.stream) {
@@ -44,9 +44,9 @@ export async function runAgentTurn(agent, session, input, {
     })) {
       content += delta;
     }
-    return content.trim() || buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
+    return content.trim() || formatLlmUnavailableMessage('flux vide');
   }
-  return buildLimitedAgentResponse({ input, session });
+  return formatLlmUnavailableMessage('reponse vide');
 }
 
 export async function runAgenticLoop(agent, session, initialInput, {
@@ -109,6 +109,7 @@ export async function runAgenticLoop(agent, session, initialInput, {
         onPlanAlreadySet?.({ steps: session.headlessPlan });
       }
     }
+    sanitizeSessionPlan(session, { runId });
 
     const newPending = newNonTerminalActivities(snapshot, session);
     if (newPending.length === 0) {
@@ -156,6 +157,20 @@ export async function runAgenticLoop(agent, session, initialInput, {
 
   onMaxTurns?.({ maxTurns });
   return { ok: false, maxTurns: true };
+}
+
+function sanitizeSessionPlan(session, { runId = null } = {}) {
+  if (!session.headlessPlan) return;
+  const sanitized = sanitizePlanForExecution(session.headlessPlan);
+  if (sanitized.warnings.length === 0) return;
+  session.headlessPlan = sanitized.plan;
+  dispatchAgentEvent(session, createAgentEvent('runtime_log', {
+    origin: 'runtime',
+    runId,
+    payload: {
+      message: `plan warning: ${sanitized.warnings.join('; ')}`,
+    },
+  }));
 }
 
 function pendingStepsPrompt(initialInput, plan, readyTask) {

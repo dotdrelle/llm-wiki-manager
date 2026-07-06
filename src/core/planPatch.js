@@ -86,7 +86,7 @@ export function rebasePlanPatch(patch, { currentRevision = 0 } = {}) {
 }
 
 export function readyPlanTasks(plan) {
-  const tasks = (plan ?? []).map((step, index) => normalizeTask(step, index));
+  const { plan: tasks } = sanitizePlanForExecution(plan);
   const done = new Set(tasks.filter((task) => task.status === 'done').map(taskId));
   return tasks
     .filter((task) => task.status === 'pending')
@@ -123,6 +123,36 @@ export function normalizeTask(raw, index = 0) {
     executorQuery: item.executorQuery ?? null,
     outputRefs: Array.isArray(item.outputRefs) ? item.outputRefs.map(String) : [],
   };
+}
+
+export function sanitizePlanForExecution(plan) {
+  const tasks = (plan ?? []).map((step, index) => normalizeTask(step, index));
+  const warnings = [];
+  const ids = new Set(tasks.map(taskId));
+  for (const task of tasks) {
+    const before = task.dependsOn;
+    task.dependsOn = before.filter((dep) => ids.has(String(dep)));
+    if (task.dependsOn.length !== before.length) {
+      warnings.push(`unknown dependency removed from task ${taskId(task)}`);
+    }
+  }
+  const pending = tasks.filter((task) => task.status === 'pending');
+  const done = new Set(tasks.filter((task) => task.status === 'done').map(taskId));
+  const terminalBlocked = new Set(
+    tasks
+      .filter((task) => ['failed', 'cancelled', 'canceled'].includes(String(task.status).toLowerCase()))
+      .map(taskId),
+  );
+  const hasReady = pending.some((task) => task.dependsOn.every((dep) => done.has(String(dep))));
+  if (hasDependencyCycle(tasks)) {
+    warnings.push('dependency cycle broken by sequential fallback');
+    return { plan: sequentialize(tasks), warnings };
+  }
+  if (pending.length > 0 && !hasReady && !pending.some((task) => task.dependsOn.some((dep) => terminalBlocked.has(String(dep))))) {
+    warnings.push('no ready task after dependency cleanup; using sequential fallback');
+    return { plan: sequentialize(tasks), warnings };
+  }
+  return { plan: tasks, warnings };
 }
 
 function normalizePatchOperation(raw) {
@@ -196,6 +226,14 @@ function resequence(plan) {
   plan.forEach((task, index) => {
     task.step = index + 1;
   });
+}
+
+function sequentialize(plan) {
+  const next = plan.map((task) => ({ ...task, dependsOn: [] }));
+  for (let index = 1; index < next.length; index += 1) {
+    next[index].dependsOn = [taskId(next[index - 1])];
+  }
+  return next;
 }
 
 function hasDependencyCycle(plan) {

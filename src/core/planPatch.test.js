@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyPlanPatch, nextReadyPlanTask, readyPlanTasks, rebasePlanPatch } from './planPatch.js';
+import { applyPlanPatch, nextReadyPlanTask, readyPlanTasks, rebasePlanPatch, sanitizePlanForExecution } from './planPatch.js';
 
 test('applyPlanPatch adds a task and increments the plan revision', () => {
   const result = applyPlanPatch([
@@ -60,4 +60,26 @@ test('applyPlanPatch rejects dependency cycles', () => {
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'dependency_cycle');
+});
+
+test('sanitizePlanForExecution removes unknown dependencies and keeps execution sequential', () => {
+  const result = sanitizePlanForExecution([
+    { step: 1, id: 'a', description: 'A', status: 'pending', dependsOn: ['missing'] },
+    { step: 2, id: 'b', description: 'B', status: 'pending', dependsOn: ['a'] },
+  ]);
+
+  assert.deepEqual(result.plan.map((task) => task.dependsOn), [[], ['a']]);
+  assert.match(result.warnings.join('\n'), /unknown dependency/);
+  assert.deepEqual(readyPlanTasks(result.plan).map((task) => task.id), ['a']);
+});
+
+test('sanitizePlanForExecution breaks cycles with declaration-order fallback', () => {
+  const result = sanitizePlanForExecution([
+    { step: 1, id: 'a', description: 'A', status: 'pending', dependsOn: ['b'] },
+    { step: 2, id: 'b', description: 'B', status: 'pending', dependsOn: ['a'] },
+  ]);
+
+  assert.deepEqual(result.plan.map((task) => task.dependsOn), [[], ['a']]);
+  assert.match(result.warnings.join('\n'), /cycle/);
+  assert.deepEqual(readyPlanTasks(result.plan).map((task) => task.id), ['a']);
 });

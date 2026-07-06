@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { stdin as input, stdout as output } from 'node:process';
 import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
-import { buildAgentSystemPrompt, buildLimitedAgentResponse } from '../agent/graph.js';
+import { buildAgentSystemPrompt, formatLlmUnavailableMessage } from '../agent/graph.js';
 import { handleSlashCommand } from '../commands/slash.js';
 import { serviceDescription, serviceNames as composeServiceNames } from '../core/compose.js';
 import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
@@ -994,7 +994,7 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
     // Non-abort error: surface it in the bubble rather than leaving "Thinking…" stuck.
     if (donnaMessage) {
       const msg = err instanceof Error ? err.message : String(err);
-      donnaMessage.content = buildLimitedAgentResponse({ input, session }, `LLM indisponible: ${msg}`);
+      donnaMessage.content = formatLlmUnavailableMessage(msg);
       onUpdate?.();
     }
     throw err;
@@ -1008,10 +1008,10 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
     if (donnaMessage) {
       donnaMessage.content = stripDsmlArtifacts(donnaMessage.content).trimEnd();
       if (!donnaMessage.content.trim()) {
-        donnaMessage.content = buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
+        donnaMessage.content = formatLlmUnavailableMessage('flux vide');
       }
     } else {
-      messages.push({ role: 'donna', content: buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content') });
+      messages.push({ role: 'donna', content: formatLlmUnavailableMessage('flux vide') });
     }
     onUpdate?.();
     return {};
@@ -1050,7 +1050,7 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
       }
       donnaMessage.content = stripDsmlArtifacts(donnaMessage.content).trimEnd();
       if (!donnaMessage.content.trim()) {
-        donnaMessage.content = buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
+        donnaMessage.content = formatLlmUnavailableMessage('flux vide');
         onUpdate?.();
       }
     } catch (err) {
@@ -1060,16 +1060,16 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep }) {
         return { aborted: true };
       }
       const message = err instanceof Error ? err.message : String(err);
-      donnaMessage.content = buildLimitedAgentResponse({ input, session }, `LLM indisponible: ${message}`);
+      donnaMessage.content = formatLlmUnavailableMessage(message);
       onUpdate?.();
     }
     return {};
   }
 
   if (donnaMessage) {
-    donnaMessage.content = buildLimitedAgentResponse({ input, session });
+    donnaMessage.content = formatLlmUnavailableMessage('reponse vide');
   } else {
-    messages.push({ role: 'donna', content: buildLimitedAgentResponse({ input, session }) });
+    messages.push({ role: 'donna', content: formatLlmUnavailableMessage('reponse vide') });
   }
   onUpdate?.();
   return {};
@@ -1102,7 +1102,7 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
     }
     donnaMessage.content = stripDsmlArtifacts(donnaMessage.content).trimEnd();
     if (!donnaMessage.content.trim()) {
-      donnaMessage.content = buildLimitedAgentResponse({ input, session }, 'LLM stream ended without content');
+      donnaMessage.content = formatLlmUnavailableMessage('flux vide');
       onUpdate?.();
     }
   } catch (err) {
@@ -1111,7 +1111,7 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
       return { exit: false, aborted: true };
     }
     const message = err instanceof Error ? err.message : String(err);
-    donnaMessage.content = buildLimitedAgentResponse({ input, session }, `LLM indisponible: ${message}`);
+    donnaMessage.content = formatLlmUnavailableMessage(message);
     onUpdate?.();
   }
   return { exit: false };

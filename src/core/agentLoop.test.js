@@ -1,7 +1,25 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAgentEvent, dispatchAgentEvent } from './agentEvents.js';
-import { runAgenticLoop } from './agentLoop.js';
+import { runAgentTurn, runAgenticLoop } from './agentLoop.js';
+
+test('runAgentTurn returns a one-line LLM error on empty stream', async () => {
+  const session = {
+    commands: [],
+    llm: {
+      async *stream() {},
+    },
+  };
+  const agent = {
+    async invoke() {
+      return { readyToStream: true, streamContext: { messages: [] } };
+    },
+  };
+
+  const response = await runAgentTurn(agent, session, 'salut');
+
+  assert.equal(response, '⚠ LLM injoignable : flux vide');
+});
 
 test('runAgenticLoop waits for new activities and continues with a completion summary', async () => {
   const session = {

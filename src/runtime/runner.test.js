@@ -3,6 +3,41 @@ import test from 'node:test';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { finishRuntimeRun, replanRuntimeRun, runRuntimeAgenticWorkflow, runRuntimeParallelPlan } from './runner.js';
 
+test('runRuntimeAgenticWorkflow completes conversational turns without evaluation or replan', async () => {
+  const events = [];
+  const session = {
+    activities: {},
+    headlessPlan: null,
+    llm: {
+      async completeWithTools() {
+        assert.fail('conversation-only turn must not call evaluator or replanner');
+      },
+    },
+    _onAgentEvent: (event) => events.push(event),
+  };
+  const agent = {
+    async invoke() {
+      return { response: 'Salut.' };
+    },
+  };
+
+  const started = Date.now();
+  const result = await runRuntimeAgenticWorkflow(agent, session, 'salut', {
+    runId: 'run-chat',
+    timeoutMs: 1000,
+    maxTurns: 1,
+    maxReplans: 1,
+  });
+
+  assert.equal(result.ok, true);
+  assert.ok(Date.now() - started < 5000);
+  assert.equal(session.headlessPlan, null);
+  assert.equal(Object.keys(session.activities).length, 0);
+  assert.ok(events.some((event) => event.type === 'run_done'));
+  assert.equal(events.some((event) => event.type === 'run_evaluated'), false);
+  assert.equal(events.some((event) => event.type === 'run_replanned'), false);
+});
+
 test('finishRuntimeRun emits evaluation before run_done', async () => {
   const events = [];
   const session = {
@@ -30,6 +65,47 @@ test('finishRuntimeRun emits evaluation before run_done', async () => {
   assert.equal(result.ok, true);
   assert.deepEqual(events.map((event) => event.type), ['runtime_log', 'run_evaluated', 'run_done']);
   assert.equal(session.agentProjection.evaluation.ok, true);
+  assert.equal(session.agentProjection.status, 'done');
+});
+
+test('runRuntimeAgenticWorkflow clarifies vague evaluations without replan', async () => {
+  const events = [];
+  const session = {
+    activities: {},
+    headlessPlan: [{ step: 1, id: 'task', description: 'Task', status: 'done' }],
+    llm: {
+      async completeWithTools({ system }) {
+        assert.match(system, /strict evaluator/);
+        return { content: '{"ok":false,"reason":"demande vague / objectif indefini","suggestedAction":"clarifier l objectif"}' };
+      },
+    },
+    _onAgentEvent: (event) => events.push(event),
+  };
+  const agent = {
+    async invoke({ session: turnSession }) {
+      if (turnSession.headlessPlan === null) {
+        dispatchAgentEvent(turnSession, createAgentEvent('plan_set', {
+          origin: 'tool',
+          payload: { steps: [{ step: 1, id: 'task', description: 'Task', status: 'done' }] },
+        }));
+      }
+      return { response: 'Terminé.' };
+    },
+  };
+
+  const result = await runRuntimeAgenticWorkflow(agent, session, 'fais le truc', {
+    runId: 'run-vague',
+    timeoutMs: 1000,
+    maxTurns: 1,
+    maxReplans: 1,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.clarified, true);
+  assert.ok(session.agentProjection.conversation.at(-1).content.includes('clarifier'));
+  assert.ok(events.some((event) => event.type === 'run_evaluated'));
+  assert.equal(events.some((event) => event.type === 'run_replanned'), false);
+  assert.equal(events.some((event) => event.type === 'tool_call_started'), false);
   assert.equal(session.agentProjection.status, 'done');
 });
 
@@ -62,7 +138,7 @@ test('finishRuntimeRun turns negative evaluation into run_error', async () => {
 test('finishRuntimeRun falls back open when evaluator response is invalid', async () => {
   const session = {
     activities: {},
-    headlessPlan: null,
+    headlessPlan: [{ step: 1, description: 'Do work', status: 'done' }],
     agentProjection: { conversation: [] },
     llm: {
       async completeWithTools() {
@@ -126,13 +202,20 @@ test('runRuntimeAgenticWorkflow replans after negative evaluation', async () => 
   const agent = {
     async invoke({ session: turnSession }) {
       turns += 1;
+      if (turnSession.headlessPlan === null) {
+        dispatchAgentEvent(turnSession, createAgentEvent('plan_set', {
+          origin: 'tool',
+          payload: { steps: [{ step: 1, id: 'initial', description: 'Initial work', status: 'done' }] },
+        }));
+        return { response: 'Initial done.' };
+      }
       if (turnSession.headlessPlan?.[0]?.status === 'pending') {
         dispatchAgentEvent(turnSession, createAgentEvent('plan_step_updated', {
           origin: 'tool',
           payload: { step: 1, status: 'done' },
         }));
       }
-      return { response: turns === 1 ? 'Initial done.' : 'Export done.' };
+      return { response: 'Export done.' };
     },
   };
 
@@ -173,6 +256,27 @@ test('replanRuntimeRun preserves completed outputs when replacing remaining work
   assert.deepEqual(session.headlessPlan.map((step) => step.id), ['export', 'replan-1']);
   assert.deepEqual(session.headlessPlan[0].outputRefs, ['raw/export.json']);
   assert.deepEqual(session.headlessPlan[1].dependsOn, ['export']);
+});
+
+test('replanRuntimeRun requires runtime approval for mutating replanned work', async () => {
+  const session = {
+    activities: {},
+    headlessPlan: [{ step: 1, id: 'build', description: 'Build', status: 'failed' }],
+    llm: {
+      async completeWithTools() {
+        return { content: '{"steps":["Run production build"]}' };
+      },
+    },
+  };
+
+  const result = await replanRuntimeRun(session, 'Build deliverable', {
+    kind: 'evaluation',
+    reason: 'Build missing.',
+  }, { runId: 'run-replan-approval', replansLeft: 1 });
+
+  assert.equal(result.ok, true);
+  assert.equal(session._runApprovalRequired, true);
+  assert.equal(session._runApprovalResolved, false);
 });
 
 test('runRuntimeAgenticWorkflow replans after terminal activity error', async () => {
@@ -276,7 +380,13 @@ test('runRuntimeAgenticWorkflow stops after replan budget is exhausted', async (
     },
   };
   const agent = {
-    async invoke() {
+    async invoke({ session: turnSession }) {
+      if (turnSession.headlessPlan === null) {
+        dispatchAgentEvent(turnSession, createAgentEvent('plan_set', {
+          origin: 'tool',
+          payload: { steps: [{ step: 1, id: 'task', description: 'Task', status: 'done' }] },
+        }));
+      }
       return { response: 'Done.' };
     },
   };

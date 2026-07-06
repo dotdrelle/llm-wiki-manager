@@ -18,6 +18,7 @@ export function startRuntimeServer({
   approve,
   configProfiles,
   useConfigProfile,
+  exitOnShutdown = process.env.WIKI_MANAGER_RUNTIME_CHILD === '1',
 } = {}) {
   const clients = new Set();
   const defaultContext = { workspace: null, session, running: false, currentAbortController: null, currentRunId: null };
@@ -228,6 +229,23 @@ export function startRuntimeServer({
         context.currentAbortController.abort();
         await cancel?.(context);
         sendJson(response, 202, { cancelled: true, workspace: context.workspace ?? workspace ?? null });
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/shutdown') {
+        const workspace = workspaceFromUrl(url);
+        const context = await resolveContext({ workspace });
+        if (context?.running && context.currentAbortController) {
+          context.currentAbortController.abort();
+          await cancel?.(context);
+        }
+        sendJson(response, 202, { shutdown: true });
+        setImmediate(() => {
+          for (const client of clients) client.response.end();
+          clients.clear();
+          server.close(() => {
+            if (exitOnShutdown) process.exit(0);
+          });
+        });
         return;
       }
       if (request.method === 'POST' && url.pathname === '/resume') {

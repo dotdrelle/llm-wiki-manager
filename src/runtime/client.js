@@ -97,6 +97,18 @@ export async function postRuntimeCancel({
   return response.json();
 }
 
+export async function postRuntimeShutdown({
+  url = runtimeUrlFromEnv(),
+  token = runtimeToken(),
+} = {}) {
+  const response = await fetch(runtimeEndpoint(url, '/shutdown'), {
+    method: 'POST',
+    headers: runtimeHeaders(token),
+  });
+  if (!response.ok) throw new Error(`Runtime shutdown failed: HTTP ${response.status}`);
+  return response.json();
+}
+
 export async function postRuntimeResume({
   url = runtimeUrlFromEnv(),
   token = runtimeToken(),

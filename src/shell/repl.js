@@ -15,7 +15,7 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { listSkills } from '../core/skills.js';
 import { listWikircProfiles } from '../core/wikirc.js';
 import { listWorkspaces } from '../core/workspaces.js';
-import { fetchRuntimeState, postRuntimeApprove, postRuntimeCancel, postRuntimeControl, postRuntimeRun, streamRuntimeEvents } from '../runtime/client.js';
+import { fetchRuntimeState, postRuntimeApprove, postRuntimeCancel, postRuntimeControl, postRuntimeRun, postRuntimeShutdown, streamRuntimeEvents } from '../runtime/client.js';
 
 marked.use(markedTerminal());
 // marked-terminal's text renderer extracts token.text (raw string) instead of
@@ -1273,10 +1273,22 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
   let runtimeReconnectTimer = null;
   let runtimeSyncTimer = null;
   let runtimeStreamStopped = false;
+  let runtimeShutdownRequested = false;
   let finish;
   const finished = new Promise((resolve) => {
     finish = resolve;
   });
+
+  async function shutdownRuntimeOnExit() {
+    if (!runtime?.url || runtimeShutdownRequested) return;
+    runtimeShutdownRequested = true;
+    try {
+      await postRuntimeShutdown({ url: runtime.url });
+    } catch {
+      // The shell is already exiting; an unavailable runtime should not block
+      // terminal restoration.
+    }
+  }
 
   input.setRawMode(true);
   input.resume();
@@ -1696,6 +1708,7 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
     input.setRawMode(false);
     input.pause();
     output.write('\u001b[?25h\u001b[H\u001b[2J\u001b[?1049l');
+    await shutdownRuntimeOnExit();
   }
 }
 

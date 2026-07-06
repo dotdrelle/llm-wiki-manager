@@ -46,6 +46,44 @@ test('runtime server checks bearer and x-runtime-token credentials', async (t) =
   }
 });
 
+test('runtime server shutdown endpoint closes the listener', async (t) => {
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      token: 'runtime-secret',
+      exitOnShutdown: false,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'idle' }),
+        listEvents: () => [],
+      },
+      session: {},
+      run: async () => {},
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  const url = `http://127.0.0.1:${handle.port}`;
+  const response = await fetch(`${url}/shutdown`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer runtime-secret' },
+  });
+  assert.equal(response.status, 202);
+  assert.equal((await response.json()).shutdown, true);
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await assert.rejects(fetch(`${url}/health`, {
+    headers: { authorization: 'Bearer runtime-secret' },
+  }));
+});
+
 test('runtime server accepts only one active run', async (t) => {
   let releaseRun;
   let runCount = 0;

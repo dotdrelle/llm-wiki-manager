@@ -12,6 +12,7 @@ import { useSession } from './useSession';
 import { buildMcpStatus } from '../core/mcp.js';
 import { loadWikircProfile, summarizeWikircConfig } from '../core/wikirc.js';
 import { listWorkspaces } from '../core/workspaces.js';
+import { postRuntimeShutdown } from '../runtime/client.js';
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -119,6 +120,7 @@ function App(props: {
   let selectionCopyTimer: ReturnType<typeof setTimeout> | null = null;
   let startupKeyboardEventId = 0;
   let lastCopiedSelection = '';
+  let runtimeShutdownRequested = false;
   const state = useSession(props);
   const startup = createMemo(() => startupInfo(props.packageJson));
   const conversationRows = createMemo(() => Math.max(4, dimensions().height - 5 - chatInputHeight()));
@@ -226,6 +228,10 @@ function App(props: {
   onCleanup(() => {
     if (copyHintTimer) clearTimeout(copyHintTimer);
     if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
+    if (props.runtime?.url && !runtimeShutdownRequested) {
+      runtimeShutdownRequested = true;
+      void postRuntimeShutdown({ url: props.runtime.url }).catch(() => {});
+    }
   });
 
   const spinnerTimer = setInterval(() => {

@@ -14,6 +14,15 @@ type StartupItem = {
   detail: string;
 };
 
+const DONNA_LOGO = `
+██████╗  ██████╗ ███╗   ██╗███╗   ██╗ █████╗
+██╔══██╗██╔═══██╗████╗  ██║████╗  ██║██╔══██╗
+██║  ██║██║   ██║██╔██╗ ██║██╔██╗ ██║███████║
+██║  ██║██║   ██║██║╚██╗██║██║╚██╗██║██╔══██║
+██████╔╝╚██████╔╝██║ ╚████║██║ ╚████║██║  ██║
+╚═════╝  ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═══╝╚═╝  ╚═╝
+`.trim();
+
 function statusDot(ready: boolean) {
   return ready ? '●' : '○';
 }
@@ -93,7 +102,7 @@ export function StartupScreen(props: {
   const [selected, setSelected] = createSignal(0);
   let lastKeyboardEventId = 0;
   const panelWidth = createMemo(() => Math.max(54, Math.min(86, props.width - 4)));
-  const panelHeight = createMemo(() => Math.max(24, Math.min(32, props.height - 2)));
+  const panelHeight = createMemo(() => Math.max(27, Math.min(35, props.height - 2)));
   const left = createMemo(() => Math.max(1, Math.floor((props.width - panelWidth()) / 2)));
   const top = createMemo(() => Math.max(1, Math.floor((props.height - panelHeight()) / 2)));
 
@@ -251,10 +260,11 @@ export function StartupScreen(props: {
         </box>
         <text height={1} fg="#7F8C8D" content={fit(subtitle(), innerWidth())} />
         <text height={1}>{''}</text>
-        <box height={4} flexDirection="column" border={['left']} borderStyle="heavy" borderColor="#8BD5CA" paddingX={1}>
-          <text height={1} fg="#EAF2F8" content={fit('DONNA', innerWidth() - 2)} />
-          <text height={1} fg="#8BD5CA" content={fit('Living knowledge for AI agents', innerWidth() - 2)} />
-          <text height={1} fg="#7F8C8D" content={fit('Local workspaces · MCP agents · traceable runs', innerWidth() - 2)} />
+        <box height={8} flexDirection="column" alignItems="center" overflow="hidden">
+          <For each={DONNA_LOGO.split('\n')}>
+            {(line) => <text height={1} fg="#d6a85f" content={fit(line, innerWidth())} />}
+          </For>
+          <text height={1} fg="#888888" content="Intelligent workspace" />
         </box>
         <text height={1}>{''}</text>
         <text height={1} fg="#7F8C8D" content={menuTitle()} />

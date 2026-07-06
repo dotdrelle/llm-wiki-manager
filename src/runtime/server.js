@@ -610,7 +610,7 @@ function classifyControlMessage(input, status, forcedIntent = null) {
   if (['observe', 'converse', 'mutate', 'enqueue'].includes(intent)) {
     return { kind: intent, confidence: 1, reason: 'explicit_intent' };
   }
-  if (/\b(o[uù] en est|status|statut|progress|progression|build|run|job|queue|file|logs?|explique|explain|inspect|show|montre|quoi de neuf)\b/i.test(lower)) {
+  if (/\b(o[uù] en es[t-]|status|statut|progress|progression|build|run|job|queue|file|logs?|explique|explain|inspect|show|montre|quoi de neuf)\b/i.test(lower)) {
     return { kind: 'observe', confidence: 0.86, reason: 'status_or_explanation_request' };
   }
   if (status.running && /\b(ajoute|add|change|modifie|modify|remplace|replace|retire|remove|skip|ignore|apr[eè]s|before|after|chaque|each|plan|step|t[aâ]che)\b/i.test(lower)) {

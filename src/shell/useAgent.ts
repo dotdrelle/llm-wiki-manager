@@ -25,7 +25,6 @@ export function useAgent(props: { agent: unknown; packageJson: Record<string, un
           session: props.session,
         });
         if (outcome.kind === 'accepted') {
-          conversationMessages(props.session).push({ role: 'command', content: `Runtime run queued: ${props.runtimeUrl}` });
           props.onRuntimeAccepted?.();
           props.addLog('runtime: run accepted');
         } else if (outcome.kind === 'queued') {

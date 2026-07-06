@@ -1534,7 +1534,6 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
           conversationMessages(session).push({ role: 'user', content: line });
           const outcome = await submitRuntimeRun(line, { runtime, session });
           if (outcome.kind === 'accepted') {
-            conversationMessages(session).push({ role: 'command', content: `Runtime run queued: ${runtime.url}` });
             activityLines = [...activityLines, 'runtime: run accepted'].slice(-LOWER_DETAIL_ROWS);
           } else if (outcome.kind === 'queued') {
             conversationMessages(session).push({ role: 'command', content: 'Runtime is busy — request added to the control queue, it will start automatically.' });

@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { execFileSync } from 'node:child_process';
 import { render, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from '@opentui/solid';
-import { createMemo, createSignal, onCleanup } from 'solid-js';
+import { createMemo, createSignal, onCleanup, Show } from 'solid-js';
 import { FileEditorDialog } from './FileEditorDialog';
 import { LeftPane } from './LeftPane';
 import { RightPane } from './RightPane';
@@ -109,6 +109,7 @@ function App(props: {
   const [exitHint, setExitHint] = createSignal(false);
   const [copyHint, setCopyHint] = createSignal<string | null>(null);
   const [chatInputHeight, setChatInputHeight] = createSignal(3);
+  const [startupKeyboardEvent, setStartupKeyboardEvent] = createSignal<{ id: number; key: any } | null>(null);
   // The app has exactly three mutually exclusive screens; one signal makes
   // that invariant structural instead of relying on two booleans staying in
   // sync at every call site.
@@ -116,6 +117,7 @@ function App(props: {
   let ctrlCTimer: ReturnType<typeof setTimeout> | null = null;
   let copyHintTimer: ReturnType<typeof setTimeout> | null = null;
   let selectionCopyTimer: ReturnType<typeof setTimeout> | null = null;
+  let startupKeyboardEventId = 0;
   let lastCopiedSelection = '';
   const state = useSession(props);
   const startup = createMemo(() => startupInfo(props.packageJson));
@@ -236,6 +238,11 @@ function App(props: {
 
   useKeyboard((key) => {
     const keyName = String(key.name ?? '').toLowerCase();
+    if (screen() === 'startup') {
+      startupKeyboardEventId += 1;
+      setStartupKeyboardEvent({ id: startupKeyboardEventId, key });
+      return;
+    }
     if (screen() !== 'main') return;
     if (state.activeEditor()) {
       if (keyName === 'escape') state.closeEditor();
@@ -282,86 +289,87 @@ function App(props: {
     return null;
   };
 
-  if (screen() === 'startup') {
-    const info = startup();
-    return (
+  return (
+    <Show
+      when={screen() === 'startup'}
+      fallback={
+        <box width="100%" height="100%" flexDirection="row">
+          <LeftPane
+            width={leftColumns()}
+            title={state.title()}
+            statusLine={state.statusLine()}
+            hintLine={hintLine()}
+            showWelcome={state.showWelcome()}
+            messages={state.messages()}
+            prompt={state.prompt()}
+            input={state.input()}
+            busy={state.busy()}
+            chatMode={state.chatMode()}
+            chatFocused={!state.activeEditor()}
+            setInput={state.setInput}
+            submit={submit}
+            conversationRows={conversationRows()}
+            conversationColumns={conversationColumns()}
+            conversationScroll={state.conversationScroll()}
+            scrollConversation={state.scrollConversation}
+            spinnerFrame={SPINNER_FRAMES[spinnerIndex()] ?? SPINNER_FRAMES[0]}
+            onInputHeightChange={setChatInputHeight}
+            onCopy={(content) => showCopyHint(copyToClipboard(content, renderer) ? 'Copied.' : 'Copy failed.')}
+          />
+          <box width={1} height="100%" flexDirection="column">
+            {Array.from({ length: dimensions().height }, () => (
+              <text fg="#4B5563">│</text>
+            ))}
+          </box>
+          <RightPane
+            width={rightColumns()}
+            activities={state.activities()}
+            logs={state.logs()}
+            plan={state.plan()}
+            queueItems={state.queueItems()}
+            queueInfo={state.queueInfo()}
+            activeTab={state.rightTab()}
+            onTabClick={state.selectRightTab}
+          />
+          <SlashDialog context={state.activeEditor() ? null : state.slash()} />
+          <FileEditorDialog
+            editor={state.activeEditor()}
+            width={dimensions().width}
+            height={dimensions().height}
+            onSave={state.saveEditor}
+            onCancel={state.closeEditor}
+          />
+          {screen() === 'setup' ? (
+            <SetupWizard
+              mode="setup"
+              session={state.session}
+              width={dimensions().width}
+              height={dimensions().height}
+              initialRoute="workspace-name"
+              closeOnDone
+              onComplete={closeSetup}
+              onClose={closeSetup}
+            />
+          ) : null}
+        </box>
+      }
+    >
       <StartupScreen
-        version={info.version}
-        model={info.model}
-        connectedMcpServers={info.connectedMcpServers}
-        wikiReady={info.wikiReady}
-        workspaceName={info.workspaceName}
-        profileName={info.profileName}
-        workspaces={info.workspaces}
-        hasWorkspace={info.hasWorkspace}
+        version={startup().version}
+        model={startup().model}
+        connectedMcpServers={startup().connectedMcpServers}
+        wikiReady={startup().wikiReady}
+        workspaceName={startup().workspaceName}
+        profileName={startup().profileName}
+        workspaces={startup().workspaces}
+        hasWorkspace={startup().hasWorkspace}
         width={dimensions().width}
         height={dimensions().height}
+        keyboardEvent={startupKeyboardEvent()}
         onSelect={openAction}
         onQuit={() => renderer.destroy()}
       />
-    );
-  }
-
-  return (
-    <box width="100%" height="100%" flexDirection="row">
-      <LeftPane
-        width={leftColumns()}
-        title={state.title()}
-        statusLine={state.statusLine()}
-        hintLine={hintLine()}
-        showWelcome={state.showWelcome()}
-        messages={state.messages()}
-        prompt={state.prompt()}
-        input={state.input()}
-        busy={state.busy()}
-        chatMode={state.chatMode()}
-        chatFocused={!state.activeEditor()}
-        setInput={state.setInput}
-        submit={submit}
-        conversationRows={conversationRows()}
-        conversationColumns={conversationColumns()}
-        conversationScroll={state.conversationScroll()}
-        scrollConversation={state.scrollConversation}
-        spinnerFrame={SPINNER_FRAMES[spinnerIndex()] ?? SPINNER_FRAMES[0]}
-        onInputHeightChange={setChatInputHeight}
-        onCopy={(content) => showCopyHint(copyToClipboard(content, renderer) ? 'Copied.' : 'Copy failed.')}
-      />
-      <box width={1} height="100%" flexDirection="column">
-        {Array.from({ length: dimensions().height }, () => (
-          <text fg="#4B5563">│</text>
-        ))}
-      </box>
-      <RightPane
-        width={rightColumns()}
-        activities={state.activities()}
-        logs={state.logs()}
-        plan={state.plan()}
-        queueItems={state.queueItems()}
-        queueInfo={state.queueInfo()}
-        activeTab={state.rightTab()}
-        onTabClick={state.selectRightTab}
-      />
-      <SlashDialog context={state.activeEditor() ? null : state.slash()} />
-      <FileEditorDialog
-        editor={state.activeEditor()}
-        width={dimensions().width}
-        height={dimensions().height}
-        onSave={state.saveEditor}
-        onCancel={state.closeEditor}
-      />
-      {screen() === 'setup' ? (
-        <SetupWizard
-          mode="setup"
-          session={state.session}
-          width={dimensions().width}
-          height={dimensions().height}
-          initialRoute="workspace-name"
-          closeOnDone
-          onComplete={closeSetup}
-          onClose={closeSetup}
-        />
-      ) : null}
-    </box>
+    </Show>
   );
 }
 

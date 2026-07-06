@@ -106,7 +106,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
         role: 'command',
         content: String(message.content ?? ''),
       }));
-    if (Array.isArray(runtimeConversation) && runtimeConversation.length > 0) {
+    if (!chatMode() && Array.isArray(runtimeConversation) && runtimeConversation.length > 0) {
       const runtimeMessages = runtimeConversation.map((message: any) => ({
         role: message.role === 'assistant' ? 'donna' : message.role,
         content: String(message.content ?? ''),
@@ -310,6 +310,22 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     syncRuntimeState();
     void subscribeRuntimeEvents();
   }
+
+  let currentRuntimeWorkspace = (session as any).workspace ?? null;
+  function resyncRuntimeWorkspaceIfChanged() {
+    const workspace = (session as any).workspace ?? null;
+    if (workspace === currentRuntimeWorkspace) return;
+    currentRuntimeWorkspace = workspace;
+    if (!props.runtime?.url) return;
+    if (runtimeReconnectTimer) {
+      clearTimeout(runtimeReconnectTimer);
+      runtimeReconnectTimer = null;
+    }
+    runtimeStreamAbort?.abort();
+    syncRuntimeState();
+    void subscribeRuntimeEvents();
+  }
+
   onCleanup(() => {
     runtimeStreamStopped = true;
     runtimeStreamAbort?.abort();
@@ -408,6 +424,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     lastActivityLines.clear();
     lastActivityDetails.clear();
     const result = await agent.submit(line);
+    resyncRuntimeWorkspaceIfChanged();
     if ((result as any)?.setMode === 'chat') {
       setChatMode(true);
       (session as any).chatMode = true;

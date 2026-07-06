@@ -1,6 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { useKeyboard } from '@opentui/solid';
-import { createMemo, createSignal, For } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, untrack } from 'solid-js';
 import { fit } from './textFit';
 
 export type StartupAction =
@@ -23,6 +22,58 @@ function initWorkspaceItem(detail: string): StartupItem {
   return { action: 'init-workspace', label: 'Initialize workspace', detail };
 }
 
+function keyNameOf(key: any) {
+  return String(key?.name ?? key?.key ?? '').toLowerCase();
+}
+
+function keySequenceOf(key: any) {
+  return String(key?.sequence ?? key?.raw ?? key?.seq ?? key?.input ?? '');
+}
+
+function isEnterKey(key: any) {
+  const keyName = keyNameOf(key);
+  const sequence = keySequenceOf(key);
+  return Boolean(
+    key?.return ||
+    key?.enter ||
+    key?.linefeed ||
+    keyName === 'return' ||
+    keyName === 'enter' ||
+    keyName === 'linefeed' ||
+    keyName === 'kpenter' ||
+    keyName === 'keypadenter' ||
+    keyName === 'numenter' ||
+    (key?.ctrl && keyName === 'm') ||
+    sequence === '\r' ||
+    sequence === '\n' ||
+    sequence === '\r\n' ||
+    sequence === '\x1bOM' ||
+    /^\x1b\[13(?:;\d+)?u$/.test(sequence),
+  );
+}
+
+function isEscapeKey(key: any) {
+  const keyName = keyNameOf(key);
+  return keyName === 'escape' || keySequenceOf(key) === '\x1b';
+}
+
+function isUpKey(key: any) {
+  const keyName = keyNameOf(key);
+  const sequence = keySequenceOf(key);
+  return keyName === 'up' || keyName === 'arrow_up' || sequence === '\x1b[A' || /^\x1b\[57352(?:;\d+)?u$/.test(sequence);
+}
+
+function isDownKey(key: any) {
+  const keyName = keyNameOf(key);
+  const sequence = keySequenceOf(key);
+  return keyName === 'down' || keyName === 'arrow_down' || sequence === '\x1b[B' || /^\x1b\[57353(?:;\d+)?u$/.test(sequence);
+}
+
+function consumeKey(key: any) {
+  key?.preventDefault?.();
+  key?.stopPropagation?.();
+}
+
 export function StartupScreen(props: {
   version: string;
   model: string;
@@ -34,11 +85,13 @@ export function StartupScreen(props: {
   hasWorkspace: boolean;
   width: number;
   height: number;
+  keyboardEvent?: { id: number; key: any } | null;
   onSelect: (action: StartupAction, workspaceName?: string) => void;
   onQuit: () => void;
 }) {
   const [mode, setMode] = createSignal<'home' | 'workspace-select'>('home');
   const [selected, setSelected] = createSignal(0);
+  let lastKeyboardEventId = 0;
   const panelWidth = createMemo(() => Math.max(54, Math.min(86, props.width - 4)));
   const panelHeight = createMemo(() => Math.max(24, Math.min(32, props.height - 2)));
   const left = createMemo(() => Math.max(1, Math.floor((props.width - panelWidth()) / 2)));
@@ -74,8 +127,22 @@ export function StartupScreen(props: {
   const currentLength = createMemo(() => mode() === 'workspace-select' ? workspaceItems().length : items().length);
 
   const move = (delta: number) => {
-    setSelected((value) => (value + delta + currentLength()) % currentLength());
+    const length = currentLength();
+    if (length <= 0) {
+      setSelected(0);
+      return;
+    }
+    setSelected((value) => (value + delta + length) % length);
   };
+
+  createEffect(() => {
+    const length = currentLength();
+    if (length <= 0) {
+      setSelected(0);
+      return;
+    }
+    if (selected() >= length) setSelected(length - 1);
+  });
 
   const choose = (index = selected()) => {
     if (mode() === 'workspace-select') {
@@ -93,38 +160,52 @@ export function StartupScreen(props: {
     props.onSelect(item.action);
   };
 
-  useKeyboard((key: any) => {
-    const keyName = String(key.name ?? '').toLowerCase();
-    const sequence = String(key.sequence ?? '');
+  const handleKey = (key: any) => {
+    const keyName = keyNameOf(key);
+    const sequence = keySequenceOf(key);
     if ((key.ctrl || key.meta) && keyName === 'c') {
+      consumeKey(key);
       props.onQuit();
       return;
     }
-    if (keyName === 'escape' && mode() === 'workspace-select') {
+    if (isEscapeKey(key) && mode() === 'workspace-select') {
+      consumeKey(key);
       setMode('home');
       setSelected(0);
       return;
     }
-    if (keyName === 'escape') {
+    if (isEscapeKey(key)) {
+      consumeKey(key);
       props.onQuit();
       return;
     }
-    if (keyName === 'up') {
+    if (isEnterKey(key)) {
+      consumeKey(key);
+      choose();
+      return;
+    }
+    if (isUpKey(key)) {
+      consumeKey(key);
       move(-1);
       return;
     }
-    if (keyName === 'down') {
+    if (isDownKey(key)) {
+      consumeKey(key);
       move(1);
-      return;
-    }
-    if (keyName === 'return' || keyName === 'enter') {
-      choose();
       return;
     }
     const numeric = Number.parseInt(sequence, 10);
     if (Number.isInteger(numeric) && numeric >= 1 && numeric <= currentLength()) {
+      consumeKey(key);
       choose(numeric - 1);
     }
+  };
+
+  createEffect(() => {
+    const event = props.keyboardEvent;
+    if (!event || event.id === lastKeyboardEventId) return;
+    lastKeyboardEventId = event.id;
+    untrack(() => handleKey(event.key));
   });
 
   const status = createMemo(() => {
@@ -144,7 +225,7 @@ export function StartupScreen(props: {
     const quick = count === 1 ? '1 quick select' : `1-${count} quick select`;
     return mode() === 'workspace-select'
       ? `↑/↓ select  Enter open  ${quick}  Esc back`
-      : `↑/↓ select  Enter open  ${quick}  Esc quit`;
+      : `↑/↓ select  Enter choose  ${quick}  Esc quit`;
   });
   const menuTitle = createMemo(() => mode() === 'workspace-select' ? 'Select workspace' : '');
 
@@ -170,12 +251,11 @@ export function StartupScreen(props: {
         </box>
         <text height={1} fg="#7F8C8D" content={fit(subtitle(), innerWidth())} />
         <text height={1}>{''}</text>
-        <text height={1} fg="#D6DEE8">██████╗  ██████╗ ███╗   ██╗███╗   ██╗ █████╗</text>
-        <text height={1} fg="#D6DEE8">██╔══██╗██╔═══██╗████╗  ██║████╗  ██║██╔══██╗</text>
-        <text height={1} fg="#D6DEE8">██║  ██║██║   ██║██╔██╗ ██║██╔██╗ ██║███████║</text>
-        <text height={1} fg="#D6DEE8">██║  ██║██║   ██║██║╚██╗██║██║╚██╗██║██╔══██║</text>
-        <text height={1} fg="#D6DEE8">██████╔╝╚██████╔╝██║ ╚████║██║ ╚████║██║  ██║</text>
-        <text height={1} fg="#D6DEE8">╚═════╝  ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═══╝╚═╝  ╚═╝</text>
+        <box height={4} flexDirection="column" border={['left']} borderStyle="heavy" borderColor="#8BD5CA" paddingX={1}>
+          <text height={1} fg="#EAF2F8" content={fit('DONNA', innerWidth() - 2)} />
+          <text height={1} fg="#8BD5CA" content={fit('Living knowledge for AI agents', innerWidth() - 2)} />
+          <text height={1} fg="#7F8C8D" content={fit('Local workspaces · MCP agents · traceable runs', innerWidth() - 2)} />
+        </box>
         <text height={1}>{''}</text>
         <text height={1} fg="#7F8C8D" content={menuTitle()} />
         <box height={Math.max(1, currentLength())} flexDirection="column">

@@ -220,6 +220,13 @@ Key modules in `src/runtime/`:
   sequential run's wall time — a CI guard against the scheduler itself
   regressing, not proof that a real llm-wiki build/provider round-trip shows
   the same margin.
+  `donna-contract.test.js` (plan 0.11.5 §3/§4.1 exit criterion) is the
+  executable form of the manual recipe: one test per recipe row, driving
+  `runRuntimeAgenticWorkflow`/the real parallel scheduler with a mocked
+  per-turn agent for rows 1-3 and 8, and the real `/control` HTTP endpoint for
+  row 7. No release ships while it is red; a lot touching `runner.js`,
+  `agentLoop.js`, `plan.js`, `graph.js`, or the prompts still requires the
+  manual recipe once in Serve and once in ShellTUI before tagging.
 - **`approvals.js`**: run-level and tool-level approval gate. Run-level:
   `requireApproval: true` in the `/run` body suspends execution after the first
   plan is formed and emits `run_pending_approval`; `POST /approve?runId=...`

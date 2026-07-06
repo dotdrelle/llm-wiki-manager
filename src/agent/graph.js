@@ -14,6 +14,26 @@ import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy }
 
 const MAX_TOOL_ITERATIONS = 80;
 const MAX_SPINNER_ARG_LENGTH = 96;
+
+// Deterministic guard: on the first turn of a fresh /agent input, only bind
+// job-starting/mutating MCP tools when the raw text actually looks like an
+// action request. Plain chat (greetings, thanks, small talk) never sees those
+// tools bound, so the LLM cannot start a production job/plan from a "salut" —
+// prompting alone was not reliable enough (see plan-directeur history).
+const ACTION_INTENT_RE = /\b(lance|lancer|lancez|d[ée]marre|d[ée]marrer|d[ée]marrez|ex[ée]cute|ex[ée]cuter|exporte|exporter|export|importe|importer|import|g[ée]n[èe]re|g[ée]n[ée]rer|g[ée]n[ée]ration|cr[ée]e|cr[ée]er|construis|build|run|start|launch|deploy|d[ée]ploie|d[ée]ployer|d[ée]ploiement|publie|publier|publish|publication|synchronise|synchroniser|sync|convertis|convertir|convert|envoie|envoyer|send|configure|configurer|ajoute|ajouter|add|planifie|planifier|schedule|ingest|ing[èe]re|ing[èe]rer|ingestion|polish|pipeline|skill|job|t[âa]che|workflow|refais|relance|retente|retry)\b/i;
+const READ_ONLY_TOOL_NAME_RE = /(^|_)(list|status|get|read|describe|show|search|find)(_|$)/i;
+
+function isReadOnlyToolName(name) {
+  return READ_ONLY_TOOL_NAME_RE.test(String(name ?? ''));
+}
+
+function filterToolsForChatOnlyTurn(tools) {
+  return tools.filter((tool) => {
+    const name = tool?.function?.name ?? '';
+    if (name === 'shell__run_command' || name === 'wiki__plan_set' || name === 'wiki__plan_done') return true;
+    return isReadOnlyToolName(name);
+  });
+}
 const AGENT_SLASH_COMMANDS = new Set([
   'help',
   'version',
@@ -434,6 +454,7 @@ export function buildAgentSystemPrompt(state) {
   const agentContext = [
     'You are Donna, the terminal orchestrator agent for llm-wiki-manager.',
     'The shell is agent-first: every input without a leading slash is routed to you.',
+    'Default to a plain conversational reply with no tool call. Only call a tool, create a plan, or start a job when the user\'s message clearly requests an action (ingest, build, export, configure, run a skill, check a concrete status, etc.). Greetings, small talk, thanks, and general questions do not warrant starting a job or calling a tool — just answer in text.',
     'Commands starting with / are deterministic primitives. You may run a safe subset through shell__run_command.',
     `Reply language: ${language}.`,
     `Current workspace: ${workspace}.`,
@@ -540,12 +561,14 @@ export function createAgentGraph(options = {}) {
       state.session._onStep?.('Agent: planning next action…');
     }
 
-    const tools = [
+    const allTools = [
       SHELL_RUN_COMMAND_TOOL,
       WIKI_PLAN_SET_TOOL,
       WIKI_PLAN_DONE_TOOL,
       ...buildLlmTools(state.session.mcp),
     ];
+    const isChatOnlyFirstTurn = iterations === 0 && !ACTION_INTENT_RE.test(String(state.input ?? ''));
+    const tools = isChatOnlyFirstTurn ? filterToolsForChatOnlyTurn(allTools) : allTools;
     const system = buildAgentSystemPrompt(state);
 
     // On iteration 0: prior history is in state.messages, user input must be appended.

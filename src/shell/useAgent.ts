@@ -1,8 +1,8 @@
 import { createSignal } from 'solid-js';
 import { postRuntimeCancel } from '../runtime/client.js';
-import { conversationMessages, runLine, submitRuntimeRun } from './repl.js';
+import { conversationMessages, recordRuntimeUnavailableAgentInput, runLine, submitRuntimeRun } from './repl.js';
 
-export function useAgent(props: { agent: unknown; packageJson: Record<string, unknown>; session: Record<string, any>; chatMode: () => boolean; runtimeUrl?: string | null; refresh: () => void; addLog: (line: string) => void; onRuntimeAccepted?: () => void }) {
+export function useAgent(props: { agent: unknown; packageJson: Record<string, unknown>; session: Record<string, any>; chatMode: () => boolean; runtimeUrl?: string | null; runtimeUnavailableReason?: string | null; refresh: () => void; addLog: (line: string) => void; onRuntimeAccepted?: () => void }) {
   const [busy, setBusy] = createSignal(false);
   const [abortController, setAbortController] = createSignal<AbortController | null>(null);
 
@@ -36,6 +36,14 @@ export function useAgent(props: { agent: unknown; packageJson: Record<string, un
         }
         props.refresh();
         return { exit: false, runtime: true };
+      }
+      if (!props.chatMode() && !trimmed.startsWith('/')) {
+        const message = recordRuntimeUnavailableAgentInput(props.session, trimmed, {
+          error: props.runtimeUnavailableReason ?? 'runtime introuvable',
+        });
+        props.addLog(message ?? 'runtime: disconnected');
+        props.refresh();
+        return { exit: false, runtimeUnavailable: true };
       }
       const result = await runLine(trimmed, {
         agent: props.agent,

@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyRuntimeStateToShellSession, createSession, conversationMessages, submitRuntimeRun } from './repl.js';
+import {
+  applyRuntimeStateToShellSession,
+  createSession,
+  conversationMessages,
+  recordRuntimeUnavailableAgentInput,
+  runtimeStatusLine,
+  runtimeUnavailableAgentMessage,
+  submitRuntimeRun,
+} from './repl.js';
 
 function stubFetch(handler) {
   const original = globalThis.fetch;
@@ -111,4 +119,28 @@ test('submitRuntimeRun reports a non-409 error without throwing or calling /cont
   } finally {
     restore();
   }
+});
+
+test('agent mode without runtime records a visible error instead of falling back locally', () => {
+  const session = createSession();
+  session.chatMode = false;
+
+  const message = recordRuntimeUnavailableAgentInput(session, 'salut', { error: 'port 7788 already in use' });
+
+  assert.equal(message, '⚠ Runtime indisponible : port 7788 already in use — /agent désactivé, /chat reste possible');
+  assert.deepEqual(conversationMessages(session), [
+    { role: 'user', content: 'salut' },
+    { role: 'command', content: message },
+  ]);
+});
+
+test('runtime status exposes the disconnected reason', () => {
+  assert.equal(
+    runtimeStatusLine({ error: 'token mismatch' }, { workspace: 'juno' }),
+    'runtime: disconnected: token mismatch',
+  );
+  assert.equal(
+    runtimeUnavailableAgentMessage({ error: 'token mismatch' }),
+    '⚠ Runtime indisponible : token mismatch — /agent désactivé, /chat reste possible',
+  );
 });

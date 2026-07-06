@@ -21,7 +21,6 @@ const MAX_SPINNER_ARG_LENGTH = 96;
 // tools bound, so the LLM cannot start a production job/plan from a "salut" —
 // prompting alone was not reliable enough (see plan-directeur history).
 const ACTION_INTENT_RE = /\b(lance|lancer|lancez|d[ée]marre|d[ée]marrer|d[ée]marrez|ex[ée]cute|ex[ée]cuter|exporte|exporter|export|importe|importer|import|g[ée]n[èe]re|g[ée]n[ée]rer|g[ée]n[ée]ration|cr[ée]e|cr[ée]er|construis|build|run|start|launch|deploy|d[ée]ploie|d[ée]ployer|d[ée]ploiement|publie|publier|publish|publication|synchronise|synchroniser|sync|convertis|convertir|convert|envoie|envoyer|send|configure|configurer|ajoute|ajouter|add|planifie|planifier|schedule|ingest|ing[èe]re|ing[èe]rer|ingestion|polish|pipeline|skill|job|t[âa]che|workflow|refais|relance|retente|retry)\b/i;
-const READ_INTENT_RE = /\b(config|configuration|profil|profile|status|statut|services?|skills?|uploads?|queue|file|fichier|cherche|chercher|recherche|search|find|trouve|liste|list|montre|show|affiche|read|lis|quel|quelle|quels|quelles|où en est|ou en est|progression|logs?)\b/i;
 const READ_ONLY_TOOL_NAME_RE = /(^|_)(list|status|get|read|describe|show|search|find)(_|$)/i;
 
 function isReadOnlyToolName(name) {
@@ -39,8 +38,12 @@ function toolsForDonnaTurn(input, tools, iterations) {
   if (iterations !== 0) return tools;
   const text = String(input ?? '');
   if (ACTION_INTENT_RE.test(text)) return tools;
-  if (READ_INTENT_RE.test(text)) return filterToolsForChatOnlyTurn(tools);
-  return [];
+  // Plain chat (no action, no read intent) still gets the minimal read-only
+  // set, never an empty array: the system prompt unconditionally describes
+  // the connected MCP tools regardless of what's actually bound this turn,
+  // and sending zero tools while the prompt talks about them confuses some
+  // models into an empty/malformed completion instead of a plain reply.
+  return filterToolsForChatOnlyTurn(tools);
 }
 const AGENT_SLASH_COMMANDS = new Set([
   'help',

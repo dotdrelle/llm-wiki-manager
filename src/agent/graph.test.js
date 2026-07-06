@@ -107,7 +107,7 @@ test('agent graph reports LLM unavailable without Donna active boilerplate', asy
   assert.doesNotMatch(result.response, /Donna is active/);
 });
 
-test('agent graph binds no tools for plain discussion in agent mode', async () => {
+test('agent graph binds only the minimal read-only tool set for plain discussion, never an empty array', async () => {
   const seenTools = [];
   const session = sessionBase({
     llm: {
@@ -126,7 +126,12 @@ test('agent graph binds no tools for plain discussion in agent mode', async () =
   const result = await agent.invoke({ input: 'salut', session });
 
   assert.equal(result.response, 'Salut, je suis là.');
-  assert.deepEqual(seenTools, []);
+  // Never literally empty: the system prompt unconditionally describes the
+  // connected MCP tools, and sending zero tools while the prompt talks about
+  // them risks an empty/malformed completion from some models instead of a
+  // plain reply — this is what actually broke plain "salut" discussion.
+  assert.ok(seenTools.length > 0);
+  assert.deepEqual(seenTools, ['shell__read_command']);
   assert.equal(session.headlessPlan ?? null, null);
   assert.equal(Object.keys(session.activities ?? {}).length, 0);
 });

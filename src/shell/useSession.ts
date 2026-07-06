@@ -14,12 +14,13 @@ import {
   completionDescription,
   conversationMessages,
   createSession,
+  runtimeUnavailableAgentMessage,
 } from './repl.js';
 import { useAgent } from './useAgent';
 
-function runtimeStatusText(status: 'disabled' | 'connected' | 'disconnected', runStatus: string): string {
-  if (status === 'connected') return `runtime ${runStatus}`;
-  if (status === 'disconnected') return 'runtime offline';
+function runtimeStatusText(status: 'disabled' | 'connected' | 'disconnected', runStatus: string, reason: string | null, workspace: string | null): string {
+  if (status === 'connected') return `runtime: connected (${workspace ?? 'no workspace'}) ${runStatus}`;
+  if (status === 'disconnected') return reason ? `runtime: disconnected: ${reason}` : 'runtime offline';
   return 'runtime off';
 }
 
@@ -74,13 +75,21 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   const addLog = (line: string) => {
     setLogs((items) => [...items, `${new Date().toLocaleTimeString()} ${line}`].slice(-200));
   };
+  const runtimeUnavailableReason = createMemo(() => {
+    if (props.runtime?.url) return null;
+    const reason = props.runtime?.error ?? props.runtime?.unavailableReason ?? props.runtime?.reason ?? null;
+    return reason ? String(reason) : null;
+  });
   if (props.runtime?.url) addLog(`runtime: connected ${props.runtime.url}${props.runtime.started ? ' (started)' : ''}`);
+  else if (props.runtime?.error) addLog(`runtime: unavailable — ${props.runtime.error}`);
+  else if (runtimeUnavailableReason()) addLog(`runtime: disconnected: ${runtimeUnavailableReason()}`);
   const agent = useAgent({
     agent: props.agent,
     packageJson: props.packageJson,
     session,
     chatMode,
     runtimeUrl: props.runtime?.url ?? null,
+    runtimeUnavailableReason: runtimeUnavailableReason(),
     refresh,
     addLog,
     onRuntimeAccepted: () => {
@@ -133,8 +142,13 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
       session.wikirc?.profile ? session.wikirc.profile : 'no wikirc',
       session.language ? session.language : 'no language',
       session.llm ? 'llm ready' : 'llm limited',
-      runtimeStatusText(runtimeStatus(), runtimeRunStatus()),
+      runtimeStatusText(runtimeStatus(), runtimeRunStatus(), runtimeUnavailableReason(), session.workspace),
     ].join('  ');
+  });
+  const runtimeHint = createMemo(() => {
+    version();
+    if (props.runtime?.url) return null;
+    return runtimeUnavailableAgentMessage({ error: runtimeUnavailableReason() ?? 'runtime introuvable' });
   });
   const matchContext = createMemo(() => {
     if (input() === dismissedSlashInput()) return null;
@@ -540,6 +554,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     setInput: updateInput,
     title,
     statusLine,
+    runtimeHint,
     chatMode,
     showWelcome,
     activeEditor,

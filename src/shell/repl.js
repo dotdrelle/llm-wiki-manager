@@ -102,6 +102,31 @@ const SUBCOMMAND_COMPLETION_DESCRIPTIONS = {
   '/skills:show': 'Show one workspace skill.',
 };
 
+export function runtimeUnavailableReason(runtime) {
+  if (runtime?.url) return null;
+  const reason = runtime?.error ?? runtime?.unavailableReason ?? runtime?.reason ?? null;
+  return reason ? String(reason) : 'runtime introuvable';
+}
+
+export function runtimeUnavailableAgentMessage(runtime) {
+  const reason = runtimeUnavailableReason(runtime);
+  return reason ? `⚠ Runtime indisponible : ${reason} — /agent désactivé, /chat reste possible` : null;
+}
+
+export function runtimeStatusLine(runtime, session) {
+  if (runtime?.url) return `runtime: connected (${session?.workspace ?? 'no workspace'})`;
+  const reason = runtimeUnavailableReason(runtime);
+  if (reason) return `runtime: disconnected: ${reason}`;
+  return 'runtime: off';
+}
+
+export function recordRuntimeUnavailableAgentInput(session, line, runtime) {
+  const message = runtimeUnavailableAgentMessage(runtime);
+  conversationMessages(session).push({ role: 'user', content: line });
+  conversationMessages(session).push({ role: 'command', content: message ?? 'Runtime indisponible.' });
+  return message;
+}
+
 export function createSession() {
   return {
     workspace: null,
@@ -839,17 +864,18 @@ function isDurableActivityLine(label) {
   return /^[a-z0-9_-]+\.[a-z0-9_-]+:/i.test(String(label).trim());
 }
 
-function renderScreen({ packageJson, session, messages, inputBuffer, busy = false, spinnerFrame = 0, scrollOffset = 0, spinnerLabel = 'Thinking…', activityLines = [] }) {
+function renderScreen({ packageJson, session, messages, inputBuffer, busy = false, spinnerFrame = 0, scrollOffset = 0, spinnerLabel = 'Thinking…', activityLines = [], runtime = null }) {
   const columns = output.columns || 100;
   const rows = output.rows || 30;
   const banner = renderBannerWithMcpPanel(columns, session);
+  const runtimeBanner = runtimeUnavailableAgentMessage(runtime);
   const completions = busy ? [] : completionLines(inputBuffer, session, columns);
   const visibleCompletions = completions.slice(0, COMPLETION_PANEL_ROWS);
   const completionRows = visibleCompletions.length > 0 ? COMPLETION_PANEL_ROWS : 0;
   const activityRows = LOWER_DETAIL_ROWS - completionRows;
   const activity = renderActivityLines(activityLines, columns, activityRows);
   const productionActivityRows = 1;
-  const fixedRows = 4 + banner.length + productionActivityRows + 1 + LOWER_PANEL_ROWS + BOTTOM_PADDING_ROWS;
+  const fixedRows = 4 + banner.length + (runtimeBanner ? 1 : 0) + productionActivityRows + 1 + LOWER_PANEL_ROWS + BOTTOM_PADDING_ROWS;
   const middleHeight = Math.max(5, rows - fixedRows);
   lastMiddleHeight = middleHeight;
   const prompt = promptFor(session);
@@ -860,6 +886,7 @@ function renderScreen({ packageJson, session, messages, inputBuffer, busy = fals
     session.wikirc?.profile ? session.wikirc.profile : 'no wikirc',
     session.language ? session.language : 'no language',
     session.llm ? 'llm ready' : 'llm limited',
+    runtimeStatusLine(runtime, session),
   ].join('  ');
   const header = `${title}${' '.repeat(Math.max(0, columns - stripAnsi(title).length - context.length))}${context}`;
   const divider = '─'.repeat(columns);
@@ -909,6 +936,9 @@ function renderScreen({ packageJson, session, messages, inputBuffer, busy = fals
   buf += `${' '.repeat(columns)}\n`;
   if (banner.length > 0) {
     buf += `${banner.map((line) => line.padEnd(columns, ' ')).join('\n')}\n`;
+  }
+  if (runtimeBanner) {
+    buf += `${padVisible(`${styles.yellow}${truncateAnsi(runtimeBanner, columns)}${styles.reset}`, columns)}\n`;
   }
   buf += `${topDivider}\n`;
   buf += `${visibleBody.map((line) => padVisible(line, columns)).join('\n')}\n`;
@@ -1252,7 +1282,7 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
   input.resume();
   output.write('\u001b[?1049h');
 
-  const rerender = () => renderScreen({ packageJson, session, messages: conversationMessages(session), inputBuffer, busy, spinnerFrame, scrollOffset, spinnerLabel, activityLines });
+  const rerender = () => renderScreen({ packageJson, session, messages: conversationMessages(session), inputBuffer, busy, spinnerFrame, scrollOffset, spinnerLabel, activityLines, runtime });
   busy = true;
   spinnerLabel = 'Loading wiki-manager shell...';
   spinnerInterval = setInterval(() => {
@@ -1550,6 +1580,9 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
             activityLines = [...activityLines, `runtime error: ${outcome.message}`].slice(-LOWER_DETAIL_ROWS);
           }
           syncRuntimeState();
+        } else if (!session.chatMode && !line.trim().startsWith('/')) {
+          const message = recordRuntimeUnavailableAgentInput(session, line, runtime);
+          activityLines = [...activityLines, message ?? 'runtime: disconnected'].slice(-LOWER_DETAIL_ROWS);
         } else {
           const result = await runLine(line, { agent, packageJson, session, onUpdate: rerender, onStep });
           done = result.exit;

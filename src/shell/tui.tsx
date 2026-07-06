@@ -286,6 +286,7 @@ function App(props: {
   const hintLine = () => {
     if (copyHint()) return copyHint();
     if (exitHint()) return 'Press Ctrl+C again to exit.';
+    if (state.runtimeHint()) return state.runtimeHint();
     return null;
   };
 

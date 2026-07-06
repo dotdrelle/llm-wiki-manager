@@ -29,6 +29,11 @@ function valueAfter(argv, flag) {
   return argv[index + 1];
 }
 
+function unavailableRuntime(err) {
+  const reason = err instanceof Error ? err.message : String(err);
+  return { url: null, error: reason };
+}
+
 function createSession() {
   return {
     workspace: null,
@@ -745,7 +750,8 @@ export async function runCli(argv) {
       const { ensureRuntime } = await import('../runtime/lifecycle.js');
       runtime = await ensureRuntime();
     } catch (err) {
-      console.error(`Runtime unavailable: ${err instanceof Error ? err.message : String(err)}`);
+      runtime = unavailableRuntime(err);
+      console.error(`Runtime unavailable: ${runtime.error}`);
     }
     await runOpenTuiShell({ agent, packageJson, runtime });
     return;
@@ -757,7 +763,8 @@ export async function runCli(argv) {
       const { ensureRuntime } = await import('../runtime/lifecycle.js');
       runtime = await ensureRuntime();
     } catch (err) {
-      console.error(`Runtime unavailable: ${err instanceof Error ? err.message : String(err)}`);
+      runtime = unavailableRuntime(err);
+      console.error(`Runtime unavailable: ${runtime.error}`);
     }
   }
   await runShell({ agent, packageJson, runtime });

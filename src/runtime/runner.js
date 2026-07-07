@@ -5,13 +5,14 @@ import { formatPlanStatus } from '../core/plan.js';
 import { readyPlanTasks, sanitizePlanForExecution } from '../core/planPatch.js';
 import { createAssignmentManager } from '../orchestrator/assignmentManager.js';
 import { createAttemptManager } from '../orchestrator/attemptManager.js';
+import { createBudgetManager, BudgetExceededError } from '../orchestrator/budgetManager.js';
 import { createDispatcher } from '../orchestrator/dispatcher.js';
 import { assertValidatedFragment } from '../orchestrator/planValidator.js';
 import { createResultAggregator } from '../orchestrator/resultAggregator.js';
+import { drainActive, resolveSchedulerConcurrency, startReadyTasks } from '../orchestrator/scheduler.js';
 import { emitRuntimeLog, pollActivitiesOnce } from './supervisor.js';
 
 const DEFAULT_MAX_REPLANS = 2;
-const DEFAULT_SCHEDULER_CONCURRENCY = 3;
 
 async function waitForRuntimeActivities(session, startedActivities, { timeoutMs, signal, pollBusy }) {
   const deadline = Date.now() + timeoutMs;
@@ -223,6 +224,8 @@ export async function runRuntimeParallelPlan(agent, session, input, {
   attemptManager = null,
   dispatcher = null,
   resultAggregator = null,
+  budgetManager = null,
+  budgets = {},
   callTool = null,
   dispatcherPollIntervalMs = 250,
 } = {}) {
@@ -237,6 +240,7 @@ export async function runRuntimeParallelPlan(agent, session, input, {
     pollIntervalMs: dispatcherPollIntervalMs,
   });
   const aggregator = resultAggregator ?? createResultAggregator({ session, runId });
+  const budget = budgetManager ?? createBudgetManager({ budgets, runId });
   const failures = [];
   const previousIdentity = session._currentRunIdentity;
   const previousPlanUpdate = session._onPlanUpdate;
@@ -267,20 +271,69 @@ export async function runRuntimeParallelPlan(agent, session, input, {
           : { ok: true };
       }
 
-      const started = startReadyTasks(agent, session, input, {
+      const started = startReadyTasks({
+        plan: session.headlessPlan,
         active,
         attemptManager: attempts,
-        assignmentManager: assigner,
-        dispatcher: executor,
-        resultAggregator: aggregator,
-        signal,
-        timeoutMs,
-        maxTurns,
-        runId,
-        pollBusy,
+        lockManager: attempts,
+        budgetManager: budget,
+        registry: session.capabilityRegistry ?? null,
+        approvals: session.agentProjection?.approvals ?? session.approvals ?? [],
         limit,
+        onDuplicateTask: (taskId) => {
+          // Two distinct ready tasks resolved to the same id/step — starting
+          // both would let plan_step_updated resolve to whichever one the
+          // reducer finds first, silently marking the wrong task done. Skip the
+          // duplicate rather than risk misattribution; it stays pending and
+          // will surface as a stalled plan instead of corrupting sibling state.
+          emitRuntimeLog(session, `scheduler: skipping task with duplicate id/step "${taskId}"`);
+        },
+        onTaskStarting: (task) => {
+          const taskId = planTaskId(task);
+          dispatchAgentEvent(session, createAgentEvent('plan_step_updated', {
+            origin: 'runtime',
+            runId,
+            taskId,
+            payload: { taskId, status: 'running' },
+          }));
+          emitRuntimeLog(session, `scheduler: starting task ${taskId}`);
+        },
+        startTask: (task, attempt) => {
+          const taskAbort = createTaskAbortSignal(signal);
+          const promise = runDispatchedTask(task, {
+            session,
+            assignmentManager: assigner,
+            dispatcher: executor,
+            resultAggregator: aggregator,
+            signal: taskAbort.signal,
+            timeoutMs,
+            runId,
+            pollBusy,
+            attempt,
+          });
+          return {
+            promise,
+            controller: taskAbort.controller,
+            signal: taskAbort.signal,
+            cleanup: taskAbort.cleanup,
+          };
+        },
       });
       if (started === 0 && active.size === 0) {
+        const exceeded = budget.exceeded?.();
+        if (exceeded) {
+          dispatchAgentEvent(session, createAgentEvent('run_error', {
+            origin: 'runtime',
+            runId,
+            payload: {
+              runId,
+              message: `Run budget exceeded: ${exceeded.reason}`,
+              budget: exceeded,
+            },
+          }));
+          emitRuntimeLog(session, `scheduler: budget exceeded (${exceeded.reason})`);
+          return { ok: false, budgetExceeded: true, reason: exceeded.reason, budget: exceeded, completed: sessionActivities(session), failures };
+        }
         const reason = pending.every((step) => step.status === 'pending_approval') ? 'awaiting_approval' : 'no_ready_plan_task';
         emitRuntimeLog(session, `scheduler: stalled (${reason})`);
         return { ok: false, stalled: true, reason, completed: sessionActivities(session), failures };
@@ -296,6 +349,24 @@ export async function runRuntimeParallelPlan(agent, session, input, {
           throwIfAborted(signal, 'Runtime run cancelled.');
         }
         continue;
+      }
+      try {
+        budget.recordTaskResult?.(settled.result ?? {});
+      } catch (err) {
+        if (err instanceof BudgetExceededError) {
+          dispatchAgentEvent(session, createAgentEvent('run_error', {
+            origin: 'runtime',
+            runId,
+            payload: {
+              runId,
+              message: err.message,
+              budget: { reason: err.reason, details: err.details },
+            },
+          }));
+          emitRuntimeLog(session, `scheduler: budget exceeded (${err.reason})`);
+          return { ok: false, budgetExceeded: true, reason: err.reason, budget: err.details, completed: sessionActivities(session), failures };
+        }
+        throw err;
       }
       if (!settled.ok) failures.push(settled);
     }
@@ -319,15 +390,6 @@ function sanitizeSessionPlanForExecution(session, runId = null) {
       message: `plan warning: ${sanitized.warnings.join('; ')}`,
     },
   }));
-}
-
-async function drainActive(active, attemptManager) {
-  if (active.size === 0) return;
-  const entries = [...active.values()];
-  await Promise.all(entries.map((entry) => entry.promise));
-  for (const entry of entries) entry.cleanup?.();
-  active.clear();
-  attemptManager?.clear?.();
 }
 
 function abortCancelledActiveTasks(session, active) {
@@ -364,68 +426,6 @@ function ensurePlanProjection(session, runId) {
       planRevision: session.planRevision ?? 0,
     },
   }));
-}
-
-function startReadyTasks(_agent, session, _input, {
-  active,
-  attemptManager,
-  assignmentManager,
-  dispatcher,
-  resultAggregator,
-  signal,
-  timeoutMs,
-  maxTurns: _maxTurns,
-  runId,
-  pollBusy,
-  limit,
-}) {
-  let started = 0;
-  const seenTaskIds = new Set(active.keys());
-  for (const task of readyPlanTasks(session.headlessPlan)) {
-    if (active.size >= limit) break;
-    const taskId = planTaskId(task);
-    if (active.has(taskId)) continue;
-    if (seenTaskIds.has(taskId)) {
-      // Two distinct ready tasks resolved to the same id/step — starting
-      // both would let plan_step_updated resolve to whichever one the
-      // reducer finds first, silently marking the wrong task done. Skip the
-      // duplicate rather than risk misattribution; it stays pending and
-      // will surface as a stalled plan instead of corrupting sibling state.
-      emitRuntimeLog(session, `scheduler: skipping task with duplicate id/step "${taskId}"`);
-      continue;
-    }
-    seenTaskIds.add(taskId);
-    const attempt = attemptManager.reserve(task);
-    if (!attempt) continue;
-    dispatchAgentEvent(session, createAgentEvent('plan_step_updated', {
-      origin: 'runtime',
-      runId,
-      taskId,
-      payload: { taskId, status: 'running' },
-    }));
-    emitRuntimeLog(session, `scheduler: starting task ${taskId}`);
-    const taskAbort = createTaskAbortSignal(signal);
-    const promise = runDispatchedTask(task, {
-      session,
-      assignmentManager,
-      dispatcher,
-      resultAggregator,
-      signal: taskAbort.signal,
-      timeoutMs,
-      runId,
-      pollBusy,
-      attempt,
-    });
-    active.set(taskId, {
-      taskId,
-      promise,
-      controller: taskAbort.controller,
-      signal: taskAbort.signal,
-      cleanup: taskAbort.cleanup,
-    });
-    started += 1;
-  }
-  return started;
 }
 
 function createTaskAbortSignal(parentSignal) {
@@ -876,11 +876,4 @@ function formatRecentConversation(session, n = 12) {
 function resolveMaxReplans(value = process.env.WIKI_MANAGER_REPLANNER_MAX_REPLANS) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : DEFAULT_MAX_REPLANS;
-}
-
-function resolveSchedulerConcurrency(value = process.env.WIKI_MANAGER_SCHEDULER_CONCURRENCY) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0
-    ? Math.max(1, Math.floor(parsed))
-    : DEFAULT_SCHEDULER_CONCURRENCY;
 }

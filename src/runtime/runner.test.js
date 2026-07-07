@@ -506,6 +506,32 @@ test('runRuntimeParallelPlan dispatches orchestrated tasks without child LLM loo
   );
 });
 
+test('runRuntimeParallelPlan fails cleanly when scheduler budget is exceeded', async () => {
+  const session = {
+    mcp: { tools: {} },
+    agentEvents: [],
+    headlessPlan: [plannedDoctorTask('a', [])],
+  };
+  const agent = {
+    async invoke() {
+      assert.fail('budget rejection must happen before child execution');
+    },
+  };
+
+  const result = await runRuntimeParallelPlan(agent, session, 'Run one task', {
+    runId: 'run-budget',
+    timeoutMs: 1000,
+    maxTurns: 1,
+    budgets: { maxTasks: 0 },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.budgetExceeded, true);
+  assert.equal(result.reason, 'max_tasks_exceeded');
+  assert.ok(session.agentEvents.some((event) => event.type === 'run_error' && event.payload?.budget?.reason === 'max_tasks_exceeded'));
+  assert.equal(session.headlessPlan[0].status, 'pending');
+});
+
 function plannedDoctorTask(id, dependsOn) {
   return {
     step: id === 'a' ? 1 : id === 'b' ? 2 : 3,

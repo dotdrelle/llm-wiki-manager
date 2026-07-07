@@ -3,6 +3,7 @@ import { activityKey, sessionActivities, terminalFailures } from '../core/activi
 import { runAgenticLoop, throwIfAborted } from '../core/agentLoop.js';
 import { formatPlanStatus } from '../core/plan.js';
 import { formatReadyTaskPrompt, readyPlanTasks, sanitizePlanForExecution } from '../core/planPatch.js';
+import { assertValidatedFragment } from '../orchestrator/planValidator.js';
 import { emitRuntimeLog, pollActivitiesOnce } from './supervisor.js';
 
 const DEFAULT_MAX_REPLANS = 2;
@@ -209,7 +210,9 @@ export async function runRuntimeParallelPlan(agent, session, input, {
   runId = null,
   pollBusy,
   concurrency = resolveSchedulerConcurrency(),
+  fragment = null,
 } = {}) {
+  if (fragment != null) assertValidatedFragment(fragment);
   const limit = Math.max(1, Math.floor(Number(concurrency) || 1));
   const active = new Map();
   const locks = new Set();

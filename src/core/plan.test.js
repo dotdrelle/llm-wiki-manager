@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ensurePlanFromActivity, syncActivitiesToPlan, extractHeadlessPlan } from './plan.js';
+import { ensurePlanFromActivity, syncActivitiesToPlan, extractHeadlessPlan, formatConfigValue, formatPlanStatus, formatPlanStep } from './plan.js';
 
 test('ensurePlanFromActivity: creates multi-step plan from activity.plan.steps', () => {
   const session = { headlessPlan: null };
@@ -165,4 +165,19 @@ test('extractHeadlessPlan: parses numbered list from text (legacy)', () => {
   assert.equal(plan.length, 3);
   assert.equal(plan[0].description, 'CME export');
   assert.equal(plan[1].step, 2);
+});
+
+test('formatPlanStep renders structured steps without object interpolation', () => {
+  assert.equal(formatPlanStep('Build'), 'Build');
+  assert.equal(formatPlanStep({ description: 'Build deliverable', label: 'Build' }), 'Build deliverable');
+  assert.equal(formatPlanStep({ label: 'Build' }), 'Build');
+  assert.equal(formatPlanStep({ id: 'build-doc' }), 'build-doc');
+  assert.equal(formatPlanStatus([{ step: 1, status: 'pending', description: { label: 'Build' } }]), '1. [ ] Build');
+  assert.doesNotMatch(formatPlanStatus([{ step: 1, status: 'pending', description: { label: 'Build' } }]), /\[object Object\]/);
+});
+
+test('formatConfigValue renders objects as key-value text', () => {
+  assert.equal(formatConfigValue({ requestsPerMinute: 60 }), 'requestsPerMinute: 60');
+  assert.equal(formatConfigValue({ limits: { requestsPerMinute: 60 } }), 'limits: requestsPerMinute: 60');
+  assert.doesNotMatch(formatConfigValue({ requestsPerMinute: 60 }), /\[object Object\]/);
 });

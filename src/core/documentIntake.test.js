@@ -38,6 +38,31 @@ test('document intake stores uploads without requiring documents MCP', async () 
   }
 });
 
+test('document intake falls back to workspace root agents data, not cwd', async () => {
+  const originalAgentsDataDir = process.env.AGENTS_DATA_DIR;
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wiki-manager-doc-intake-root-'));
+  const workspacesRoot = path.join(root, 'workspaces');
+  const workspacePath = path.join(workspacesRoot, 'my-project');
+  await mkdir(workspacePath, { recursive: true });
+  const source = path.join(root, 'rapport.pdf');
+  await writeFile(source, 'fake pdf content');
+  const session = {
+    workspace: 'my-project',
+    workspacePath,
+    mcp: {},
+  };
+
+  try {
+    delete process.env.AGENTS_DATA_DIR;
+    const { record } = await storeAndMaybeConvertDocument(session, source);
+    assert.equal(record.storedPath.startsWith(path.join(workspacesRoot, '.agents-data')), true);
+    assert.equal(await readFile(record.storedPath, 'utf8'), 'fake pdf content');
+  } finally {
+    if (originalAgentsDataDir === undefined) delete process.env.AGENTS_DATA_DIR;
+    else process.env.AGENTS_DATA_DIR = originalAgentsDataDir;
+  }
+});
+
 test('document intake accepts quoted absolute paths with spaces', async () => {
   const originalAgentsDataDir = process.env.AGENTS_DATA_DIR;
   const root = await mkdtemp(path.join(os.tmpdir(), 'wiki-manager-doc-intake-'));

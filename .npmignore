@@ -4,6 +4,7 @@ mcp.endpoints.json
 !.env.example
 data/
 .agents-data/
+**/.gitkeep
 workspaces/*
 !workspaces/.env.example
 *.log

@@ -797,14 +797,6 @@ export function applyRuntimeStateToShellSession(session, state) {
       updatedAt: production.updatedAt,
     };
   }
-  const runtimeConversation = session.agentProjection.conversation;
-  if (runtimeConversation.length > 0) {
-    session.conversations ??= { [GLOBAL_CONVERSATION_KEY]: [] };
-    session.conversations[conversationKey(session)] = runtimeConversation.map((message) => ({
-      role: message.role === 'assistant' ? 'donna' : message.role,
-      content: String(message.content ?? ''),
-    }));
-  }
   return true;
 }
 

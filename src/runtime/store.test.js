@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -38,10 +38,11 @@ test('runtime store writes schema versions to sqlite and meta file', () => {
   const stateDir = join(root, '.wiki-manager');
   const store = openRuntimeStore({ stateDir });
   const version = store.db.prepare('PRAGMA user_version').get().user_version;
-  const meta = JSON.parse(readFileSync(join(root, '.wiki', 'meta.json'), 'utf8'));
+  const meta = JSON.parse(readFileSync(join(root, '.wiki-manager', 'meta.json'), 'utf8'));
 
   assert.equal(version, 1);
   assert.equal(meta.schemaVersion, 1);
+  assert.equal(existsSync(join(root, '.wiki', 'meta.json')), false);
   store.close();
 });
 
@@ -61,13 +62,28 @@ test('runtime store refuses unknown sqlite schema versions', () => {
 test('runtime store refuses unknown runtime metadata versions', () => {
   const root = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
   const stateDir = join(root, '.wiki-manager');
-  mkdirSync(join(root, '.wiki'), { recursive: true });
-  writeFileSync(join(root, '.wiki', 'meta.json'), '{"schemaVersion":99}\n', 'utf8');
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(join(stateDir, 'meta.json'), '{"schemaVersion":99}\n', 'utf8');
 
   assert.throws(
     () => openRuntimeStore({ stateDir }),
     /Unsupported runtime metadata schemaVersion 99/,
   );
+});
+
+test('runtime store migrates legacy .wiki metadata to .wiki-manager', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const stateDir = join(root, '.wiki-manager');
+  mkdirSync(join(root, '.wiki'), { recursive: true });
+  writeFileSync(join(root, '.wiki', 'meta.json'), '{"schemaVersion":1,"legacy":true}\n', 'utf8');
+
+  const store = openRuntimeStore({ stateDir });
+  const meta = JSON.parse(readFileSync(join(stateDir, 'meta.json'), 'utf8'));
+
+  assert.equal(meta.schemaVersion, 1);
+  assert.equal(meta.legacy, true);
+  assert.equal(existsSync(join(root, '.wiki', 'meta.json')), false);
+  store.close();
 });
 
 test('runtime store persists duplicate events idempotently', () => {

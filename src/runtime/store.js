@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { applyAgentProjectionToSession, dispatchAgentEvent, reduceAgentEvents } from '../core/agentEvents.js';
@@ -436,7 +436,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
 }
 
 function defaultRuntimeMetaPath(stateDir) {
-  return join(dirname(stateDir), '.wiki', 'meta.json');
+  return join(stateDir, 'meta.json');
 }
 
 function ensureKnownStoreVersion(db, dbPath) {
@@ -448,6 +448,7 @@ function ensureKnownStoreVersion(db, dbPath) {
 }
 
 function ensureRuntimeMeta(metaPath) {
+  migrateLegacyRuntimeMeta(metaPath);
   mkdirSync(dirname(metaPath), { recursive: true });
   if (!existsSync(metaPath)) {
     writeFileSync(metaPath, `${JSON.stringify({ schemaVersion: RUNTIME_STORE_SCHEMA_VERSION }, null, 2)}\n`, 'utf8');
@@ -466,6 +467,14 @@ function ensureRuntimeMeta(metaPath) {
   if (!version) {
     writeFileSync(metaPath, `${JSON.stringify({ ...parsed, schemaVersion: RUNTIME_STORE_SCHEMA_VERSION }, null, 2)}\n`, 'utf8');
   }
+}
+
+function migrateLegacyRuntimeMeta(metaPath) {
+  if (existsSync(metaPath)) return;
+  const legacyPath = join(dirname(metaPath), '..', '.wiki', 'meta.json');
+  if (!existsSync(legacyPath)) return;
+  mkdirSync(dirname(metaPath), { recursive: true });
+  renameSync(legacyPath, metaPath);
 }
 
 function purgeOldTerminalRuns(db, now = new Date()) {

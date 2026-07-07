@@ -300,7 +300,7 @@ test('agent graph waits for tool-level approval configured on endpoint', async (
   }
 });
 
-test('agent graph accepts structured wiki plan steps and selects MCP executors', async () => {
+test('agent graph accepts structured wiki plan steps without selecting MCP executors implicitly', async () => {
   let calls = 0;
   const session = sessionBase({
     mcp: {
@@ -359,8 +359,15 @@ test('agent graph accepts structured wiki plan steps and selects MCP executors',
 
   assert.equal(result.response, 'Plan ready.');
   assert.deepEqual(session.headlessPlan.map((step) => step.id), ['cme-export', 'build']);
-  assert.equal(session.headlessPlan[0].executor, 'cme.cme_export_run');
-  assert.equal(session.headlessPlan[1].executor, 'production.production_start_job');
+  assert.equal(session.headlessPlan[0].executor, null);
+  assert.equal(session.headlessPlan[1].executor, null);
   assert.deepEqual(session.headlessPlan[1].dependsOn, ['cme-export']);
   assert.deepEqual(session.headlessPlan[0].outputRefs, ['raw/untracked']);
+});
+
+test('buildAgentSystemPrompt forbids inventing slash commands or arguments', () => {
+  const prompt = buildAgentSystemPrompt({ session: sessionBase({ commands: ['status', 'services'] }) });
+  assert.match(prompt, /Available primitives: \/status, \/services\./);
+  assert.match(prompt, /Do not invent command names, subcommands, or arguments/);
+  assert.doesNotMatch(prompt, /\/restart serve/);
 });

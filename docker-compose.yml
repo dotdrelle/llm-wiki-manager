@@ -101,6 +101,7 @@ services:
 
   production-mcp:
     image: dotdrelle/agent-wiki-production:latest
+    user: "${UID:-1000}:${GID:-1000}"
     labels:
       wiki-manager.description: "Production MCP server for ingest/build/export jobs."
     volumes:

@@ -460,7 +460,7 @@ function handleWikiTool(session, tool, args) {
   return `Unknown wiki tool: ${tool}`;
 }
 
-function normalizeDeclaredPlanStep(raw, index, session) {
+function normalizeDeclaredPlanStep(raw, index) {
   const item = raw && typeof raw === 'object' && !Array.isArray(raw)
     ? raw
     : { description: String(raw) };
@@ -471,7 +471,7 @@ function normalizeDeclaredPlanStep(raw, index, session) {
     description,
     status: item.status ?? 'pending',
     dependsOn: Array.isArray(item.dependsOn) ? item.dependsOn.map(String) : [],
-    executor: item.executor ?? selectExecutorForStep(description, session),
+    executor: item.executor ?? null,
     executorQuery: item.executorQuery ?? null,
     outputRefs: Array.isArray(item.outputRefs) ? item.outputRefs.map(String) : [],
   };
@@ -486,23 +486,6 @@ function slugStepId(description, index) {
     .replace(/^-+|-+$/g, '')
     .slice(0, 48);
   return slug || `task-${index + 1}`;
-}
-
-function selectExecutorForStep(description, session) {
-  const text = String(description ?? '').toLowerCase();
-  let fallback = null;
-  for (const [serverName, value] of Object.entries(session.mcp ?? {})) {
-    if (value.status !== 'connected') continue;
-    for (const tool of value.tools ?? []) {
-      const executor = `${serverName}.${tool.name}`;
-      fallback ??= executor;
-      const haystack = `${serverName} ${tool.name} ${tool.description ?? ''}`.toLowerCase();
-      if (text.split(/[^a-z0-9]+/).filter((token) => token.length >= 4).some((token) => haystack.includes(token))) {
-        return executor;
-      }
-    }
-  }
-  return fallback;
 }
 
 // The manager runs on the same host filesystem as the workspace directory
@@ -535,6 +518,7 @@ export function buildAgentSystemPrompt(state) {
     `Current workspace: ${workspace}.`,
     `Current wikirc profile: ${wikirc}.`,
     `Available primitives: ${commandList(state.session)}.`,
+    'Only announce or call slash commands that appear exactly in Available primitives. Do not invent command names, subcommands, or arguments.',
     'Connected MCP tools (use the server__tool naming convention for tool calls):',
     mcpTools,
     'Current local MCP job queue:',
@@ -575,7 +559,7 @@ export function buildAgentSystemPrompt(state) {
       '',
       'On failure: if a completed activity is failed/error/cancelled, call wiki__plan_done(step=N, status="failed") then stop with a clear error report.',
     ].filter(Boolean).join('\n'),
-    'For service actions, recommend /services, /start, /stop or /logs with the exact service name.',
+    'For service actions, recommend only available service primitives from Available primitives, with the exact service name when the primitive supports one.',
     'Disambiguate export requests carefully.',
     'Confluence/CME/source export means exporting external Confluence sources into raw/untracked: use cme MCP tools (`cme_export_run`, then `cme_export_status`). Never use production `type=export` for Confluence source export.',
     'Wiki/deliverable/publication export means exporting generated deliverables from the wiki: use production MCP tools (`production_start_job` with `type:"export"` or pipeline steps). Require the deliverable path when exporting deliverables.',

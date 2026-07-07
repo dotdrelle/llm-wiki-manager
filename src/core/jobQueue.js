@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { extractActivity, parseJsonText, sessionActivities } from './activity.js';
 import { createAgentEvent, dispatchAgentEvent } from './agentEvents.js';
 import { callMcpTool, formatMcpToolResult } from './mcp.js';
@@ -34,13 +35,18 @@ export function productionLockBusy(session) {
 
 export function enqueueProductionJob(session, args = {}, reason = 'waiting') {
   const workspace = session.workspace ?? null;
+  const workspacePath = session.workspacePath ? resolve(session.workspacePath) : null;
+  if (!workspace || !workspacePath) {
+    throw new Error('Cannot enqueue production job: no active workspace path. Use /use <workspace> first.');
+  }
+  const normalizedArgs = normalizeProductionJobArgsForWorkspace(args, workspacePath);
   const item = {
     id: shortId(),
     workspace,
     server: 'production',
     tool: 'production_start_job',
-    args: { ...args },
-    lockKey: workspace ? `production:${workspace}` : 'production',
+    args: normalizedArgs,
+    lockKey: `production:${workspace}`,
     status: 'waiting',
     reason,
     createdAt: now(),
@@ -48,6 +54,24 @@ export function enqueueProductionJob(session, args = {}, reason = 'waiting') {
   ensureJobQueue(session).push(item);
   notifyQueueUpdate(session);
   return item;
+}
+
+function normalizeProductionJobArgsForWorkspace(args, workspacePath) {
+  const normalized = { ...args };
+  if (!Array.isArray(normalized.inputs)) return normalized;
+  normalized.inputs = normalized.inputs.map((input) => normalizeWorkspaceInput(input, workspacePath));
+  return normalized;
+}
+
+function normalizeWorkspaceInput(input, workspacePath) {
+  const raw = String(input ?? '').trim();
+  if (!raw) return raw;
+  const absolute = isAbsolute(raw) ? resolve(raw) : resolve(workspacePath, raw);
+  const rel = relative(workspacePath, absolute);
+  if (rel.startsWith('..') || rel === '..' || isAbsolute(rel)) {
+    throw new Error(`Cannot enqueue production job: input is outside the active workspace: ${raw}`);
+  }
+  return rel.split(sep).join('/');
 }
 
 export function queueSummary(args = {}) {

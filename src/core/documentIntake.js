@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { basename, extname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path';
 import { callMcpTool, formatMcpToolResult } from './mcp.js';
 import { parseJsonText } from './activity.js';
-import { userManagerDir } from './env.js';
+import { defaultRuntimeStateDir } from './env.js';
 
 const SUPPORTED_EXTENSIONS = new Set([
   '.txt', '.md', '.markdown', '.csv', '.json', '.xml', '.yaml', '.yml', '.html', '.htm', '.rtf',
@@ -13,17 +13,19 @@ const SUPPORTED_EXTENSIONS = new Set([
   '.pdf',
 ]);
 
-function agentsDataDir() {
-  const configured = process.env.AGENTS_DATA_DIR || '.agents-data';
-  return isAbsolute(configured) ? configured : resolve(userManagerDir(), configured);
+function agentsDataDir(session = null) {
+  const configured = process.env.AGENTS_DATA_DIR;
+  if (configured) return isAbsolute(configured) ? configured : resolve(defaultRuntimeStateDir(), configured);
+  if (session?.workspacePath) return resolve(dirname(session.workspacePath), '.agents-data');
+  return resolve(defaultRuntimeStateDir(), 'agents-data');
 }
 
-function documentInputRoot() {
-  return resolve(agentsDataDir(), 'documents', 'input');
+function documentInputRoot(session = null) {
+  return resolve(agentsDataDir(session), 'documents', 'input');
 }
 
-function uploadsRoot() {
-  return resolve(agentsDataDir(), 'documents', 'uploads');
+function uploadsRoot(session = null) {
+  return resolve(agentsDataDir(session), 'documents', 'uploads');
 }
 
 function requireWorkspace(session) {
@@ -70,12 +72,12 @@ function assertSupportedFile(filename, size) {
   }
 }
 
-function manifestPath(workspace) {
-  return join(uploadsRoot(), `${workspace}.jsonl`);
+function manifestPath(workspace, session = null) {
+  return join(uploadsRoot(session), `${workspace}.jsonl`);
 }
 
-async function readManifest(workspace) {
-  const file = manifestPath(workspace);
+async function readManifest(workspace, session = null) {
+  const file = manifestPath(workspace, session);
   if (!existsSync(file)) return [];
   const raw = await readFile(file, 'utf8');
   return raw
@@ -90,26 +92,26 @@ async function readManifest(workspace) {
     });
 }
 
-async function writeManifest(workspace, records) {
-  const file = manifestPath(workspace);
-  await mkdir(uploadsRoot(), { recursive: true });
+async function writeManifest(workspace, records, session = null) {
+  const file = manifestPath(workspace, session);
+  await mkdir(uploadsRoot(session), { recursive: true });
   const body = records.map((record) => JSON.stringify(record)).join('\n');
   const tmp = `${file}.tmp.${process.pid}`;
   await writeFile(tmp, body ? `${body}\n` : '', 'utf8');
   await rename(tmp, file);
 }
 
-async function upsertUpload(record) {
-  const records = await readManifest(record.workspace);
+async function upsertUpload(record, session = null) {
+  const records = await readManifest(record.workspace, session);
   const index = records.findIndex((item) => item.id === record.id);
   if (index === -1) records.unshift(record);
   else records[index] = { ...records[index], ...record };
-  await writeManifest(record.workspace, records);
+  await writeManifest(record.workspace, records, session);
   return record;
 }
 
-async function removeExistingUploadsForFilename(workspace, filename) {
-  const records = await readManifest(workspace);
+async function removeExistingUploadsForFilename(workspace, filename, session = null) {
+  const records = await readManifest(workspace, session);
   const removed = records.filter((item) => item.filename === filename);
   if (removed.length === 0) return [];
 
@@ -119,7 +121,7 @@ async function removeExistingUploadsForFilename(workspace, filename) {
       if (file) await rm(file, { force: true }).catch(() => {});
     }
   }
-  await writeManifest(workspace, keep);
+  await writeManifest(workspace, keep, session);
   return removed;
 }
 
@@ -159,11 +161,11 @@ export async function storeDocumentUpload(session, sourcePath) {
   const filename = sanitizeFilename(absolutePath);
   assertSupportedFile(filename, info.size);
 
-  await removeExistingUploadsForFilename(workspace, filename);
+  await removeExistingUploadsForFilename(workspace, filename, session);
 
   const id = randomUUID().slice(0, 8);
   const storedFilename = `${id}-${filename}`;
-  const workspaceInput = join(documentInputRoot(), workspace);
+  const workspaceInput = join(documentInputRoot(session), workspace);
   await mkdir(workspaceInput, { recursive: true });
   const storedPath = join(workspaceInput, storedFilename);
   await copyFile(absolutePath, storedPath);
@@ -184,13 +186,13 @@ export async function storeDocumentUpload(session, sourcePath) {
     createdAt: now,
     updatedAt: now,
   };
-  await upsertUpload(record);
+  await upsertUpload(record, session);
   return record;
 }
 
 export async function convertStoredDocument(session, id, options = {}) {
   const workspace = requireWorkspace(session);
-  const records = await readManifest(workspace);
+  const records = await readManifest(workspace, session);
   const record = records.find((item) => item.id === id);
   if (!record) throw new Error(`Unknown upload id: ${id}`);
   if (!existsSync(record.storedPath)) throw new Error(`Stored file is missing: ${record.storedPath}`);
@@ -199,7 +201,7 @@ export async function convertStoredDocument(session, id, options = {}) {
     record.provider = null;
     record.error = 'documents MCP is not connected';
     record.updatedAt = new Date().toISOString();
-    await upsertUpload(record);
+    await upsertUpload(record, session);
     return { record, converted: false };
   }
 
@@ -207,7 +209,7 @@ export async function convertStoredDocument(session, id, options = {}) {
   record.provider = 'documents';
   record.error = null;
   record.updatedAt = new Date().toISOString();
-  await upsertUpload(record);
+  await upsertUpload(record, session);
 
   try {
     const toolArgs = {
@@ -223,7 +225,7 @@ export async function convertStoredDocument(session, id, options = {}) {
     if (activity && !activity.terminal) {
       record.jobId = payload.jobId ?? null;
       record.updatedAt = new Date().toISOString();
-      await upsertUpload(record);
+      await upsertUpload(record, session);
       return { record, converted: false, activity };
     }
 
@@ -232,13 +234,13 @@ export async function convertStoredDocument(session, id, options = {}) {
     record.method = payload.method ?? null;
     record.error = null;
     record.updatedAt = new Date().toISOString();
-    await upsertUpload(record);
+    await upsertUpload(record, session);
     return { record, converted: true, payload, activity };
   } catch (err) {
     record.status = 'failed';
     record.error = err instanceof Error ? err.message : String(err);
     record.updatedAt = new Date().toISOString();
-    await upsertUpload(record);
+    await upsertUpload(record, session);
     return { record, converted: false };
   }
 }
@@ -247,7 +249,7 @@ export async function storeAndMaybeConvertDocument(session, sourcePath, options 
   const record = await storeDocumentUpload(session, sourcePath);
   if (!documentsConverter(session)) {
     record.error = 'documents MCP is not connected';
-    await upsertUpload(record);
+    await upsertUpload(record, session);
     return { record, converted: false };
   }
   return convertStoredDocument(session, record.id, options);
@@ -255,12 +257,12 @@ export async function storeAndMaybeConvertDocument(session, sourcePath, options 
 
 export async function listDocumentUploads(session) {
   const workspace = requireWorkspace(session);
-  return (await readManifest(workspace)).map(publicRecord);
+  return (await readManifest(workspace, session)).map(publicRecord);
 }
 
 export async function convertPendingDocumentUploads(session, options = {}) {
   const workspace = requireWorkspace(session);
-  const records = await readManifest(workspace);
+  const records = await readManifest(workspace, session);
   const pending = records.filter((record) => ['stored', 'failed'].includes(record.status));
   const results = [];
   for (const record of pending) {
@@ -281,7 +283,7 @@ function parseAgeMs(value = '30d') {
 export async function cleanDocumentUploads(session, olderThan = '30d') {
   const workspace = requireWorkspace(session);
   const cutoff = Date.now() - parseAgeMs(olderThan);
-  const records = await readManifest(workspace);
+  const records = await readManifest(workspace, session);
   const keep = [];
   const removed = [];
   for (const record of records) {
@@ -295,7 +297,7 @@ export async function cleanDocumentUploads(session, olderThan = '30d') {
       keep.push(record);
     }
   }
-  if (removed.length > 0) await writeManifest(workspace, keep);
+  if (removed.length > 0) await writeManifest(workspace, keep, session);
   return { removed, kept: keep };
 }
 

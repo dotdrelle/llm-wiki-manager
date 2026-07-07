@@ -291,6 +291,13 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     const target = conversationMessages(session);
     const backed = runtimeConversationRefsByWorkspace.get(workspace) ?? [];
     runtimeConversationRefsByWorkspace.set(workspace, backed);
+    if (backed.length === 0 && target.length === 0 && !runtimeConversation.some((message: any) => message?._pending)) {
+      backed.push(...runtimeConversation.map((message: any) => ({
+        role: message.role === 'assistant' ? 'donna' : message.role,
+        content: String(message.content ?? ''),
+      })));
+      return;
+    }
     for (let i = 0; i < runtimeConversation.length; i += 1) {
       const message = runtimeConversation[i];
       const content = String(message.content ?? '');

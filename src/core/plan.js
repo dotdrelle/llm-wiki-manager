@@ -104,9 +104,28 @@ export function formatPlanStatus(plan) {
   return plan
     .map((s) => {
       const icon = s.status === 'done' ? '✓' : s.status === 'failed' ? '✗' : s.status === 'running' ? '…' : ' ';
-      return `${s.step}. [${icon}] ${s.description}`;
+      return `${s.step}. [${icon}] ${formatPlanStep(s)}`;
     })
     .join('\n');
+}
+
+export function formatPlanStep(step) {
+  if (step == null) return '';
+  if (typeof step === 'string') return step;
+  if (typeof step !== 'object') return String(step);
+  for (const key of ['description', 'label', 'id', 'name']) {
+    if (step[key] != null) return formatPlanStep(step[key]);
+  }
+  return '';
+}
+
+export function formatConfigValue(value) {
+  if (value == null) return '';
+  if (Array.isArray(value)) return value.map(formatConfigValue).join(', ');
+  if (typeof value !== 'object') return String(value);
+  return Object.entries(value)
+    .map(([key, item]) => `${key}: ${formatConfigValue(item)}`)
+    .join(', ');
 }
 
 export function formatCompletedActivities(activities) {

@@ -59,6 +59,10 @@ test('applyRuntimeStateToShellSession projects runtime state into shell session'
 
   assert.equal(applied, true);
   assert.equal(session.agentProjection.status, 'running');
+  assert.deepEqual(session.agentProjection.conversation, [
+    { role: 'user', content: 'Build docs' },
+    { role: 'assistant', content: 'Working.' },
+  ]);
   assert.equal(session.headlessPlan[0].description, 'Build');
   assert.equal(session.activities['production:job-1'].status, 'running');
   assert.equal(session.productionActivity.jobId, 'job-1');
@@ -66,10 +70,7 @@ test('applyRuntimeStateToShellSession projects runtime state into shell session'
   assert.equal(session.workflow.nodes[0].id, 'task:build');
   assert.equal(session.workflow.relations[0].type, 'contains');
   assert.deepEqual(session.workflow.waitingReasons, ['queue:q-1']);
-  assert.deepEqual(conversationMessages(session), [
-    { role: 'user', content: 'Build docs' },
-    { role: 'donna', content: 'Working.' },
-  ]);
+  assert.deepEqual(conversationMessages(session), []);
 });
 
 test('submitRuntimeRun reports acceptance without throwing', async () => {

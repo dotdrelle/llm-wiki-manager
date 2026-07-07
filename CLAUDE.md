@@ -39,14 +39,6 @@ not expose the runtime as a shared write surface before that work lands.
 `plan-0.11.5-hotfix-final.md` §3 (the Donna contract recipe) and runs in
 `npm test`/`ci.yml`. No release ships while it is red.
 
-Any lot touching `runner.js`, `agentLoop.js`, `plan.js`, `graph.js`, or the
-agent prompts additionally requires the **manual** §3 recipe — 8 scenarios,
-run by hand once in Serve (Agent mode) and once in ShellTUI (`/agent`) — before
-tagging. This is written down because the 0.9.5→0.11.4 lots were validated on
-technical criteria (the scheduler parallelizes, the plan is structured) and
-never replayed against the actual user scenario ("I say hello, she answers"),
-which is how the 0.11.5 regression shipped in the first place.
-
 ## Layout
 
 ```text

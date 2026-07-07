@@ -91,3 +91,108 @@ test('plan and patch contracts cover structured dependencies and output refs', (
   assert.equal(validateContract('plan', plan).ok, true);
   assert.equal(validateContract('planPatch', patch).ok, true);
 });
+
+test('task graph fragment contract carries planned tasks and groups round-trip', () => {
+  const fragment = {
+    contractVersion: '1',
+    agentInstanceId: 'production-main',
+    capability: 'knowledge.update',
+    summary: {
+      label: 'Update knowledge',
+      initialSynthesis: ['Two files will be ingested.'],
+      estimatedTasks: 1,
+    },
+    groups: [{
+      id: 'ingest',
+      label: 'Ingest sources',
+      recommendedConcurrency: 2,
+      progressWeight: 2,
+    }],
+    tasks: [{
+      id: 'ingest-a',
+      label: 'Ingest source A',
+      requiredCapability: 'knowledge.update',
+      operation: 'ingest',
+      arguments: { files: ['raw/untracked/a.md'] },
+      groupId: 'ingest',
+      dependsOn: [],
+      parallelizable: true,
+      recommendedConcurrency: 2,
+      inputRefs: [{ type: 'file', ref: 'raw/untracked/a.md', label: 'A' }],
+      expectedOutputRefs: ['wiki/a.md'],
+      locks: ['workspace:wiki'],
+      requiresApproval: false,
+      idempotencyKey: null,
+      progressWeight: 1,
+      priority: 10,
+      retryPolicy: {
+        maxAttempts: 2,
+        retryableErrors: ['timeout'],
+        allowAgentFallback: false,
+      },
+    }],
+    expectedOutputs: ['wiki/a.md'],
+  };
+
+  const roundTrip = JSON.parse(JSON.stringify(fragment));
+  assert.deepEqual(roundTrip, fragment);
+  assert.equal(validateContract('taskGraphFragment', roundTrip).ok, true);
+  assert.equal(validateContract('plannedTask', roundTrip.tasks[0]).ok, true);
+  assert.equal(validateContract('taskGroup', roundTrip.groups[0]).ok, true);
+  assert.equal(validateContract('retryPolicy', roundTrip.tasks[0].retryPolicy).ok, true);
+});
+
+test('strict planned task contract rejects invalid fields and types', () => {
+  const invalid = {
+    id: 'bad',
+    label: 'Bad task',
+    requiredCapability: 'knowledge.update',
+    operation: 'ingest',
+    dependsOn: [],
+    parallelizable: false,
+    inputRefs: [],
+    locks: [],
+    requiresApproval: false,
+    idempotencyKey: null,
+    progressWeight: 1,
+    executor: 'legacy-tool',
+  };
+
+  const result = validateContract('plannedTask', invalid);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.includes('executor is not allowed')));
+  assert.throws(() => assertContract('plannedTask', invalid), /executor is not allowed/);
+});
+
+test('plan and plan patch contracts accept new planned task fields without rejecting legacy tasks', () => {
+  const plannedTask = {
+    id: 'publish',
+    label: 'Publish deliverable',
+    requiredCapability: 'document.publish',
+    operation: 'publish',
+    arguments: { target: 'deliverables/report.md' },
+    dependsOn: ['build'],
+    parallelizable: false,
+    inputRefs: ['deliverables/report.md'],
+    locks: ['deliverable:report.md'],
+    requiresApproval: true,
+    approvalClass: 'mutation',
+    approvalSummary: 'Publish report',
+    idempotencyKey: 'idem-1',
+    progressWeight: 1,
+  };
+  const legacyTask = {
+    step: 1,
+    id: 'build',
+    description: 'Build report',
+    status: 'done',
+    dependsOn: [],
+    outputRefs: ['deliverables/report.md'],
+  };
+
+  assert.equal(validateContract('plan', [legacyTask, plannedTask]).ok, true);
+  assert.equal(validateContract('planPatch', {
+    basePlanRevision: 1,
+    operations: [{ op: 'add_task', task: plannedTask }],
+  }).ok, true);
+});

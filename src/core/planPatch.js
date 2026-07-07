@@ -112,17 +112,41 @@ export function formatReadyTaskPrompt(task) {
 
 export function normalizeTask(raw, index = 0) {
   const item = raw && typeof raw === 'object' ? raw : { description: String(raw ?? '') };
-  return {
+  const label = String(item.label ?? item.description ?? item.name ?? `Step ${index + 1}`);
+  const task = {
     ...item,
     step: Number(item.step ?? index + 1),
     id: item.id != null ? String(item.id) : null,
-    description: String(item.description ?? item.label ?? item.name ?? `Step ${index + 1}`),
+    label,
+    description: String(item.description ?? label),
     status: String(item.status ?? 'pending'),
     dependsOn: Array.isArray(item.dependsOn) ? item.dependsOn.map(String) : [],
+    requiredCapability: item.requiredCapability != null ? String(item.requiredCapability) : null,
+    operation: item.operation != null ? String(item.operation) : null,
+    arguments: item.arguments && typeof item.arguments === 'object' && !Array.isArray(item.arguments) ? { ...item.arguments } : {},
+    groupId: item.groupId != null ? String(item.groupId) : null,
+    dependsOnGroup: item.dependsOnGroup != null ? String(item.dependsOnGroup) : null,
+    barrier: item.barrier === true,
+    parallelizable: item.parallelizable === true,
+    recommendedConcurrency: normalizeOptionalPositiveInteger(item.recommendedConcurrency),
+    inputRefs: normalizeReferenceArray(item.inputRefs),
+    expectedOutputRefs: normalizeReferenceArray(item.expectedOutputRefs),
+    locks: Array.isArray(item.locks) ? item.locks.map(String) : [],
+    requiresApproval: item.requiresApproval === true,
+    approvalClass: item.approvalClass != null ? String(item.approvalClass) : null,
+    approvalSummary: item.approvalSummary != null ? String(item.approvalSummary) : null,
+    idempotencyKey: item.idempotencyKey != null ? String(item.idempotencyKey) : null,
+    progressWeight: normalizeProgressWeight(item.progressWeight),
+    priority: normalizeOptionalNumber(item.priority),
+    retryPolicy: item.retryPolicy == null ? undefined : normalizeRetryPolicy(item.retryPolicy),
     executor: item.executor ?? null,
     executorQuery: item.executorQuery ?? null,
-    outputRefs: Array.isArray(item.outputRefs) ? item.outputRefs.map(String) : [],
+    outputRefs: normalizeReferenceArray(item.outputRefs),
   };
+  if (task.recommendedConcurrency === undefined) delete task.recommendedConcurrency;
+  if (task.priority === undefined) delete task.priority;
+  if (task.retryPolicy === undefined) delete task.retryPolicy;
+  return task;
 }
 
 export function sanitizePlanForExecution(plan) {
@@ -160,6 +184,39 @@ function normalizePatchOperation(raw) {
   const op = String(raw.op ?? '');
   if (!PATCH_OPS.has(op)) return null;
   return { ...raw, op };
+}
+
+function normalizeReferenceArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    if (item && typeof item === 'object' && !Array.isArray(item)) return { ...item };
+    return String(item);
+  });
+}
+
+function normalizeOptionalPositiveInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 1 ? number : undefined;
+}
+
+function normalizeOptionalNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function normalizeProgressWeight(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : 1;
+}
+
+function normalizeRetryPolicy(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const maxAttempts = Number(value.maxAttempts);
+  return {
+    maxAttempts: Number.isInteger(maxAttempts) && maxAttempts >= 1 ? maxAttempts : 1,
+    retryableErrors: Array.isArray(value.retryableErrors) ? value.retryableErrors.map(String) : [],
+    allowAgentFallback: value.allowAgentFallback === true,
+  };
 }
 
 function normalizeAddedTask(raw, index) {

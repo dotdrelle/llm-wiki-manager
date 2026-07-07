@@ -12,6 +12,8 @@ export function integrate(runId, fragment, {
   workspace = null,
   insertBeforeTasks = [],
   insertAfterTasks = [],
+  approvals = null,
+  enforceApprovalCoverage = false,
   now = () => new Date(),
 } = {}) {
   if (!runId) throw new Error('integrate requires runId.');
@@ -52,6 +54,12 @@ export function integrate(runId, fragment, {
   }
 
   const globalized = globalizeFragment(runId, normalizedFragment, current);
+  if (enforceApprovalCoverage) {
+    applyApprovalCoverage(globalized.tasks, {
+      runId,
+      approvals: approvals ?? approvalList(session),
+    });
+  }
   const integrated = mergePlan(currentPlan, globalized.tasks, { insertBeforeTasks: beforeIds, insertAfterTasks: afterIds });
   const planRevision = currentRevision(session) + 1;
 
@@ -206,6 +214,35 @@ function firstTerminalMutation(current, beforeIds, afterIds) {
     if (terminal) return terminal.id;
   }
   return null;
+}
+
+function applyApprovalCoverage(tasks, { runId, approvals }) {
+  for (const task of tasks) {
+    if (task.requiresApproval === true && !approvalCoversTask(task, { runId, approvals })) {
+      task.status = 'waiting_approval';
+    }
+  }
+}
+
+function approvalCoversTask(task, { runId, approvals }) {
+  if (task.requiresApproval !== true) return true;
+  if (task.approved === true || task.approvalStatus === 'approved') return true;
+  const taskIds = new Set([task.id, task.localId].filter(Boolean).map(String));
+  return (approvals ?? []).some((approval) => {
+    if (String(approval?.status ?? '') !== 'approved') return false;
+    if (approval?.scope === 'run' && (!approval.runId || String(approval.runId) === String(runId))) return true;
+    if (approval?.id && taskIds.has(String(approval.id))) return true;
+    if (approval?.approvalId && taskIds.has(String(approval.approvalId))) return true;
+    if (approval?.itemId && taskIds.has(String(approval.itemId))) return true;
+    if (approval?.taskId && taskIds.has(String(approval.taskId))) return true;
+    return false;
+  });
+}
+
+function approvalList(session) {
+  const projectionApprovals = session?.agentProjection?.approvals;
+  if (Array.isArray(projectionApprovals) && projectionApprovals.length > 0) return projectionApprovals;
+  return Array.isArray(session?.approvals) ? session.approvals : [];
 }
 
 function uniqueGlobalId(runId, localId, usedIds) {

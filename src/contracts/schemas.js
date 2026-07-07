@@ -3,6 +3,7 @@ const STATUS_VALUES = [
   'queued',
   'running',
   'waiting',
+  'waiting_approval',
   'pending_approval',
   'done',
   'failed',
@@ -216,6 +217,35 @@ const taskGraphFragmentSchema = {
   },
 };
 
+const planExpansionRequestSchema = {
+  $id: 'https://dotdrelle.dev/wiki-manager/contracts/plan-expansion-request/v1',
+  title: 'PlanExpansionRequest',
+  schemaVersion: '1',
+  type: 'object',
+  required: ['capability'],
+  additionalProperties: true,
+  properties: {
+    capability: { type: 'string', minLength: 1 },
+    operation: nullableString,
+    objective: nullableString,
+    reason: nullableString,
+    arguments: { type: 'object', additionalProperties: true },
+    workspace: { type: 'object', additionalProperties: true },
+    constraints: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        maxTasks: { type: 'integer', minimum: 1 },
+        maxConcurrency: { type: 'integer', minimum: 1 },
+        maxDepth: { type: 'integer', minimum: 1 },
+        requireApprovalForMutations: { type: 'boolean' },
+      },
+    },
+    insertBeforeTasks: stringArraySchema,
+    insertAfterTasks: stringArraySchema,
+  },
+};
+
 // Shared by planStepSchema and patchTaskSchema, which differ only in their
 // `id`/`description` requiredness — every other field is identical.
 const taskFieldsSchema = {
@@ -398,6 +428,7 @@ export const contractSchemas = {
   taskGroup: taskGroupSchema,
   plannedTask: plannedTaskSchema,
   taskGraphFragment: taskGraphFragmentSchema,
+  planExpansionRequest: planExpansionRequestSchema,
 };
 
 export function validateContract(name, value) {

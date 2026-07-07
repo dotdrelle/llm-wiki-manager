@@ -263,7 +263,7 @@ export async function runRuntimeParallelPlan(agent, session, input, {
         await drainActive(active, attempts);
         throwIfAborted(signal, 'Runtime run cancelled.');
       }
-      const pending = (session.headlessPlan ?? []).filter((step) => step.status === 'pending' || step.status === 'pending_approval');
+      const pending = (session.headlessPlan ?? []).filter((step) => pendingSchedulerStatus(step.status));
       if (pending.length === 0 && active.size === 0) {
         emitRuntimeLog(session, 'scheduler: all plan tasks terminal');
         return failures.length > 0
@@ -334,7 +334,7 @@ export async function runRuntimeParallelPlan(agent, session, input, {
           emitRuntimeLog(session, `scheduler: budget exceeded (${exceeded.reason})`);
           return { ok: false, budgetExceeded: true, reason: exceeded.reason, budget: exceeded, completed: sessionActivities(session), failures };
         }
-        const reason = pending.every((step) => step.status === 'pending_approval') ? 'awaiting_approval' : 'no_ready_plan_task';
+        const reason = pending.every((step) => approvalWaitingStatus(step.status)) ? 'awaiting_approval' : 'no_ready_plan_task';
         emitRuntimeLog(session, `scheduler: stalled (${reason})`);
         return { ok: false, stalled: true, reason, completed: sessionActivities(session), failures };
       }
@@ -399,6 +399,14 @@ function abortCancelledActiveTasks(session, active) {
       entry.controller?.abort();
     }
   }
+}
+
+function pendingSchedulerStatus(status) {
+  return ['pending', 'pending_approval', 'waiting_approval'].includes(String(status ?? ''));
+}
+
+function approvalWaitingStatus(status) {
+  return ['pending_approval', 'waiting_approval'].includes(String(status ?? ''));
 }
 
 // Scope the evaluator/replanner's view of "completed" activities to the

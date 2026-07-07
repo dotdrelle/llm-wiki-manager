@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import YAML from 'yaml';
-import { patchWikircProfile } from './wikirc.js';
+import { loadWikircProfile, normalizeCapabilityRouting, patchWikircProfile } from './wikirc.js';
 import { finalizeCreatedWorkspace, writeVectorConfig } from './wikiSetup.js';
 
 test('patchWikircProfile merges keys and preserves existing values', () => {
@@ -40,6 +40,54 @@ test('patchWikircProfile merges keys and preserves existing values', () => {
   assert.equal(parsed.llm.temperature, 0.2);
   assert.equal(parsed.llm.model, 'gpt-5.4-mini');
   assert.equal(parsed.retrieval.vector.enabled, true);
+});
+
+test('loadWikircProfile parses capabilityRouting agent lists', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wikirc-routing-'));
+  writeFileSync(join(root, '.wikirc.yaml'), [
+    'language: en-US',
+    'capabilityRouting:',
+    '  external-source.export:',
+    '    preferredAgents:',
+    '      - commercial-main',
+    '    fallbackAgents:',
+    '      - cme-main',
+    '  knowledge.update:',
+    '    allowedAgents:',
+    '      - production-main',
+    '',
+  ].join('\n'), 'utf8');
+
+  const { config } = loadWikircProfile(root);
+
+  assert.deepEqual(config.capabilityRouting, {
+    'external-source.export': {
+      preferredAgents: ['commercial-main'],
+      fallbackAgents: ['cme-main'],
+      allowedAgents: [],
+    },
+    'knowledge.update': {
+      preferredAgents: [],
+      fallbackAgents: [],
+      allowedAgents: ['production-main'],
+    },
+  });
+});
+
+test('normalizeCapabilityRouting ignores invalid routing values safely', () => {
+  assert.deepEqual(normalizeCapabilityRouting({
+    'knowledge.update': {
+      preferredAgents: ['production-main', '', null],
+      fallbackAgents: 'production-secondary',
+      allowedAgents: ['production-main'],
+    },
+  }), {
+    'knowledge.update': {
+      preferredAgents: ['production-main'],
+      fallbackAgents: [],
+      allowedAgents: ['production-main'],
+    },
+  });
 });
 
 test('writeVectorConfig writes llm-wiki vector and rerank keys', () => {

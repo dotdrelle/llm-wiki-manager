@@ -337,8 +337,20 @@ test('agent graph accepts structured wiki plan steps without selecting MCP execu
                 name: 'wiki__plan_set',
                 arguments: JSON.stringify({
                   steps: [
-                    { id: 'cme-export', description: 'Export CME pages', outputRefs: ['raw/untracked'] },
-                    { id: 'build', description: 'Run production build', dependsOn: ['cme-export'] },
+                    {
+                      id: 'cme-export',
+                      description: 'Export CME pages',
+                      requiredCapability: 'external-source.export',
+                      executor: 'cme.cme_export_run',
+                      executorQuery: { capability: 'legacy export' },
+                      outputRefs: ['raw/untracked'],
+                    },
+                    {
+                      id: 'build',
+                      description: 'Run production build',
+                      requiredCapability: 'knowledge.pipeline',
+                      dependsOn: ['cme-export'],
+                    },
                   ],
                 }),
               },
@@ -359,7 +371,9 @@ test('agent graph accepts structured wiki plan steps without selecting MCP execu
 
   assert.equal(result.response, 'Plan ready.');
   assert.deepEqual(session.headlessPlan.map((step) => step.id), ['cme-export', 'build']);
+  assert.deepEqual(session.headlessPlan.map((step) => step.requiredCapability), ['external-source.export', 'knowledge.pipeline']);
   assert.equal(session.headlessPlan[0].executor, null);
+  assert.equal(session.headlessPlan[0].executorQuery, null);
   assert.equal(session.headlessPlan[1].executor, null);
   assert.deepEqual(session.headlessPlan[1].dependsOn, ['cme-export']);
   assert.deepEqual(session.headlessPlan[0].outputRefs, ['raw/untracked']);
@@ -370,4 +384,6 @@ test('buildAgentSystemPrompt forbids inventing slash commands or arguments', () 
   assert.match(prompt, /Available primitives: \/status, \/services\./);
   assert.match(prompt, /Do not invent command names, subcommands, or arguments/);
   assert.doesNotMatch(prompt, /\/restart serve/);
+  assert.doesNotMatch(prompt, /executorQuery/);
+  assert.doesNotMatch(prompt, /executor:"/);
 });

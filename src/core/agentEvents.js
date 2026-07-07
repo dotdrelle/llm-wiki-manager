@@ -561,6 +561,7 @@ function normalizePlan(steps, payload = {}) {
       description: String(item.description ?? item.label ?? item.name ?? `Step ${i + 1}`),
       status: item.status ?? 'pending',
       dependsOn: Array.isArray(item.dependsOn) ? item.dependsOn.map(String) : [],
+      requiredCapability: item.requiredCapability ?? null,
       executor: item.executor ?? null,
       executorQuery: item.executorQuery ?? null,
       outputRefs: Array.isArray(item.outputRefs) ? item.outputRefs.map(String) : [],

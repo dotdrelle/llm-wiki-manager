@@ -47,11 +47,33 @@ export function loadWikircProfile(workspacePath, profileName = 'default') {
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
     throw new Error('wikirc YAML invalide: objet attendu a la racine');
   }
+  config.capabilityRouting = normalizeCapabilityRouting(config.capabilityRouting);
   return { profile, config };
 }
 
 function isPlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function normalizeCapabilityRouting(value) {
+  if (!isPlainObject(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([capability]) => String(capability).trim())
+      .map(([capability, routing]) => [
+        String(capability).trim(),
+        {
+          preferredAgents: normalizeAgentList(routing?.preferredAgents),
+          fallbackAgents: normalizeAgentList(routing?.fallbackAgents),
+          allowedAgents: normalizeAgentList(routing?.allowedAgents),
+        },
+      ]),
+  );
+}
+
+function normalizeAgentList(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => item != null).map((item) => String(item).trim()).filter(Boolean);
 }
 
 function setYamlValue(map, key, value) {

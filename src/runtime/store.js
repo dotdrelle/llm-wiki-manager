@@ -97,6 +97,68 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       declaration TEXT NOT NULL,
       PRIMARY KEY (instance_id, capability_id, version)
     );
+    CREATE TABLE IF NOT EXISTS task_groups (
+      run_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      local_id TEXT,
+      label TEXT NOT NULL,
+      recommended_concurrency INTEGER,
+      progress_weight REAL,
+      declaration TEXT NOT NULL,
+      created_at TEXT,
+      updated_at TEXT,
+      PRIMARY KEY (run_id, id),
+      FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS tasks (
+      run_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      local_id TEXT,
+      agent_instance_id TEXT,
+      label TEXT NOT NULL,
+      required_capability TEXT NOT NULL,
+      operation TEXT NOT NULL,
+      arguments TEXT NOT NULL,
+      group_id TEXT,
+      depends_on_group TEXT,
+      barrier INTEGER DEFAULT 0,
+      parallelizable INTEGER DEFAULT 0,
+      recommended_concurrency INTEGER,
+      input_refs TEXT NOT NULL,
+      expected_output_refs TEXT NOT NULL,
+      locks TEXT NOT NULL,
+      requires_approval INTEGER DEFAULT 0,
+      approval_class TEXT,
+      approval_summary TEXT,
+      idempotency_key TEXT,
+      progress_weight REAL NOT NULL,
+      priority REAL,
+      retry_policy TEXT,
+      declaration TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT,
+      updated_at TEXT,
+      PRIMARY KEY (run_id, id),
+      FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS task_dependencies (
+      run_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      depends_on_task_id TEXT NOT NULL,
+      created_at TEXT,
+      PRIMARY KEY (run_id, task_id, depends_on_task_id),
+      FOREIGN KEY (run_id, task_id) REFERENCES tasks(run_id, id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS plan_revisions (
+      run_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      previous_revision INTEGER,
+      reason TEXT,
+      task_ids TEXT NOT NULL,
+      created_at TEXT,
+      PRIMARY KEY (run_id, revision),
+      FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+    );
   `);
   ensureColumn(db, 'events', 'sequence', 'INTEGER');
   ensureColumn(db, 'events', 'workspace', 'TEXT');
@@ -105,6 +167,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   backfillEventSequence(db);
   db.exec('CREATE INDEX IF NOT EXISTS idx_events_workspace ON events(workspace)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_events_sequence ON events(sequence)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_run_status ON tasks(run_id, status)');
   db.exec(`PRAGMA user_version = ${RUNTIME_STORE_SCHEMA_VERSION}`);
   purgeOldTerminalRuns(db);
 
@@ -135,6 +198,10 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       status = excluded.status,
       input = COALESCE(excluded.input, runs.input),
       updated_at = excluded.updated_at
+  `);
+  const ensureRun = db.prepare(`
+    INSERT OR IGNORE INTO runs (id, workspace, status, input, created_at, updated_at)
+    VALUES (?, ?, 'running', NULL, ?, ?)
   `);
   const listRunsStatement = db.prepare(`
     SELECT id, workspace, status, input, created_at, updated_at
@@ -248,6 +315,83 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     FROM agents
     ORDER BY instance_id ASC
   `);
+  const upsertTaskGroupStatement = db.prepare(`
+    INSERT INTO task_groups (
+      run_id, id, local_id, label, recommended_concurrency, progress_weight,
+      declaration, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(run_id, id) DO UPDATE SET
+      label = excluded.label,
+      recommended_concurrency = excluded.recommended_concurrency,
+      progress_weight = excluded.progress_weight,
+      declaration = excluded.declaration,
+      updated_at = excluded.updated_at
+  `);
+  const upsertTaskStatement = db.prepare(`
+    INSERT INTO tasks (
+      run_id, id, local_id, agent_instance_id, label, required_capability,
+      operation, arguments, group_id, depends_on_group, barrier, parallelizable,
+      recommended_concurrency, input_refs, expected_output_refs, locks,
+      requires_approval, approval_class, approval_summary, idempotency_key,
+      progress_weight, priority, retry_policy, declaration, status, created_at,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(run_id, id) DO UPDATE SET
+      agent_instance_id = excluded.agent_instance_id,
+      label = excluded.label,
+      required_capability = excluded.required_capability,
+      operation = excluded.operation,
+      arguments = excluded.arguments,
+      group_id = excluded.group_id,
+      depends_on_group = excluded.depends_on_group,
+      barrier = excluded.barrier,
+      parallelizable = excluded.parallelizable,
+      recommended_concurrency = excluded.recommended_concurrency,
+      input_refs = excluded.input_refs,
+      expected_output_refs = excluded.expected_output_refs,
+      locks = excluded.locks,
+      requires_approval = excluded.requires_approval,
+      approval_class = excluded.approval_class,
+      approval_summary = excluded.approval_summary,
+      idempotency_key = excluded.idempotency_key,
+      progress_weight = excluded.progress_weight,
+      priority = excluded.priority,
+      retry_policy = excluded.retry_policy,
+      declaration = excluded.declaration,
+      status = excluded.status,
+      updated_at = excluded.updated_at
+  `);
+  const deleteTaskDependenciesStatement = db.prepare('DELETE FROM task_dependencies WHERE run_id = ? AND task_id = ?');
+  const insertTaskDependencyStatement = db.prepare(`
+    INSERT OR IGNORE INTO task_dependencies (run_id, task_id, depends_on_task_id, created_at)
+    VALUES (?, ?, ?, ?)
+  `);
+  const insertPlanRevisionStatement = db.prepare(`
+    INSERT OR REPLACE INTO plan_revisions (
+      run_id, revision, previous_revision, reason, task_ids, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const listTasksStatement = db.prepare(`
+    SELECT * FROM tasks ORDER BY run_id ASC, id ASC
+  `);
+  const listTasksByRunStatement = db.prepare(`
+    SELECT * FROM tasks WHERE run_id = ? ORDER BY id ASC
+  `);
+  const listTaskDependenciesStatement = db.prepare(`
+    SELECT * FROM task_dependencies ORDER BY run_id ASC, task_id ASC, depends_on_task_id ASC
+  `);
+  const listTaskDependenciesByRunStatement = db.prepare(`
+    SELECT * FROM task_dependencies WHERE run_id = ? ORDER BY task_id ASC, depends_on_task_id ASC
+  `);
+  const listPlanRevisionsStatement = db.prepare(`
+    SELECT * FROM plan_revisions ORDER BY run_id ASC, revision ASC
+  `);
+  const listPlanRevisionsByRunStatement = db.prepare(`
+    SELECT * FROM plan_revisions WHERE run_id = ? ORDER BY revision ASC
+  `);
 
   function persistEvent(event) {
     if (NON_PERSISTED_EVENT_TYPES.has(event.type)) return event;
@@ -291,6 +435,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       }
     }
     persistAgentFromEvent(event);
+    persistPlanFromEvent(event);
     return event;
   }
 
@@ -432,6 +577,89 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     persistAgent(event.payload?.agent);
   }
 
+  function persistPlanFromEvent(event) {
+    if (!['task_group.created', 'task.created', 'plan.revision_changed'].includes(event.type)) return;
+    const runId = event.runId ?? event.payload?.runId ?? null;
+    if (!runId) return;
+    ensureRun.run(runId, event.workspace ?? event.payload?.workspace ?? null, event.ts, event.ts);
+    if (event.type === 'task_group.created') persistTaskGroup(runId, event.payload?.group, event.ts);
+    else if (event.type === 'task.created') persistTask(runId, event.payload?.task, event.ts);
+    else persistPlanRevision(runId, event.payload ?? {}, event.ts);
+  }
+
+  function persistTaskGroup(runId, group, ts) {
+    if (!group?.id) return;
+    upsertTaskGroupStatement.run(
+      runId,
+      group.id,
+      group.localId ?? null,
+      group.label ?? group.id,
+      group.recommendedConcurrency ?? null,
+      group.progressWeight ?? null,
+      JSON.stringify(group),
+      group.createdAt ?? ts,
+      group.updatedAt ?? ts,
+    );
+  }
+
+  function persistTask(runId, task, ts) {
+    if (!task?.id) return;
+    db.exec('BEGIN');
+    try {
+      upsertTaskStatement.run(
+        runId,
+        task.id,
+        task.localId ?? null,
+        task.agentInstanceId ?? null,
+        task.label ?? task.description ?? task.id,
+        task.requiredCapability ?? '',
+        task.operation ?? '',
+        JSON.stringify(task.arguments ?? {}),
+        task.groupId ?? null,
+        task.dependsOnGroup ?? null,
+        task.barrier === true ? 1 : 0,
+        task.parallelizable === true ? 1 : 0,
+        task.recommendedConcurrency ?? null,
+        JSON.stringify(task.inputRefs ?? []),
+        JSON.stringify(task.expectedOutputRefs ?? []),
+        JSON.stringify(task.locks ?? []),
+        task.requiresApproval === true ? 1 : 0,
+        task.approvalClass ?? null,
+        task.approvalSummary ?? null,
+        task.idempotencyKey ?? null,
+        task.progressWeight ?? 1,
+        task.priority ?? null,
+        task.retryPolicy == null ? null : JSON.stringify(task.retryPolicy),
+        JSON.stringify(task),
+        task.status ?? 'pending',
+        task.createdAt ?? ts,
+        task.updatedAt ?? ts,
+      );
+      deleteTaskDependenciesStatement.run(runId, task.id);
+      for (const dependencyId of task.dependsOn ?? []) {
+        insertTaskDependencyStatement.run(runId, task.id, dependencyId, ts);
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  function persistPlanRevision(runId, payload, ts) {
+    insertPlanRevisionStatement.run(
+      runId,
+      Number(payload.planRevision ?? payload.revision ?? 0),
+      payload.previousRevision ?? null,
+      payload.reason ?? null,
+      JSON.stringify(payload.taskIds ?? []),
+      ts,
+    );
+    if (Array.isArray(payload.tasks)) {
+      for (const task of payload.tasks) persistTask(runId, task, ts);
+    }
+  }
+
   function listAgents() {
     return listAgentsStatement.all().map((row) => {
       const description = row.description ? JSON.parse(row.description) : null;
@@ -467,6 +695,33 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       startedAt: row.started_at ?? undefined,
       finishedAt: row.finished_at ?? undefined,
       updatedAt: row.updated_at,
+    }));
+  }
+
+  function listTasks({ runId = null } = {}) {
+    const rows = runId ? listTasksByRunStatement.all(runId) : listTasksStatement.all();
+    return rows.map(rowToTask);
+  }
+
+  function listTaskDependencies({ runId = null } = {}) {
+    const rows = runId ? listTaskDependenciesByRunStatement.all(runId) : listTaskDependenciesStatement.all();
+    return rows.map((row) => ({
+      runId: row.run_id,
+      taskId: row.task_id,
+      dependsOnTaskId: row.depends_on_task_id,
+      createdAt: row.created_at ?? null,
+    }));
+  }
+
+  function listPlanRevisions({ runId = null } = {}) {
+    const rows = runId ? listPlanRevisionsByRunStatement.all(runId) : listPlanRevisionsStatement.all();
+    return rows.map((row) => ({
+      runId: row.run_id,
+      revision: row.revision,
+      previousRevision: row.previous_revision ?? null,
+      reason: row.reason ?? null,
+      taskIds: row.task_ids ? JSON.parse(row.task_ids) : [],
+      createdAt: row.created_at ?? null,
     }));
   }
 
@@ -540,6 +795,9 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     interruptRuns,
     saveQueue,
     listQueue,
+    listTasks,
+    listTaskDependencies,
+    listPlanRevisions,
     persistAgent,
     listAgents,
     replayEvents,
@@ -629,6 +887,38 @@ function rowToEvent(row) {
     taskId: row.task_id ?? null,
     workspace: row.workspace ?? null,
     payload: row.payload ? JSON.parse(row.payload) : {},
+  };
+}
+
+function rowToTask(row) {
+  return {
+    runId: row.run_id,
+    id: row.id,
+    localId: row.local_id ?? null,
+    agentInstanceId: row.agent_instance_id ?? null,
+    label: row.label,
+    requiredCapability: row.required_capability,
+    operation: row.operation,
+    arguments: row.arguments ? JSON.parse(row.arguments) : {},
+    groupId: row.group_id ?? null,
+    dependsOnGroup: row.depends_on_group ?? null,
+    barrier: Boolean(row.barrier),
+    parallelizable: Boolean(row.parallelizable),
+    recommendedConcurrency: row.recommended_concurrency ?? null,
+    inputRefs: row.input_refs ? JSON.parse(row.input_refs) : [],
+    expectedOutputRefs: row.expected_output_refs ? JSON.parse(row.expected_output_refs) : [],
+    locks: row.locks ? JSON.parse(row.locks) : [],
+    requiresApproval: Boolean(row.requires_approval),
+    approvalClass: row.approval_class ?? null,
+    approvalSummary: row.approval_summary ?? null,
+    idempotencyKey: row.idempotency_key ?? null,
+    progressWeight: row.progress_weight,
+    priority: row.priority ?? null,
+    retryPolicy: row.retry_policy ? JSON.parse(row.retry_policy) : null,
+    declaration: row.declaration ? JSON.parse(row.declaration) : null,
+    status: row.status,
+    createdAt: row.created_at ?? null,
+    updatedAt: row.updated_at ?? null,
   };
 }
 

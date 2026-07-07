@@ -14,6 +14,12 @@ const SESSION_PROJECTION_EVENTS = new Set([
   'plan_patch_applied',
   'plan_patch_rebased',
   'plan_patch_rejected',
+  'plan.received',
+  'plan.validated',
+  'plan.rejected',
+  'task_group.created',
+  'task.created',
+  'plan.revision_changed',
   'activity_upserted',
   'run_evaluated',
   'run_replanned',
@@ -38,6 +44,7 @@ const PLAN_MUTATING_EVENTS = new Set([
   'run_started',
   'plan_set',
   'plan_patch_applied',
+  'task.created',
   'plan_step_updated',
   'activity_upserted',
   'run_done',
@@ -226,6 +233,29 @@ function applyEvent(state, event) {
       state.planRevision = event.payload?.planRevision != null
         ? normalizePlanRevision(event.payload.planRevision)
         : state.planRevision + 1;
+      return;
+    case 'plan.received':
+      state.logs.push(`Plan received for run ${String(event.runId ?? event.payload?.runId ?? '')}`.trim());
+      state.logs = state.logs.slice(-200);
+      return;
+    case 'plan.validated':
+      state.logs.push(`Plan validated for run ${String(event.runId ?? event.payload?.runId ?? '')}`.trim());
+      state.logs = state.logs.slice(-200);
+      return;
+    case 'plan.rejected':
+      state.logs.push(`Plan rejected: ${formatPlanErrors(event.payload?.errors)}`);
+      state.logs = state.logs.slice(-200);
+      return;
+    case 'task_group.created':
+      return;
+    case 'task.created':
+      appendCreatedTask(state, event.payload?.task);
+      return;
+    case 'plan.revision_changed':
+      if (Array.isArray(event.payload?.tasks)) {
+        state.plan = normalizePlan(event.payload.tasks, { owner: 'orchestrator', planRevision: state.planRevision });
+      }
+      state.planRevision = normalizePlanRevision(event.payload?.planRevision ?? state.planRevision + 1);
       return;
     case 'plan_step_updated':
       updatePlanStep(state.plan, event.payload ?? {});
@@ -440,6 +470,14 @@ function upsertPlanPatch(state, next) {
   upsertById(state.planPatches, next);
 }
 
+function appendCreatedTask(state, rawTask) {
+  if (!rawTask?.id) return;
+  state.plan ??= [];
+  const existing = state.plan.find((task) => String(task.id ?? task.step) === String(rawTask.id));
+  if (existing) return;
+  state.plan.push(normalizePlanTask(rawTask, state.plan.length, { owner: 'orchestrator' }));
+}
+
 function patchIdFromEvent(event) {
   return event.payload?.id ?? event.payload?.patchId ?? event.id;
 }
@@ -553,29 +591,52 @@ function normalizePlan(steps, payload = {}) {
   if (!Array.isArray(steps)) return null;
   const owner = payload.owner ?? 'orchestrator';
   const ownerActivityKey = payload.ownerActivityKey ?? payload.activityKey ?? null;
-  const plan = steps.map((raw, i) => {
-    const item = typeof raw === 'string' ? { description: raw } : (raw ?? {});
-    return {
-      step: Number(item.step ?? i + 1),
-      id: item.id ?? null,
-      description: String(item.description ?? item.label ?? item.name ?? `Step ${i + 1}`),
-      status: item.status ?? 'pending',
-      dependsOn: Array.isArray(item.dependsOn) ? item.dependsOn.map(String) : [],
-      requiredCapability: item.requiredCapability ?? null,
-      executor: item.executor ?? null,
-      executorQuery: item.executorQuery ?? null,
-      outputRefs: Array.isArray(item.outputRefs) ? item.outputRefs.map(String) : [],
-      locks: Array.isArray(item.locks) ? item.locks.map(String) : item.locks ?? null,
-      writeLocks: Array.isArray(item.writeLocks) ? item.writeLocks.map(String) : item.writeLocks ?? null,
-      deliverableWrites: Array.isArray(item.deliverableWrites) ? item.deliverableWrites.map(String) : [],
-      wikiPageWrites: Array.isArray(item.wikiPageWrites) ? item.wikiPageWrites.map(String) : [],
-      workspaceWrite: item.workspaceWrite === true,
-      owner: item.owner ?? owner,
-      ownerActivityKey: item.ownerActivityKey ?? ownerActivityKey,
-      _activityKey: item._activityKey ?? payload.activityKey ?? null,
-    };
-  });
+  const plan = steps.map((raw, i) => normalizePlanTask(raw, i, { owner, ownerActivityKey, activityKey: payload.activityKey ?? null }));
   return validateContractInDev('plan', plan);
+}
+
+function normalizePlanTask(raw, index, { owner = 'orchestrator', ownerActivityKey = null, activityKey = null } = {}) {
+  const item = typeof raw === 'string' ? { description: raw } : (raw ?? {});
+  const task = {
+    step: Number(item.step ?? index + 1),
+    id: item.id ?? null,
+    label: item.label ?? item.description ?? item.name ?? `Step ${index + 1}`,
+    description: String(item.description ?? item.label ?? item.name ?? `Step ${index + 1}`),
+    status: item.status ?? 'pending',
+    dependsOn: Array.isArray(item.dependsOn) ? item.dependsOn.map(String) : [],
+    requiredCapability: item.requiredCapability ?? null,
+    operation: item.operation ?? null,
+    arguments: item.arguments && typeof item.arguments === 'object' && !Array.isArray(item.arguments) ? { ...item.arguments } : {},
+    groupId: item.groupId ?? null,
+    dependsOnGroup: item.dependsOnGroup ?? null,
+    barrier: item.barrier === true,
+    parallelizable: item.parallelizable === true,
+    recommendedConcurrency: item.recommendedConcurrency,
+    inputRefs: Array.isArray(item.inputRefs) ? item.inputRefs.map(cloneRef) : [],
+    expectedOutputRefs: Array.isArray(item.expectedOutputRefs) ? item.expectedOutputRefs.map(cloneRef) : [],
+    executor: item.executor ?? null,
+    executorQuery: item.executorQuery ?? null,
+    outputRefs: Array.isArray(item.outputRefs) ? item.outputRefs.map(String) : [],
+    locks: Array.isArray(item.locks) ? item.locks.map(String) : item.locks ?? null,
+    requiresApproval: item.requiresApproval === true,
+    approvalClass: item.approvalClass ?? null,
+    approvalSummary: item.approvalSummary ?? null,
+    idempotencyKey: item.idempotencyKey ?? null,
+    progressWeight: Number.isFinite(Number(item.progressWeight)) ? Number(item.progressWeight) : 1,
+    priority: item.priority,
+    retryPolicy: item.retryPolicy ? cloneJson(item.retryPolicy) : undefined,
+    writeLocks: Array.isArray(item.writeLocks) ? item.writeLocks.map(String) : item.writeLocks ?? null,
+    deliverableWrites: Array.isArray(item.deliverableWrites) ? item.deliverableWrites.map(String) : [],
+    wikiPageWrites: Array.isArray(item.wikiPageWrites) ? item.wikiPageWrites.map(String) : [],
+    workspaceWrite: item.workspaceWrite === true,
+    owner: item.owner ?? owner,
+    ownerActivityKey: item.ownerActivityKey ?? ownerActivityKey,
+    _activityKey: item._activityKey ?? activityKey,
+  };
+  for (const key of ['recommendedConcurrency', 'priority', 'retryPolicy']) {
+    if (task[key] === undefined) delete task[key];
+  }
+  return task;
 }
 
 function updatePlanStep(plan, payload) {
@@ -590,6 +651,16 @@ function updatePlanStep(plan, payload) {
   else if (payload.status === 'cancelled') step.status = 'cancelled';
   else step.status = 'done';
   if (payload.activityKey) step.activityKey = payload.activityKey;
+}
+
+function formatPlanErrors(errors) {
+  return Array.isArray(errors) && errors.length > 0
+    ? errors.map((error) => error.code ?? error.message ?? String(error)).join(', ')
+    : 'unknown';
+}
+
+function cloneRef(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : String(value);
 }
 
 function sortedActivities(activities) {

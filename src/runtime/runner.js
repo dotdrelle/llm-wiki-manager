@@ -368,7 +368,20 @@ export async function runRuntimeParallelPlan(agent, session, input, {
         }
         throw err;
       }
-      if (!settled.ok) failures.push(settled);
+      if (!settled.ok) {
+        const task = (session.headlessPlan ?? []).find((item) => planTaskId(item) === settled.taskId);
+        const retry = attempts.scheduleRetry?.(task, settled, {
+          assignment: settled.assignment,
+          registry: session.capabilityRegistry ?? null,
+          session,
+          runId,
+        });
+        if (retry?.scheduled) {
+          emitRuntimeLog(session, `scheduler: retry scheduled for task ${settled.taskId}${retry.newAgentInstanceId ? ` on ${retry.newAgentInstanceId}` : ''}`);
+          continue;
+        }
+        failures.push(settled);
+      }
     }
   } finally {
     if (previousIdentity) session._currentRunIdentity = previousIdentity;
@@ -464,8 +477,9 @@ async function runDispatchedTask(task, {
   attempt,
 }) {
   const taskId = planTaskId(task);
+  let assignment = null;
   try {
-    const assignment = await assignmentManager.assign(task, {
+    assignment = await assignmentManager.assign(task, {
       session,
       signal,
     });
@@ -495,10 +509,10 @@ async function runDispatchedTask(task, {
     const aggregate = await resultAggregator.accept(result, { task, assignment });
     if (!aggregate.ok) {
       emitRuntimeLog(session, `scheduler: task ${taskId} failed`);
-      return { ok: false, taskId, result };
+      return { ok: false, taskId, result, assignment };
     }
     emitRuntimeLog(session, `scheduler: task ${taskId} done`);
-    return { ok: true, taskId, result };
+    return { ok: true, taskId, result, assignment };
   } catch (err) {
     if (err?.name === 'AbortError') {
       attempt?.release?.();
@@ -508,7 +522,7 @@ async function runDispatchedTask(task, {
         taskId,
         payload: { taskId, status: 'cancelled' },
       }));
-      return { ok: false, taskId, cancelled: true };
+      return { ok: false, taskId, cancelled: true, assignment };
     }
     attempt?.release?.();
     const result = {
@@ -524,7 +538,7 @@ async function runDispatchedTask(task, {
         retryable: false,
       },
     };
-    await resultAggregator.accept(result, { task, assignment: null });
+    await resultAggregator.accept(result, { task, assignment });
     dispatchAgentEvent(session, createAgentEvent('plan_step_updated', {
       origin: 'runtime',
       runId,
@@ -534,6 +548,8 @@ async function runDispatchedTask(task, {
     return {
       ok: false,
       taskId,
+      result,
+      assignment,
       error: err instanceof Error ? err.message : String(err),
     };
   }

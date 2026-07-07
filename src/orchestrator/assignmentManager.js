@@ -31,6 +31,26 @@ export async function assign(task, {
     agents: session?.agentRegistrySnapshot ?? session?.agents ?? [],
   });
   const effectiveWorkspaceConfig = workspaceConfig ?? session?.wikircConfig ?? session?.wikirc?.config ?? {};
+  const retryAssignment = task?.retryAssignment;
+  if (retryAssignment?.agentInstanceId) {
+    const provider = providerFor(effectiveRegistry, capability, retryAssignment.agentInstanceId);
+    if (!provider) {
+      throw new CapabilityUnavailableError(capability, 'retry_agent_unavailable', {
+        agentInstanceId: retryAssignment.agentInstanceId,
+        taskId: task?.id ?? task?.step,
+      });
+    }
+    const agent = agentFor(session, retryAssignment.agentInstanceId) ?? provider;
+    return {
+      agentInstanceId: retryAssignment.agentInstanceId,
+      capability,
+      operation: task?.operation ?? null,
+      serverName: agent?.serverName ?? provider?.serverName ?? null,
+      agent,
+      retry: true,
+      previousAgentInstanceId: retryAssignment.previousAgentInstanceId ?? null,
+    };
+  }
   const resolved = resolve(capability, {
     workspaceConfig: effectiveWorkspaceConfig,
     registry: effectiveRegistry,

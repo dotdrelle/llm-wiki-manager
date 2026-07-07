@@ -532,6 +532,76 @@ test('runRuntimeParallelPlan fails cleanly when scheduler budget is exceeded', a
   assert.equal(session.headlessPlan[0].status, 'pending');
 });
 
+test('runRuntimeParallelPlan retries a retryable task on a fallback agent', async () => {
+  const executeServers = [];
+  const session = {
+    mcp: {
+      cme: { tools: [{ name: 'agent_execute' }, { name: 'agent_status' }, { name: 'agent_cancel' }] },
+      commercial: { tools: [{ name: 'agent_execute' }, { name: 'agent_status' }, { name: 'agent_cancel' }] },
+    },
+    agentEvents: [],
+    headlessPlan: [{
+      ...plannedDoctorTask('a', []),
+      retryPolicy: {
+        maxAttempts: 2,
+        retryableErrors: ['temporarily_unavailable'],
+        allowAgentFallback: true,
+      },
+    }],
+    capabilityRegistry: fallbackRegistry(),
+  };
+  const jobs = new Map();
+  const callTool = async (_mcp, serverName, toolName, args) => {
+    if (toolName === 'agent_execute') {
+      executeServers.push(serverName);
+      const jobId = `${serverName}-job`;
+      jobs.set(jobId, { serverName, taskId: args.taskId });
+      return toolResult({ accepted: true, jobId, status: 'queued' });
+    }
+    if (toolName === 'agent_status') {
+      const job = jobs.get(args.jobId);
+      if (job.serverName === 'cme') {
+        return toolResult({
+          jobId: args.jobId,
+          taskId: job.taskId,
+          status: 'failed',
+          result: {
+            status: 'failed',
+            error: { code: 'temporarily_unavailable', message: 'CME unavailable', retryable: true },
+          },
+        });
+      }
+      return toolResult({
+        jobId: args.jobId,
+        taskId: job.taskId,
+        status: 'done',
+        result: {
+          status: 'succeeded',
+          outputRefs: [{ type: 'file', ref: 'out/a.json' }],
+          metrics: { durationMs: 1 },
+        },
+      });
+    }
+    return toolResult({ ok: true });
+  };
+
+  const result = await runRuntimeParallelPlan({ invoke: async () => assert.fail('no child loop') }, session, 'Retry task', {
+    runId: 'run-retry-fallback',
+    timeoutMs: 1000,
+    maxTurns: 1,
+    concurrency: 1,
+    callTool,
+    dispatcherPollIntervalMs: 1,
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(executeServers, ['cme', 'commercial']);
+  assert.equal(session.headlessPlan[0].status, 'done');
+  assert.ok(session.agentEvents.some((event) => event.type === 'task.retry_scheduled'
+    && event.payload.previousAgentInstanceId === 'cme-main'
+    && event.payload.newAgentInstanceId === 'commercial-main'));
+});
+
 function plannedDoctorTask(id, dependsOn) {
   return {
     step: id === 'a' ? 1 : id === 'b' ? 2 : 3,
@@ -551,6 +621,38 @@ function plannedDoctorTask(id, dependsOn) {
     idempotencyKey: null,
     progressWeight: 1,
     outputRefs: [],
+  };
+}
+
+function fallbackRegistry() {
+  const providers = [
+    fallbackProvider('cme-main', 'cme'),
+    fallbackProvider('commercial-main', 'commercial'),
+  ];
+  return {
+    providersFor(capability) {
+      return capability === 'workspace.diagnose' ? providers : [];
+    },
+    isCompatible(contractVersion) {
+      return String(contractVersion) === '1';
+    },
+  };
+}
+
+function fallbackProvider(agentInstanceId, serverName) {
+  return {
+    agentInstanceId,
+    serverName,
+    health: 'available',
+    capability: {
+      id: 'workspace.diagnose',
+      version: '1',
+      description: 'Diagnose',
+      inputSchema: { type: 'object', additionalProperties: true },
+      outputSchema: {},
+      supportedOperations: ['doctor'],
+    },
+    description: { contractVersion: '1', limits: { maxTaskDurationMs: 1000 } },
   };
 }
 

@@ -655,6 +655,8 @@ function normalizePlanTask(raw, index, { owner = 'orchestrator', ownerActivityKe
     progressWeight: Number.isFinite(Number(item.progressWeight)) ? Number(item.progressWeight) : 1,
     priority: item.priority,
     retryPolicy: item.retryPolicy ? cloneJson(item.retryPolicy) : undefined,
+    retryState: item.retryState ? cloneJson(item.retryState) : undefined,
+    retryAssignment: item.retryAssignment ? cloneJson(item.retryAssignment) : undefined,
     writeLocks: Array.isArray(item.writeLocks) ? item.writeLocks.map(String) : item.writeLocks ?? null,
     deliverableWrites: Array.isArray(item.deliverableWrites) ? item.deliverableWrites.map(String) : [],
     wikiPageWrites: Array.isArray(item.wikiPageWrites) ? item.wikiPageWrites.map(String) : [],
@@ -678,11 +680,16 @@ function updatePlanStep(plan, payload) {
   if (!step) return;
   if (payload.status === 'failed') step.status = 'failed';
   else if (payload.status === 'running') step.status = 'running';
+  else if (payload.status === 'pending') step.status = 'pending';
+  else if (payload.status === 'pending_approval') step.status = 'pending_approval';
+  else if (payload.status === 'waiting_approval') step.status = 'waiting_approval';
   else if (payload.status === 'cancelled') step.status = 'cancelled';
   else step.status = 'done';
   if (payload.activityKey) step.activityKey = payload.activityKey;
   if (Array.isArray(payload.outputRefs)) step.outputRefs = payload.outputRefs.map(cloneRef);
   if (payload.result) step.result = cloneJson(payload.result);
+  if (payload.retryState) step.retryState = cloneJson(payload.retryState);
+  if (payload.retryAssignment) step.retryAssignment = cloneJson(payload.retryAssignment);
 }
 
 function formatPlanErrors(errors) {

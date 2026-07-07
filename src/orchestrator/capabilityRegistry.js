@@ -12,6 +12,7 @@ export function createCapabilityRegistry({ agents = [], compatibleContractVersio
       const key = capabilityKey(capability.id, capability.version);
       const entry = {
         agentInstanceId: agent.agentInstanceId,
+        serverName: agent.serverName ?? null,
         agentType: agent.description.agentType,
         displayName: agent.description.displayName,
         health: agent.health,

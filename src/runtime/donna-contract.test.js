@@ -209,41 +209,65 @@ test('Recipe #5 — "construis le livrable X": plan posed, job runs, progress, d
 });
 
 function buildTwoParallelTasksAgent() {
-  const started = [];
-  const release = {};
   let parentTurnDone = false;
   return {
-    started,
-    release,
-    async invoke({ input, session: turnSession }) {
-      const taskMatch = input.match(/Task id: (\w+)/);
-      if (!taskMatch) {
-        if (!parentTurnDone) {
-          parentTurnDone = true;
-          dispatchAgentEvent(turnSession, createAgentEvent('plan_set', {
-            origin: 'tool',
-            payload: {
-              steps: [
-                { step: 1, id: 'x', description: 'Construire X', status: 'pending', dependsOn: [] },
-                { step: 2, id: 'y', description: 'Construire Y', status: 'pending', dependsOn: [] },
-              ],
-            },
-          }));
-          return { response: 'Je construis X et Y en parallèle.' };
-        }
-        return { response: 'X et Y sont construits.' };
+    async invoke({ session: turnSession }) {
+      if (!parentTurnDone) {
+        parentTurnDone = true;
+        dispatchAgentEvent(turnSession, createAgentEvent('plan_set', {
+          origin: 'tool',
+          payload: {
+            steps: [
+              plannedDoctorTask('x', []),
+              plannedDoctorTask('y', []),
+            ],
+          },
+        }));
+        return { response: 'Je construis X et Y en parallèle.' };
       }
-      const id = taskMatch[1];
-      started.push(id);
-      await new Promise((resolve) => { release[id] = resolve; });
-      return { response: `${id} construit.` };
+      assert.fail('contractual tasks must be dispatched through agent tools, not child Donna turns');
     },
   };
 }
 
 test('Recipe #6 — "construis X et Y": two tasks run in parallel, converge, done', async () => {
-  const session = baseSession();
+  const completed = new Set();
+  const jobs = new Map();
+  const executeOrder = [];
+  const session = baseSession({
+    workspace: 'demo-workspace',
+    mcp: {
+      production: {
+        status: 'connected',
+        tools: [{ name: 'agent_execute' }, { name: 'agent_status' }, { name: 'agent_cancel' }],
+      },
+    },
+    agentRegistrySnapshot: [productionAgent()],
+    wikircConfig: { capabilityRouting: {} },
+  });
   const agent = buildTwoParallelTasksAgent();
+  const callTool = async (_mcp, _serverName, toolName, args) => {
+    if (toolName === 'agent_execute') {
+      executeOrder.push(args.taskId);
+      const jobId = `job-${args.taskId}`;
+      jobs.set(jobId, { jobId, taskId: args.taskId });
+      return toolResult({ accepted: true, jobId, status: 'queued' });
+    }
+    if (toolName === 'agent_status') {
+      const job = jobs.get(args.jobId);
+      const done = completed.has(job.taskId);
+      return toolResult({
+        jobId: job.jobId,
+        taskId: job.taskId,
+        operation: 'doctor',
+        status: done ? 'done' : 'running',
+        progress: { percent: done ? 100 : 50 },
+        ...(done ? { result: { status: 'succeeded', outputRefs: [], metrics: { durationMs: 1 } } } : {}),
+      });
+    }
+    if (toolName === 'agent_cancel') return toolResult({ ok: true });
+    throw new Error(`unexpected tool: ${toolName}`);
+  };
 
   const running = runRuntimeAgenticWorkflow(agent, session, 'construis X et Y', {
     runId: 'recipe-6',
@@ -251,21 +275,82 @@ test('Recipe #6 — "construis X et Y": two tasks run in parallel, converge, don
     maxTurns: 3,
     maxReplans: 1,
     evaluate: false,
+    callTool,
+    dispatcherPollIntervalMs: 1,
   });
 
-  await waitFor(() => agent.started.includes('x') && agent.started.includes('y'));
+  await waitFor(() => executeOrder.includes('x') && executeOrder.includes('y'));
   assert.deepEqual(
     session.headlessPlan.filter((step) => ['x', 'y'].includes(step.id)).map((step) => step.status),
     ['running', 'running'],
   );
-  agent.release.x();
-  agent.release.y();
+  completed.add('x');
+  completed.add('y');
 
   const result = await running;
 
   assert.equal(result.ok, true);
   assert.deepEqual(session.headlessPlan.map((step) => step.status), ['done', 'done']);
 });
+
+function plannedDoctorTask(id, dependsOn) {
+  return {
+    step: id === 'x' ? 1 : 2,
+    id,
+    label: `Construire ${id.toUpperCase()}`,
+    description: `Construire ${id.toUpperCase()}`,
+    status: 'pending',
+    dependsOn,
+    requiredCapability: 'workspace.diagnose',
+    operation: 'doctor',
+    arguments: {},
+    parallelizable: true,
+    inputRefs: [],
+    expectedOutputRefs: [],
+    locks: [],
+    requiresApproval: false,
+    idempotencyKey: null,
+    progressWeight: 1,
+    outputRefs: [],
+  };
+}
+
+function productionAgent() {
+  return {
+    serverName: 'production',
+    agentInstanceId: 'production-main',
+    health: 'available',
+    description: {
+      contractVersion: '1',
+      agentType: 'production',
+      agentInstanceId: 'production-main',
+      displayName: 'Production',
+      capabilities: [{
+        id: 'workspace.diagnose',
+        version: '1',
+        description: 'Diagnose workspace',
+        inputSchema: { type: 'object', additionalProperties: true },
+        outputSchema: { type: 'object', additionalProperties: true },
+        supportedOperations: ['doctor'],
+      }],
+      orchestration: {
+        canPlan: true,
+        canExpandPlan: false,
+        canExecute: true,
+        canCancel: true,
+        canResume: false,
+        supportsIdempotency: false,
+        supportsParallelWorkers: true,
+      },
+      limits: { recommendedConcurrency: 2, maxConcurrency: 2, maxTaskDurationMs: 2000 },
+      health: { status: 'available' },
+    },
+  };
+}
+
+function toolResult(payload) {
+  return { content: [{ type: 'text', text: JSON.stringify(payload) }] };
+}
 
 test('Recipe #7 — "où en es-tu ?" during an active run: status in conversation, run continues, no new run', async (t) => {
   const session = { workspace: 'juno', controlQueue: [] };

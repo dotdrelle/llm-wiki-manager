@@ -1,9 +1,13 @@
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { activityKey, sessionActivities, terminalFailures } from '../core/activity.js';
+import { sessionActivities, terminalFailures } from '../core/activity.js';
 import { runAgenticLoop, throwIfAborted } from '../core/agentLoop.js';
 import { formatPlanStatus } from '../core/plan.js';
-import { formatReadyTaskPrompt, readyPlanTasks, sanitizePlanForExecution } from '../core/planPatch.js';
+import { readyPlanTasks, sanitizePlanForExecution } from '../core/planPatch.js';
+import { createAssignmentManager } from '../orchestrator/assignmentManager.js';
+import { createAttemptManager } from '../orchestrator/attemptManager.js';
+import { createDispatcher } from '../orchestrator/dispatcher.js';
 import { assertValidatedFragment } from '../orchestrator/planValidator.js';
+import { createResultAggregator } from '../orchestrator/resultAggregator.js';
 import { emitRuntimeLog, pollActivitiesOnce } from './supervisor.js';
 
 const DEFAULT_MAX_REPLANS = 2;
@@ -88,6 +92,8 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
   pollBusy,
   evaluate = true,
   maxReplans = resolveMaxReplans(),
+  callTool = null,
+  dispatcherPollIntervalMs = 250,
 } = {}) {
   let currentInput = initialInput ?? input;
   let replansLeft = Math.max(0, Math.floor(Number(maxReplans) || 0));
@@ -101,6 +107,8 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
         maxTurns,
         runId,
         pollBusy,
+        callTool,
+        dispatcherPollIntervalMs,
       })
       : await runRuntimeAgenticLoop(agent, session, currentInput, {
         signal,
@@ -211,11 +219,24 @@ export async function runRuntimeParallelPlan(agent, session, input, {
   pollBusy,
   concurrency = resolveSchedulerConcurrency(),
   fragment = null,
+  assignmentManager = null,
+  attemptManager = null,
+  dispatcher = null,
+  resultAggregator = null,
+  callTool = null,
+  dispatcherPollIntervalMs = 250,
 } = {}) {
   if (fragment != null) assertValidatedFragment(fragment);
   const limit = Math.max(1, Math.floor(Number(concurrency) || 1));
   const active = new Map();
-  const locks = new Set();
+  const attempts = attemptManager ?? createAttemptManager();
+  const assigner = assignmentManager ?? createAssignmentManager({ session });
+  const executor = dispatcher ?? createDispatcher({
+    session,
+    ...(callTool ? { callTool } : {}),
+    pollIntervalMs: dispatcherPollIntervalMs,
+  });
+  const aggregator = resultAggregator ?? createResultAggregator({ session, runId });
   const failures = [];
   const previousIdentity = session._currentRunIdentity;
   const previousPlanUpdate = session._onPlanUpdate;
@@ -235,7 +256,7 @@ export async function runRuntimeParallelPlan(agent, session, input, {
   try {
     while (true) {
       if (signal?.aborted) {
-        await drainActive(active, locks);
+        await drainActive(active, attempts);
         throwIfAborted(signal, 'Runtime run cancelled.');
       }
       const pending = (session.headlessPlan ?? []).filter((step) => step.status === 'pending' || step.status === 'pending_approval');
@@ -248,7 +269,10 @@ export async function runRuntimeParallelPlan(agent, session, input, {
 
       const started = startReadyTasks(agent, session, input, {
         active,
-        locks,
+        attemptManager: attempts,
+        assignmentManager: assigner,
+        dispatcher: executor,
+        resultAggregator: aggregator,
         signal,
         timeoutMs,
         maxTurns,
@@ -266,10 +290,9 @@ export async function runRuntimeParallelPlan(agent, session, input, {
       const activeEntry = active.get(settled.taskId);
       active.delete(settled.taskId);
       activeEntry?.cleanup?.();
-      for (const lock of settled.locks) locks.delete(lock);
       if (settled.cancelled) {
         if (signal?.aborted) {
-          await drainActive(active, locks);
+          await drainActive(active, attempts);
           throwIfAborted(signal, 'Runtime run cancelled.');
         }
         continue;
@@ -298,13 +321,13 @@ function sanitizeSessionPlanForExecution(session, runId = null) {
   }));
 }
 
-async function drainActive(active, locks) {
+async function drainActive(active, attemptManager) {
   if (active.size === 0) return;
   const entries = [...active.values()];
   await Promise.all(entries.map((entry) => entry.promise));
   for (const entry of entries) entry.cleanup?.();
   active.clear();
-  locks.clear();
+  attemptManager?.clear?.();
 }
 
 function abortCancelledActiveTasks(session, active) {
@@ -343,12 +366,15 @@ function ensurePlanProjection(session, runId) {
   }));
 }
 
-function startReadyTasks(agent, session, input, {
+function startReadyTasks(_agent, session, _input, {
   active,
-  locks,
+  attemptManager,
+  assignmentManager,
+  dispatcher,
+  resultAggregator,
   signal,
   timeoutMs,
-  maxTurns,
+  maxTurns: _maxTurns,
   runId,
   pollBusy,
   limit,
@@ -369,9 +395,8 @@ function startReadyTasks(agent, session, input, {
       continue;
     }
     seenTaskIds.add(taskId);
-    const taskLocks = locksForTask(task);
-    if (taskLocks.some((lock) => locks.has(lock))) continue;
-    for (const lock of taskLocks) locks.add(lock);
+    const attempt = attemptManager.reserve(task);
+    if (!attempt) continue;
     dispatchAgentEvent(session, createAgentEvent('plan_step_updated', {
       origin: 'runtime',
       runId,
@@ -380,17 +405,19 @@ function startReadyTasks(agent, session, input, {
     }));
     emitRuntimeLog(session, `scheduler: starting task ${taskId}`);
     const taskAbort = createTaskAbortSignal(signal);
-    const promise = runParallelTask(agent, session, input, task, {
+    const promise = runDispatchedTask(task, {
+      session,
+      assignmentManager,
+      dispatcher,
+      resultAggregator,
       signal: taskAbort.signal,
       timeoutMs,
-      maxTurns,
       runId,
       pollBusy,
-      locks: taskLocks,
+      attempt,
     });
     active.set(taskId, {
       taskId,
-      locks: taskLocks,
       promise,
       controller: taskAbort.controller,
       signal: taskAbort.signal,
@@ -417,55 +444,64 @@ function createTaskAbortSignal(parentSignal) {
   };
 }
 
-async function runParallelTask(agent, parentSession, input, task, {
+async function runDispatchedTask(task, {
+  session,
+  assignmentManager,
+  dispatcher,
+  resultAggregator,
   signal,
   timeoutMs,
-  maxTurns,
   runId,
   pollBusy,
-  locks,
+  attempt,
 }) {
   const taskId = planTaskId(task);
-  const childSession = createTaskSession(parentSession, task, { runId, taskId });
   try {
-    const result = await runRuntimeAgenticLoop(agent, childSession, buildTaskPrompt(input, parentSession.headlessPlan, task), {
+    const assignment = await assignmentManager.assign(task, {
+      session,
+      signal,
+    });
+    const result = await dispatcher.execute(task, assignment, {
+      session,
       signal,
       timeoutMs,
-      maxTurns,
       runId,
       pollBusy,
+      attempt,
     });
-    if (!result.ok) {
-      dispatchAgentEvent(parentSession, createAgentEvent('plan_step_updated', {
-        origin: 'runtime',
-        runId,
-        taskId,
-        payload: { taskId, status: 'failed' },
-      }));
-      return { ok: false, taskId, locks, result };
+    const aggregate = await resultAggregator.accept(result, { task, assignment });
+    if (!aggregate.ok) {
+      emitRuntimeLog(session, `scheduler: task ${taskId} failed`);
+      return { ok: false, taskId, result };
     }
-    if ((parentSession.headlessPlan ?? []).find((step) => planTaskId(step) === taskId)?.status === 'cancelled') {
-      return { ok: false, taskId, locks, cancelled: true };
-    }
-    dispatchAgentEvent(parentSession, createAgentEvent('plan_step_updated', {
-      origin: 'runtime',
-      runId,
-      taskId,
-      payload: { taskId, status: 'done' },
-    }));
-    emitRuntimeLog(parentSession, `scheduler: task ${taskId} done`);
-    return { ok: true, taskId, locks, result };
+    emitRuntimeLog(session, `scheduler: task ${taskId} done`);
+    return { ok: true, taskId, result };
   } catch (err) {
     if (err?.name === 'AbortError') {
-      dispatchAgentEvent(parentSession, createAgentEvent('plan_step_updated', {
+      attempt?.release?.();
+      dispatchAgentEvent(session, createAgentEvent('plan_step_updated', {
         origin: 'runtime',
         runId,
         taskId,
         payload: { taskId, status: 'cancelled' },
       }));
-      return { ok: false, taskId, locks, cancelled: true };
+      return { ok: false, taskId, cancelled: true };
     }
-    dispatchAgentEvent(parentSession, createAgentEvent('plan_step_updated', {
+    attempt?.release?.();
+    const result = {
+      ok: false,
+      taskId,
+      status: 'failed',
+      outputRefs: [],
+      metrics: {},
+      error: {
+        code: 'dispatcher_error',
+        message: err instanceof Error ? err.message : String(err),
+        retryable: false,
+      },
+    };
+    await resultAggregator.accept(result, { task, assignment: null });
+    dispatchAgentEvent(session, createAgentEvent('plan_step_updated', {
       origin: 'runtime',
       runId,
       taskId,
@@ -474,129 +510,17 @@ async function runParallelTask(agent, parentSession, input, task, {
     return {
       ok: false,
       taskId,
-      locks,
       error: err instanceof Error ? err.message : String(err),
     };
   }
 }
 
-function createTaskSession(parent, task, { runId, taskId }) {
-  const child = {
-    ...parent,
-    // Copy (not share) the parent's activities: a child's own diffing needs
-    // isolation from mutation, but local guards like productionLockBusy must
-    // still see activities already running when this task started.
-    activities: { ...parent.activities },
-    agentEvents: [],
-    agentProjection: null,
-    _agentProjectionState: null,
-    headlessPlan: null,
-    _currentRunIdentity: {
-      ...(parent._currentRunIdentity ?? {}),
-      runId,
-      taskId,
-      workspace: parent.workspace ?? parent._currentRunIdentity?.workspace ?? null,
-    },
-    _onAgentEvent: (event) => {
-      if (event.type === 'plan_set') return;
-      if (event.type === 'plan_step_updated') {
-        // The child always targets its own single task, regardless of what
-        // step/id the child's LLM passed to wiki__plan_done — a child has no
-        // visibility into the parent's real multi-task numbering.
-        dispatchAgentEvent(parent, {
-          ...event,
-          taskId: taskId,
-          runId: event.runId ?? runId,
-          payload: { ...event.payload, taskId },
-        });
-        return;
-      }
-      if (event.type === 'activity_upserted') {
-        stampOwnerActivityKey(parent, taskId, event.payload?.activity);
-      }
-      dispatchAgentEvent(parent, {
-        ...event,
-        taskId: event.taskId ?? taskId,
-        runId: event.runId ?? runId,
-      });
-    },
-  };
-  Object.defineProperty(child, '_runApprovalResolved', {
-    get: () => parent._runApprovalResolved,
-    set: (value) => { parent._runApprovalResolved = value; },
-    enumerable: true,
-    configurable: true,
-  });
-  if (parent._requestApproval) {
-    child._requestApproval = (request) => {
-      if (request?.scope === 'tool') return parent._requestApproval(request);
-      // Run-level approval is one decision for the whole run: concurrent
-      // children must join the same in-flight request instead of each
-      // minting their own (only one of which /approve could ever resolve).
-      parent._pendingRunApproval ??= parent._requestApproval(request)
-        .finally(() => { delete parent._pendingRunApproval; });
-      return parent._pendingRunApproval;
-    };
-  }
-  // Seed the plan through the real reducer (not a raw property write): the
-  // child's own _agentProjectionState knows nothing about this task
-  // otherwise, and the very next session-projection event (even a plain
-  // runtime_log from onTurnStart) would overwrite headlessPlan back to null
-  // via applyAgentProjectionToSession. The _onAgentEvent filter above already
-  // keeps this plan_set from being forwarded to the parent.
-  dispatchAgentEvent(child, createAgentEvent('plan_set', {
-    origin: 'runtime',
-    runId,
-    taskId,
-    payload: { steps: [{ ...task, status: 'running' }] },
-  }));
-  return child;
-}
-
-function stampOwnerActivityKey(parent, taskId, rawActivity) {
-  if (!rawActivity) return;
-  const entry = (parent.headlessPlan ?? []).find((item) => String(item.id ?? item.step) === taskId);
-  if (!entry || entry.ownerActivityKey) return;
-  entry.ownerActivityKey = activityKey(rawActivity);
-}
-
-function buildTaskPrompt(input, plan, task) {
-  return [
-    'Original task:',
-    input || '(unknown)',
-    '',
-    `Plan status:\n${formatPlanStatus(plan)}`,
-    '',
-    formatReadyTaskPrompt(task),
-    '',
-    'Execute exactly this task as an autonomous child task.',
-    'Do not start sibling tasks. Do not modify unrelated plan steps.',
-    'If this task cannot complete, report the blocker clearly.',
-  ].join('\n');
-}
-
 function shouldUseParallelScheduler(plan) {
-  return readyPlanTasks(plan).length > 0;
+  return readyPlanTasks(plan).some((task) => task.requiredCapability && task.operation);
 }
 
 function planTaskId(task) {
   return String(task.id ?? task.step);
-}
-
-function locksForTask(task) {
-  const locks = new Set();
-  const explicit = task.locks ?? task.writeLocks ?? null;
-  if (Array.isArray(explicit)) {
-    for (const lock of explicit) if (lock) locks.add(String(lock));
-  } else if (explicit && typeof explicit === 'object') {
-    if (explicit.workspaceWrite || explicit.workspace) locks.add('workspace:write');
-    for (const value of explicit.deliverableWrites ?? explicit.deliverables ?? []) locks.add(`deliverable:${value}`);
-    for (const value of explicit.wikiPageWrites ?? explicit.wikiPages ?? []) locks.add(`wiki-page:${value}`);
-  }
-  for (const value of task.deliverableWrites ?? []) locks.add(`deliverable:${value}`);
-  for (const value of task.wikiPageWrites ?? []) locks.add(`wiki-page:${value}`);
-  if (task.workspaceWrite) locks.add('workspace:write');
-  return [...locks].sort();
 }
 
 export async function finishRuntimeRun(session, input, {

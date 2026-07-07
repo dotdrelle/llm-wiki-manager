@@ -100,11 +100,12 @@ export function normalizeActivity(activity, fallback = {}) {
   return normalized;
 }
 
-function productionActivityFromPayload(payload) {
+function productionActivityFromPayload(payload, context = {}) {
   const progress = payload?.progress;
   const job = payload?.job;
   const jobId = payload?.jobId ?? job?.jobId;
   if (!progress && !job && !jobId) return null;
+  const result = payload?.result && typeof payload.result === 'object' ? payload.result : null;
   const status = job?.status ?? payload?.status ?? progress?.status ?? 'running';
   const percent = Number.isFinite(Number(progress?.percent)) ? Number(progress.percent) : null;
   const sourceCount = Number(progress?.sourceCount);
@@ -139,21 +140,23 @@ function productionActivityFromPayload(payload) {
   return normalizeActivity({
     id: jobId,
     source: 'production',
-    kind: job?.type ?? payload?.type ?? progress?.phase ?? progress?.currentStep ?? 'job',
+    kind: job?.type ?? payload?.operation ?? payload?.type ?? progress?.phase ?? progress?.currentStep ?? 'job',
     label: detail ? `Production: ${detail}` : `Production: ${status}`,
     status,
     progress: {
       ...(progress ?? {}),
       ...(percent !== null ? { percent } : {}),
       step,
+      ...(payload?.taskId ? { stepId: String(payload.taskId) } : {}),
     },
     poll: jobId ? {
       server: 'production',
-      tool: 'production_job_status',
+      tool: context.tool === 'agent_status' ? 'agent_status' : 'production_job_status',
       args: { jobId },
       intervalMs: 2500,
     } : null,
-    error: job?.error ?? payload?.error ?? null,
+    outputRefs: Array.isArray(result?.outputRefs) ? result.outputRefs : [],
+    error: job?.error ?? result?.error?.message ?? payload?.error ?? null,
   });
 }
 
@@ -163,7 +166,7 @@ export function extractActivity(payload, context = {}) {
     return normalizeActivity(payload._activity, { source: context.server });
   }
   if (context.server === 'production') {
-    return productionActivityFromPayload(payload);
+    return productionActivityFromPayload(payload, context);
   }
   return null;
 }

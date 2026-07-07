@@ -54,17 +54,24 @@ export function matchCompletedToPlan(plan, completed) {
 
 export function syncActivitiesToPlan(plan, activities) {
   if (!plan) return;
+  const contractTaskPlan = isContractTaskPlan(plan);
   for (const activity of activities ?? []) {
     const terminal = Boolean(activity.terminal);
     const failed = ['failed', 'error', 'cancelled', 'canceled'].includes(String(activity.status).toLowerCase());
     const actKey = activity.key ?? activity.id ?? activity.jobId ?? null;
-    const matched = findMatchingPlanStepByStructure(plan, activity) ?? findMatchingPlanStep(plan, activity);
+    const structuredMatch = findMatchingPlanStepByStructure(plan, activity);
+    const matched = structuredMatch ?? findMatchingPlanStep(plan, activity);
     if (!matched) continue;
 
     if (terminal && !failed) {
+      const ownedSteps = actKey ? plan.filter((s) => s._activityKey === actKey) : [];
+      if (contractTaskPlan && structuredMatch && ownedSteps.length === 0) {
+        matched.status = 'done';
+        matched.activityKey = actKey;
+        continue;
+      }
       // Structured plan: mark all steps owned by this activity as done.
       // Legacy plan (no _activityKey): mark all steps up to matched as done (sequential assumption).
-      const ownedSteps = actKey ? plan.filter((s) => s._activityKey === actKey) : [];
       if (ownedSteps.length > 0) {
         for (const step of ownedSteps) {
           if (step.status !== 'failed') {
@@ -85,6 +92,11 @@ export function syncActivitiesToPlan(plan, activities) {
       matched.status = 'failed';
       matched.activityKey = actKey;
     } else if (!failed) {
+      if (contractTaskPlan && structuredMatch) {
+        matched.status = 'running';
+        matched.activityKey = actKey;
+        continue;
+      }
       // Running: matched step is in progress; preceding pending steps are implicitly done.
       for (const step of plan) {
         if (step.status === 'failed') continue;
@@ -215,7 +227,10 @@ function statusRank(status) {
 export function attachActivityToExistingPlan(plan, activity) {
   const actKey = activity.key ?? activity.id ?? activity.jobId ?? null;
   if (!actKey) return;
-  const matched = plan.find((step) => step.activityKey === actKey)
+  const contractTaskPlan = isContractTaskPlan(plan);
+  const structuredMatch = findMatchingPlanStepByStructure(plan, activity);
+  const matched = structuredMatch
+    ?? plan.find((step) => step.activityKey === actKey)
     ?? plan.find((step) => step.ownerActivityKey === actKey)
     ?? plan.find((step) => step.status === 'pending')
     ?? plan.find((step) => step.status === 'running');
@@ -228,10 +243,18 @@ export function attachActivityToExistingPlan(plan, activity) {
     return;
   }
   if (!failed) {
+    if (contractTaskPlan && structuredMatch) {
+      matched.status = 'running';
+      return;
+    }
     for (const step of plan) {
       if (step.status === 'failed') continue;
       if (step.step < matched.step) step.status = 'done';
       else if (step.step === matched.step) step.status = 'running';
     }
   }
+}
+
+function isContractTaskPlan(plan) {
+  return (plan ?? []).some((step) => step.requiredCapability || step.operation);
 }

@@ -19,6 +19,9 @@ const SESSION_PROJECTION_EVENTS = new Set([
   'plan.rejected',
   'task_group.created',
   'task.created',
+  'task.result_returned',
+  'task.completed',
+  'task.failed',
   'plan.revision_changed',
   'activity_upserted',
   'run_evaluated',
@@ -250,6 +253,18 @@ function applyEvent(state, event) {
       return;
     case 'task.created':
       appendCreatedTask(state, event.payload?.task);
+      return;
+    case 'task.result_returned':
+      state.logs.push(`Task result returned: ${String(event.taskId ?? event.payload?.taskId ?? '')}`.trim());
+      state.logs = state.logs.slice(-200);
+      return;
+    case 'task.completed':
+      state.logs.push(`Task completed: ${String(event.taskId ?? event.payload?.taskId ?? '')}`.trim());
+      state.logs = state.logs.slice(-200);
+      return;
+    case 'task.failed':
+      state.logs.push(`Task failed: ${String(event.taskId ?? event.payload?.taskId ?? '')}`.trim());
+      state.logs = state.logs.slice(-200);
       return;
     case 'plan.revision_changed':
       if (Array.isArray(event.payload?.tasks)) {
@@ -651,6 +666,8 @@ function updatePlanStep(plan, payload) {
   else if (payload.status === 'cancelled') step.status = 'cancelled';
   else step.status = 'done';
   if (payload.activityKey) step.activityKey = payload.activityKey;
+  if (Array.isArray(payload.outputRefs)) step.outputRefs = payload.outputRefs.map(cloneRef);
+  if (payload.result) step.result = cloneJson(payload.result);
 }
 
 function formatPlanErrors(errors) {

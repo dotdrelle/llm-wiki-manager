@@ -12,30 +12,116 @@ const MAX_PARALLEL_TO_SEQUENTIAL_RATIO = 0.65;
 
 function buildTwoTemplatePlan() {
   return [
-    { step: 1, id: 'template-a', description: 'Build template A', status: 'pending', dependsOn: [] },
-    { step: 2, id: 'template-b', description: 'Build template B', status: 'pending', dependsOn: [] },
+    plannedBuildTask(1, 'template-a'),
+    plannedBuildTask(2, 'template-b'),
   ];
 }
 
-function latencyAgent() {
-  return {
-    async invoke() {
-      await new Promise((resolve) => setTimeout(resolve, SIMULATED_BUILD_LATENCY_MS));
-      return { response: 'done' };
-    },
-  };
-}
-
 async function timedRun(concurrency, runId) {
-  const session = { activities: {}, headlessPlan: buildTwoTemplatePlan() };
+  const jobs = new Map();
+  const session = {
+    workspace: 'demo-workspace',
+    activities: {},
+    headlessPlan: buildTwoTemplatePlan(),
+    mcp: {
+      production: {
+        status: 'connected',
+        tools: [{ name: 'agent_execute' }, { name: 'agent_status' }, { name: 'agent_cancel' }],
+      },
+    },
+    agentRegistrySnapshot: [productionAgent()],
+    wikircConfig: { capabilityRouting: {} },
+  };
+  const callTool = async (_mcp, _serverName, toolName, args) => {
+    if (toolName === 'agent_execute') {
+      const jobId = `job-${args.taskId}`;
+      jobs.set(jobId, { jobId, taskId: args.taskId, startedAt: Date.now() });
+      return toolResult({ accepted: true, jobId, status: 'queued' });
+    }
+    if (toolName === 'agent_status') {
+      const job = jobs.get(args.jobId);
+      const done = Date.now() - job.startedAt >= SIMULATED_BUILD_LATENCY_MS;
+      return toolResult({
+        jobId: job.jobId,
+        taskId: job.taskId,
+        operation: 'build',
+        status: done ? 'done' : 'running',
+        progress: { percent: done ? 100 : 50 },
+        ...(done ? { result: { status: 'succeeded', outputRefs: [], metrics: { durationMs: SIMULATED_BUILD_LATENCY_MS } } } : {}),
+      });
+    }
+    if (toolName === 'agent_cancel') return toolResult({ ok: true });
+    throw new Error(`unexpected tool: ${toolName}`);
+  };
   const startedAt = Date.now();
-  const result = await runRuntimeParallelPlan(latencyAgent(), session, 'Build 2 templates', {
+  const result = await runRuntimeParallelPlan({ invoke: async () => assert.fail('child Donna loop must not run') }, session, 'Build 2 templates', {
     runId,
     timeoutMs: 10_000,
     maxTurns: 1,
     concurrency,
+    callTool,
+    dispatcherPollIntervalMs: 5,
   });
   return { result, durationMs: Date.now() - startedAt };
+}
+
+function plannedBuildTask(step, id) {
+  return {
+    step,
+    id,
+    label: `Build ${id}`,
+    description: `Build ${id}`,
+    status: 'pending',
+    dependsOn: [],
+    requiredCapability: 'document.build',
+    operation: 'build',
+    arguments: { templates: [`${id}.md`] },
+    parallelizable: true,
+    inputRefs: [],
+    expectedOutputRefs: [],
+    locks: [],
+    requiresApproval: false,
+    idempotencyKey: 'test-idempotency-key',
+    progressWeight: 1,
+    outputRefs: [],
+  };
+}
+
+function productionAgent() {
+  return {
+    serverName: 'production',
+    agentInstanceId: 'production-main',
+    health: 'available',
+    description: {
+      contractVersion: '1',
+      agentType: 'production',
+      agentInstanceId: 'production-main',
+      displayName: 'Production',
+      capabilities: [{
+        id: 'document.build',
+        version: '1',
+        description: 'Build documents',
+        inputSchema: { type: 'object', additionalProperties: true },
+        outputSchema: { type: 'object', additionalProperties: true },
+        supportedOperations: ['build'],
+      }],
+      orchestration: {
+        canPlan: true,
+        canExpandPlan: false,
+        canExecute: true,
+        canCancel: true,
+        canResume: false,
+        supportsIdempotency: false,
+        supportsParallelWorkers: true,
+      },
+      limits: { recommendedConcurrency: 2, maxConcurrency: 2, maxTaskDurationMs: 10_000 },
+      health: { status: 'available' },
+    },
+  };
+}
+
+function toolResult(payload) {
+  return { content: [{ type: 'text', text: JSON.stringify(payload) }] };
 }
 
 test('multi-agent scheduler beats sequential on 2 independent build tasks by the required margin (plan 0.11.4 §3 guard)', async () => {

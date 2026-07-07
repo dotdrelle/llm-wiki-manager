@@ -214,6 +214,59 @@ test('reduceAgentEvents: approvals move from pending to approved', () => {
   assert.deepEqual(projection.approvals[0].plan, ['Build']);
 });
 
+test('reduceAgentEvents: bounded approval grant covers matching pending requests only', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('approval.requested', {
+      origin: 'orchestrator',
+      runId: 'run-1',
+      workspace: 'docs',
+      taskId: 'run-1:a',
+      payload: {
+        id: 'approval-a',
+        scope: 'task',
+        runId: 'run-1',
+        workspaceId: 'docs',
+        planRevision: 2,
+        taskId: 'run-1:a',
+        approvalClasses: ['workspace-write'],
+      },
+    }),
+    createAgentEvent('approval.requested', {
+      origin: 'orchestrator',
+      runId: 'run-1',
+      workspace: 'docs',
+      taskId: 'run-1:b',
+      payload: {
+        id: 'approval-b',
+        scope: 'task',
+        runId: 'run-1',
+        workspaceId: 'docs',
+        planRevision: 2,
+        taskId: 'run-1:b',
+        approvalClasses: ['publish'],
+      },
+    }),
+    createAgentEvent('approval.granted', {
+      origin: 'runtime',
+      runId: 'run-1',
+      workspace: 'docs',
+      payload: {
+        id: 'grant-1',
+        scope: 'run',
+        runId: 'run-1',
+        workspaceId: 'docs',
+        planRevision: 2,
+        approvalClasses: ['workspace-write'],
+      },
+    }),
+  ]);
+
+  const byId = Object.fromEntries(projection.approvals.map((approval) => [approval.id, approval]));
+  assert.equal(byId['approval-a'].status, 'approved');
+  assert.equal(byId['approval-b'].status, 'pending_approval');
+  assert.equal(byId['grant-1'].status, 'approved');
+});
+
 test('reduceAgentEvents: control queue is event sourced and follows run status', () => {
   const projection = reduceAgentEvents([
     createAgentEvent('control_enqueued', {

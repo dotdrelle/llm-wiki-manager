@@ -33,6 +33,9 @@ const SESSION_PROJECTION_EVENTS = new Set([
   'run_approved',
   'tool_pending_approval',
   'tool_approved',
+  'approval.requested',
+  'approval.granted',
+  'approval.rejected',
   'control_enqueued',
   'control_started',
   'agent.registered',
@@ -413,6 +416,60 @@ function applyEvent(state, event) {
         approvedAt: event.ts,
       });
       return;
+    case 'approval.requested':
+      upsertApproval(state, {
+        id: approvalProjectionId(event),
+        approvalId: event.payload?.approvalId ?? event.payload?.id ?? null,
+        scope: event.payload?.scope ?? 'task',
+        status: 'pending_approval',
+        runId: event.runId ?? event.payload?.runId ?? null,
+        workspaceId: event.workspace ?? event.payload?.workspaceId ?? event.payload?.workspace ?? null,
+        planRevision: event.payload?.planRevision ?? null,
+        taskId: event.taskId ?? event.payload?.taskId ?? null,
+        itemId: event.payload?.itemId ?? event.payload?.taskId ?? null,
+        groupId: event.payload?.groupId ?? null,
+        approvalClasses: normalizeApprovalClasses(event.payload?.approvalClasses ?? event.payload?.approvalClass),
+        reason: event.payload?.reason ?? null,
+        createdAt: event.ts,
+      });
+      return;
+    case 'approval.granted': {
+      const grant = {
+        id: approvalProjectionId(event),
+        approvalId: event.payload?.approvalId ?? event.payload?.id ?? null,
+        scope: event.payload?.scope ?? 'run',
+        status: 'approved',
+        runId: event.runId ?? event.payload?.runId ?? null,
+        workspaceId: event.workspace ?? event.payload?.workspaceId ?? event.payload?.workspace ?? null,
+        planRevision: event.payload?.planRevision ?? null,
+        taskId: event.taskId ?? event.payload?.taskId ?? null,
+        itemId: event.payload?.itemId ?? event.payload?.taskId ?? null,
+        groupId: event.payload?.groupId ?? null,
+        approvalClasses: normalizeApprovalClasses(event.payload?.approvalClasses ?? event.payload?.approvalClass),
+        reason: event.payload?.reason ?? null,
+        approvedAt: event.ts,
+      };
+      upsertApproval(state, grant);
+      markCoveredApprovalsApproved(state.approvals, grant, event.ts);
+      return;
+    }
+    case 'approval.rejected':
+      upsertApproval(state, {
+        id: approvalProjectionId(event),
+        approvalId: event.payload?.approvalId ?? event.payload?.id ?? null,
+        scope: event.payload?.scope ?? 'run',
+        status: 'rejected',
+        runId: event.runId ?? event.payload?.runId ?? null,
+        workspaceId: event.workspace ?? event.payload?.workspaceId ?? event.payload?.workspace ?? null,
+        planRevision: event.payload?.planRevision ?? null,
+        taskId: event.taskId ?? event.payload?.taskId ?? null,
+        itemId: event.payload?.itemId ?? event.payload?.taskId ?? null,
+        groupId: event.payload?.groupId ?? null,
+        approvalClasses: normalizeApprovalClasses(event.payload?.approvalClasses ?? event.payload?.approvalClass),
+        reason: event.payload?.reason ?? null,
+        rejectedAt: event.ts,
+      });
+      return;
     case 'run_done':
       state.status = 'done';
       finishPendingPlanSteps(state.plan);
@@ -557,6 +614,42 @@ function finishToolCall(state, payload = {}) {
 
 function upsertApproval(state, next) {
   upsertById(state.approvals, next);
+}
+
+function approvalProjectionId(event) {
+  return event.payload?.id
+    ?? event.payload?.approvalId
+    ?? event.payload?.taskId
+    ?? event.payload?.itemId
+    ?? event.payload?.groupId
+    ?? event.payload?.runId
+    ?? event.id;
+}
+
+function normalizeApprovalClasses(value) {
+  if (value == null) return [];
+  const values = Array.isArray(value) ? value : [value];
+  return [...new Set(values.map((item) => String(item).trim()).filter(Boolean))];
+}
+
+function markCoveredApprovalsApproved(approvals, grant, ts) {
+  const classes = normalizeApprovalClasses(grant.approvalClasses);
+  for (const approval of approvals) {
+    if (approval.status !== 'pending_approval') continue;
+    if (grant.runId != null && approval.runId != null && String(grant.runId) !== String(approval.runId)) continue;
+    if (grant.workspaceId != null && approval.workspaceId != null && String(grant.workspaceId) !== String(approval.workspaceId)) continue;
+    if (grant.planRevision != null && approval.planRevision != null && Number(grant.planRevision) !== Number(approval.planRevision)) continue;
+    const approvalClasses = normalizeApprovalClasses(approval.approvalClasses);
+    if (classes.length > 0 && approvalClasses.length > 0 && !approvalClasses.some((item) => classes.includes(item))) continue;
+    if (grant.scope === 'group' && String(grant.groupId ?? '') !== String(approval.groupId ?? '')) continue;
+    if (grant.scope === 'task' || grant.scope === 'tool') {
+      const grantIds = new Set([grant.taskId, grant.itemId, grant.approvalId, grant.id].filter(Boolean).map(String));
+      const approvalIds = [approval.taskId, approval.itemId, approval.approvalId, approval.id].filter(Boolean).map(String);
+      if (!approvalIds.some((id) => grantIds.has(id))) continue;
+    }
+    approval.status = 'approved';
+    approval.approvedAt = ts;
+  }
 }
 
 function finishPendingPlanSteps(plan) {

@@ -581,9 +581,15 @@ test('runtime server exposes approval endpoint', async (t) => {
     assert.equal(response.status, 202);
     assert.deepEqual(approved, {
       workspace: 'juno',
+      workspaceId: 'juno',
       runId: 'run-1',
       itemId: 'item-1',
       approvalId: null,
+      scope: null,
+      taskId: null,
+      groupId: null,
+      planRevision: null,
+      approvalClasses: [],
     });
     assert.deepEqual(await response.json(), { approved: true, runId: 'run-1', itemId: 'item-1' });
   } finally {

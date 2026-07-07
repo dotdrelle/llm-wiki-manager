@@ -503,6 +503,43 @@ test('runtime store tracks pending approval run status', () => {
   store.close();
 });
 
+test('runtime store persists bounded approval grants', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  store.persistEvent(createAgentEvent('approval.granted', {
+    origin: 'runtime',
+    runId: 'run-approval-grant',
+    workspace: 'docs',
+    payload: {
+      id: 'grant-1',
+      scope: 'run',
+      runId: 'run-approval-grant',
+      workspaceId: 'docs',
+      planRevision: 3,
+      approvalClasses: ['workspace-write'],
+      reason: 'valide tout',
+    },
+  }));
+
+  const grants = store.listApprovalGrants({ runId: 'run-approval-grant' });
+  assert.deepEqual(grants, [{
+    id: 'grant-1',
+    runId: 'run-approval-grant',
+    workspaceId: 'docs',
+    planRevision: 3,
+    scope: 'run',
+    taskId: null,
+    groupId: null,
+    approvalClasses: ['workspace-write'],
+    status: 'approved',
+    reason: 'valide tout',
+    createdAt: grants[0].createdAt,
+    grantedAt: grants[0].grantedAt,
+    rejectedAt: null,
+  }]);
+  store.close();
+});
+
 test('runtime store orders events by durable sequence', () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
   const store = openRuntimeStore({ stateDir });

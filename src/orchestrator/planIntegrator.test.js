@@ -99,16 +99,19 @@ test('planIntegrator integrates an initial fragment, persists DAG tables and emi
   assert.equal(result.ok, true);
   assert.equal(result.planRevision, 1);
   assert.deepEqual(session.headlessPlan.map((item) => item.id), ['run-1:ingest-a']);
-  assert.deepEqual(result.readyTasks.map((item) => item.id), ['run-1:ingest-a']);
+  assert.deepEqual(result.readyTasks.map((item) => item.id), []);
   assert.deepEqual(session.agentEvents.map((event) => event.type), [
     'plan.received',
     'plan.validated',
     'task_group.created',
     'task.created',
     'plan.revision_changed',
+    'approval.requested',
   ]);
   assert.equal(store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks'").get().name, 'tasks');
   assert.equal(store.listTasks({ runId: 'run-1' })[0].id, 'run-1:ingest-a');
+  assert.equal(store.listTasks({ runId: 'run-1' })[0].status, 'waiting_approval');
+  assert.equal(store.listApprovalGrants({ runId: 'run-1' })[0].status, 'pending_approval');
   assert.equal(store.listTaskDependencies({ runId: 'run-1' }).length, 0);
   assert.equal(store.listPlanRevisions({ runId: 'run-1' })[0].revision, 1);
   store.close();

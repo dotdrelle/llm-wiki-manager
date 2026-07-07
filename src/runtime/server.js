@@ -145,6 +145,7 @@ export function startRuntimeServer({
             intent: body.intent,
             startNextControlRequest,
             cancel,
+            approve,
           });
           sendJson(response, result.statusCode, result.body);
           return;
@@ -299,9 +300,15 @@ export function startRuntimeServer({
         const workspace = workspaceFromBody(body) ?? workspaceFromUrl(url);
         const result = await approve?.({
           workspace,
+          workspaceId: workspace,
           runId: url.searchParams.get('runId') ?? body.runId ?? null,
           itemId: url.searchParams.get('itemId') ?? body.itemId ?? null,
           approvalId: url.searchParams.get('approvalId') ?? body.approvalId ?? null,
+          scope: url.searchParams.get('scope') ?? body.scope ?? null,
+          taskId: url.searchParams.get('taskId') ?? body.taskId ?? null,
+          groupId: url.searchParams.get('groupId') ?? body.groupId ?? null,
+          planRevision: readOptionalNumber(url.searchParams.get('planRevision') ?? body.planRevision),
+          approvalClasses: readOptionalList(body.approvalClasses ?? body.approvalClass ?? url.searchParams.get('approvalClass')),
         });
         sendJson(response, result?.approved ? 202 : 404, result ?? { approved: false });
         return;
@@ -470,7 +477,21 @@ function readOnlyControlResponse(kind, classification, status, explanation, { ac
   };
 }
 
-async function handleControlMessage(context, store, input, { intent = null, startNextControlRequest = () => false, cancel = null } = {}) {
+function approvalRequestFromStatus(status) {
+  const runId = status.runId ?? status.runs?.find((run) => run.status === 'running' || run.status === 'pending_approval')?.id ?? null;
+  const pending = (status.approvals ?? []).filter((approval) => approval.status === 'pending_approval');
+  const classes = [...new Set(pending.flatMap((approval) => readOptionalList(approval.approvalClasses ?? approval.approvalClass)))];
+  return {
+    workspace: status.workspace ?? null,
+    workspaceId: status.workspace ?? null,
+    runId,
+    scope: 'run',
+    planRevision: status.planRevision ?? null,
+    approvalClasses: classes.length > 0 ? classes : ['default'],
+  };
+}
+
+async function handleControlMessage(context, store, input, { intent = null, startNextControlRequest = () => false, cancel = null, approve = null } = {}) {
   const status = controlStatus(context, store);
   const classification = classifyControlMessage(input, status, intent);
   if (classification.kind === 'observe') {
@@ -485,7 +506,10 @@ async function handleControlMessage(context, store, input, { intent = null, star
     return readOnlyControlResponse('cancel', classification, status, 'No active run to cancel.', { accepted: false });
   }
   if (classification.kind === 'approve') {
-    return readOnlyControlResponse('approve', classification, status, 'Approval intent recorded; targeted approval grants are handled by the approval endpoint.', { accepted: true });
+    const result = await approve?.(approvalRequestFromStatus(status));
+    return readOnlyControlResponse('approve', classification, controlStatus(context, store), result?.approved
+      ? 'Approval grant recorded for the current run revision.'
+      : 'Approval intent recorded; no pending approval was available to grant.', { accepted: result?.approved === true, extra: { approval: result ?? null } });
   }
   if (classification.kind === 'modify_run') {
     const proposal = storeControlProposal(context, input, classification, status);
@@ -765,6 +789,18 @@ function readRequiredPatchId(body, response) {
     return null;
   }
   return patchId;
+}
+
+function readOptionalNumber(value) {
+  if (value == null || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function readOptionalList(value) {
+  if (value == null || value === '') return [];
+  if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean);
+  return String(value).split(',').map((item) => item.trim()).filter(Boolean);
 }
 
 function readJson(request) {

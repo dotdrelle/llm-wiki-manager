@@ -188,6 +188,21 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       error TEXT,
       created_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS approval_grants (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      workspace_id TEXT,
+      plan_revision INTEGER,
+      scope TEXT NOT NULL,
+      task_id TEXT,
+      group_id TEXT,
+      approval_classes TEXT NOT NULL,
+      status TEXT NOT NULL,
+      reason TEXT,
+      created_at TEXT NOT NULL,
+      granted_at TEXT,
+      rejected_at TEXT
+    );
   `);
   ensureColumn(db, 'events', 'sequence', 'INTEGER');
   ensureColumn(db, 'events', 'workspace', 'TEXT');
@@ -200,6 +215,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   db.exec('CREATE INDEX IF NOT EXISTS idx_task_attempts_task ON task_attempts(task_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_task_attempts_run ON task_attempts(run_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_task_results_task ON task_results(task_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_approval_grants_run_revision ON approval_grants(run_id, workspace_id, plan_revision, status)');
   db.exec(`PRAGMA user_version = ${RUNTIME_STORE_SCHEMA_VERSION}`);
   purgeOldTerminalRuns(db);
 
@@ -475,6 +491,31 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   const latestTaskResultStatement = db.prepare(`
     SELECT * FROM task_results WHERE task_id = ? ORDER BY COALESCE(created_at, attempt_id) DESC, attempt_id DESC LIMIT 1
   `);
+  const upsertApprovalGrantStatement = db.prepare(`
+    INSERT INTO approval_grants (
+      id, run_id, workspace_id, plan_revision, scope, task_id, group_id,
+      approval_classes, status, reason, created_at, granted_at, rejected_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      run_id = excluded.run_id,
+      workspace_id = excluded.workspace_id,
+      plan_revision = excluded.plan_revision,
+      scope = excluded.scope,
+      task_id = excluded.task_id,
+      group_id = excluded.group_id,
+      approval_classes = excluded.approval_classes,
+      status = excluded.status,
+      reason = COALESCE(excluded.reason, approval_grants.reason),
+      granted_at = COALESCE(excluded.granted_at, approval_grants.granted_at),
+      rejected_at = COALESCE(excluded.rejected_at, approval_grants.rejected_at)
+  `);
+  const listApprovalGrantsStatement = db.prepare(`
+    SELECT * FROM approval_grants ORDER BY created_at ASC, id ASC
+  `);
+  const listApprovalGrantsByRunStatement = db.prepare(`
+    SELECT * FROM approval_grants WHERE run_id = ? ORDER BY created_at ASC, id ASC
+  `);
 
   function persistEvent(event) {
     if (NON_PERSISTED_EVENT_TYPES.has(event.type)) return event;
@@ -520,6 +561,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     persistAgentFromEvent(event);
     persistPlanFromEvent(event);
     persistTaskLifecycleFromEvent(event);
+    persistApprovalGrantFromEvent(event);
     return event;
   }
 
@@ -849,6 +891,34 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     );
   }
 
+  function persistApprovalGrantFromEvent(event) {
+    if (!['approval.requested', 'approval.granted', 'approval.rejected'].includes(event.type)) return;
+    const payload = event.payload ?? {};
+    const runId = event.runId ?? payload.runId ?? null;
+    if (!runId) return;
+    const id = payload.id ?? payload.approvalId ?? payload.taskId ?? payload.itemId ?? payload.groupId ?? event.id;
+    const status = event.type === 'approval.requested'
+      ? 'pending_approval'
+      : event.type === 'approval.rejected'
+        ? 'rejected'
+        : 'approved';
+    upsertApprovalGrantStatement.run(
+      String(id),
+      String(runId),
+      event.workspace ?? payload.workspaceId ?? payload.workspace ?? null,
+      payload.planRevision == null ? null : Number(payload.planRevision),
+      String(payload.scope ?? 'run'),
+      payload.taskId ?? payload.itemId ?? event.taskId ?? null,
+      payload.groupId ?? null,
+      JSON.stringify(normalizeApprovalClasses(payload.approvalClasses ?? payload.approvalClass)),
+      status,
+      payload.reason ?? null,
+      payload.createdAt ?? event.ts,
+      status === 'approved' ? (payload.grantedAt ?? event.ts) : null,
+      status === 'rejected' ? (payload.rejectedAt ?? event.ts) : null,
+    );
+  }
+
   function lifecycleTaskId(event) {
     const taskId = event.taskId ?? event.payload?.taskId ?? event.payload?.result?.taskId;
     return taskId == null ? null : String(taskId);
@@ -934,6 +1004,11 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     if (!taskId) return null;
     const row = latestTaskResultStatement.get(String(taskId));
     return row ? rowToTaskResult(row) : null;
+  }
+
+  function listApprovalGrants({ runId = null } = {}) {
+    const rows = runId ? listApprovalGrantsByRunStatement.all(String(runId)) : listApprovalGrantsStatement.all();
+    return rows.map(rowToApprovalGrant);
   }
 
   function listTaskDependencies({ runId = null } = {}) {
@@ -1032,6 +1107,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     listTaskAssignments,
     listTaskAttempts,
     getTaskResult,
+    listApprovalGrants,
     listTaskDependencies,
     listPlanRevisions,
     persistAgent,
@@ -1193,6 +1269,30 @@ function rowToTaskResult(row) {
     error: row.error ? parseJsonMaybe(row.error) : null,
     createdAt: row.created_at ?? null,
   };
+}
+
+function rowToApprovalGrant(row) {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    workspaceId: row.workspace_id ?? null,
+    planRevision: row.plan_revision ?? null,
+    scope: row.scope,
+    taskId: row.task_id ?? null,
+    groupId: row.group_id ?? null,
+    approvalClasses: row.approval_classes ? JSON.parse(row.approval_classes) : [],
+    status: row.status,
+    reason: row.reason ?? null,
+    createdAt: row.created_at,
+    grantedAt: row.granted_at ?? null,
+    rejectedAt: row.rejected_at ?? null,
+  };
+}
+
+function normalizeApprovalClasses(value) {
+  if (value == null) return [];
+  const values = Array.isArray(value) ? value : [value];
+  return [...new Set(values.map((item) => String(item).trim()).filter(Boolean))];
 }
 
 function parseJsonMaybe(value) {

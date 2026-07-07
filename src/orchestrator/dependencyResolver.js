@@ -1,4 +1,5 @@
 import { locksForTask } from './lockManager.js';
+import { approvalCovered } from './approvalPolicy.js';
 
 const DONE_STATUSES = new Set(['done', 'completed', 'complete', 'success', 'succeeded']);
 const TERMINAL_STATUSES = new Set([...DONE_STATUSES, 'failed', 'cancelled', 'canceled', 'skipped']);
@@ -18,7 +19,7 @@ export function readyTasks(dag, {
     .filter((task) => !active.has(taskId(task)))
     .filter((task) => dependenciesDone(task, done))
     .filter((task) => groupBarrierSatisfied(task, tasks))
-    .filter((task) => approvalCovered(task, approvals))
+    .filter((task) => approvalCovered(task, approvals, { runId: task?.runId ?? dag?.runId ?? null, workspaceId: dag?.workspace ?? null, planRevision: dag?.planRevision ?? null }))
     .filter((task) => agentSane(task, registry))
     .filter((task) => locksFree(task, lockManager))
     .filter((task) => budgetOk(task, budgetManager))
@@ -42,20 +43,6 @@ function groupBarrierSatisfied(task, tasks) {
   const groupTasks = tasks.filter((candidate) => taskGroupId(candidate) === String(groupId));
   if (groupTasks.length === 0) return false;
   return groupTasks.every((candidate) => DONE_STATUSES.has(statusOf(candidate)));
-}
-
-function approvalCovered(task, approvals) {
-  if (task?.requiresApproval !== true) return true;
-  if (task?.approved === true || task?.approvalStatus === 'approved') return true;
-  const id = taskId(task);
-  const approvalId = task?.approvalId ?? null;
-  return approvals.some((approval) => {
-    const status = String(approval?.status ?? '');
-    if (status !== 'approved') return false;
-    if (approvalId && approval?.id === approvalId) return true;
-    if (approvalId && approval?.approvalId === approvalId) return true;
-    return approval?.itemId === id || approval?.taskId === id;
-  });
 }
 
 function agentSane(task, registry) {

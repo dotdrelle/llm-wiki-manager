@@ -461,6 +461,21 @@ async function runDispatchedTask(task, {
       session,
       signal,
     });
+    dispatchAgentEvent(session, createAgentEvent('task.assigned', {
+      origin: 'assignment_manager',
+      runId,
+      taskId,
+      payload: {
+        runId,
+        taskId,
+        attemptId: attempt?.attemptId ?? null,
+        assignment: {
+          ...assignment,
+          attemptId: attempt?.attemptId ?? null,
+          agent: undefined,
+        },
+      },
+    }));
     const result = await dispatcher.execute(task, assignment, {
       session,
       signal,
@@ -491,6 +506,7 @@ async function runDispatchedTask(task, {
     const result = {
       ok: false,
       taskId,
+      attemptId: attempt?.attemptId ?? null,
       status: 'failed',
       outputRefs: [],
       metrics: {},

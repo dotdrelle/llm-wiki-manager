@@ -159,6 +159,35 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       PRIMARY KEY (run_id, revision),
       FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS task_assignments (
+      task_id TEXT NOT NULL,
+      attempt_id TEXT NOT NULL,
+      agent_instance_id TEXT NOT NULL,
+      agent_id TEXT,
+      pool_id TEXT,
+      assigned_at TEXT NOT NULL,
+      PRIMARY KEY (task_id, attempt_id)
+    );
+    CREATE TABLE IF NOT EXISTS task_attempts (
+      attempt_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      job_id TEXT,
+      started_at TEXT,
+      finished_at TEXT,
+      error TEXT
+    );
+    CREATE TABLE IF NOT EXISTS task_results (
+      attempt_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      summary TEXT,
+      output_refs TEXT,
+      metrics TEXT,
+      error TEXT,
+      created_at TEXT
+    );
   `);
   ensureColumn(db, 'events', 'sequence', 'INTEGER');
   ensureColumn(db, 'events', 'workspace', 'TEXT');
@@ -168,6 +197,9 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   db.exec('CREATE INDEX IF NOT EXISTS idx_events_workspace ON events(workspace)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_events_sequence ON events(sequence)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_run_status ON tasks(run_id, status)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_task_attempts_task ON task_attempts(task_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_task_attempts_run ON task_attempts(run_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_task_results_task ON task_results(task_id)');
   db.exec(`PRAGMA user_version = ${RUNTIME_STORE_SCHEMA_VERSION}`);
   purgeOldTerminalRuns(db);
 
@@ -392,6 +424,57 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   const listPlanRevisionsByRunStatement = db.prepare(`
     SELECT * FROM plan_revisions WHERE run_id = ? ORDER BY revision ASC
   `);
+  const upsertTaskAssignmentStatement = db.prepare(`
+    INSERT INTO task_assignments (
+      task_id, attempt_id, agent_instance_id, agent_id, pool_id, assigned_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(task_id, attempt_id) DO UPDATE SET
+      agent_instance_id = excluded.agent_instance_id,
+      agent_id = excluded.agent_id,
+      pool_id = excluded.pool_id,
+      assigned_at = excluded.assigned_at
+  `);
+  const upsertTaskAttemptStatement = db.prepare(`
+    INSERT INTO task_attempts (
+      attempt_id, task_id, run_id, status, job_id, started_at, finished_at, error
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(attempt_id) DO UPDATE SET
+      task_id = excluded.task_id,
+      run_id = excluded.run_id,
+      status = excluded.status,
+      job_id = COALESCE(excluded.job_id, task_attempts.job_id),
+      started_at = COALESCE(task_attempts.started_at, excluded.started_at),
+      finished_at = COALESCE(excluded.finished_at, task_attempts.finished_at),
+      error = COALESCE(excluded.error, task_attempts.error)
+  `);
+  const upsertTaskResultStatement = db.prepare(`
+    INSERT INTO task_results (
+      attempt_id, task_id, status, summary, output_refs, metrics, error, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(attempt_id) DO UPDATE SET
+      task_id = excluded.task_id,
+      status = excluded.status,
+      summary = COALESCE(excluded.summary, task_results.summary),
+      output_refs = CASE WHEN excluded.output_refs = '[]' THEN task_results.output_refs ELSE excluded.output_refs END,
+      metrics = CASE WHEN excluded.metrics = '{}' THEN task_results.metrics ELSE excluded.metrics END,
+      error = COALESCE(excluded.error, task_results.error),
+      created_at = excluded.created_at
+  `);
+  const listTaskAssignmentsStatement = db.prepare(`
+    SELECT * FROM task_assignments WHERE task_id = ? ORDER BY assigned_at ASC, attempt_id ASC
+  `);
+  const listTaskAttemptsStatement = db.prepare(`
+    SELECT * FROM task_attempts WHERE task_id = ? ORDER BY COALESCE(started_at, finished_at, attempt_id) ASC, attempt_id ASC
+  `);
+  const latestTaskAttemptStatement = db.prepare(`
+    SELECT * FROM task_attempts WHERE task_id = ? ORDER BY COALESCE(started_at, finished_at, attempt_id) DESC, attempt_id DESC LIMIT 1
+  `);
+  const latestTaskResultStatement = db.prepare(`
+    SELECT * FROM task_results WHERE task_id = ? ORDER BY COALESCE(created_at, attempt_id) DESC, attempt_id DESC LIMIT 1
+  `);
 
   function persistEvent(event) {
     if (NON_PERSISTED_EVENT_TYPES.has(event.type)) return event;
@@ -436,6 +519,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     }
     persistAgentFromEvent(event);
     persistPlanFromEvent(event);
+    persistTaskLifecycleFromEvent(event);
     return event;
   }
 
@@ -660,6 +744,139 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     }
   }
 
+  function persistTaskLifecycleFromEvent(event) {
+    if (![
+      'task.assigned',
+      'task.started',
+      'task.retry_scheduled',
+      'task.result_returned',
+      'task.completed',
+      'task.failed',
+    ].includes(event.type)) return;
+    const taskId = lifecycleTaskId(event);
+    const runId = event.runId ?? event.payload?.runId ?? event.payload?.result?.runId ?? null;
+    if (!taskId || !runId) return;
+    const attemptId = lifecycleAttemptId(event, taskId);
+
+    if (event.type === 'task.assigned') {
+      const assignment = event.payload?.assignment ?? {};
+      const agentInstanceId = event.payload?.agentInstanceId ?? assignment.agentInstanceId;
+      if (agentInstanceId) {
+        upsertTaskAssignmentStatement.run(
+          taskId,
+          attemptId,
+          String(agentInstanceId),
+          event.payload?.agentId ?? assignment.agentId ?? null,
+          event.payload?.poolId ?? assignment.poolId ?? null,
+          event.payload?.assignedAt ?? event.ts,
+        );
+      }
+      persistTaskAttempt({
+        attemptId,
+        taskId,
+        runId,
+        status: event.payload?.status ?? 'assigned',
+        startedAt: null,
+        finishedAt: null,
+        jobId: null,
+        error: null,
+      });
+      return;
+    }
+
+    if (event.type === 'task.started') {
+      persistTaskAttempt({
+        attemptId,
+        taskId,
+        runId,
+        status: event.payload?.status ?? 'running',
+        startedAt: event.payload?.startedAt ?? event.ts,
+        finishedAt: null,
+        jobId: event.payload?.jobId ?? event.payload?.result?.jobId ?? null,
+        error: null,
+      });
+      return;
+    }
+
+    if (event.type === 'task.retry_scheduled') {
+      persistTaskAttempt({
+        attemptId,
+        taskId,
+        runId,
+        status: event.payload?.status ?? 'retry_scheduled',
+        startedAt: null,
+        finishedAt: null,
+        jobId: event.payload?.jobId ?? null,
+        error: stringifyError(event.payload?.error ?? event.payload?.reason ?? null),
+      });
+      return;
+    }
+
+    const result = event.payload?.result ?? {};
+    const status = resultStatusForEvent(event, result);
+    persistTaskAttempt({
+      attemptId,
+      taskId,
+      runId,
+      status: attemptStatusForResult(status, event.type),
+      startedAt: null,
+      finishedAt: event.ts,
+      jobId: result.jobId ?? event.payload?.jobId ?? null,
+      error: stringifyError(result.error ?? event.payload?.error ?? null),
+    });
+    upsertTaskResultStatement.run(
+      attemptId,
+      taskId,
+      status,
+      result.summary ?? event.payload?.summary ?? null,
+      JSON.stringify(result.outputRefs ?? result.result?.outputRefs ?? []),
+      JSON.stringify(result.metrics ?? result.result?.metrics ?? {}),
+      stringifyError(result.error ?? event.payload?.error ?? null),
+      event.payload?.createdAt ?? event.ts,
+    );
+  }
+
+  function persistTaskAttempt({ attemptId, taskId, runId, status, jobId, startedAt, finishedAt, error }) {
+    upsertTaskAttemptStatement.run(
+      attemptId,
+      taskId,
+      runId,
+      status,
+      jobId,
+      startedAt,
+      finishedAt,
+      error,
+    );
+  }
+
+  function lifecycleTaskId(event) {
+    const taskId = event.taskId ?? event.payload?.taskId ?? event.payload?.result?.taskId;
+    return taskId == null ? null : String(taskId);
+  }
+
+  function lifecycleAttemptId(event, taskId) {
+    const attemptId = event.payload?.attemptId
+      ?? event.payload?.assignment?.attemptId
+      ?? event.payload?.result?.attemptId;
+    if (attemptId != null) return String(attemptId);
+    return latestTaskAttemptStatement.get(taskId)?.attempt_id ?? `${taskId}:attempt-1`;
+  }
+
+  function resultStatusForEvent(event, result) {
+    if (result?.status) return String(result.status);
+    if (event.type === 'task.completed') return 'succeeded';
+    if (event.type === 'task.failed') return 'failed';
+    return 'unknown';
+  }
+
+  function attemptStatusForResult(status, eventType) {
+    const normalized = String(status ?? '').toLowerCase();
+    if (['succeeded', 'success', 'done', 'complete', 'completed'].includes(normalized)) return 'done';
+    if (['cancelled', 'canceled'].includes(normalized)) return 'cancelled';
+    if (eventType === 'task.failed') return 'failed';
+    return normalized || 'finished';
+  }
+
   function listAgents() {
     return listAgentsStatement.all().map((row) => {
       const description = row.description ? JSON.parse(row.description) : null;
@@ -701,6 +918,22 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   function listTasks({ runId = null } = {}) {
     const rows = runId ? listTasksByRunStatement.all(runId) : listTasksStatement.all();
     return rows.map(rowToTask);
+  }
+
+  function listTaskAssignments({ taskId }) {
+    if (!taskId) return [];
+    return listTaskAssignmentsStatement.all(String(taskId)).map(rowToTaskAssignment);
+  }
+
+  function listTaskAttempts({ taskId }) {
+    if (!taskId) return [];
+    return listTaskAttemptsStatement.all(String(taskId)).map(rowToTaskAttempt);
+  }
+
+  function getTaskResult({ taskId }) {
+    if (!taskId) return null;
+    const row = latestTaskResultStatement.get(String(taskId));
+    return row ? rowToTaskResult(row) : null;
   }
 
   function listTaskDependencies({ runId = null } = {}) {
@@ -796,6 +1029,9 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     saveQueue,
     listQueue,
     listTasks,
+    listTaskAssignments,
+    listTaskAttempts,
+    getTaskResult,
     listTaskDependencies,
     listPlanRevisions,
     persistAgent,
@@ -920,6 +1156,56 @@ function rowToTask(row) {
     createdAt: row.created_at ?? null,
     updatedAt: row.updated_at ?? null,
   };
+}
+
+function rowToTaskAssignment(row) {
+  return {
+    taskId: row.task_id,
+    attemptId: row.attempt_id,
+    agentInstanceId: row.agent_instance_id,
+    agentId: row.agent_id ?? null,
+    poolId: row.pool_id ?? null,
+    assignedAt: row.assigned_at,
+  };
+}
+
+function rowToTaskAttempt(row) {
+  return {
+    attemptId: row.attempt_id,
+    taskId: row.task_id,
+    runId: row.run_id,
+    status: row.status,
+    jobId: row.job_id ?? null,
+    startedAt: row.started_at ?? null,
+    finishedAt: row.finished_at ?? null,
+    error: row.error ? parseJsonMaybe(row.error) : null,
+  };
+}
+
+function rowToTaskResult(row) {
+  return {
+    attemptId: row.attempt_id,
+    taskId: row.task_id,
+    status: row.status,
+    summary: row.summary ?? null,
+    outputRefs: row.output_refs ? JSON.parse(row.output_refs) : [],
+    metrics: row.metrics ? JSON.parse(row.metrics) : {},
+    error: row.error ? parseJsonMaybe(row.error) : null,
+    createdAt: row.created_at ?? null,
+  };
+}
+
+function parseJsonMaybe(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function stringifyError(value) {
+  if (value == null) return null;
+  return typeof value === 'string' ? value : JSON.stringify(value);
 }
 
 function eventToAuditEntry(event) {

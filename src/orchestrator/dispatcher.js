@@ -56,6 +56,19 @@ export async function execute(task, assignment, {
     }
     jobId = String(accepted.jobId ?? '');
     if (!jobId) throw new Error('agent_execute did not return jobId.');
+    dispatchAgentEvent(session, createAgentEvent('task.started', {
+      origin: 'dispatcher',
+      runId,
+      taskId: String(task.id ?? task.step),
+      payload: {
+        runId,
+        taskId: String(task.id ?? task.step),
+        attemptId: attempt?.attemptId ?? null,
+        agentInstanceId: assignment.agentInstanceId,
+        jobId,
+        startedAt: new Date().toISOString(),
+      },
+    }));
     dispatchTaskActivity(session, task, assignment, jobId, statusTool, runId);
 
     while (true) {
@@ -78,12 +91,12 @@ export async function execute(task, assignment, {
         lastStatus = parseToolPayload(await callTool(session.mcp, serverName, statusTool, { jobId }, signal));
       }
       if (isTerminal(lastStatus?.status ?? lastStatus?.result?.status)) {
-        return taskResultFromStatus(task, assignment, jobId, lastStatus);
+        return taskResultFromStatus(task, assignment, jobId, lastStatus, attempt);
       }
       await delay(pollIntervalMs, signal);
       lastStatus = parseToolPayload(await callTool(session.mcp, serverName, statusTool, { jobId }, signal));
       if (isTerminal(lastStatus?.status ?? lastStatus?.result?.status)) {
-        return taskResultFromStatus(task, assignment, jobId, lastStatus);
+        return taskResultFromStatus(task, assignment, jobId, lastStatus, attempt);
       }
     }
   } catch (error) {
@@ -138,13 +151,14 @@ function dispatchTaskActivity(session, task, assignment, jobId, statusTool, runI
   }));
 }
 
-function taskResultFromStatus(task, assignment, jobId, statusPayload) {
+function taskResultFromStatus(task, assignment, jobId, statusPayload, attempt = null) {
   const result = statusPayload?.result ?? {};
   const resultStatus = String(result.status ?? statusPayload?.status ?? '').toLowerCase();
   const ok = ['succeeded', 'success', 'done', 'complete', 'completed'].includes(resultStatus);
   return {
     ok,
     taskId: String(task.id ?? task.step),
+    attemptId: statusPayload?.attemptId ?? attempt?.attemptId ?? null,
     jobId,
     agentInstanceId: assignment.agentInstanceId,
     status: result.status ?? statusPayload?.status,

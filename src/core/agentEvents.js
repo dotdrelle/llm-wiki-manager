@@ -19,6 +19,9 @@ const SESSION_PROJECTION_EVENTS = new Set([
   'plan.rejected',
   'task_group.created',
   'task.created',
+  'task.assigned',
+  'task.started',
+  'task.retry_scheduled',
   'task.result_returned',
   'task.completed',
   'task.failed',
@@ -253,6 +256,18 @@ function applyEvent(state, event) {
       return;
     case 'task.created':
       appendCreatedTask(state, event.payload?.task);
+      return;
+    case 'task.assigned':
+      state.logs.push(`Task assigned: ${String(event.taskId ?? event.payload?.taskId ?? '')}`.trim());
+      state.logs = state.logs.slice(-200);
+      return;
+    case 'task.started':
+      state.logs.push(`Task started: ${String(event.taskId ?? event.payload?.taskId ?? '')}`.trim());
+      state.logs = state.logs.slice(-200);
+      return;
+    case 'task.retry_scheduled':
+      state.logs.push(`Task retry scheduled: ${String(event.taskId ?? event.payload?.taskId ?? '')}`.trim());
+      state.logs = state.logs.slice(-200);
       return;
     case 'task.result_returned':
       state.logs.push(`Task result returned: ${String(event.taskId ?? event.payload?.taskId ?? '')}`.trim());

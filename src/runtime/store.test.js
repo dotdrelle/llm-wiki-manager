@@ -11,6 +11,26 @@ function runtimeStateDir() {
   return join(mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-')), '.wiki-manager');
 }
 
+function plannedTask(id) {
+  return {
+    id,
+    label: 'Build A',
+    description: 'Build A',
+    requiredCapability: 'document.build',
+    operation: 'build',
+    arguments: { templates: ['templates/a.md'] },
+    dependsOn: [],
+    parallelizable: true,
+    inputRefs: [],
+    expectedOutputRefs: [{ type: 'file', ref: 'deliverables/a.md' }],
+    locks: ['deliverable:deliverables/a.md'],
+    requiresApproval: false,
+    idempotencyKey: 'test-key',
+    progressWeight: 1,
+    status: 'pending',
+  };
+}
+
 test('runtime store persists and replays agent events into a projection', () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
   const store = openRuntimeStore({ stateDir });
@@ -84,6 +104,121 @@ test('runtime store persists agent registry tables and exposes registry in state
   assert.equal(state.agents[0].agentInstanceId, 'production-main');
   assert.equal(state.capabilityRegistry['knowledge.update@1'][0].agentInstanceId, 'production-main');
   store.close();
+});
+
+test('runtime store persists task assignments attempts and results from events', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  const runId = 'run-task-persistence';
+  const taskId = 'run-task-persistence:build-a';
+  const attemptId = 'attempt-1';
+
+  for (const event of [
+    createAgentEvent('run_started', {
+      origin: 'runtime',
+      runId,
+      workspace: 'docs',
+      payload: { input: 'build docs', workspace: 'docs' },
+    }),
+    createAgentEvent('task.created', {
+      origin: 'plan_integrator',
+      runId,
+      taskId,
+      workspace: 'docs',
+      payload: { runId, task: plannedTask(taskId) },
+    }),
+    createAgentEvent('task.assigned', {
+      origin: 'assignment_manager',
+      runId,
+      taskId,
+      workspace: 'docs',
+      payload: {
+        runId,
+        taskId,
+        attemptId,
+        assignment: {
+          attemptId,
+          agentInstanceId: 'production-main',
+          agentId: 'production',
+          poolId: 'production-pool',
+        },
+      },
+    }),
+    createAgentEvent('task.started', {
+      origin: 'dispatcher',
+      runId,
+      taskId,
+      workspace: 'docs',
+      payload: { runId, taskId, attemptId, jobId: 'job-1', startedAt: '2026-07-07T10:00:00.000Z' },
+    }),
+    createAgentEvent('task.result_returned', {
+      origin: 'result_aggregator',
+      runId,
+      taskId,
+      workspace: 'docs',
+      payload: {
+        runId,
+        taskId,
+        attemptId,
+        result: {
+          attemptId,
+          taskId,
+          jobId: 'job-1',
+          status: 'succeeded',
+          summary: 'Built A',
+          outputRefs: [{ type: 'file', ref: 'deliverables/a.md' }],
+          metrics: { durationMs: 42 },
+        },
+      },
+    }),
+    createAgentEvent('task.completed', {
+      origin: 'result_aggregator',
+      runId,
+      taskId,
+      workspace: 'docs',
+      payload: { runId, taskId, attemptId, result: { attemptId, taskId, status: 'succeeded' } },
+    }),
+    createAgentEvent('task.retry_scheduled', {
+      origin: 'attempt_manager',
+      runId,
+      taskId,
+      workspace: 'docs',
+      payload: {
+        runId,
+        taskId,
+        attemptId: 'attempt-2',
+        reason: 'retryable_error',
+        error: { code: 'rate_limit', retryable: true },
+      },
+    }),
+  ]) {
+    store.persistEvent(event);
+  }
+
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM task_assignments').get().n, 1);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM task_attempts').get().n, 2);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM task_results').get().n, 1);
+  assert.equal(store.listTasks({ runId })[0].id, taskId);
+  assert.deepEqual(store.listTaskAssignments({ taskId })[0], {
+    taskId,
+    attemptId,
+    agentInstanceId: 'production-main',
+    agentId: 'production',
+    poolId: 'production-pool',
+    assignedAt: store.listTaskAssignments({ taskId })[0].assignedAt,
+  });
+  assert.deepEqual(store.listTaskAttempts({ taskId }).map((attempt) => attempt.status), ['done', 'retry_scheduled']);
+  assert.deepEqual(store.getTaskResult({ taskId }).outputRefs, [{ type: 'file', ref: 'deliverables/a.md' }]);
+  assert.equal(store.getTaskResult({ taskId }).metrics.durationMs, 42);
+  store.close();
+
+  const reopened = openRuntimeStore({ stateDir });
+  const session = { activities: {}, headlessPlan: null };
+  reopened.hydrateSession(session, { workspace: 'docs' });
+  assert.ok(reopened.getState(session, { workspace: 'docs' }).logs.some((line) => line === `Task assigned: ${taskId}`));
+  assert.equal(reopened.listTaskAttempts({ taskId })[0].jobId, 'job-1');
+  assert.equal(reopened.getTaskResult({ taskId }).status, 'succeeded');
+  reopened.close();
 });
 
 test('runtime store writes schema versions to sqlite and meta file', () => {

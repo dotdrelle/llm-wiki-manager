@@ -1,4 +1,5 @@
 export function createAttemptManager({ locks = new Set() } = {}) {
+  let nextAttempt = 0;
   return {
     reserve(task, requestedLocks = locksForTask(task)) {
       const taskId = planTaskId(task);
@@ -6,8 +7,10 @@ export function createAttemptManager({ locks = new Set() } = {}) {
       if (lockNames.some((lock) => locks.has(lock))) return null;
       for (const lock of lockNames) locks.add(lock);
       let released = false;
+      nextAttempt += 1;
       return {
         taskId,
+        attemptId: `${taskId}:attempt-${nextAttempt}`,
         locks: lockNames,
         release() {
           if (released) return;

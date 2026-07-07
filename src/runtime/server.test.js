@@ -128,6 +128,64 @@ test('runtime server shutdown endpoint closes the listener', async (t) => {
   }));
 });
 
+test('runtime server exposes task assignment attempt and result read endpoints', async (t) => {
+  const taskId = 'run-1:task-a';
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      token: 'runtime-secret',
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'idle' }),
+        listEvents: () => [],
+        listTasks: ({ runId }) => runId === 'run-1' ? [{ id: taskId, runId, status: 'done' }] : [],
+        listTaskAttempts: ({ taskId: requested }) => requested === taskId ? [{
+          attemptId: 'attempt-1',
+          taskId,
+          runId: 'run-1',
+          status: 'done',
+          jobId: 'job-1',
+        }] : [],
+        getTaskResult: ({ taskId: requested }) => requested === taskId ? {
+          attemptId: 'attempt-1',
+          taskId,
+          status: 'succeeded',
+          outputRefs: [{ type: 'file', ref: 'deliverables/a.md' }],
+          metrics: { durationMs: 7 },
+        } : null,
+      },
+      session: {},
+      run: async () => {},
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const headers = { authorization: 'Bearer runtime-secret' };
+    const tasksResponse = await fetch(`http://127.0.0.1:${handle.port}/runs/run-1/tasks`, { headers });
+    assert.equal(tasksResponse.status, 200);
+    assert.deepEqual((await tasksResponse.json()).tasks, [{ id: taskId, runId: 'run-1', status: 'done' }]);
+
+    const encodedTaskId = encodeURIComponent(taskId);
+    const attemptsResponse = await fetch(`http://127.0.0.1:${handle.port}/tasks/${encodedTaskId}/attempts`, { headers });
+    assert.equal(attemptsResponse.status, 200);
+    assert.equal((await attemptsResponse.json()).attempts[0].attemptId, 'attempt-1');
+
+    const resultResponse = await fetch(`http://127.0.0.1:${handle.port}/tasks/${encodedTaskId}/result`, { headers });
+    assert.equal(resultResponse.status, 200);
+    assert.equal((await resultResponse.json()).result.metrics.durationMs, 7);
+  } finally {
+    await handle.close();
+  }
+});
+
 test('runtime server accepts only one active run', async (t) => {
   let releaseRun;
   let runCount = 0;

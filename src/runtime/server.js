@@ -85,6 +85,35 @@ export function startRuntimeServer({
         });
         return;
       }
+      if (request.method === 'GET') {
+        const taskRead = readTaskEndpoint(url);
+        if (taskRead) {
+          if (taskRead.kind === 'run_tasks') {
+            sendJson(response, 200, {
+              ok: true,
+              runId: taskRead.runId,
+              tasks: typeof store.listTasks === 'function' ? store.listTasks({ runId: taskRead.runId }) : [],
+            });
+            return;
+          }
+          if (taskRead.kind === 'task_attempts') {
+            sendJson(response, 200, {
+              ok: true,
+              taskId: taskRead.taskId,
+              attempts: typeof store.listTaskAttempts === 'function' ? store.listTaskAttempts({ taskId: taskRead.taskId }) : [],
+            });
+            return;
+          }
+          if (taskRead.kind === 'task_result') {
+            sendJson(response, 200, {
+              ok: true,
+              taskId: taskRead.taskId,
+              result: typeof store.getTaskResult === 'function' ? store.getTaskResult({ taskId: taskRead.taskId }) : null,
+            });
+            return;
+          }
+        }
+      }
       if (request.method === 'GET' && url.pathname === '/control') {
         const workspace = workspaceFromUrl(url);
         const context = await resolveContext({ workspace });
@@ -361,6 +390,20 @@ function workspaceFromUrl(url) {
 function workspaceFromBody(body) {
   const workspace = body?.workspace;
   return workspace == null ? null : String(workspace).trim() || null;
+}
+
+function readTaskEndpoint(url) {
+  const parts = url.pathname.split('/').filter(Boolean).map((part) => decodeURIComponent(part));
+  if (parts.length === 3 && parts[0] === 'runs' && parts[2] === 'tasks') {
+    return { kind: 'run_tasks', runId: parts[1] };
+  }
+  if (parts.length === 3 && parts[0] === 'tasks' && parts[2] === 'attempts') {
+    return { kind: 'task_attempts', taskId: parts[1] };
+  }
+  if (parts.length === 3 && parts[0] === 'tasks' && parts[2] === 'result') {
+    return { kind: 'task_result', taskId: parts[1] };
+  }
+  return null;
 }
 
 function controlStatus(context, store) {

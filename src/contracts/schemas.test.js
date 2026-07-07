@@ -196,3 +196,43 @@ test('plan and plan patch contracts accept new planned task fields without rejec
     operations: [{ op: 'add_task', task: plannedTask }],
   }).ok, true);
 });
+
+test('agent description contract validates orchestrable agent capabilities', () => {
+  const description = {
+    contractVersion: '1',
+    agentType: 'production',
+    agentInstanceId: 'production-main',
+    displayName: 'Production',
+    capabilities: [{
+      id: 'knowledge.update',
+      version: '1',
+      description: 'Update wiki knowledge',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+      supportedOperations: ['ingest', 'pipeline'],
+      mutationClass: 'workspace',
+      defaultRequiresApproval: true,
+      estimatedCost: { llmCalls: 2, tokenRange: [1000, 3000] },
+    }],
+    orchestration: {
+      canPlan: true,
+      canExpandPlan: false,
+      canExecute: true,
+      canCancel: true,
+      canResume: false,
+      supportsIdempotency: false,
+      supportsParallelWorkers: true,
+    },
+    limits: {
+      recommendedConcurrency: 2,
+      maxConcurrency: 4,
+      maxTasksPerPlan: 50,
+      maxTaskDurationMs: 600000,
+    },
+    health: { status: 'available' },
+  };
+
+  assert.equal(validateContract('agentDescription', description).ok, true);
+  assert.equal(validateContract('capabilityDescription', description.capabilities[0]).ok, true);
+  assert.equal(validateContract('agentDescription', { ...description, health: { status: 'offline' } }).ok, false);
+});

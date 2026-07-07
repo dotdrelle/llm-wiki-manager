@@ -33,6 +33,59 @@ test('runtime store persists and replays agent events into a projection', () => 
   reopened.close();
 });
 
+test('runtime store persists agent registry tables and exposes registry in state', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  const agent = {
+    agentInstanceId: 'production-main',
+    health: 'available',
+    firstSeenAt: '2026-01-01T00:00:00.000Z',
+    lastSeenAt: '2026-01-01T00:00:00.000Z',
+    description: {
+      contractVersion: '1',
+      agentType: 'production',
+      agentInstanceId: 'production-main',
+      displayName: 'Production',
+      capabilities: [{
+        id: 'knowledge.update',
+        version: '1',
+        description: 'Update wiki knowledge',
+        inputSchema: {},
+        outputSchema: {},
+        supportedOperations: ['ingest'],
+        defaultRequiresApproval: true,
+      }],
+      orchestration: {
+        canPlan: true,
+        canExpandPlan: false,
+        canExecute: true,
+        canCancel: true,
+        canResume: false,
+        supportsIdempotency: false,
+        supportsParallelWorkers: true,
+      },
+      limits: {
+        recommendedConcurrency: 1,
+        maxConcurrency: 2,
+      },
+      health: { status: 'available' },
+    },
+  };
+
+  store.persistEvent(createAgentEvent('agent.registered', {
+    origin: 'agent_registry',
+    payload: { agent },
+  }));
+
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM agents').get().n, 1);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM agent_capabilities').get().n, 1);
+  assert.equal(store.listAgents()[0].agentInstanceId, 'production-main');
+  const state = store.getState();
+  assert.equal(state.agents[0].agentInstanceId, 'production-main');
+  assert.equal(state.capabilityRegistry['knowledge.update@1'][0].agentInstanceId, 'production-main');
+  store.close();
+});
+
 test('runtime store writes schema versions to sqlite and meta file', () => {
   const root = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
   const stateDir = join(root, '.wiki-manager');

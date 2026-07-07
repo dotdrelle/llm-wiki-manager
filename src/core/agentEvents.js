@@ -23,6 +23,8 @@ const SESSION_PROJECTION_EVENTS = new Set([
   'tool_approved',
   'control_enqueued',
   'control_started',
+  'agent.registered',
+  'agent.health_changed',
   'run_done',
   'run_error',
   'run_cancelled',
@@ -120,6 +122,7 @@ function createProjectionState() {
     planRevision: 0,
     planPatches: [],
     controlQueue: [],
+    agents: {},
     summary: null,
     status: 'idle',
   };
@@ -142,6 +145,9 @@ function publicProjection(state) {
       patch: patch.patch ? { ...patch.patch, operations: (patch.patch.operations ?? []).map((operation) => ({ ...operation })) } : null,
     })),
     controlQueue: state.controlQueue.map((item) => ({ ...item })),
+    agents: Object.values(state.agents)
+      .map((agent) => ({ ...agent, description: cloneJson(agent.description) }))
+      .sort((a, b) => a.agentInstanceId.localeCompare(b.agentInstanceId)),
     summary: state.summary,
     status: state.status,
   };
@@ -155,6 +161,7 @@ export function applyAgentProjectionToSession(session, projection) {
   session.headlessPlan = projection.plan ? projection.plan.map((step) => ({ ...step })) : null;
   session.activities = Object.fromEntries((projection.activities ?? []).map((activity) => [activity.key, { ...activity }]));
   session.controlQueue = (projection.controlQueue ?? []).map((item) => ({ ...item }));
+  session.agents = (projection.agents ?? []).map((agent) => ({ ...agent, description: cloneJson(agent.description) }));
   session.planRevision = projection.planRevision ?? 0;
   session.planPatches = (projection.planPatches ?? []).map((patch) => ({ ...patch }));
   session.workflow = projection.workflow ? { ...projection.workflow } : null;
@@ -380,6 +387,16 @@ function applyEvent(state, event) {
         updatedAt: event.ts,
       });
       return;
+    case 'agent.registered':
+      upsertAgent(state, event.payload?.agent, event.ts);
+      return;
+    case 'agent.health_changed':
+      upsertAgent(state, {
+        ...(event.payload?.agent ?? {}),
+        agentInstanceId: event.payload?.agentInstanceId ?? event.payload?.agent?.agentInstanceId,
+        health: event.payload?.health ?? event.payload?.agent?.health,
+      }, event.ts);
+      return;
     case 'runtime_log':
       state.logs.push(String(event.payload?.message ?? ''));
       state.logs = state.logs.slice(-200);
@@ -387,6 +404,18 @@ function applyEvent(state, event) {
     default:
       return;
   }
+}
+
+function upsertAgent(state, rawAgent, ts) {
+  if (!rawAgent?.agentInstanceId) return;
+  const existing = state.agents[rawAgent.agentInstanceId] ?? {};
+  state.agents[rawAgent.agentInstanceId] = {
+    ...existing,
+    ...rawAgent,
+    description: cloneJson(rawAgent.description ?? existing.description ?? null),
+    health: rawAgent.health ?? rawAgent.description?.health?.status ?? existing.health ?? 'unavailable',
+    lastSeenAt: rawAgent.lastSeenAt ?? ts,
+  };
 }
 
 function upsertById(list, next) {
@@ -565,4 +594,8 @@ function updatePlanStep(plan, payload) {
 function sortedActivities(activities) {
   return Object.values(activities ?? {})
     .sort((a, b) => String(a.updatedAt ?? '').localeCompare(String(b.updatedAt ?? '')));
+}
+
+function cloneJson(value) {
+  return value == null ? value : JSON.parse(JSON.stringify(value));
 }

@@ -2,15 +2,20 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { startNextQueuedJob, syncQueueWithActivity } from '../core/jobQueue.js';
+import { createAgentRegistry } from '../orchestrator/agentRegistry.js';
 
 export function startActivitySupervisor(session, {
   intervalMs = 1000,
   queueIntervalMs = 10000,
+  agentRegistryIntervalMs = registryIntervalFromEnv(),
+  agentRegistry = null,
   callTool = callMcpTool,
 } = {}) {
   const pollBusy = new Set();
   let stopped = false;
   let runSignal = null;
+  const registry = agentRegistry ?? createAgentRegistry({ callTool });
+  session.agentRegistry ??= registry;
 
   const pollTimer = setInterval(() => {
     void pollActivitiesOnce(session, { pollBusy, callTool, signal: runSignal });
@@ -24,7 +29,14 @@ export function startActivitySupervisor(session, {
     }
   }, queueIntervalMs);
 
+  const agentRegistryTimer = agentRegistryIntervalMs > 0
+    ? setInterval(() => {
+      void discoverAgentsOnce(session, { registry, signal: runSignal });
+    }, agentRegistryIntervalMs)
+    : null;
+
   void pollActivitiesOnce(session, { pollBusy, callTool, signal: runSignal });
+  void discoverAgentsOnce(session, { registry, signal: runSignal });
 
   return {
     pollBusy,
@@ -36,9 +48,19 @@ export function startActivitySupervisor(session, {
       stopped = true;
       clearInterval(pollTimer);
       clearInterval(queueTimer);
+      if (agentRegistryTimer) clearInterval(agentRegistryTimer);
       pollBusy.clear();
     },
   };
+}
+
+export async function discoverAgentsOnce(session, {
+  registry = session?.agentRegistry ?? createAgentRegistry(),
+  signal = null,
+} = {}) {
+  if (!session) return [];
+  session.agentRegistry ??= registry;
+  return registry.discover(session, { signal });
 }
 
 export async function pollActivitiesOnce(session, {
@@ -101,4 +123,9 @@ export function emitRuntimeLog(session, message) {
     origin: 'runtime',
     payload: { message },
   }));
+}
+
+function registryIntervalFromEnv() {
+  const value = Number(process.env.WIKI_MANAGER_AGENT_REGISTRY_INTERVAL_MS);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 60000;
 }

@@ -5,6 +5,7 @@ import { applyAgentProjectionToSession, dispatchAgentEvent, reduceAgentEvents } 
 import { defaultRuntimeStateDir } from '../core/env.js';
 import { projectQueue } from '../core/jobQueue.js';
 import { projectWorkflow } from '../core/workflow.js';
+import { createCapabilityRegistry } from '../orchestrator/capabilityRegistry.js';
 
 export { defaultRuntimeStateDir };
 
@@ -77,6 +78,24 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       started_at TEXT,
       finished_at TEXT,
       updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS agents (
+      instance_id TEXT PRIMARY KEY,
+      agent_type TEXT NOT NULL,
+      display_name TEXT,
+      contract_version TEXT NOT NULL,
+      health TEXT NOT NULL,
+      description TEXT NOT NULL,
+      first_seen_at TEXT,
+      last_seen_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS agent_capabilities (
+      instance_id TEXT NOT NULL,
+      capability_id TEXT NOT NULL,
+      version TEXT NOT NULL,
+      default_requires_approval INTEGER DEFAULT 0,
+      declaration TEXT NOT NULL,
+      PRIMARY KEY (instance_id, capability_id, version)
     );
   `);
   ensureColumn(db, 'events', 'sequence', 'INTEGER');
@@ -198,6 +217,37 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     WHERE workspace IS NOT NULL AND status IN (${RECOVERABLE_QUEUE_STATUSES.map(() => '?').join(', ')})
     ORDER BY workspace
   `);
+  const upsertAgentStatement = db.prepare(`
+    INSERT INTO agents (
+      instance_id, agent_type, display_name, contract_version, health,
+      description, first_seen_at, last_seen_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(instance_id) DO UPDATE SET
+      agent_type = excluded.agent_type,
+      display_name = excluded.display_name,
+      contract_version = excluded.contract_version,
+      health = excluded.health,
+      description = excluded.description,
+      first_seen_at = COALESCE(agents.first_seen_at, excluded.first_seen_at),
+      last_seen_at = excluded.last_seen_at
+  `);
+  const deleteAgentCapabilitiesStatement = db.prepare('DELETE FROM agent_capabilities WHERE instance_id = ?');
+  const upsertAgentCapabilityStatement = db.prepare(`
+    INSERT INTO agent_capabilities (
+      instance_id, capability_id, version, default_requires_approval, declaration
+    )
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(instance_id, capability_id, version) DO UPDATE SET
+      default_requires_approval = excluded.default_requires_approval,
+      declaration = excluded.declaration
+  `);
+  const listAgentsStatement = db.prepare(`
+    SELECT instance_id, agent_type, display_name, contract_version, health,
+      description, first_seen_at, last_seen_at
+    FROM agents
+    ORDER BY instance_id ASC
+  `);
 
   function persistEvent(event) {
     if (NON_PERSISTED_EVENT_TYPES.has(event.type)) return event;
@@ -240,6 +290,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
         });
       }
     }
+    persistAgentFromEvent(event);
     return event;
   }
 
@@ -341,6 +392,61 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     }
   }
 
+  function persistAgent(agent) {
+    if (!agent?.agentInstanceId || !agent.description) return;
+    const description = agent.description;
+    const capabilities = Array.isArray(description.capabilities) ? description.capabilities : [];
+    const firstSeenAt = agent.firstSeenAt ?? agent.lastSeenAt ?? new Date().toISOString();
+    const lastSeenAt = agent.lastSeenAt ?? firstSeenAt;
+    db.exec('BEGIN');
+    try {
+      upsertAgentStatement.run(
+        agent.agentInstanceId,
+        description.agentType ?? agent.serverName ?? 'unknown',
+        description.displayName ?? agent.agentInstanceId,
+        description.contractVersion ?? 'legacy',
+        agent.health ?? description.health?.status ?? 'unavailable',
+        JSON.stringify(description),
+        firstSeenAt,
+        lastSeenAt,
+      );
+      deleteAgentCapabilitiesStatement.run(agent.agentInstanceId);
+      for (const capability of capabilities) {
+        upsertAgentCapabilityStatement.run(
+          agent.agentInstanceId,
+          capability.id,
+          capability.version,
+          capability.defaultRequiresApproval === true ? 1 : 0,
+          JSON.stringify(capability),
+        );
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  function persistAgentFromEvent(event) {
+    if (event.type !== 'agent.registered' && event.type !== 'agent.health_changed') return;
+    persistAgent(event.payload?.agent);
+  }
+
+  function listAgents() {
+    return listAgentsStatement.all().map((row) => {
+      const description = row.description ? JSON.parse(row.description) : null;
+      return {
+        agentInstanceId: row.instance_id,
+        description,
+        health: row.health,
+        firstSeenAt: row.first_seen_at ?? null,
+        lastSeenAt: row.last_seen_at ?? null,
+        legacy: description?.contractVersion === 'legacy',
+        orchestrable: description?.contractVersion !== 'legacy',
+      };
+    });
+  }
+
   function listQueue({ workspace = null } = {}) {
     const rows = workspace
       ? listQueueByWorkspaceStatement.all(workspace)
@@ -388,10 +494,17 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     const controlQueue = Array.isArray(projection.controlQueue)
       ? projection.controlQueue.filter((item) => !workspace || item.workspace === workspace || !item.workspace).map((item) => ({ ...item }))
       : [];
+    const agents = mergeAgents(
+      listAgents(),
+      projection.agents ?? [],
+      session?.agentRegistry?.snapshot?.() ?? [],
+    );
     const baseState = {
       ...projection,
       queue,
       controlQueue,
+      agents,
+      capabilityRegistry: createCapabilityRegistry({ agents }).snapshot(),
       eventsCursor: session?.agentEvents?.at(-1)?.sequence ?? events?.at(-1)?.sequence ?? lastEventSequence,
     };
     const runs = listRuns({ workspace });
@@ -427,6 +540,8 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     interruptRuns,
     saveQueue,
     listQueue,
+    persistAgent,
+    listAgents,
     replayEvents,
     hydrateSession,
     getProjection,
@@ -545,6 +660,21 @@ function auditSummary(event) {
   if (typeof payload.content === 'string') return payload.content.slice(0, 240);
   if (payload.activity?.label) return payload.activity.label;
   return event.type;
+}
+
+function mergeAgents(...groups) {
+  const byId = new Map();
+  for (const agents of groups) {
+    for (const agent of agents ?? []) {
+      if (!agent?.agentInstanceId) continue;
+      byId.set(agent.agentInstanceId, {
+        ...(byId.get(agent.agentInstanceId) ?? {}),
+        ...agent,
+        description: agent.description ?? byId.get(agent.agentInstanceId)?.description ?? null,
+      });
+    }
+  }
+  return [...byId.values()].sort((a, b) => a.agentInstanceId.localeCompare(b.agentInstanceId));
 }
 
 function ensureColumn(db, table, column, definition) {

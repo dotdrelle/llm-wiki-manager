@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { pollActivitiesOnce, startActivitySupervisor } from './supervisor.js';
+import { discoverAgentsOnce, pollActivitiesOnce, startActivitySupervisor } from './supervisor.js';
 
 test('pollActivitiesOnce updates activity through the event reducer', async () => {
   const session = {
@@ -152,6 +152,52 @@ test('startActivitySupervisor passes the active run signal to background polls',
   } finally {
     supervisor.stop();
   }
+});
+
+test('startActivitySupervisor periodically re-scans the agent registry', async () => {
+  const session = {
+    mcp: {},
+    activities: {},
+    headlessPlan: null,
+    jobQueue: [],
+  };
+  let discoveries = 0;
+  const registry = {
+    async discover() {
+      discoveries += 1;
+      return [];
+    },
+    snapshot() {
+      return [];
+    },
+  };
+
+  const supervisor = startActivitySupervisor(session, {
+    intervalMs: 1000,
+    queueIntervalMs: 1000,
+    agentRegistryIntervalMs: 10,
+    agentRegistry: registry,
+  });
+
+  try {
+    await waitFor(() => discoveries >= 2);
+    assert.equal(session.agentRegistry, registry);
+  } finally {
+    supervisor.stop();
+  }
+});
+
+test('discoverAgentsOnce uses the session registry and returns discovered agents', async () => {
+  const expected = [{ agentInstanceId: 'a' }];
+  const registry = {
+    async discover(session) {
+      assert.equal(session.workspace, 'docs');
+      return expected;
+    },
+  };
+  const session = { workspace: 'docs', agentRegistry: registry };
+
+  assert.equal(await discoverAgentsOnce(session), expected);
 });
 
 test('pollActivitiesOnce fires _onActivitiesTerminal when last activity becomes terminal', async () => {

@@ -53,6 +53,83 @@ const retryPolicySchema = {
   },
 };
 
+const jsonSchemaSchema = { type: 'object', additionalProperties: true };
+const capabilityDescriptionSchema = {
+  $id: 'https://dotdrelle.dev/wiki-manager/contracts/capability-description/v1',
+  title: 'CapabilityDescription',
+  schemaVersion: '1',
+  type: 'object',
+  required: ['id', 'version', 'description', 'inputSchema', 'outputSchema', 'supportedOperations'],
+  additionalProperties: true,
+  properties: {
+    id: { type: 'string', minLength: 1 },
+    version: { type: 'string', minLength: 1 },
+    description: { type: 'string' },
+    inputSchema: jsonSchemaSchema,
+    outputSchema: jsonSchemaSchema,
+    supportedOperations: stringArraySchema,
+    mutationClass: { type: 'string' },
+    defaultRequiresApproval: { type: 'boolean' },
+    estimatedCost: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        llmCalls: { type: 'number', minimum: 0 },
+        tokenRange: { type: 'array', items: { type: 'number' } },
+      },
+    },
+  },
+};
+
+const agentDescriptionSchema = {
+  $id: 'https://dotdrelle.dev/wiki-manager/contracts/agent-description/v1',
+  title: 'AgentDescription',
+  schemaVersion: '1',
+  type: 'object',
+  required: ['contractVersion', 'agentType', 'agentInstanceId', 'displayName', 'capabilities', 'orchestration', 'limits', 'health'],
+  additionalProperties: true,
+  properties: {
+    contractVersion: { type: 'string', minLength: 1 },
+    agentType: { type: 'string', minLength: 1 },
+    agentInstanceId: { type: 'string', minLength: 1 },
+    displayName: { type: 'string', minLength: 1 },
+    capabilities: { type: 'array', items: capabilityDescriptionSchema },
+    orchestration: {
+      type: 'object',
+      required: ['canPlan', 'canExpandPlan', 'canExecute', 'canCancel', 'canResume', 'supportsIdempotency', 'supportsParallelWorkers'],
+      additionalProperties: true,
+      properties: {
+        canPlan: { type: 'boolean' },
+        canExpandPlan: { type: 'boolean' },
+        canExecute: { type: 'boolean' },
+        canCancel: { type: 'boolean' },
+        canResume: { type: 'boolean' },
+        supportsIdempotency: { type: 'boolean' },
+        supportsParallelWorkers: { type: 'boolean' },
+      },
+    },
+    limits: {
+      type: 'object',
+      required: ['recommendedConcurrency', 'maxConcurrency'],
+      additionalProperties: true,
+      properties: {
+        recommendedConcurrency: { type: 'number', minimum: 0 },
+        maxConcurrency: { type: 'number', minimum: 0 },
+        maxTasksPerPlan: { type: 'number', minimum: 0 },
+        maxTaskDurationMs: { type: 'number', minimum: 0 },
+      },
+    },
+    health: {
+      type: 'object',
+      required: ['status'],
+      additionalProperties: false,
+      properties: {
+        status: { type: 'string', enum: ['available', 'degraded', 'unavailable'] },
+      },
+    },
+  },
+};
+
 const taskGroupSchema = {
   $id: 'https://dotdrelle.dev/wiki-manager/contracts/task-group/v1',
   title: 'TaskGroup',
@@ -139,6 +216,35 @@ const taskGraphFragmentSchema = {
   },
 };
 
+// Shared by planStepSchema and patchTaskSchema, which differ only in their
+// `id`/`description` requiredness — every other field is identical.
+const taskFieldsSchema = {
+  label: { type: 'string' },
+  requiredCapability: { type: ['string', 'null'] },
+  operation: { type: ['string', 'null'] },
+  arguments: { type: 'object', additionalProperties: true },
+  groupId: nullableString,
+  status: { type: 'string' },
+  dependsOn: { type: 'array', items: { type: 'string' } },
+  dependsOnGroup: nullableString,
+  barrier: { type: 'boolean' },
+  parallelizable: { type: 'boolean' },
+  recommendedConcurrency: { type: 'integer', minimum: 1 },
+  executor: nullableString,
+  executorQuery: nullableObject,
+  inputRefs: { type: 'array', items: outputReferenceSchema },
+  expectedOutputRefs: { type: 'array', items: outputReferenceSchema },
+  locks: stringArraySchema,
+  requiresApproval: { type: 'boolean' },
+  approvalClass: nullableString,
+  approvalSummary: nullableString,
+  idempotencyKey: { type: ['string', 'null'] },
+  progressWeight: { type: 'number', minimum: 0 },
+  priority: { type: 'number' },
+  retryPolicy: retryPolicySchema,
+  outputRefs: { type: 'array', items: outputReferenceSchema },
+};
+
 const planStepSchema = {
   type: 'object',
   required: ['description', 'status', 'dependsOn', 'outputRefs'],
@@ -147,30 +253,7 @@ const planStepSchema = {
     step: { type: 'number' },
     id: nullableString,
     description: { type: 'string' },
-    label: { type: 'string' },
-    requiredCapability: { type: ['string', 'null'] },
-    operation: { type: ['string', 'null'] },
-    arguments: { type: 'object', additionalProperties: true },
-    groupId: nullableString,
-    status: { type: 'string' },
-    dependsOn: { type: 'array', items: { type: 'string' } },
-    dependsOnGroup: nullableString,
-    barrier: { type: 'boolean' },
-    parallelizable: { type: 'boolean' },
-    recommendedConcurrency: { type: 'integer', minimum: 1 },
-    executor: nullableString,
-    executorQuery: nullableObject,
-    inputRefs: { type: 'array', items: outputReferenceSchema },
-    expectedOutputRefs: { type: 'array', items: outputReferenceSchema },
-    locks: stringArraySchema,
-    requiresApproval: { type: 'boolean' },
-    approvalClass: nullableString,
-    approvalSummary: nullableString,
-    idempotencyKey: { type: ['string', 'null'] },
-    progressWeight: { type: 'number', minimum: 0 },
-    priority: { type: 'number' },
-    retryPolicy: retryPolicySchema,
-    outputRefs: { type: 'array', items: outputReferenceSchema },
+    ...taskFieldsSchema,
   },
 };
 
@@ -181,30 +264,7 @@ const patchTaskSchema = {
   properties: {
     id: { type: 'string' },
     description: { type: 'string' },
-    label: { type: 'string' },
-    requiredCapability: { type: ['string', 'null'] },
-    operation: { type: ['string', 'null'] },
-    arguments: { type: 'object', additionalProperties: true },
-    groupId: nullableString,
-    status: { type: 'string' },
-    dependsOn: { type: 'array', items: { type: 'string' } },
-    dependsOnGroup: nullableString,
-    barrier: { type: 'boolean' },
-    parallelizable: { type: 'boolean' },
-    recommendedConcurrency: { type: 'integer', minimum: 1 },
-    executor: nullableString,
-    executorQuery: nullableObject,
-    inputRefs: { type: 'array', items: outputReferenceSchema },
-    expectedOutputRefs: { type: 'array', items: outputReferenceSchema },
-    locks: stringArraySchema,
-    requiresApproval: { type: 'boolean' },
-    approvalClass: nullableString,
-    approvalSummary: nullableString,
-    idempotencyKey: { type: ['string', 'null'] },
-    progressWeight: { type: 'number', minimum: 0 },
-    priority: { type: 'number' },
-    retryPolicy: retryPolicySchema,
-    outputRefs: { type: 'array', items: outputReferenceSchema },
+    ...taskFieldsSchema,
   },
 };
 
@@ -332,6 +392,8 @@ export const contractSchemas = {
     },
   },
   outputReference: outputReferenceSchema,
+  capabilityDescription: capabilityDescriptionSchema,
+  agentDescription: agentDescriptionSchema,
   retryPolicy: retryPolicySchema,
   taskGroup: taskGroupSchema,
   plannedTask: plannedTaskSchema,

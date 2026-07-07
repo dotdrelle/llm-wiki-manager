@@ -248,6 +248,7 @@ export function startRuntimeServer({
               kind: 'enqueue_run',
               item,
               ...controlStatus(context, store),
+              explanation: 'Request queued for a future run.',
             });
             return;
           }
@@ -527,7 +528,7 @@ async function handleControlMessage(context, store, input, { intent = null, star
   }
   if (classification.kind === 'enqueue_run') {
     const item = enqueueControlRequest(context, input);
-    // Unlike `mutate`, this may synchronously start a queued run (see
+    // Unlike `modify_run`, this may synchronously start a queued run (see
     // startNextControlRequest), which can change running/plan/status — a full
     // controlStatus() recompute is required here, not just controlQueue.
     void startNextControlRequest(context);
@@ -539,6 +540,7 @@ async function handleControlMessage(context, store, input, { intent = null, star
         classification,
         item,
         ...controlStatus(context, store),
+        explanation: 'Request queued for a future run.',
       },
     };
   }

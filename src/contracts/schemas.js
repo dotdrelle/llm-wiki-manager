@@ -374,7 +374,7 @@ export const contractSchemas = {
       message: { type: 'string' },
       prompt: { type: 'string' },
       request: { type: 'string' },
-      intent: { type: 'string', enum: ['observe', 'converse', 'mutate', 'enqueue'] },
+      intent: { type: 'string', enum: ['observe', 'converse', 'mutate', 'enqueue', 'approve', 'modify_run', 'enqueue_run', 'cancel', 'ambiguous'] },
       workspace: nullableString,
       patchId: { type: 'string' },
       id: { type: 'string' },

@@ -109,6 +109,26 @@ test('submitRuntimeRun routes busy runtime input through the control lane', asyn
   }
 });
 
+test('submitRuntimeRun reports queued runs from non-blocking runtime', async () => {
+  const restore = stubFetch(async (url) => {
+    assert.equal(pathOf(url), '/run');
+    return jsonResponse(202, {
+      accepted: true,
+      queued: true,
+      kind: 'enqueue_run',
+      item: { id: 'control-1', status: 'queued' },
+    });
+  });
+  try {
+    const session = createSession();
+    const outcome = await submitRuntimeRun('build the doc', { runtime: { url: 'http://runtime.test' }, session });
+    assert.equal(outcome.kind, 'queued');
+    assert.equal(outcome.result.item.id, 'control-1');
+  } finally {
+    restore();
+  }
+});
+
 test('submitRuntimeRun reports a non-409 error without throwing or calling /control', async () => {
   let controlCalled = false;
   const restore = stubFetch(async (url) => {

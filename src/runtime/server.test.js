@@ -215,7 +215,6 @@ test('runtime server accepts only one active run', async (t) => {
 
   try {
     const url = `http://127.0.0.1:${handle.port}/run`;
-    let acceptedRun = null;
     const [first, second] = await Promise.all([
       fetch(url, {
         method: 'POST',
@@ -229,9 +228,11 @@ test('runtime server accepts only one active run', async (t) => {
       }),
     ]);
 
-    assert.deepEqual([first.status, second.status].sort(), [202, 409]);
-    const accepted = first.status === 202 ? first : second;
-    acceptedRun = await accepted.json();
+    assert.deepEqual([first.status, second.status], [202, 202]);
+    const bodies = [await first.json(), await second.json()];
+    const acceptedRun = bodies.find((body) => body.accepted && !body.queued);
+    const queuedRun = bodies.find((body) => body.queued);
+    assert.equal(queuedRun.kind, 'enqueue_run');
     assert.equal(acceptedRun.accepted, true);
     assert.match(acceptedRun.runId, /^[0-9a-f-]{36}$/);
     assert.equal(runCount, 1);
@@ -394,12 +395,13 @@ test('runtime server isolates active runs by workspace', async (t) => {
     ]);
     assert.deepEqual([juno.status, docs.status], [202, 202]);
 
-    const conflict = await fetch(`${url}?workspace=juno`, {
+    const queued = await fetch(`${url}?workspace=juno`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ input: 'third' }),
     });
-    assert.equal(conflict.status, 409);
+    assert.equal(queued.status, 202);
+    assert.equal((await queued.json()).queued, true);
     assert.deepEqual(runWorkspaces.sort(), ['docs', 'juno']);
   } finally {
     releases.get('juno')?.();
@@ -763,6 +765,70 @@ test('runtime server control message observes an active run without enqueueing',
   }
 });
 
+test('runtime server control message handles approve and cancel intents during an active run', async (t) => {
+  const session = {
+    workspace: 'juno',
+    controlQueue: [],
+  };
+  const abortController = new AbortController();
+  let cancelled = false;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({
+          status: 'running',
+          plan: [{ step: 1, description: 'Build documents', status: 'running' }],
+          queue: [],
+          approvals: [],
+          summary: null,
+        }),
+        listEvents: () => [],
+      },
+      getContext: async () => ({
+        workspace: 'juno',
+        session,
+        running: true,
+        currentAbortController: abortController,
+      }),
+      cancel: async () => { cancelled = true; },
+      run: async () => {},
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const approveResponse = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=juno`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'message', input: 'valide tout' }),
+    });
+    assert.equal(approveResponse.status, 200);
+    assert.equal((await approveResponse.json()).kind, 'approve');
+
+    const cancelResponse = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=juno`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'message', input: 'annule le run' }),
+    });
+    assert.equal(cancelResponse.status, 200);
+    assert.equal((await cancelResponse.json()).kind, 'cancel');
+    assert.equal(cancelled, true);
+    assert.equal(abortController.signal.aborted, true);
+    assert.equal(session.controlQueue.length, 0);
+  } finally {
+    await handle.close();
+  }
+});
+
 test('runtime server control message records active plan mutation as a proposal', async (t) => {
   const session = {
     workspace: 'juno',
@@ -823,7 +889,7 @@ test('runtime server control message records active plan mutation as a proposal'
     });
     assert.equal(response.status, 202);
     const body = await response.json();
-    assert.equal(body.kind, 'mutate');
+    assert.equal(body.kind, 'modify_run');
     assert.equal(body.proposal.status, 'proposed');
     assert.equal(body.proposal.input, 'Ajoute un envoi après chaque génération');
     assert.equal(session.agentProjection.planPatches[0].status, 'proposed');

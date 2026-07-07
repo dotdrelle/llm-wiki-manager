@@ -9,7 +9,7 @@ import {
 } from '../core/mcp.js';
 import { formatSkillsForAgent, readOptionalText } from '../core/skills.js';
 import { handleSlashCommand } from '../commands/slash.js';
-import { extractActivity, formatActivitySummary, parseJsonText } from '../core/activity.js';
+import { extractActivity, formatActivitySummary, parseJsonText, sessionActivities } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
 import { updateWorkspaceProfilePreference } from '../core/profile.js';
@@ -179,6 +179,7 @@ const AgentState = Annotation.Root({
   }),
   toolIterations: Annotation({ default: () => 0 }),
   pendingToolCalls: Annotation(),
+  inputClassification: Annotation(),
   readyToStream: Annotation(),
   streamContext: Annotation(),
   streamedInline: Annotation(),
@@ -601,6 +602,36 @@ export function formatLlmUnavailableMessage(reason) {
   return `⚠ LLM injoignable : ${clean || 'raison inconnue'}`;
 }
 
+function classifyAgentInput(input, session) {
+  const lower = String(input ?? '').toLowerCase();
+  const hasActiveRun = session?.agentProjection?.status === 'running'
+    || sessionActivities(session).some((activity) => !activity.terminal);
+  if (/\b(valide tout|approve all|approve|approuve|valid[eé]|ok pour tout|go pour tout)\b/i.test(lower)) {
+    return { kind: 'approve', confidence: 0.86, reason: 'approval_request', activeRun: hasActiveRun };
+  }
+  if (/\b(cancel|annule|stop|arr[eê]te|interromps|abort)\b/i.test(lower)) {
+    return { kind: 'cancel', confidence: 0.86, reason: 'cancel_request', activeRun: hasActiveRun };
+  }
+  if (/\b(plus tard|later|ensuite|apr[eè]s ce run|enqueue|mets en file|met en file|futur|next run|future run)\b/i.test(lower)) {
+    return { kind: 'enqueue_run', confidence: 0.8, reason: 'future_run_request', activeRun: hasActiveRun };
+  }
+  if (/\b(o[uù] en es[t-]|status|statut|progress|progression|run|job|queue|logs?|explique|explain|inspect|show|montre|quoi de neuf)\b/i.test(lower)) {
+    return { kind: 'observe', confidence: 0.86, reason: 'status_or_explanation_request', activeRun: hasActiveRun };
+  }
+  if (hasActiveRun && /\b(ajoute|add|change|modifie|modify|remplace|replace|retire|remove|skip|ignore|plan|step|t[aâ]che)\b/i.test(lower)) {
+    return { kind: 'modify_run', confidence: 0.78, reason: 'active_run_change_request', activeRun: hasActiveRun };
+  }
+  if (hasActiveRun && /\b(lance|run|g[eé]n[eè]re|build|export|cr[eé]e|create|send|envoie|ingest|convert|importe|import)\b/i.test(lower)) {
+    return { kind: 'ambiguous', confidence: 0.45, reason: 'active_run_action_is_ambiguous', activeRun: hasActiveRun };
+  }
+  return { kind: 'converse', confidence: 0.62, reason: 'plain_conversation', activeRun: hasActiveRun };
+}
+
+function toolsForClassification(classification, writeTools) {
+  if (classification.activeRun && ['converse', 'observe'].includes(classification.kind)) return [SHELL_READ_COMMAND_TOOL];
+  return [SHELL_READ_COMMAND_TOOL, ...writeTools];
+}
+
 export function createAgentGraph(options = {}) {
   async function orchestratorNode(state) {
     const llm = state.session.llm ?? options.llm ?? null;
@@ -624,15 +655,33 @@ export function createAgentGraph(options = {}) {
       state.session._onStep?.('Agent: planning next action…');
     }
 
-    const allTools = [
+    const classification = iterations === 0
+      ? classifyAgentInput(state.input, state.session)
+      : (state.inputClassification ?? { kind: 'modify_run', confidence: 1, reason: 'tool_iteration' });
+    if (iterations === 0) {
+      state.session._onStep?.(`Agent: classified input as ${classification.kind}`);
+      emitAgentEvent(state.session, 'control_message_received', 'agent_classifier', {
+        input: state.input,
+        classification,
+      });
+    }
+    if (iterations === 0 && classification.kind === 'ambiguous') {
+      return {
+        response: 'Je peux répondre sur le run en cours, modifier ce run, mettre une nouvelle demande en file, approuver, ou annuler. Peux-tu préciser ce que tu veux faire ?',
+        pendingToolCalls: null,
+        readyToStream: false,
+        inputClassification: classification,
+      };
+    }
+
+    const writeTools = [
       SHELL_RUN_COMMAND_TOOL,
-      SHELL_READ_COMMAND_TOOL,
       SHELL_PROFILE_UPDATE_TOOL,
       WIKI_PLAN_SET_TOOL,
       WIKI_PLAN_DONE_TOOL,
       ...buildLlmTools(state.session.mcp),
     ];
-    const tools = allTools;
+    const tools = toolsForClassification(classification, writeTools);
     const system = buildAgentSystemPrompt(state);
 
     // On iteration 0: prior history is in state.messages, user input must be appended.
@@ -674,6 +723,7 @@ export function createAgentGraph(options = {}) {
           messages: newMessages,
           toolIterations: iterations + 1,
           readyToStream: false,
+          inputClassification: classification,
         };
       }
 
@@ -689,6 +739,7 @@ export function createAgentGraph(options = {}) {
           readyToStream: false,
           streamedInline: true,
           messages: newMessages,
+          inputClassification: classification,
         };
       }
 

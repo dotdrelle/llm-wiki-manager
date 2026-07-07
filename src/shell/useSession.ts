@@ -99,11 +99,13 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     },
   });
   const runtimeRunStatus = createMemo(() => String(runtimeState()?.status ?? 'idle'));
-  const agentBusy = createMemo(() =>
+  const conversationBusy = createMemo(() => agent.busy());
+  const executionActive = createMemo(() =>
     props.runtime?.url
-      ? runtimeRunStatus() === 'running' || agent.busy()
-      : agent.busy(),
+      ? runtimeRunStatus() === 'running'
+      : sessionActivities(session).some((activity) => !activity.terminal),
   );
+  const agentBusy = conversationBusy;
   const localFallbackActive = createMemo(() => !props.runtime?.url || runtimeStatus() === 'disconnected');
 
   // Runtime conversation entries are merged into conversationMessages(session)
@@ -444,7 +446,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
               const plan = (session as any).headlessPlan;
               const stillRunning = sessionActivities(session).filter((a) => !a.terminal && a.poll);
               const pendingSteps = (plan ?? []).filter((s: any) => s.status === 'pending');
-              if (stillRunning.length === 0 && pendingSteps.length > 0 && !agentBusy()) {
+              if (stillRunning.length === 0 && pendingSteps.length > 0 && !conversationBusy()) {
                 const completedAll = sessionActivities(session).filter((a) => a.terminal);
                 const prompt = buildContinuationPrompt(session, completedAll);
                 void agent.submit(prompt);
@@ -476,7 +478,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
 
   async function submitInput(submittedValue?: string) {
     const line = typeof submittedValue === 'string' && submittedValue.trim() ? submittedValue : input();
-    if (agentBusy()) return { exit: false, busy: true };
+    if (conversationBusy()) return { exit: false, busy: true };
     setInput('');
     setConversationScroll(0);
     if (line.trim()) {
@@ -620,6 +622,8 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     plan,
     conversationScroll,
     scrollConversation,
+    conversationBusy,
+    executionActive,
     busy: agentBusy,
     abort,
     submitInput,

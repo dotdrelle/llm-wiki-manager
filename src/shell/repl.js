@@ -806,7 +806,10 @@ export function applyRuntimeStateToShellSession(session, state) {
 export async function submitRuntimeRun(line, { runtime, session }) {
   const workspace = session.workspace ?? null;
   try {
-    await postRuntimeRun(line, { url: runtime.url, workspace });
+    const result = await postRuntimeRun(line, { url: runtime.url, workspace });
+    if (result?.queued || result?.kind === 'enqueue_run' || result?.kind === 'enqueue') {
+      return { kind: 'queued', result };
+    }
     return { kind: 'accepted' };
   } catch (err) {
     if (err?.status !== 409) {

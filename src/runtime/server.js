@@ -141,9 +141,10 @@ export function startRuntimeServer({
             return;
           }
           validateContractInDev('controlMessage', { ...body, action, input });
-          const result = handleControlMessage(context, store, input, {
+          const result = await handleControlMessage(context, store, input, {
             intent: body.intent,
             startNextControlRequest,
+            cancel,
           });
           sendJson(response, result.statusCode, result.body);
           return;
@@ -231,10 +232,6 @@ export function startRuntimeServer({
       }
       if (request.method === 'POST' && url.pathname === '/run') {
         const { body, context } = await resolveBodyContext(request, url);
-        if (context.running) {
-          sendJson(response, 409, { error: 'A runtime run is already active.' });
-          return;
-        }
         try {
           const input = String(body.input ?? body.prompt ?? '').trim();
           if (!input) {
@@ -242,6 +239,17 @@ export function startRuntimeServer({
             return;
           }
           validateContractInDev('runRequest', { ...body, input });
+          if (context.running) {
+            const item = enqueueControlRequest(context, input);
+            sendJson(response, 202, {
+              accepted: true,
+              queued: true,
+              kind: 'enqueue_run',
+              item,
+              ...controlStatus(context, store),
+            });
+            return;
+          }
           const accepted = startRuntimeRun(context, body);
           sendJson(response, 202, accepted);
         } catch (err) {
@@ -462,19 +470,30 @@ function readOnlyControlResponse(kind, classification, status, explanation, { ac
   };
 }
 
-function handleControlMessage(context, store, input, { intent = null, startNextControlRequest = () => false } = {}) {
+async function handleControlMessage(context, store, input, { intent = null, startNextControlRequest = () => false, cancel = null } = {}) {
   const status = controlStatus(context, store);
   const classification = classifyControlMessage(input, status, intent);
   if (classification.kind === 'observe') {
     return readOnlyControlResponse('observe', classification, status, explainControlState(status));
   }
-  if (classification.kind === 'mutate') {
+  if (classification.kind === 'cancel') {
+    if (context.running && context.currentAbortController) {
+      context.currentAbortController.abort();
+      await cancel?.(context);
+      return readOnlyControlResponse('cancel', classification, controlStatus(context, store), 'Runtime cancellation requested.', { accepted: true });
+    }
+    return readOnlyControlResponse('cancel', classification, status, 'No active run to cancel.', { accepted: false });
+  }
+  if (classification.kind === 'approve') {
+    return readOnlyControlResponse('approve', classification, status, 'Approval intent recorded; targeted approval grants are handled by the approval endpoint.', { accepted: true });
+  }
+  if (classification.kind === 'modify_run') {
     const proposal = storeControlProposal(context, input, classification, status);
     return {
       statusCode: 202,
       body: {
         accepted: true,
-        kind: 'mutate',
+        kind: 'modify_run',
         classification,
         proposal,
         ...controlStatus(context, store),
@@ -482,7 +501,7 @@ function handleControlMessage(context, store, input, { intent = null, startNextC
       },
     };
   }
-  if (classification.kind === 'enqueue') {
+  if (classification.kind === 'enqueue_run') {
     const item = enqueueControlRequest(context, input);
     // Unlike `mutate`, this may synchronously start a queued run (see
     // startNextControlRequest), which can change running/plan/status — a full
@@ -492,7 +511,7 @@ function handleControlMessage(context, store, input, { intent = null, startNextC
       statusCode: 202,
       body: {
         accepted: true,
-        kind: 'enqueue',
+        kind: 'enqueue_run',
         classification,
         item,
         ...controlStatus(context, store),
@@ -505,8 +524,8 @@ function handleControlMessage(context, store, input, { intent = null, startNextC
       extra: {
         choices: [
           { action: 'message', intent: 'observe', label: 'Ask about this run' },
-          { action: 'message', intent: 'mutate', label: 'Propose a change to this run' },
-          { action: 'enqueue', intent: 'enqueue', label: 'Queue as a future run' },
+          { action: 'message', intent: 'modify_run', label: 'Propose a change to this run' },
+          { action: 'enqueue', intent: 'enqueue_run', label: 'Queue as a future run' },
         ],
       },
     });
@@ -553,7 +572,7 @@ function storeControlProposal(context, input, classification, status) {
     origin: 'runtime',
     runId: context.currentRunId ?? status.runId ?? null,
     workspace: proposal.workspace,
-    payload: { input, intent: 'mutate', classification },
+    payload: { input, intent: 'modify_run', classification },
   }));
   dispatchAgentEvent(context.session, createAgentEvent('plan_patch_proposed', {
     origin: 'runtime',
@@ -679,17 +698,34 @@ function classifyControlMessage(input, status, forcedIntent = null) {
   // Caller (the /control message route) already trims and rejects empty input.
   const lower = String(input ?? '').toLowerCase();
   const intent = forcedIntent ? String(forcedIntent).toLowerCase() : null;
-  if (['observe', 'converse', 'mutate', 'enqueue'].includes(intent)) {
-    return { kind: intent, confidence: 1, reason: 'explicit_intent' };
+  const explicit = {
+    observe: 'observe',
+    converse: 'converse',
+    approve: 'approve',
+    modify_run: 'modify_run',
+    mutate: 'modify_run',
+    enqueue_run: 'enqueue_run',
+    enqueue: 'enqueue_run',
+    cancel: 'cancel',
+    ambiguous: 'ambiguous',
+  }[intent];
+  if (explicit) {
+    return { kind: explicit, confidence: 1, reason: 'explicit_intent' };
+  }
+  if (/\b(valide tout|approve all|approve|approuve|valid[eé]|ok pour tout|go pour tout)\b/i.test(lower)) {
+    return { kind: 'approve', confidence: 0.86, reason: 'approval_request' };
+  }
+  if (/\b(cancel|annule|stop|arr[eê]te|interromps|abort)\b/i.test(lower)) {
+    return { kind: 'cancel', confidence: 0.86, reason: 'cancel_request' };
+  }
+  if (/\b(plus tard|later|ensuite|apr[eè]s ce run|enqueue|mets en file|met en file|futur|next run|future run)\b/i.test(lower)) {
+    return { kind: 'enqueue_run', confidence: 0.8, reason: 'future_run_request' };
   }
   if (/\b(o[uù] en es[t-]|status|statut|progress|progression|build|run|job|queue|file|logs?|explique|explain|inspect|show|montre|quoi de neuf)\b/i.test(lower)) {
     return { kind: 'observe', confidence: 0.86, reason: 'status_or_explanation_request' };
   }
   if (status.running && /\b(ajoute|add|change|modifie|modify|remplace|replace|retire|remove|skip|ignore|apr[eè]s|before|after|chaque|each|plan|step|t[aâ]che)\b/i.test(lower)) {
-    return { kind: 'mutate', confidence: 0.78, reason: 'active_run_change_request' };
-  }
-  if (/\b(plus tard|later|ensuite|apr[eè]s ce run|apr[eè]s|enqueue|queue|mets en file|met en file|futur|next run|future run)\b/i.test(lower)) {
-    return { kind: 'enqueue', confidence: 0.8, reason: 'future_run_request' };
+    return { kind: 'modify_run', confidence: 0.78, reason: 'active_run_change_request' };
   }
   if (status.running && /\b(lance|run|g[eé]n[eè]re|build|export|cr[eé]e|create|send|envoie|ingest|convert|importe|import)\b/i.test(lower)) {
     return { kind: 'ambiguous', confidence: 0.45, reason: 'active_run_action_is_ambiguous' };

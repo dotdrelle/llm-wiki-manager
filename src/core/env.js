@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 export function userManagerDir() {
   return process.cwd();
@@ -29,6 +29,16 @@ export function managerEnvFile() {
 
 export function managerMcpEndpointsFile() {
   return join(managerStateDir(), 'mcp.endpoints.json');
+}
+
+// Single source of truth for where `.agents-data` lives, shared by the
+// manager's own document intake and by the host path it mounts into agent
+// containers — keeping them in sync avoids the two silently drifting apart.
+export function resolveAgentsDataDir(session = null) {
+  const configured = process.env.AGENTS_DATA_DIR;
+  if (configured) return isAbsolute(configured) ? configured : resolve(defaultRuntimeStateDir(), configured);
+  if (session?.workspacePath) return resolve(dirname(session.workspacePath), '.agents-data');
+  return resolve(defaultRuntimeStateDir(), 'agents-data');
 }
 
 function parseEnvValue(value) {

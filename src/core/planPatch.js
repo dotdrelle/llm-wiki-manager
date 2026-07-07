@@ -121,11 +121,11 @@ export function normalizeTask(raw, index = 0) {
     description: String(item.description ?? label),
     status: String(item.status ?? 'pending'),
     dependsOn: Array.isArray(item.dependsOn) ? item.dependsOn.map(String) : [],
-    requiredCapability: item.requiredCapability != null ? String(item.requiredCapability) : null,
-    operation: item.operation != null ? String(item.operation) : null,
+    requiredCapability: toNullableString(item.requiredCapability),
+    operation: toNullableString(item.operation),
     arguments: item.arguments && typeof item.arguments === 'object' && !Array.isArray(item.arguments) ? { ...item.arguments } : {},
-    groupId: item.groupId != null ? String(item.groupId) : null,
-    dependsOnGroup: item.dependsOnGroup != null ? String(item.dependsOnGroup) : null,
+    groupId: toNullableString(item.groupId),
+    dependsOnGroup: toNullableString(item.dependsOnGroup),
     barrier: item.barrier === true,
     parallelizable: item.parallelizable === true,
     recommendedConcurrency: normalizeOptionalPositiveInteger(item.recommendedConcurrency),
@@ -133,9 +133,9 @@ export function normalizeTask(raw, index = 0) {
     expectedOutputRefs: normalizeReferenceArray(item.expectedOutputRefs),
     locks: Array.isArray(item.locks) ? item.locks.map(String) : [],
     requiresApproval: item.requiresApproval === true,
-    approvalClass: item.approvalClass != null ? String(item.approvalClass) : null,
-    approvalSummary: item.approvalSummary != null ? String(item.approvalSummary) : null,
-    idempotencyKey: item.idempotencyKey != null ? String(item.idempotencyKey) : null,
+    approvalClass: toNullableString(item.approvalClass),
+    approvalSummary: toNullableString(item.approvalSummary),
+    idempotencyKey: toNullableString(item.idempotencyKey),
     progressWeight: normalizeProgressWeight(item.progressWeight),
     priority: normalizeOptionalNumber(item.priority),
     retryPolicy: item.retryPolicy == null ? undefined : normalizeRetryPolicy(item.retryPolicy),
@@ -143,9 +143,9 @@ export function normalizeTask(raw, index = 0) {
     executorQuery: item.executorQuery ?? null,
     outputRefs: normalizeReferenceArray(item.outputRefs),
   };
-  if (task.recommendedConcurrency === undefined) delete task.recommendedConcurrency;
-  if (task.priority === undefined) delete task.priority;
-  if (task.retryPolicy === undefined) delete task.retryPolicy;
+  for (const key of ['recommendedConcurrency', 'priority', 'retryPolicy']) {
+    if (task[key] === undefined) delete task[key];
+  }
   return task;
 }
 
@@ -184,6 +184,10 @@ function normalizePatchOperation(raw) {
   const op = String(raw.op ?? '');
   if (!PATCH_OPS.has(op)) return null;
   return { ...raw, op };
+}
+
+function toNullableString(value) {
+  return value != null ? String(value) : null;
 }
 
 function normalizeReferenceArray(value) {

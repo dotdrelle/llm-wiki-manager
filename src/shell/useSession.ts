@@ -3,7 +3,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import { formatMcpToolResult, callMcpTool } from '../core/mcp.js';
 import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
-import { formatPlanStatus, formatCompletedActivities } from '../core/plan.js';
+import { formatPlanStatus, formatCompletedActivities, formatPlanStep } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { projectQueue, queueCounts, startNextQueuedJob, syncQueueWithActivity } from '../core/jobQueue.js';
 import { queueStoreFor } from '../core/queueStore.js';
@@ -246,7 +246,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
         .sort((a: any, b: any) => Number(a.step ?? 0) - Number(b.step ?? 0))
         .map((node: any, index: number) => ({
           step: Number(node.step ?? index + 1),
-          description: String(node.description ?? node.label ?? `Step ${index + 1}`),
+          description: formatPlanStep(node) || `Step ${index + 1}`,
           status: String(node.status ?? 'pending'),
         }));
     }
@@ -254,7 +254,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     if (runtimePlan) {
       return runtimePlan.map((step: any, index: number) => ({
         step: Number(step.step ?? index + 1),
-        description: String(step.description ?? step.label ?? step.name ?? `Step ${index + 1}`),
+        description: formatPlanStep(step) || `Step ${index + 1}`,
         status: String(step.status ?? 'pending'),
       }));
     }

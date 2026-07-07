@@ -68,7 +68,7 @@ function normalizeWorkspaceInput(input, workspacePath) {
   if (!raw) return raw;
   const absolute = isAbsolute(raw) ? resolve(raw) : resolve(workspacePath, raw);
   const rel = relative(workspacePath, absolute);
-  if (rel.startsWith('..') || rel === '..' || isAbsolute(rel)) {
+  if (rel.startsWith('..') || isAbsolute(rel)) {
     throw new Error(`Cannot enqueue production job: input is outside the active workspace: ${raw}`);
   }
   return rel.split(sep).join('/');

@@ -1,10 +1,10 @@
 import { execFile, spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import YAML from 'yaml';
 import { cacertEnv, ensureCacertComposeOverride } from './cacert.js';
-import { managerEnvFile, readEnvFile } from './env.js';
+import { managerEnvFile, readEnvFile, resolveAgentsDataDir } from './env.js';
 import { managerRoot } from './workspaces.js';
 
 const execFileAsync = promisify(execFile);
@@ -108,8 +108,6 @@ function composeBaseArgs(session) {
 function composeEnv(session) {
   const uid = typeof process.getuid === 'function' ? String(process.getuid()) : (process.env.UID ?? '1000');
   const gid = typeof process.getgid === 'function' ? String(process.getgid()) : (process.env.GID ?? '1000');
-  const agentsDataDir = process.env.AGENTS_DATA_DIR
-    ?? (session.workspacePath ? join(dirname(session.workspacePath), '.agents-data') : undefined);
   return {
     ...process.env,
     ...readManagerEnv(),
@@ -117,7 +115,7 @@ function composeEnv(session) {
     ...cacertEnv(),
     UID: uid,
     GID: gid,
-    ...(agentsDataDir && { AGENTS_DATA_DIR: agentsDataDir }),
+    AGENTS_DATA_DIR: resolveAgentsDataDir(session),
     WORKSPACE_NAME: session.workspace,
     WIKI_WORKSPACE_PATH: session.workspacePath,
     ...(session.wikirc?.fileName && { WIKI_CONFIG_PATH: session.wikirc.fileName }),

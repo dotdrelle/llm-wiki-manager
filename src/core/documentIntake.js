@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path';
+import { basename, extname, join, resolve } from 'node:path';
 import { callMcpTool, formatMcpToolResult } from './mcp.js';
 import { parseJsonText } from './activity.js';
-import { defaultRuntimeStateDir } from './env.js';
+import { resolveAgentsDataDir } from './env.js';
 
 const SUPPORTED_EXTENSIONS = new Set([
   '.txt', '.md', '.markdown', '.csv', '.json', '.xml', '.yaml', '.yml', '.html', '.htm', '.rtf',
@@ -13,19 +13,12 @@ const SUPPORTED_EXTENSIONS = new Set([
   '.pdf',
 ]);
 
-function agentsDataDir(session = null) {
-  const configured = process.env.AGENTS_DATA_DIR;
-  if (configured) return isAbsolute(configured) ? configured : resolve(defaultRuntimeStateDir(), configured);
-  if (session?.workspacePath) return resolve(dirname(session.workspacePath), '.agents-data');
-  return resolve(defaultRuntimeStateDir(), 'agents-data');
-}
-
 function documentInputRoot(session = null) {
-  return resolve(agentsDataDir(session), 'documents', 'input');
+  return resolve(resolveAgentsDataDir(session), 'documents', 'input');
 }
 
 function uploadsRoot(session = null) {
-  return resolve(agentsDataDir(session), 'documents', 'uploads');
+  return resolve(resolveAgentsDataDir(session), 'documents', 'uploads');
 }
 
 function requireWorkspace(session) {

@@ -185,6 +185,20 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   let lastVisiblePlan: Array<{ step: number; description: string; status: string }> | null = null;
   const activities = createMemo(() => {
     version();
+    const activityLines = nonEmptyRuntimeArray(runtimeState()?.workflow?.activity?.lines);
+    if (activityLines) {
+      return activityLines.map((line: any, index: number) => ({
+        key: line.id ?? `activity-line-${index}`,
+        id: line.id ?? `activity-line-${index}`,
+        label: line.label,
+        status: line.status ?? 'running',
+        progress: line.progress ?? null,
+        terminal: ['done', 'failed', 'cancelled'].includes(String(line.status)),
+        _runtime: true,
+        _workflow: true,
+        _aggregated: true,
+      }));
+    }
     const workflowActivities = nonEmptyRuntimeArray(runtimeState()?.workflow?.nodes?.filter((node: any) => node.type === 'activity'));
     if (workflowActivities) {
       return workflowActivities.map((node: any) => ({

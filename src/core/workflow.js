@@ -1,3 +1,6 @@
+import { aggregateActivity } from '../activity/activityAggregator.js';
+import { calculateWeightedProgress } from '../activity/progressCalculator.js';
+
 const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled', 'canceled', 'error', 'complete', 'completed', 'success']);
 const RUNNING_STATUSES = new Set(['running', 'starting', 'queued', 'waiting', 'pending_approval']);
 
@@ -88,7 +91,8 @@ export function projectWorkflow(state = {}, events = []) {
 
   const current = findCurrentNode(nodes);
   const next = findNextTask(planNodes);
-  const progress = computeProgress({ planNodes, activityNodes, state });
+  const activity = aggregateActivity(state, events);
+  const progress = computeProgress({ planNodes, activityNodes, state, activity });
   const waitingReasons = computeWaitingReasons({ nodes, queueNodes, approvalNodes });
   const summary = buildSummary({ state, run, current, next, progress, evaluation });
 
@@ -99,6 +103,7 @@ export function projectWorkflow(state = {}, events = []) {
     current,
     next,
     progress,
+    activity,
     waitingReasons,
     warnings,
   };
@@ -218,7 +223,10 @@ function findNextTask(tasks) {
     ?? null;
 }
 
-function computeProgress({ planNodes, activityNodes, state }) {
+function computeProgress({ planNodes, activityNodes, state, activity }) {
+  if (planNodes.some((task) => Number.isFinite(Number(task.raw?.progressWeight)))) {
+    return activity.progress ?? calculateWeightedProgress(planNodes.map((node) => node.raw), activityNodes);
+  }
   const activityWithPercent = activityNodes.find((activity) => Number.isFinite(Number(activity.progress?.percent)));
   if (activityWithPercent) {
     return {

@@ -224,36 +224,64 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
       ? lastVisibleActivities.map((activity) => ({ ...activity }))
       : current;
   });
+  // Control-lane run requests (user messages queued while the runtime is
+  // busy) live in state.controlQueue, a separate lane from the MCP job
+  // queue. They must appear in the Queue panel too — otherwise a queued run
+  // request is invisible (Queue (0)) even though it is registered and will
+  // start automatically.
+  const controlQueueItems = createMemo(() => {
+    version();
+    const controlQueue = runtimeState()?.controlQueue;
+    if (!Array.isArray(controlQueue)) return [] as any[];
+    return controlQueue
+      .filter((item: any) => ['queued', 'running', 'starting'].includes(String(item.status ?? '').toLowerCase()))
+      .map((item: any) => ({
+        ...item,
+        id: item.id,
+        label: `run: ${String(item.input ?? '').slice(0, 64)}`,
+        status: item.status,
+        _runtime: true,
+        _control: true,
+      }));
+  });
   const queueItems = createMemo(() => {
     version();
+    const control = controlQueueItems();
     const workflowQueue = nonEmptyRuntimeArray(runtimeState()?.workflow?.nodes?.filter((node: any) => node.type === 'queue'));
     if (workflowQueue) {
-      return workflowQueue.map((node: any) => ({ ...(node.raw ?? {}), id: node.itemId ?? node.id, label: node.label, status: node.status, _runtime: true, _workflow: true }));
+      return [...control, ...workflowQueue.map((node: any) => ({ ...(node.raw ?? {}), id: node.itemId ?? node.id, label: node.label, status: node.status, _runtime: true, _workflow: true }))];
     }
     const runtimeQueue = nonEmptyRuntimeArray(runtimeState()?.queue);
-    if (runtimeQueue) return runtimeQueue.map((item: any) => ({ ...item, _runtime: true }));
-    return projectQueue((session as any).headlessPlan, (session as any).jobQueue ?? [], { workspace: (session as any).workspace ?? null })
-      .map((item: any) => ({ ...item }));
+    if (runtimeQueue) return [...control, ...runtimeQueue.map((item: any) => ({ ...item, _runtime: true }))];
+    return [
+      ...control,
+      ...projectQueue((session as any).headlessPlan, (session as any).jobQueue ?? [], { workspace: (session as any).workspace ?? null })
+        .map((item: any) => ({ ...item })),
+    ];
   });
   const queueInfo = createMemo(() => {
     version();
+    const control = controlQueueItems();
+    const controlActive = control.length;
+    const controlCurrent = control.filter((item: any) => ['starting', 'running'].includes(String(item.status ?? '').toLowerCase())).length;
     const workflowQueue = runtimeState()?.workflow?.nodes?.filter((node: any) => node.type === 'queue');
     if (Array.isArray(workflowQueue)) {
       return {
-        active: workflowQueue.filter((item: any) => ['waiting', 'starting', 'running', 'queued', 'pending', 'pending_approval'].includes(String(item.status ?? '').toLowerCase())).length,
-        current: workflowQueue.filter((item: any) => ['starting', 'running'].includes(String(item.status ?? '').toLowerCase())).length,
+        active: controlActive + workflowQueue.filter((item: any) => ['waiting', 'starting', 'running', 'queued', 'pending', 'pending_approval'].includes(String(item.status ?? '').toLowerCase())).length,
+        current: controlCurrent + workflowQueue.filter((item: any) => ['starting', 'running'].includes(String(item.status ?? '').toLowerCase())).length,
         frozen: 0,
       };
     }
     const runtimeQueue = runtimeState()?.queue;
     if (Array.isArray(runtimeQueue)) {
       return {
-        active: runtimeQueue.filter((item: any) => ['waiting', 'starting', 'running', 'queued', 'pending', 'pending_approval'].includes(String(item.status ?? '').toLowerCase())).length,
-        current: runtimeQueue.filter((item: any) => ['starting', 'running'].includes(String(item.status ?? '').toLowerCase())).length,
+        active: controlActive + runtimeQueue.filter((item: any) => ['waiting', 'starting', 'running', 'queued', 'pending', 'pending_approval'].includes(String(item.status ?? '').toLowerCase())).length,
+        current: controlCurrent + runtimeQueue.filter((item: any) => ['starting', 'running'].includes(String(item.status ?? '').toLowerCase())).length,
         frozen: 0,
       };
     }
-    return queueCounts(session);
+    const base = queueCounts(session);
+    return { ...base, active: (base.active ?? 0) + controlActive, current: (base.current ?? 0) + controlCurrent };
   });
   const plan = createMemo(() => {
     version();

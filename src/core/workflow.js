@@ -1,5 +1,6 @@
 import { aggregateActivity } from '../activity/activityAggregator.js';
 import { calculateWeightedProgress } from '../activity/progressCalculator.js';
+import { aggregateGraph } from '../graph/graphAggregator.js';
 
 const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled', 'canceled', 'error', 'complete', 'completed', 'success']);
 const RUNNING_STATUSES = new Set(['running', 'starting', 'queued', 'waiting', 'pending_approval']);
@@ -96,7 +97,7 @@ export function projectWorkflow(state = {}, events = []) {
   const waitingReasons = computeWaitingReasons({ nodes, queueNodes, approvalNodes });
   const summary = buildSummary({ state, run, current, next, progress, evaluation });
 
-  return {
+  const projected = {
     summary,
     nodes,
     relations,
@@ -107,6 +108,8 @@ export function projectWorkflow(state = {}, events = []) {
     waitingReasons,
     warnings,
   };
+  projected.graph = aggregateGraph(projected, events);
+  return projected;
 }
 
 function currentRun(state, events) {

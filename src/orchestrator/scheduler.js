@@ -40,6 +40,8 @@ export function startReadyTasks({
   budgetManager = null,
   approvals = [],
   onDuplicateTask = null,
+  onTaskReady = null,
+  onAttemptCreated = null,
   onTaskStarting = null,
 } = {}) {
   let started = 0;
@@ -60,8 +62,10 @@ export function startReadyTasks({
       continue;
     }
     seenTaskIds.add(taskId);
+    onTaskReady?.(task);
     const attempt = attemptManager.reserve(task);
     if (!attempt) continue;
+    onAttemptCreated?.(task, attempt);
     budgetManager?.recordTaskStart?.(task);
     onTaskStarting?.(task, attempt);
     const entry = startTask(task, attempt);

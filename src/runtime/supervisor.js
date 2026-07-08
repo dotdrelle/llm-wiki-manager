@@ -1,6 +1,7 @@
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
+import { normalizeRuntimeLog } from '../core/runtimeLog.js';
 import { startNextQueuedJob, syncQueueWithActivity } from '../core/jobQueue.js';
 import { createAgentRegistry } from '../orchestrator/agentRegistry.js';
 
@@ -119,9 +120,13 @@ export async function pollActivitiesOnce(session, {
 }
 
 export function emitRuntimeLog(session, message) {
+  const payload = normalizeRuntimeLog(message, { session });
   dispatchAgentEvent(session, createAgentEvent('runtime_log', {
     origin: 'runtime',
-    payload: { message },
+    runId: payload.runId ?? null,
+    taskId: payload.taskId ?? null,
+    workspace: payload.workspaceId ?? null,
+    payload,
   }));
 }
 

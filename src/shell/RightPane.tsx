@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { createMemo, Index, Show } from 'solid-js';
+import { filterRuntimeLogs } from '../core/runtimeLog.js';
 import { fit } from './textFit';
 
 type PlanStep = { step: number; description: string; status: string };
@@ -182,9 +183,10 @@ export function ActivityPanel(props: { activities: any[]; width: number }) {
   );
 }
 
-export function LogPanel(props: { logs: string[]; width: number }) {
+export function LogPanel(props: { logs: string[]; width: number; filter?: string }) {
   const lineWidth = () => Math.max(8, props.width - 2);
-  const visibleLines = () => props.logs.slice(-12).flatMap((line) => wrapLine(line, lineWidth())).slice(-24);
+  const filteredLogs = () => filterRuntimeLogs(props.logs, props.filter ?? '');
+  const visibleLines = () => filteredLogs().flatMap((line) => wrapLine(line, lineWidth())).slice(-24);
   const logLineAt = (index: number) => visibleLines()[index] ?? '';
   return (
     <box flexGrow={1} flexDirection="column" padding={1}>
@@ -202,8 +204,8 @@ export function LogPanel(props: { logs: string[]; width: number }) {
                 fallback={<text width={lineWidth()} fg="#AAB7C4" content={line()} />}
               >
                 <box height={1} flexDirection="row" overflow="hidden">
-                  <text width={timeWidth()} fg="#89B4FA" content={fit(`${parts().time} `, timeWidth())} />
-                  <text width={messageWidth()} fg="#AAB7C4" content={fit(parts().message, messageWidth())} />
+                  <text width={timeWidth()} fg="#89B4FA" content={`${parts().time} `} />
+                  <text width={messageWidth()} fg="#AAB7C4" content={parts().message} />
                 </box>
               </Show>
             );
@@ -284,6 +286,7 @@ export function RightPane(props: {
   queueItems: QueueItem[];
   queueInfo: QueueInfo;
   activeTab: 'plan' | 'queue';
+  logFilter?: string;
   onTabClick: (tab: 'plan' | 'queue') => void;
 }) {
   const planJobName = () => activityJobName(
@@ -302,7 +305,7 @@ export function RightPane(props: {
       )}>
         <QueuePanel width={props.width} items={props.queueItems} info={props.queueInfo} />
       </Show>
-      <LogPanel width={props.width} logs={props.logs} />
+      <LogPanel width={props.width} logs={props.logs} filter={props.logFilter} />
     </box>
   );
 }

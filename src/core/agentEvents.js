@@ -1,6 +1,7 @@
 import { normalizeActivity } from './activity.js';
 import { attachActivityToExistingPlan, syncActivitiesToPlan } from './plan.js';
 import { applyPlanPatch, normalizePlanPatch, normalizePlanRevision, rebasePlanPatch } from './planPatch.js';
+import { formatRuntimeLogPayload } from './runtimeLog.js';
 import { projectWorkflow } from './workflow.js';
 import { validateContractInDev } from '../contracts/schemas.js';
 
@@ -515,8 +516,7 @@ function applyEvent(state, event) {
       }, event.ts);
       return;
     case 'runtime_log':
-      state.logs.push(String(event.payload?.message ?? ''));
-      state.logs = state.logs.slice(-200);
+      state.logs.push(formatRuntimeLogPayload(event.payload ?? {}, event.ts));
       return;
     default:
       return;

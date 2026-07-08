@@ -1,7 +1,7 @@
 import { normalizeActivity, parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
-import { pollActivitiesOnce } from '../runtime/supervisor.js';
+import { emitRuntimeLog, pollActivitiesOnce } from '../runtime/supervisor.js';
 
 const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled', 'canceled', 'complete', 'completed', 'success', 'error']);
 
@@ -44,6 +44,11 @@ export async function execute(task, assignment, {
   let lastStatus = null;
 
   try {
+    emitRuntimeLog(session, taskLogPayload('agent_execute', task, assignment, {
+      runId,
+      attempt,
+      detail: executeTool,
+    }));
     const accepted = parseToolPayload(await callTool(
       session.mcp,
       serverName,
@@ -56,6 +61,13 @@ export async function execute(task, assignment, {
     }
     jobId = String(accepted.jobId ?? '');
     if (!jobId) throw new Error('agent_execute did not return jobId.');
+    emitRuntimeLog(session, taskLogPayload('job.accepted', task, assignment, {
+      runId,
+      attempt,
+      jobId,
+      agentId: accepted.agentId ?? null,
+      detail: accepted.status ?? 'accepted',
+    }));
     dispatchAgentEvent(session, createAgentEvent('task.started', {
       origin: 'dispatcher',
       runId,
@@ -88,14 +100,44 @@ export async function execute(task, assignment, {
         },
       });
       if (!lastStatus) {
+        emitRuntimeLog(session, taskLogPayload('agent_status', task, assignment, {
+          runId,
+          attempt,
+          jobId,
+          detail: statusTool,
+        }));
         lastStatus = parseToolPayload(await callTool(session.mcp, serverName, statusTool, { jobId }, signal));
       }
       if (isTerminal(lastStatus?.status ?? lastStatus?.result?.status)) {
+        emitRuntimeLog(session, taskLogPayload('task.result_returned', task, assignment, {
+          runId,
+          attempt,
+          jobId,
+          status: lastStatus?.result?.status ?? lastStatus?.status,
+          outputs: lastStatus?.result?.outputRefs ?? [],
+          error: lastStatus?.result?.error?.code ?? lastStatus?.result?.error?.message ?? null,
+          detail: 'terminal status',
+        }));
         return taskResultFromStatus(task, assignment, jobId, lastStatus, attempt);
       }
       await delay(pollIntervalMs, signal);
+      emitRuntimeLog(session, taskLogPayload('agent_status', task, assignment, {
+        runId,
+        attempt,
+        jobId,
+        detail: statusTool,
+      }));
       lastStatus = parseToolPayload(await callTool(session.mcp, serverName, statusTool, { jobId }, signal));
       if (isTerminal(lastStatus?.status ?? lastStatus?.result?.status)) {
+        emitRuntimeLog(session, taskLogPayload('task.result_returned', task, assignment, {
+          runId,
+          attempt,
+          jobId,
+          status: lastStatus?.result?.status ?? lastStatus?.status,
+          outputs: lastStatus?.result?.outputRefs ?? [],
+          error: lastStatus?.result?.error?.code ?? lastStatus?.result?.error?.message ?? null,
+          detail: 'terminal status',
+        }));
         return taskResultFromStatus(task, assignment, jobId, lastStatus, attempt);
       }
     }
@@ -105,6 +147,12 @@ export async function execute(task, assignment, {
     }
     throw error;
   } finally {
+    emitRuntimeLog(session, taskLogPayload('lock.released', task, assignment, {
+      runId,
+      attempt,
+      jobId,
+      detail: attempt?.locks?.join(',') || 'no locks',
+    }));
     attempt?.release?.();
   }
 }
@@ -188,6 +236,36 @@ function resolvedTimeoutMs(assignment, timeoutMs) {
   if (Number.isFinite(agentLimit) && agentLimit > 0) return agentLimit;
   const runtimeLimit = Number(timeoutMs);
   return Number.isFinite(runtimeLimit) && runtimeLimit > 0 ? runtimeLimit : 600_000;
+}
+
+function taskLogPayload(event, task, assignment, {
+  runId = null,
+  attempt = null,
+  jobId = null,
+  agentId = null,
+  status = null,
+  outputs = null,
+  error = null,
+  detail = null,
+} = {}) {
+  return {
+    event,
+    runId,
+    planRevision: task?.planRevision ?? null,
+    groupId: task?.groupId ?? null,
+    taskId: String(task?.id ?? task?.step),
+    attemptId: attempt?.attemptId ?? null,
+    agentType: assignment?.agent?.description?.agentType ?? assignment?.description?.agentType ?? null,
+    agentInstanceId: assignment?.agentInstanceId ?? null,
+    agentId: agentId ?? assignment?.agentId ?? null,
+    jobId,
+    capability: task?.requiredCapability ?? assignment?.capability ?? null,
+    operation: task?.operation ?? assignment?.operation ?? null,
+    status,
+    outputs,
+    error,
+    detail,
+  };
 }
 
 function isTerminal(status) {

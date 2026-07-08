@@ -336,6 +336,7 @@ function App(props: {
             queueItems={state.queueItems()}
             queueInfo={state.queueInfo()}
             activeTab={state.rightTab()}
+            logFilter={state.runtimeLogFilter()}
             onTabClick={state.selectRightTab}
           />
           <SlashDialog context={state.activeEditor() ? null : state.slash()} />

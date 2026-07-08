@@ -7,6 +7,7 @@ import { formatPlanStatus, formatCompletedActivities, formatPlanStep } from '../
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { projectQueue, queueCounts, startNextQueuedJob, syncQueueWithActivity } from '../core/jobQueue.js';
 import { queueStoreFor } from '../core/queueStore.js';
+import { filterRuntimeLogs } from '../core/runtimeLog.js';
 import { fetchRuntimeState, streamRuntimeEvents } from '../runtime/client.js';
 import type { ActiveFileEditor } from './FileEditorDialog';
 import {
@@ -274,8 +275,9 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     version();
     const runtimeLogs = runtimeState()?.logs;
     if (!Array.isArray(runtimeLogs) || runtimeLogs.length === 0) return logs();
-    const tagged = runtimeLogs.slice(-80).map((line: any) => `runtime ${String(line)}`);
-    return [...logs(), ...tagged].slice(-200);
+    const filter = String((session as any).runtimeLogFilter ?? '').trim();
+    const tagged = filterRuntimeLogs(runtimeLogs.map((line: any) => `runtime ${String(line)}`), filter);
+    return [...logs(), ...tagged];
   });
 
   // Index-aligned with each workspace's runtimeConversation array — not just
@@ -602,6 +604,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     session,
     messages,
     logs: visibleLogs,
+    runtimeLogFilter: () => String((session as any).runtimeLogFilter ?? ''),
     input,
     setInput: updateInput,
     title,

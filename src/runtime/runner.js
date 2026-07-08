@@ -288,6 +288,21 @@ export async function runRuntimeParallelPlan(agent, session, input, {
           // will surface as a stalled plan instead of corrupting sibling state.
           emitRuntimeLog(session, `scheduler: skipping task with duplicate id/step "${taskId}"`);
         },
+        onTaskReady: (task) => {
+          emitRuntimeLog(session, taskLogPayload('task.ready', task, { runId, detail: 'ready for assignment' }));
+        },
+        onAttemptCreated: (task, attempt) => {
+          emitRuntimeLog(session, taskLogPayload('attempt.created', task, {
+            runId,
+            attempt,
+            detail: 'attempt created',
+          }));
+          emitRuntimeLog(session, taskLogPayload('lock.acquired', task, {
+            runId,
+            attempt,
+            detail: attempt?.locks?.join(',') || 'no locks',
+          }));
+        },
         onTaskStarting: (task) => {
           const taskId = planTaskId(task);
           dispatchAgentEvent(session, createAgentEvent('plan_step_updated', {
@@ -296,7 +311,7 @@ export async function runRuntimeParallelPlan(agent, session, input, {
             taskId,
             payload: { taskId, status: 'running' },
           }));
-          emitRuntimeLog(session, `scheduler: starting task ${taskId}`);
+          emitRuntimeLog(session, taskLogPayload('task.starting', task, { runId, detail: `starting task ${taskId}` }));
         },
         startTask: (task, attempt) => {
           const taskAbort = createTaskAbortSignal(signal);
@@ -479,10 +494,21 @@ async function runDispatchedTask(task, {
   const taskId = planTaskId(task);
   let assignment = null;
   try {
+    emitRuntimeLog(session, taskLogPayload('capability.resolving', task, {
+      runId,
+      attempt,
+      detail: `resolving ${task.requiredCapability}`,
+    }));
     assignment = await assignmentManager.assign(task, {
       session,
       signal,
     });
+    emitRuntimeLog(session, taskLogPayload('agent.selected', task, {
+      runId,
+      attempt,
+      assignment,
+      detail: assignment.agentInstanceId,
+    }));
     dispatchAgentEvent(session, createAgentEvent('task.assigned', {
       origin: 'assignment_manager',
       runId,
@@ -498,6 +524,12 @@ async function runDispatchedTask(task, {
         },
       },
     }));
+    emitRuntimeLog(session, taskLogPayload('task.assigned', task, {
+      runId,
+      attempt,
+      assignment,
+      detail: 'assignment created',
+    }));
     const result = await dispatcher.execute(task, assignment, {
       session,
       signal,
@@ -508,10 +540,24 @@ async function runDispatchedTask(task, {
     });
     const aggregate = await resultAggregator.accept(result, { task, assignment });
     if (!aggregate.ok) {
-      emitRuntimeLog(session, `scheduler: task ${taskId} failed`);
+      emitRuntimeLog(session, taskLogPayload('task.failed', task, {
+        runId,
+        attempt,
+        assignment,
+        jobId: result?.jobId,
+        error: result?.error?.code ?? result?.error?.message ?? result?.status ?? 'failed',
+        detail: 'task terminal',
+      }));
       return { ok: false, taskId, result, assignment };
     }
-    emitRuntimeLog(session, `scheduler: task ${taskId} done`);
+    emitRuntimeLog(session, taskLogPayload('task.completed', task, {
+      runId,
+      attempt,
+      assignment,
+      jobId: result?.jobId,
+      outputs: result?.outputRefs ?? [],
+      detail: 'returned to donna',
+    }));
     return { ok: true, taskId, result, assignment };
   } catch (err) {
     if (err?.name === 'AbortError') {
@@ -557,6 +603,34 @@ async function runDispatchedTask(task, {
 
 function shouldUseParallelScheduler(plan) {
   return readyPlanTasks(plan).some((task) => task.requiredCapability && task.operation);
+}
+
+function taskLogPayload(event, task, {
+  runId = null,
+  attempt = null,
+  assignment = null,
+  jobId = null,
+  outputs = null,
+  error = null,
+  detail = null,
+} = {}) {
+  return {
+    event,
+    runId,
+    planRevision: task?.planRevision ?? null,
+    groupId: task?.groupId ?? null,
+    taskId: planTaskId(task),
+    attemptId: attempt?.attemptId ?? null,
+    agentType: assignment?.agent?.description?.agentType ?? assignment?.description?.agentType ?? null,
+    agentInstanceId: assignment?.agentInstanceId ?? null,
+    agentId: assignment?.agentId ?? null,
+    jobId,
+    capability: task?.requiredCapability ?? assignment?.capability ?? null,
+    operation: task?.operation ?? assignment?.operation ?? null,
+    outputs,
+    error,
+    detail,
+  };
 }
 
 function planTaskId(task) {

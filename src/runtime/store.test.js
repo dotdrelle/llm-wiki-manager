@@ -281,8 +281,8 @@ test('runtime store persists duplicate events idempotently', () => {
     origin: 'test',
     runId: 'run-1',
     turnId: 'run-1:turn-0',
-    workspace: 'juno',
-    payload: { input: 'build wiki', workspace: 'juno' },
+    workspace: 'acme',
+    payload: { input: 'build wiki', workspace: 'acme' },
   });
 
   store.persistEvent(event);
@@ -292,7 +292,7 @@ test('runtime store persists duplicate events idempotently', () => {
   assert.equal(store.listEvents()[0].sequence, 1);
   assert.equal(store.getState().eventsCursor, 1);
   assert.equal(store.listRuns()[0].id, 'run-1');
-  assert.equal(store.listRuns()[0].workspace, 'juno');
+  assert.equal(store.listRuns()[0].workspace, 'acme');
   assert.equal(store.listRuns()[0].status, 'running');
   store.close();
 });
@@ -590,19 +590,19 @@ test('runtime store persists cancelled run status', () => {
     origin: 'test',
     runId: 'run-1',
     turnId: 'run-1:turn-0',
-    workspace: 'juno',
-    payload: { input: 'build wiki', workspace: 'juno' },
+    workspace: 'acme',
+    payload: { input: 'build wiki', workspace: 'acme' },
   }));
   store.persistEvent(createAgentEvent('run_cancelled', {
     origin: 'test',
     runId: 'run-1',
     turnId: 'run-1:turn-1',
-    workspace: 'juno',
-    payload: { runId: 'run-1', workspace: 'juno' },
+    workspace: 'acme',
+    payload: { runId: 'run-1', workspace: 'acme' },
   }));
 
   assert.equal(store.listRuns()[0].status, 'cancelled');
-  assert.equal(store.listRuns()[0].workspace, 'juno');
+  assert.equal(store.listRuns()[0].workspace, 'acme');
   store.close();
 });
 
@@ -724,10 +724,10 @@ test('runtime store filters events runs and queue by workspace', () => {
   const store = openRuntimeStore({ stateDir });
   store.persistEvent(createAgentEvent('run_started', {
     origin: 'test',
-    runId: 'run-juno',
-    turnId: 'run-juno:turn-0',
-    workspace: 'juno',
-    payload: { input: 'juno', workspace: 'juno' },
+    runId: 'run-acme',
+    turnId: 'run-acme:turn-0',
+    workspace: 'acme',
+    payload: { input: 'acme', workspace: 'acme' },
   }));
   store.persistEvent(createAgentEvent('run_started', {
     origin: 'test',
@@ -736,12 +736,12 @@ test('runtime store filters events runs and queue by workspace', () => {
     workspace: 'docs',
     payload: { input: 'docs', workspace: 'docs' },
   }));
-  store.saveQueue([{ id: 'q-juno', workspace: 'juno', status: 'waiting' }], { workspace: 'juno' });
+  store.saveQueue([{ id: 'q-acme', workspace: 'acme', status: 'waiting' }], { workspace: 'acme' });
   store.saveQueue([{ id: 'q-docs', workspace: 'docs', status: 'waiting' }], { workspace: 'docs' });
 
-  assert.deepEqual(store.listEvents({ workspace: 'juno' }).map((event) => event.runId), ['run-juno']);
+  assert.deepEqual(store.listEvents({ workspace: 'acme' }).map((event) => event.runId), ['run-acme']);
   assert.deepEqual(store.listRuns({ workspace: 'docs' }).map((run) => run.id), ['run-docs']);
-  assert.deepEqual(store.listQueue({ workspace: 'juno' }).map((item) => item.id), ['q-juno']);
+  assert.deepEqual(store.listQueue({ workspace: 'acme' }).map((item) => item.id), ['q-acme']);
 
   const session = { activities: {}, headlessPlan: null };
   store.hydrateSession(session, { workspace: 'docs' });
@@ -794,8 +794,8 @@ test('runtime store persists and replays control queue events without mixing MCP
   }));
   store.persistEvent(createAgentEvent('control_enqueued', {
     origin: 'runtime',
-    workspace: 'juno',
-    payload: { id: 'control-juno', workspace: 'juno', input: 'other' },
+    workspace: 'acme',
+    payload: { id: 'control-acme', workspace: 'acme', input: 'other' },
   }));
   store.close();
 
@@ -925,10 +925,10 @@ test('runtime store identifies recoverable workspaces and interrupts stale runs'
   const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
   const store = openRuntimeStore({ stateDir });
   store.persistRun({
-    id: 'run-juno',
-    workspace: 'juno',
+    id: 'run-acme',
+    workspace: 'acme',
     status: 'running',
-    input: 'build juno',
+    input: 'build acme',
   });
   store.persistRun({
     id: 'run-done',
@@ -938,9 +938,9 @@ test('runtime store identifies recoverable workspaces and interrupts stale runs'
   });
   store.saveQueue([{ id: 'q-docs', workspace: 'docs', status: 'waiting' }], { workspace: 'docs' });
 
-  assert.deepEqual(store.listRecoverableWorkspaces(), ['docs', 'juno']);
-  assert.deepEqual(store.listRecoverableRuns({ workspace: 'juno' }).map((run) => run.id), ['run-juno']);
-  assert.equal(store.interruptRuns({ workspace: 'juno' }), 1);
-  assert.equal(store.listRuns({ workspace: 'juno' })[0].status, 'interrupted');
+  assert.deepEqual(store.listRecoverableWorkspaces(), ['acme', 'docs']);
+  assert.deepEqual(store.listRecoverableRuns({ workspace: 'acme' }).map((run) => run.id), ['run-acme']);
+  assert.equal(store.interruptRuns({ workspace: 'acme' }), 1);
+  assert.equal(store.listRuns({ workspace: 'acme' })[0].status, 'interrupted');
   store.close();
 });

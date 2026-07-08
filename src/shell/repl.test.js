@@ -183,7 +183,7 @@ test('agent mode without runtime records a visible error instead of falling back
 
 test('runtime status exposes the disconnected reason', () => {
   assert.equal(
-    runtimeStatusLine({ error: 'token mismatch' }, { workspace: 'juno' }),
+    runtimeStatusLine({ error: 'token mismatch' }, { workspace: 'acme' }),
     'runtime: disconnected: token mismatch',
   );
   assert.equal(

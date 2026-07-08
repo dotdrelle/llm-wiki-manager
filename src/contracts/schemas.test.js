@@ -50,7 +50,7 @@ test('agent event contract carries the unified audit identity fields', () => {
     runId: 'run-1',
     turnId: 'turn-1',
     taskId: 'task-1',
-    workspace: 'juno',
+    workspace: 'acme',
     payload: { toolCallId: 'call-1', ok: true },
   };
 
@@ -58,7 +58,7 @@ test('agent event contract carries the unified audit identity fields', () => {
 });
 
 test('run and control request contracts reject empty run input but accept explicit controls', () => {
-  assert.equal(validateContract('runRequest', { input: 'Build docs', workspace: 'juno' }).ok, true);
+  assert.equal(validateContract('runRequest', { input: 'Build docs', workspace: 'acme' }).ok, true);
   assert.equal(validateContract('runRequest', { input: '' }).ok, false);
   assert.equal(validateContract('controlMessage', { action: 'message', input: 'Ou en est le build ?', intent: 'observe' }).ok, true);
 });

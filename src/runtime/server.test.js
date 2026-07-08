@@ -271,7 +271,7 @@ test('runtime server returns the accepted run id and passes it to the runner', a
     const response = await fetch(`http://127.0.0.1:${handle.port}/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: 'build', workspace: 'juno', evaluate: false, replans: 1 }),
+      body: JSON.stringify({ input: 'build', workspace: 'acme', evaluate: false, replans: 1 }),
     });
     assert.equal(response.status, 202);
     const body = await response.json();
@@ -279,7 +279,7 @@ test('runtime server returns the accepted run id and passes it to the runner', a
     assert.match(body.runId, /^[0-9a-f-]{36}$/);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(receivedBody.runId, body.runId);
-    assert.equal(receivedBody.workspace, 'juno');
+    assert.equal(receivedBody.workspace, 'acme');
     assert.equal(receivedBody.evaluate, false);
     assert.equal(receivedBody.replans, 1);
   } finally {
@@ -290,8 +290,8 @@ test('runtime server returns the accepted run id and passes it to the runner', a
 test('runtime server state exposes active run identity while running', async (t) => {
   let releaseRun;
   const context = {
-    workspace: 'juno',
-    session: { workspace: 'juno' },
+    workspace: 'acme',
+    session: { workspace: 'acme' },
     running: false,
     currentAbortController: null,
     currentRunId: null,
@@ -321,18 +321,18 @@ test('runtime server state exposes active run identity while running', async (t)
   }
 
   try {
-    const runResponse = await fetch(`http://127.0.0.1:${handle.port}/run?workspace=juno`, {
+    const runResponse = await fetch(`http://127.0.0.1:${handle.port}/run?workspace=acme`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ input: 'build' }),
     });
     acceptedRun = await runResponse.json();
-    const stateResponse = await fetch(`http://127.0.0.1:${handle.port}/state?workspace=juno`);
+    const stateResponse = await fetch(`http://127.0.0.1:${handle.port}/state?workspace=acme`);
     const state = await stateResponse.json();
     assert.equal(state.status, 'running');
     assert.equal(state.running, true);
     assert.equal(state.runId, acceptedRun.runId);
-    assert.equal(state.workspace, 'juno');
+    assert.equal(state.workspace, 'acme');
   } finally {
     releaseRun?.();
     await handle.close();
@@ -381,8 +381,8 @@ test('runtime server isolates active runs by workspace', async (t) => {
 
   try {
     const url = `http://127.0.0.1:${handle.port}/run`;
-    const [juno, docs] = await Promise.all([
-      fetch(`${url}?workspace=juno`, {
+    const [acme, docs] = await Promise.all([
+      fetch(`${url}?workspace=acme`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ input: 'first' }),
@@ -393,18 +393,18 @@ test('runtime server isolates active runs by workspace', async (t) => {
         body: JSON.stringify({ input: 'second' }),
       }),
     ]);
-    assert.deepEqual([juno.status, docs.status], [202, 202]);
+    assert.deepEqual([acme.status, docs.status], [202, 202]);
 
-    const queued = await fetch(`${url}?workspace=juno`, {
+    const queued = await fetch(`${url}?workspace=acme`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ input: 'third' }),
     });
     assert.equal(queued.status, 202);
     assert.equal((await queued.json()).queued, true);
-    assert.deepEqual(runWorkspaces.sort(), ['docs', 'juno']);
+    assert.deepEqual(runWorkspaces.sort(), ['acme', 'docs']);
   } finally {
-    releases.get('juno')?.();
+    releases.get('acme')?.();
     releases.get('docs')?.();
     await handle.close();
   }
@@ -446,10 +446,10 @@ test('runtime server filters state and events by workspace', async (t) => {
   }
 
   try {
-    const state = await fetch(`http://127.0.0.1:${handle.port}/state?workspace=juno`);
+    const state = await fetch(`http://127.0.0.1:${handle.port}/state?workspace=acme`);
     assert.equal(state.status, 200);
-    assert.equal((await state.json()).workspace, 'juno');
-    assert.equal(stateWorkspace, 'juno');
+    assert.equal((await state.json()).workspace, 'acme');
+    assert.equal(stateWorkspace, 'acme');
 
     const events = await fetch(`http://127.0.0.1:${handle.port}/events?workspace=docs`);
     assert.equal(events.status, 200);
@@ -533,15 +533,15 @@ test('runtime server exposes manual resume endpoint', async (t) => {
   }
 
   try {
-    const response = await fetch(`http://127.0.0.1:${handle.port}/resume?workspace=juno`, {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/resume?workspace=acme`, {
       method: 'POST',
     });
     assert.equal(response.status, 202);
-    assert.equal(resumedWorkspace, 'juno');
+    assert.equal(resumedWorkspace, 'acme');
     assert.deepEqual(await response.json(), {
       resumed: 1,
       interrupted: 0,
-      workspaces: [{ workspace: 'juno', resumed: true }],
+      workspaces: [{ workspace: 'acme', resumed: true }],
     });
   } finally {
     await handle.close();
@@ -575,13 +575,13 @@ test('runtime server exposes approval endpoint', async (t) => {
   }
 
   try {
-    const response = await fetch(`http://127.0.0.1:${handle.port}/approve?workspace=juno&runId=run-1&itemId=item-1`, {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/approve?workspace=acme&runId=run-1&itemId=item-1`, {
       method: 'POST',
     });
     assert.equal(response.status, 202);
     assert.deepEqual(approved, {
-      workspace: 'juno',
-      workspaceId: 'juno',
+      workspace: 'acme',
+      workspaceId: 'acme',
       runId: 'run-1',
       itemId: 'item-1',
       approvalId: null,
@@ -599,8 +599,8 @@ test('runtime server exposes approval endpoint', async (t) => {
 
 test('runtime server exposes control status and explanation', async (t) => {
   const session = {
-    workspace: 'juno',
-    controlQueue: [{ id: 'control-1', workspace: 'juno', status: 'queued', input: 'later' }],
+    workspace: 'acme',
+    controlQueue: [{ id: 'control-1', workspace: 'acme', status: 'queued', input: 'later' }],
   };
   let handle;
   try {
@@ -620,7 +620,7 @@ test('runtime server exposes control status and explanation', async (t) => {
         listEvents: () => [],
       },
       getContext: async () => ({
-        workspace: 'juno',
+        workspace: 'acme',
         session,
         running: false,
         currentAbortController: null,
@@ -636,14 +636,14 @@ test('runtime server exposes control status and explanation', async (t) => {
   }
 
   try {
-    const status = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=juno`);
+    const status = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`);
     assert.equal(status.status, 200);
     const statusBody = await status.json();
     assert.equal(statusBody.status, 'idle');
     assert.equal(statusBody.running, false);
     assert.equal(statusBody.controlQueue[0].id, 'control-1');
 
-    const explain = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=juno`, {
+    const explain = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'explain' }),
@@ -657,7 +657,7 @@ test('runtime server exposes control status and explanation', async (t) => {
 
 test('runtime server control enqueue emits events but does not patch an active plan or start a run', async (t) => {
   const session = {
-    workspace: 'juno',
+    workspace: 'acme',
     controlQueue: [],
   };
   const events = [];
@@ -681,7 +681,7 @@ test('runtime server control enqueue emits events but does not patch an active p
         listEvents: () => [],
       },
       getContext: async () => ({
-        workspace: 'juno',
+        workspace: 'acme',
         session,
         running: true,
         currentAbortController: new AbortController(),
@@ -697,7 +697,7 @@ test('runtime server control enqueue emits events but does not patch an active p
   }
 
   try {
-    const response = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=juno`, {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'enqueue', input: 'run this after current work' }),
@@ -718,7 +718,7 @@ test('runtime server control enqueue emits events but does not patch an active p
 
 test('runtime server control message observes an active run without enqueueing', async (t) => {
   const session = {
-    workspace: 'juno',
+    workspace: 'acme',
     controlQueue: [],
   };
   let runCount = 0;
@@ -739,7 +739,7 @@ test('runtime server control message observes an active run without enqueueing',
         listEvents: () => [],
       },
       getContext: async () => ({
-        workspace: 'juno',
+        workspace: 'acme',
         session,
         running: true,
         currentAbortController: new AbortController(),
@@ -755,7 +755,7 @@ test('runtime server control message observes an active run without enqueueing',
   }
 
   try {
-    const response = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=juno`, {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'message', input: 'Où en est le build ?' }),
@@ -773,7 +773,7 @@ test('runtime server control message observes an active run without enqueueing',
 
 test('runtime server control message handles approve and cancel intents during an active run', async (t) => {
   const session = {
-    workspace: 'juno',
+    workspace: 'acme',
     controlQueue: [],
   };
   const abortController = new AbortController();
@@ -795,7 +795,7 @@ test('runtime server control message handles approve and cancel intents during a
         listEvents: () => [],
       },
       getContext: async () => ({
-        workspace: 'juno',
+        workspace: 'acme',
         session,
         running: true,
         currentAbortController: abortController,
@@ -812,7 +812,7 @@ test('runtime server control message handles approve and cancel intents during a
   }
 
   try {
-    const approveResponse = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=juno`, {
+    const approveResponse = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'message', input: 'valide tout' }),
@@ -820,7 +820,7 @@ test('runtime server control message handles approve and cancel intents during a
     assert.equal(approveResponse.status, 200);
     assert.equal((await approveResponse.json()).kind, 'approve');
 
-    const cancelResponse = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=juno`, {
+    const cancelResponse = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'message', input: 'annule le run' }),
@@ -837,18 +837,18 @@ test('runtime server control message handles approve and cancel intents during a
 
 test('runtime server control message records active plan mutation as a proposal', async (t) => {
   const session = {
-    workspace: 'juno',
+    workspace: 'acme',
     controlQueue: [],
   };
   dispatchAgentEvent(session, createAgentEvent('run_started', {
     origin: 'runtime',
     runId: 'run-mutate',
-    workspace: 'juno',
+    workspace: 'acme',
   }));
   dispatchAgentEvent(session, createAgentEvent('plan_set', {
     origin: 'tool',
     runId: 'run-mutate',
-    workspace: 'juno',
+    workspace: 'acme',
     payload: {
       steps: [{ step: 1, id: 'generate', description: 'Generate', status: 'running' }],
     },
@@ -865,13 +865,13 @@ test('runtime server control message records active plan mutation as a proposal'
           ...session.agentProjection,
           status: session.agentProjection?.status ?? 'running',
           queue: [],
-          runs: [{ id: 'run-mutate', workspace: 'juno', status: 'running' }],
+          runs: [{ id: 'run-mutate', workspace: 'acme', status: 'running' }],
           runId: 'run-mutate',
         }),
         listEvents: () => [],
       },
       getContext: async () => ({
-        workspace: 'juno',
+        workspace: 'acme',
         session,
         running: true,
         currentAbortController: new AbortController(),
@@ -888,7 +888,7 @@ test('runtime server control message records active plan mutation as a proposal'
   }
 
   try {
-    const response = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=juno`, {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'message', input: 'Ajoute un envoi après chaque génération' }),
@@ -901,7 +901,7 @@ test('runtime server control message records active plan mutation as a proposal'
     assert.equal(session.agentProjection.planPatches[0].status, 'proposed');
     assert.ok(session.agentEvents.some((event) => event.type === 'control_message_received'));
     assert.ok(session.agentEvents.some((event) => event.type === 'plan_patch_proposed'));
-    const approveResponse = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=juno`, {
+    const approveResponse = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'approve_patch', patchId: body.proposal.id }),
@@ -924,7 +924,7 @@ test('runtime server control message records active plan mutation as a proposal'
 
 test('runtime server control message reports ambiguity without starting a run', async (t) => {
   const session = {
-    workspace: 'juno',
+    workspace: 'acme',
     controlQueue: [],
   };
   let runCount = 0;
@@ -945,7 +945,7 @@ test('runtime server control message reports ambiguity without starting a run', 
         listEvents: () => [],
       },
       getContext: async () => ({
-        workspace: 'juno',
+        workspace: 'acme',
         session,
         running: true,
         currentAbortController: new AbortController(),
@@ -961,7 +961,7 @@ test('runtime server control message reports ambiguity without starting a run', 
   }
 
   try {
-    const response = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=juno`, {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'message', input: 'Lance aussi la publication' }),
@@ -979,7 +979,7 @@ test('runtime server control message reports ambiguity without starting a run', 
 
 test('runtime server drains queued control requests when idle', async (t) => {
   const session = {
-    workspace: 'juno',
+    workspace: 'acme',
     controlQueue: [],
   };
   const events = [];
@@ -1003,7 +1003,7 @@ test('runtime server drains queued control requests when idle', async (t) => {
         listEvents: () => [],
       },
       getContext: async () => ({
-        workspace: 'juno',
+        workspace: 'acme',
         session,
         running: false,
         currentAbortController: null,
@@ -1021,7 +1021,7 @@ test('runtime server drains queued control requests when idle', async (t) => {
   }
 
   try {
-    const response = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=juno`, {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'enqueue', input: 'run from control queue' }),
@@ -1029,7 +1029,7 @@ test('runtime server drains queued control requests when idle', async (t) => {
     assert.equal(response.status, 202);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(receivedBody.input, 'run from control queue');
-    assert.equal(receivedBody.workspace, 'juno');
+    assert.equal(receivedBody.workspace, 'acme');
     assert.match(receivedBody.runId, /^[0-9a-f-]{36}$/);
     assert.equal(session.controlQueue[0].status, 'running');
     assert.equal(session.controlQueue[0].runId, receivedBody.runId);
@@ -1041,13 +1041,13 @@ test('runtime server drains queued control requests when idle', async (t) => {
 
 test('runtime server handle drains a pre-existing hydrated control request', async (t) => {
   const session = {
-    workspace: 'juno',
-    controlQueue: [{ id: 'control-existing', workspace: 'juno', status: 'queued', input: 'resume queued control' }],
+    workspace: 'acme',
+    controlQueue: [{ id: 'control-existing', workspace: 'acme', status: 'queued', input: 'resume queued control' }],
   };
   const events = [];
   session._onAgentEvent = (event) => events.push(event);
   const context = {
-    workspace: 'juno',
+    workspace: 'acme',
     session,
     running: false,
     currentAbortController: null,
@@ -1089,8 +1089,8 @@ test('runtime server handle drains a pre-existing hydrated control request', asy
 
 test('runtime server exposes config profile list and switch endpoints', async (t) => {
   const context = {
-    workspace: 'juno',
-    session: { workspace: 'juno', wikirc: { profile: 'default' } },
+    workspace: 'acme',
+    session: { workspace: 'acme', wikirc: { profile: 'default' } },
     running: false,
     currentAbortController: null,
   };
@@ -1123,11 +1123,11 @@ test('runtime server exposes config profile list and switch endpoints', async (t
   }
 
   try {
-    const profiles = await fetch(`http://127.0.0.1:${handle.port}/config/profiles?workspace=juno`);
+    const profiles = await fetch(`http://127.0.0.1:${handle.port}/config/profiles?workspace=acme`);
     assert.equal(profiles.status, 200);
     assert.deepEqual(await profiles.json(), { profiles: ['default', 'vpn'], active: 'default' });
 
-    const use = await fetch(`http://127.0.0.1:${handle.port}/config/use?workspace=juno`, {
+    const use = await fetch(`http://127.0.0.1:${handle.port}/config/use?workspace=acme`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ profile: 'vpn' }),
@@ -1152,8 +1152,8 @@ test('runtime server rejects config switching while a run is active', async (t) 
         listEvents: () => [],
       },
       getContext: async () => ({
-        workspace: 'juno',
-        session: { workspace: 'juno' },
+        workspace: 'acme',
+        session: { workspace: 'acme' },
         running: true,
         currentAbortController: null,
       }),
@@ -1169,7 +1169,7 @@ test('runtime server rejects config switching while a run is active', async (t) 
   }
 
   try {
-    const response = await fetch(`http://127.0.0.1:${handle.port}/config/use?workspace=juno`, {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/config/use?workspace=acme`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ profile: 'vpn' }),

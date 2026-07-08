@@ -531,7 +531,7 @@ function toolResult(payload) {
 }
 
 test('Recipe #7 — "où en es-tu ?" during an active run: status in conversation, run continues, no new run', async (t) => {
-  const session = { workspace: 'juno', controlQueue: [] };
+  const session = { workspace: 'acme', controlQueue: [] };
   let runCount = 0;
   let handle;
   try {
@@ -550,7 +550,7 @@ test('Recipe #7 — "où en es-tu ?" during an active run: status in conversatio
         listEvents: () => [],
       },
       getContext: async () => ({
-        workspace: 'juno',
+        workspace: 'acme',
         session,
         running: true,
         currentAbortController: new AbortController(),
@@ -566,7 +566,7 @@ test('Recipe #7 — "où en es-tu ?" during an active run: status in conversatio
   }
 
   try {
-    const response = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=juno`, {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'message', input: 'où en es-tu ?' }),

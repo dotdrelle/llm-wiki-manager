@@ -412,6 +412,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       updated_at = excluded.updated_at
   `);
   const deleteTaskDependenciesStatement = db.prepare('DELETE FROM task_dependencies WHERE run_id = ? AND task_id = ?');
+  const updateTaskStatusStatement = db.prepare('UPDATE tasks SET status = ?, declaration = ?, updated_at = ? WHERE run_id = ? AND id = ?');
   const insertTaskDependencyStatement = db.prepare(`
     INSERT OR IGNORE INTO task_dependencies (run_id, task_id, depends_on_task_id, created_at)
     VALUES (?, ?, ?, ?)
@@ -787,6 +788,28 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   }
 
   function persistTaskLifecycleFromEvent(event) {
+    const taskId = lifecycleTaskId(event);
+    const runId = event.runId ?? event.payload?.runId ?? event.payload?.result?.runId ?? null;
+    if (!taskId || !runId) return;
+
+    if (event.type === 'plan_step_updated') {
+      const task = event.payload?.task;
+      const status = event.payload?.status ?? task?.status ?? null;
+      if (status) {
+        const existing = listTasksByRunStatement.all(runId).map(rowToTask).find((item) => item.id === taskId);
+        if (existing) {
+          updateTaskStatusStatement.run(
+            String(status),
+            JSON.stringify({ ...existing.declaration, ...task, status: String(status) }),
+            event.ts,
+            runId,
+            taskId,
+          );
+        }
+      }
+      return;
+    }
+
     if (![
       'task.assigned',
       'task.started',
@@ -795,9 +818,6 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       'task.completed',
       'task.failed',
     ].includes(event.type)) return;
-    const taskId = lifecycleTaskId(event);
-    const runId = event.runId ?? event.payload?.runId ?? event.payload?.result?.runId ?? null;
-    if (!taskId || !runId) return;
     const attemptId = lifecycleAttemptId(event, taskId);
 
     if (event.type === 'task.assigned') {

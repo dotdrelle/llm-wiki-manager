@@ -294,6 +294,7 @@ async function runRuntime(argv, agent) {
   }
   const { defaultRuntimeStateDir, openRuntimeStore, RECOVERABLE_QUEUE_STATUSES } = await import('../runtime/store.js');
   const { startRuntimeServer } = await import('../runtime/server.js');
+  const { recoverActiveRuns } = await import('../runtime/recoveryManager.js');
   const { emitRuntimeLog, startActivitySupervisor } = await import('../runtime/supervisor.js');
   const { resolveRuntimeAuthToken } = await import('../runtime/auth.js');
   const { createSqliteQueueStore } = await import('../runtime/queueStore.js');
@@ -483,6 +484,27 @@ async function runRuntime(argv, agent) {
           interrupted,
           reason: `MCP unavailable: ${gaps.join(', ')}`,
         };
+      }
+      const taskRecovery = await recoverActiveRuns({
+        store,
+        session: context.session,
+        workspace: context.workspace,
+        callTool: callMcpTool,
+      });
+      if (!taskRecovery.ok) {
+        const interrupted = store.interruptRuns({ workspace: context.workspace });
+        return {
+          workspace: context.workspace ?? workspace ?? null,
+          resumed: false,
+          interrupted,
+          reason: `Task recovery failed: ${taskRecovery.errors.map((item) => `${item.taskId}: ${item.error}`).join('; ')}`,
+        };
+      }
+      if (taskRecovery.recovered.length > 0 || taskRecovery.rescheduled.length > 0) {
+        emitRuntimeLog(
+          context.session,
+          `runtime: recovery attached ${taskRecovery.recovered.length} job(s), requeued ${taskRecovery.rescheduled.length} task(s)`,
+        );
       }
       const recoverableRuns = store.listRecoverableRuns({ workspace: context.workspace });
       const runningRun = recoverableRuns.find((run) => run.status === 'running');

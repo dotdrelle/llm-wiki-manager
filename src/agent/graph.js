@@ -5,7 +5,7 @@ import {
   callMcpTool,
   formatMcpToolResult,
   formatMcpToolsForAgent,
-  parseToolCallName,
+  resolveToolCallName,
 } from '../core/mcp.js';
 import { formatSkillsForAgent, readOptionalText } from '../core/skills.js';
 import { handleSlashCommand } from '../commands/slash.js';
@@ -17,6 +17,14 @@ import { updateWorkspaceProfilePreference } from '../core/profile.js';
 const MAX_TOOL_ITERATIONS = 80;
 const MAX_SPINNER_ARG_LENGTH = 96;
 const MAX_PROFILE_CHARS = 4000;
+
+// Pseudo-servers handled directly by the tool executor (not present in
+// session.mcp). Listed so unqualified names like "plan_set" resolve the same
+// way as MCP tools in resolveToolCallName.
+const INTERNAL_TOOL_SERVERS = {
+  wiki: ['plan_set', 'plan_done'],
+  shell: ['run_command', 'read_command', 'profile_update'],
+};
 
 const AGENT_SLASH_COMMANDS = new Set([
   'help',
@@ -562,11 +570,11 @@ export function buildAgentSystemPrompt(state) {
     ].filter(Boolean).join('\n'),
     'For service actions, recommend only available service primitives from Available primitives, with the exact service name when the primitive supports one.',
     'Disambiguate export requests carefully.',
-    'Confluence/CME/source export means exporting external Confluence sources into raw/untracked: use cme MCP tools (`cme_export_run`, then `cme_export_status`). Never use production `type=export` for Confluence source export.',
-    'Wiki/deliverable/publication export means exporting generated deliverables from the wiki: use production MCP tools (`production_start_job` with `type:"export"` or pipeline steps). Require the deliverable path when exporting deliverables.',
-    'For ingest/build/export/polish/pipeline workflows, use production MCP tools. Do not route these through direct /wiki shortcuts. To chain multiple sequential steps (e.g. build then polish), always use a single production_start_job call with type="pipeline" and steps=["build","polish"] — never start them as separate jobs: the first job is asynchronous and the second would run before it completes. For existing deliverables where content stability matters, pass stabilize:true so the build step preserves unchanged sections; keep polish in the pipeline when publication output is requested. Do not ask the user to confirm between steps; start the pipeline call directly.',
+    'Confluence/CME/source export means exporting external Confluence sources into raw/untracked: use cme MCP tools (`cme__cme_export_run`, then `cme__cme_export_status`). Never use production `type=export` for Confluence source export.',
+    'Wiki/deliverable/publication export means exporting generated deliverables from the wiki: use production MCP tools (`production__production_start_job` with `type:"export"` or pipeline steps). Require the deliverable path when exporting deliverables.',
+    'For ingest/build/export/polish/pipeline workflows, use production MCP tools. Do not route these through direct /wiki shortcuts. To chain multiple sequential steps (e.g. build then polish), always use a single production__production_start_job call with type="pipeline" and steps=["build","polish"] — never start them as separate jobs: the first job is asynchronous and the second would run before it completes. For existing deliverables where content stability matters, pass stabilize:true so the build step preserves unchanged sections; keep polish in the pipeline when publication output is requested. Do not ask the user to confirm between steps; start the pipeline call directly.',
     'Long-running MCP jobs: do not call the same status tool more than once consecutively. When chaining jobs sequentially: (1) start the job, report job/activity id and status; (2) check status once — if done, proceed to the next step immediately; (3) if still running, report status, list the remaining steps, and return control; (4) when re-invoked, check status first, then proceed. Do not spin-poll (status → status → status with no new action between). The shell activity panel monitors non-terminal jobs automatically.',
-    'If production_start_job is returned as queued/waiting by the manager, report that it is waiting in the local queue and return control. Do not continue as if the production job has started.',
+    'If production__production_start_job is returned as queued/waiting by the manager, report that it is waiting in the local queue and return control. Do not continue as if the production job has started.',
     'For diagnostics, use /wiki run doctor when the user asks for doctor. Use /workspace init <name> [path] for low-level non-interactive workspace creation. In the interactive TUI, /new <name> opens the setup wizard. Use /wiki for index, or /wiki run index through the explicit backup hatch. Use /wiki run init only for explicit current-workspace llm-wiki init.',
     'If an action requires tools or skills not available yet, explain the limitation and name the expected primitive.',
     workspaceProfile
@@ -771,11 +779,19 @@ export function createAgentGraph(options = {}) {
     const toolResultMessages = [];
 
     for (const call of toolCalls) {
-      const { server, tool } = parseToolCallName(call.function.name);
+      const resolved = resolveToolCallName(state.session.mcp, call.function.name, INTERNAL_TOOL_SERVERS);
+      const { server, tool } = resolved;
       const argsSummary = summarizeToolArguments(call.function.arguments);
       const isInternalWikiTool = server === 'wiki' && (tool === 'plan_set' || tool === 'plan_done');
       const serverLabel = server === 'shell' ? 'Shell' : isInternalWikiTool ? 'Plan' : 'MCP';
-      const toolName = `${server}.${tool}`;
+      const toolName = server ? `${server}.${tool}` : call.function.name;
+      if (resolved.normalized) {
+        // Keep normalizations visible: the defensive routing must not hide
+        // prompt/skill regressions that reintroduce unqualified names.
+        state.session._onStep?.(
+          `tool name normalized: ${call.function.name} -> ${server}__${tool}`,
+        );
+      }
       state.session._onStep?.(
         `[${state.toolIterations}/${MAX_TOOL_ITERATIONS}] ${serverLabel} ${toolName}${argsSummary ? ` (${argsSummary})` : ''}`,
       );
@@ -796,6 +812,18 @@ export function createAgentGraph(options = {}) {
       let resultText;
       let ok = true;
       try {
+        if (!server) {
+          if (resolved.candidates.length > 1) {
+            throw new Error(
+              `Ambiguous unqualified tool name "${call.function.name}": several connected servers expose it. `
+              + `Use the <server>__<tool> form: ${resolved.candidates.map((s) => `${s}__${tool}`).join(', ')}.`,
+            );
+          }
+          throw new Error(
+            `Unqualified tool call name "${call.function.name}". Tool calls must use the <server>__<tool> `
+            + `naming convention (e.g. production__production_start_job); no connected server exposes a tool named "${tool}".`,
+          );
+        }
         let args = JSON.parse(call.function.arguments ?? '{}');
         if (server === 'production' && tool === 'production_start_job' && state.session.workspace && !args.callerLabel) {
           args = { ...args, callerLabel: `${state.session.workspace}/wiki-manager` };
@@ -869,7 +897,7 @@ export function createAgentGraph(options = {}) {
           err.name === 'ApprovalError'
         ) throw err;
         ok = false;
-        resultText = `Error [${server}.${tool}]: ${err instanceof Error ? err.message : String(err)}`;
+        resultText = `Error [${toolName}]: ${err instanceof Error ? err.message : String(err)}`;
         if (minimalPlanActive && state.session.headlessPlan?.[0]?._activityKey === null) {
           emitAgentEvent(state.session, 'plan_step_updated', 'tool', { step: 1, status: 'failed' });
         }

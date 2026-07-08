@@ -3,7 +3,65 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { buildMcpStatus, callMcpTool, discoverMcpTools, resolveRetryPolicy } from './mcp.js';
+import {
+  buildMcpStatus,
+  callMcpTool,
+  discoverMcpTools,
+  resolveRetryPolicy,
+  resolveToolCallName,
+} from './mcp.js';
+
+const resolveFixtureStatus = {
+  production: {
+    status: 'connected',
+    tools: [{ name: 'production_start_job' }, { name: 'agent_status' }],
+  },
+  cme: {
+    status: 'connected',
+    tools: [{ name: 'cme_status' }, { name: 'agent_status' }],
+  },
+  documents: {
+    status: 'configured', // not connected: must never be a candidate
+    tools: [{ name: 'cme_status' }],
+  },
+};
+
+test('resolveToolCallName passes qualified names through untouched', () => {
+  const resolved = resolveToolCallName(resolveFixtureStatus, 'cme__cme_status');
+  assert.deepEqual(
+    { server: resolved.server, tool: resolved.tool, normalized: resolved.normalized },
+    { server: 'cme', tool: 'cme_status', normalized: false },
+  );
+});
+
+test('resolveToolCallName normalizes a bare name with exactly one connected match', () => {
+  const resolved = resolveToolCallName(resolveFixtureStatus, 'cme_status');
+  assert.deepEqual(
+    { server: resolved.server, tool: resolved.tool, normalized: resolved.normalized },
+    { server: 'cme', tool: 'cme_status', normalized: true },
+  );
+});
+
+test('resolveToolCallName refuses ambiguous bare names and reports candidates', () => {
+  const resolved = resolveToolCallName(resolveFixtureStatus, 'agent_status');
+  assert.equal(resolved.server, null);
+  assert.equal(resolved.normalized, false);
+  assert.deepEqual([...resolved.candidates].sort(), ['cme', 'production']);
+});
+
+test('resolveToolCallName returns no server for unknown bare names', () => {
+  const resolved = resolveToolCallName(resolveFixtureStatus, 'does_not_exist');
+  assert.equal(resolved.server, null);
+  assert.deepEqual(resolved.candidates, []);
+});
+
+test('resolveToolCallName resolves internal pseudo-server tools via extraServers', () => {
+  const resolved = resolveToolCallName(resolveFixtureStatus, 'plan_set', { wiki: ['plan_set', 'plan_done'] });
+  assert.deepEqual(
+    { server: resolved.server, tool: resolved.tool, normalized: resolved.normalized },
+    { server: 'wiki', tool: 'plan_set', normalized: true },
+  );
+});
 
 test('buildMcpStatus reads external MCP endpoints from mcp.endpoints.json', async () => {
   const originalCwd = process.cwd();

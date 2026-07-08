@@ -174,7 +174,7 @@ function clarifyToolDescription(serverName, toolName, description) {
   if (serverName === 'production' && toolName === 'production_start_job') {
     return compactDescription([
       base,
-      'Production export means wiki deliverable/publication export only. Do not use type=export for Confluence/CME/source export; use cme_export_run instead.',
+      'Production export means wiki deliverable/publication export only. Do not use type=export for Confluence/CME/source export; use cme__cme_export_run instead.',
     ].filter(Boolean).join(' '));
   }
   return base;
@@ -469,7 +469,9 @@ export function formatMcpToolsForAgent(mcpStatus) {
       sections.push(`${name}: connected, tools not discovered yet`);
       continue;
     }
-    sections.push(`${name}: ${tools.map((tool) => tool.name).join(', ')}`);
+    // Always advertise the qualified call name (server__tool): showing bare
+    // tool names here is what teaches the model to emit unqualified calls.
+    sections.push(`${name}: ${tools.map((tool) => `${name}__${tool.name}`).join(', ')}`);
   }
   return sections.length > 0 ? sections.join('\n') : 'No connected MCP tools discovered yet.';
 }
@@ -496,6 +498,31 @@ export function parseToolCallName(name) {
   const sep = name.indexOf('__');
   if (sep === -1) return { server: null, tool: name };
   return { server: name.slice(0, sep), tool: name.slice(sep + 2) };
+}
+
+// Deterministic recovery for unqualified tool-call names emitted by the LLM
+// (e.g. "cme_status" instead of "cme__cme_status"). Exact-name match only:
+// if exactly one connected server (or extra pseudo-server) exposes the bare
+// tool name, route to it and report `normalized: true`; otherwise return
+// `server: null` with the list of candidate servers so the caller can raise
+// an explicit error. This is name normalization, never fuzzy matching — do
+// not extend it to description/similarity-based selection (plan directeur
+// §20 forbids that).
+export function resolveToolCallName(mcpStatus, name, extraServers = {}) {
+  const parsed = parseToolCallName(name);
+  if (parsed.server) return { ...parsed, normalized: false, candidates: [] };
+  const candidates = [];
+  for (const [serverName, toolNames] of Object.entries(extraServers)) {
+    if (toolNames.includes(parsed.tool)) candidates.push(serverName);
+  }
+  for (const [serverName, value] of Object.entries(mcpStatus ?? {})) {
+    if (value.status !== 'connected') continue;
+    if ((value.tools ?? []).some((tool) => tool.name === parsed.tool)) candidates.push(serverName);
+  }
+  if (candidates.length === 1) {
+    return { server: candidates[0], tool: parsed.tool, normalized: true, candidates };
+  }
+  return { server: null, tool: parsed.tool, normalized: false, candidates };
 }
 
 export function mcpStatusMarker(status) {

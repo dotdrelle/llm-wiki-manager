@@ -9,35 +9,53 @@ the `donna` agent shell.
 Keep it a manager. Do not absorb responsibilities from `llm-wiki`,
 `agent-cme`, `agent-wiki-production`, or other external agents.
 
-The multi-repo roadmap driving current work lives in `plan-directeur-revise.md`
-at the wikiLLM workspace root (one level above this repo, not versioned here).
-It sequences 0.9.3 → 0.11.0 across all six service repos; sections referenced
-below (e.g. "plan §4.2") point into that document. As of this writing, 0.9.3
-and 0.9.4 (`serve.ts`/`chatHtml.ts` module extraction, this repo untouched by
-that lot) are released; 0.9.5 (single orchestrator, non-blocking control-lane
-conversation — see Agent Runtime below), 0.9.6 (structured plan +
-`projectWorkflow` canonical projection — see Activity, Plan, Queue below),
-0.10.0 (structured plan patches + sequential topological scheduler — the
-plan's own highest-risk lot, de-risking the model before 0.10.1's real
-parallelism — see the Control lane and this section), and 0.10.1 (real
-parallel task execution, `runRuntimeParallelPlan` — see Agent Runtime below)
-are all implemented and committed, not yet tagged/released. (0.9.7, the Wiki
-graph, and 0.10.2, the Run/Task graph, landed in `llm-wiki` only — see that
-repo's `CLAUDE.md`.) 0.10.3 (contracts, MCP write guards, MCP HTTP hardening,
-audit) is partially implemented in this repo: versioned contract schemas
-(see Contracts below) and the audit trail (see Agent Runtime below) are done;
-Python agent auth/scope/rate-limiting hardening landed in each agent repo
-(not this one) — see their own `CLAUDE.md` files.
+The multi-repo master plan lives in `plan-directeur-orchestration.md` at the
+wikiLLM workspace root (one level above this repo, not versioned here), with
+its per-commit breakdown in `plan-implementation-detaillee.md` and the backing
+code review in `revue-critique-orchestration.md`. It supersedes
+`plan-directeur-revise.md` and all earlier plans. The "agnostic orchestration
+of Donna" refactor it describes is **fully implemented in this repo** as of
+0.12.0 (corrective release + ordered commits `f1e4090`…`fd744de`):
 
-0.11.0 is an industrialized single-user deployment baseline. Multi-user support
-is specified in `llm-wiki/docs/industrialisation.md` and planned for 0.12.0; do
-not expose the runtime as a shared write surface before that work lands.
+- Donna's core is business-agnostic. It never branches on operations or agent
+  names; it only understands capabilities, tasks, dependencies, groups,
+  barriers, assignments, attempts, results, locks, approvals and budgets.
+- Agents are discovered via `agent_describe` and indexed in the capability
+  registry (`src/orchestrator/agentRegistry.js`, `capabilityRegistry.js`);
+  `capabilityResolver.js` picks an instance per task from
+  `requiredCapability` + workspace `capabilityRouting` config. The old
+  text-similarity `selectExecutorForStep` is gone — never reintroduce fuzzy
+  executor selection or a first-available-tool fallback.
+- Agent-proposed `TaskGraphFragment`s pass through `planValidator.js` (13 DAG/
+  contract/budget checks) then `planIntegrator.js` (revisions, events,
+  persistence). Dynamic expansion via `TaskResult.planExpansionRequest`.
+- Tasks execute through `dispatcher.js`/`assignmentManager.js`/
+  `attemptManager.js` calling `agent_execute`/`agent_status`/`agent_cancel` —
+  **no per-task LLM loop** (`runParallelTask`/`createTaskSession` were
+  deleted; never recreate child agentic sessions per task). Retries can fall
+  back to another instance of the same capability.
+- Approvals are bounded `ApprovalGrant`s (run + revision + approval classes);
+  conversation is decoupled from execution (`conversationBusy` vs
+  `executionActive` in `src/shell/useSession.ts`) so the chat stays available
+  during runs and extra runs are queued.
+- `src/runtime/recoveryManager.js` re-attaches active tasks at boot via
+  `agent_status`: terminal jobs get their results aggregated; still-active
+  tasks with an `idempotencyKey` go back to `pending` for idempotent
+  rescheduling.
 
-## Release recipe gate
+0.11.0 was the industrialized single-user baseline; 0.12.0 (this codebase) is
+the agnostic-orchestration release, pending tags. Multi-user support is
+specified in `llm-wiki/docs/industrialisation.md` and planned next; do not
+expose the runtime as a shared write surface before that work lands.
 
-`src/runtime/donna-contract.test.js` is the executable form of
-`plan-0.11.5-hotfix-final.md` §3 (the Donna contract recipe) and runs in
-`npm test`/`ci.yml`. No release ships while it is red.
+## Release gate
+
+`npm test` (see `package.json`) is the release gate: it includes the
+orchestrator suites (registry, resolver, validator, integrator, scheduler,
+attemptManager, resultAggregator, approvalPolicy), `recoveryManager.test.js`,
+and `src/runtime/donna-contract.test.js`. No release ships while it is red.
+When adding an orchestrator module, add its test file to the `npm test` list —
+tests that exist but are not in the gate protect nothing.
 
 ## Layout
 
@@ -58,10 +76,28 @@ src/core/queueStore.js      QueueStore interface (memory & SQLite impls)
 src/core/skills.js          Workspace skill discovery
 src/core/workspaces.js      Workspace registry and creation
 src/core/sessionConfig.js   Shared .wikirc profile application (shell + runtime)
+src/orchestrator/           Generic, business-agnostic orchestration core
+  agentRegistry.js          agent_describe discovery + health re-scan
+  capabilityRegistry.js     capability@version → agent instances index
+  capabilityResolver.js     Deterministic agent selection (no fuzzy matching)
+  planValidator.js          DAG/contract/budget validation of fragments
+  planIntegrator.js         Fragment integration, plan revisions, events
+  scheduler.js              Ready-task computation, effective concurrency
+  dependencyResolver.js     Deps, groups, barriers
+  lockManager.js            Task/administrative locks
+  budgetManager.js          Per-run budgets (tasks, attempts, duration…)
+  dispatcher.js             agent_execute/agent_status/agent_cancel driver
+  assignmentManager.js      Task → agent instance assignment
+  attemptManager.js         Attempts, retries, agent fallback
+  resultAggregator.js       TaskResult intake, DAG update, plan expansion
+  approvalPolicy.js         Bounded ApprovalGrants (run + revision + class)
+src/activity/               Aggregated activity: synthesis, weighted progress, dedup
+src/graph/                  Run/Task graph projection + visibility policy
 src/runtime/                Agentic runtime HTTP/SSE server + SQLite store
-  store.js                  SQLite persistence (events, runs, queue_items)
+  store.js                  SQLite persistence (events, runs, queue_items, agents, tasks, task_groups, task_dependencies, task_assignments, task_attempts, task_results, approval_grants, plan_revisions)
   server.js                 HTTP/SSE endpoints: /health /state /events/stream /run /cancel /resume /approve /control /config/profiles /config/use
-  runner.js                 runRuntimeAgenticWorkflow: loop → evaluate → replan; finishRuntimeRun; evaluateRuntimeRun; replanRuntimeRun
+  runner.js                 runRuntimeAgenticWorkflow: loop → evaluate → replan; parallel plan execution delegates to the orchestrator dispatcher (no child LLM sessions)
+  recoveryManager.js        Boot-time re-attachment of active tasks via agent_status
   approvals.js              Run-level and tool-level approval gate; POST /approve handler
   supervisor.js             Background activity poller; pollBusy set shared with runner
   lifecycle.js              ensureRuntime: health-check, spawn Node child, inject token

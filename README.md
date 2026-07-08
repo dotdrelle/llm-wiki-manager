@@ -9,13 +9,19 @@ inspect workspaces, run safe manager commands, call MCP tools, guide production
 jobs, and run one-shot headless tasks.
 
 The manager does not implement the wiki engine or the external agents. It
-**orchestrates** them.
+**orchestrates** them — generically. Since 0.12.0 the Donna core is
+business-agnostic: agents declare their capabilities through a standard
+contract (`agent_describe` / `agent_plan` / `agent_execute` / `agent_status` /
+`agent_cancel`), plans target *capabilities* rather than agent names, and a
+deterministic dispatcher executes bounded tasks with idempotency, bounded
+approvals, per-run budgets and automatic recovery after restart. The chat
+stays available while runs execute; additional requests are queued.
 
-Scope note: 0.11.0 is an industrialized single-user deployment baseline. The
-multi-user model is specified in `llm-wiki/docs/industrialisation.md` and
-planned for 0.12.0. Until then, do not expose the runtime as a shared write
-surface; it binds to `127.0.0.1` by default, and `--host 0.0.0.0` must be an
-explicit deployment choice with bearer-token and network protection.
+Scope note: this is a single-user deployment baseline. The multi-user model is
+specified in `llm-wiki/docs/industrialisation.md` and planned next. Until
+then, do not expose the runtime as a shared write surface; it binds to
+`127.0.0.1` by default, and `--host 0.0.0.0` must be an explicit deployment
+choice with bearer-token and network protection.
 
 ---
 
@@ -779,6 +785,25 @@ automatic shell/headless monitoring by including `_activity`:
 The existing native payload should stay intact. `_activity` is additive metadata
 for the manager. When `poll` is present, the shell/TUI and headless loop call the
 declared MCP tool until the activity becomes terminal.
+
+## Orchestration Contract
+
+Beyond `_activity`, an MCP server can become a fully **orchestrable agent** by
+exposing five tools: `agent_describe` (capabilities, limits, health),
+`agent_plan` (returns a task-graph fragment for an objective — planner agents
+only), `agent_execute` (starts one bounded, idempotent task), `agent_status`
+and `agent_cancel`. The manager discovers these at startup and on a periodic
+re-scan, and routes tasks by capability: workspace config can pin
+`preferredAgents` / `allowedAgents` / `fallbackAgents` per capability under
+`capabilityRouting`. Executor-only agents (like `agent-cme`) declare
+`canPlan: false` and receive single tasks planned elsewhere. Mutating
+operations must carry an `idempotencyKey` — the agent persists key→job
+mappings so a retry never duplicates work. Capabilities that mutate external
+systems should declare `defaultRequiresApproval: true`; the manager then
+requires a bounded approval (scoped to run, plan revision and approval class)
+before dispatch. Contracts and schemas live in
+`plan-directeur-orchestration.md` at the wikiLLM workspace root and in
+`src/contracts/schemas.js`.
 
 ## Local Compose Overrides
 

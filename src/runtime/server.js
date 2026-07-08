@@ -5,6 +5,7 @@ import { activeCacertPath } from '../core/cacert.js';
 import { normalizePlanPatch, rebasePlanPatch } from '../core/planPatch.js';
 import { validateContractInDev } from '../contracts/schemas.js';
 import { runtimeTokenFromEnv } from './auth.js';
+import { controlMessage } from './controlMessages.js';
 
 export function startRuntimeServer({
   host = '127.0.0.1',
@@ -248,7 +249,7 @@ export function startRuntimeServer({
               kind: 'enqueue_run',
               item,
               ...controlStatus(context, store),
-              explanation: 'Request queued for a future run.',
+              explanation: controlMessage(context?.session, 'queued_for_future_run'),
             });
             return;
           }
@@ -522,7 +523,7 @@ async function handleControlMessage(context, store, input, { intent = null, star
         classification,
         proposal,
         ...controlStatus(context, store),
-        explanation: 'Plan patch proposed. Approve it explicitly to apply it to the active plan.',
+        explanation: controlMessage(context?.session, 'plan_patch_proposed'),
       },
     };
   }
@@ -540,12 +541,12 @@ async function handleControlMessage(context, store, input, { intent = null, star
         classification,
         item,
         ...controlStatus(context, store),
-        explanation: 'Request queued for a future run.',
+        explanation: controlMessage(context?.session, 'queued_for_future_run'),
       },
     };
   }
   if (classification.kind === 'ambiguous') {
-    return readOnlyControlResponse('ambiguous', classification, status, 'The runtime cannot safely classify this message.', {
+    return readOnlyControlResponse('ambiguous', classification, status, controlMessage(context?.session, 'ambiguous_control'), {
       accepted: false,
       extra: {
         choices: [
@@ -557,8 +558,8 @@ async function handleControlMessage(context, store, input, { intent = null, star
     });
   }
   return readOnlyControlResponse('converse', classification, status, status.running
-    ? 'Runtime run is still active. This message was treated as conversation and did not create a queued run.'
-    : 'Runtime is idle. This message was treated as conversation and did not create a run.');
+    ? controlMessage(context?.session, 'converse_while_running')
+    : controlMessage(context?.session, 'converse_while_idle'));
 }
 
 function enqueueControlRequest(context, input) {

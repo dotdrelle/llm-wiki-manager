@@ -1580,14 +1580,15 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
             if (outcome.kind === 'accepted') {
               activityLines = [...activityLines, 'runtime: run accepted'].slice(-LOWER_DETAIL_ROWS);
             } else if (outcome.kind === 'queued') {
-              conversationMessages(session).push({ role: 'command', content: 'Runtime is busy — request added to the control queue, it will start automatically.' });
+              // Server-localized acknowledgement (src/runtime/controlMessages.js).
+              conversationMessages(session).push({ role: 'command', content: String(outcome.result?.explanation ?? 'Request added to the queue.') });
               activityLines = [...activityLines, 'runtime: control queued'].slice(-LOWER_DETAIL_ROWS);
             } else if (outcome.kind === 'observe' || outcome.kind === 'converse' || outcome.kind === 'mutate') {
               const explanation = outcome.result?.explanation ?? 'Runtime control message accepted.';
               conversationMessages(session).push({ role: 'command', content: explanation });
               activityLines = [...activityLines, `runtime: ${outcome.kind}`].slice(-LOWER_DETAIL_ROWS);
             } else if (outcome.kind === 'ambiguous') {
-              conversationMessages(session).push({ role: 'command', content: 'Runtime could not classify that message. Use /queue for a future run, or ask/status more explicitly.' });
+              conversationMessages(session).push({ role: 'command', content: String(outcome.result?.explanation ?? 'Runtime could not classify that message. Use /queue for a future run, or ask/status more explicitly.') });
               activityLines = [...activityLines, 'runtime: ambiguous control'].slice(-LOWER_DETAIL_ROWS);
             } else {
               conversationMessages(session).push({ role: 'command', content: `Runtime error: ${outcome.message}` });

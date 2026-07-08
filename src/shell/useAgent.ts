@@ -31,7 +31,11 @@ export function useAgent(props: { agent: unknown; packageJson: Record<string, un
           props.onRuntimeAccepted?.();
           props.addLog('runtime: run accepted');
         } else if (outcome.kind === 'queued') {
-          conversationMessages(props.session).push({ role: 'command', content: 'Runtime is busy — request added to the control queue, it will start automatically.' });
+          // The server localizes control-lane acknowledgements from the
+          // session language (src/runtime/controlMessages.js) — always prefer
+          // its explanation over a local hardcoded string.
+          const explanation = (outcome as any).result?.explanation ?? 'Request added to the queue.';
+          conversationMessages(props.session).push({ role: 'command', content: String(explanation) });
           props.addLog('runtime: control queued');
         } else {
           conversationMessages(props.session).push({ role: 'command', content: `Runtime error: ${outcome.message}` });

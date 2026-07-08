@@ -740,7 +740,7 @@ function normalizePlanTask(raw, index, { owner = 'orchestrator', ownerActivityKe
     executor: item.executor ?? null,
     executorQuery: item.executorQuery ?? null,
     outputRefs: Array.isArray(item.outputRefs) ? item.outputRefs.map(String) : [],
-    locks: Array.isArray(item.locks) ? item.locks.map(String) : item.locks ?? null,
+    locks: Array.isArray(item.locks) ? item.locks.map(String) : [],
     requiresApproval: item.requiresApproval === true,
     approvalClass: item.approvalClass ?? null,
     approvalSummary: item.approvalSummary ?? null,

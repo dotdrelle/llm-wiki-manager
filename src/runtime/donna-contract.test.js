@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createAgentGraph } from '../agent/graph.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { runRuntimeAgenticWorkflow } from './runner.js';
+import { runRuntimeAgenticWorkflow, runRuntimeParallelPlan } from './runner.js';
 import { startRuntimeServer } from './server.js';
 
 // Executable version of plan-0.11.5-hotfix-final.md §3 ("La recette — le seul
@@ -138,6 +139,123 @@ test('Recipe #3 — "où en est le dernier build ?" reads status, starts no new 
   const types = eventTypes(session);
   assert.equal(types.includes('activity_upserted'), false);
   assert.equal(types.includes('plan_set'), false);
+});
+
+test('CME setup and source configuration stay outside export orchestration', async () => {
+  const originalFetch = globalThis.fetch;
+  const calledTools = [];
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = JSON.parse(String(options.body ?? '{}'));
+    calledTools.push(body.params?.name);
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({ result: { content: [{ type: 'text', text: '{"ok":true}' }] } }),
+    };
+  };
+  let turn = 0;
+  const session = baseSession({
+    commands: ['status'],
+    workspace: 'demo-workspace',
+    mcp: {
+      cme: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3010/mcp/',
+        tools: [
+          { name: 'cme_setup', inputSchema: { type: 'object', additionalProperties: true } },
+          { name: 'cme_source_add', inputSchema: { type: 'object', additionalProperties: true } },
+          { name: 'cme_export_run', inputSchema: { type: 'object', additionalProperties: true } },
+        ],
+      },
+    },
+    llm: {
+      async completeWithTools() {
+        turn += 1;
+        if (turn === 1) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [
+              {
+                id: 'setup',
+                type: 'function',
+                function: {
+                  name: 'cme__cme_setup',
+                  arguments: JSON.stringify({ workspace: 'demo-workspace', base_url: 'https://confluence.example', username: 'user@example.com', pat: 'token' }),
+                },
+              },
+              {
+                id: 'source',
+                type: 'function',
+                function: {
+                  name: 'cme__cme_source_add',
+                  arguments: JSON.stringify({ workspace: 'demo-workspace', name: 'docs', base_url: 'https://confluence.example', space: 'DOC' }),
+                },
+              },
+            ],
+          };
+        }
+        return {
+          content: 'CME est configuré.',
+          message: { role: 'assistant', content: 'CME est configuré.' },
+          tool_calls: null,
+        };
+      },
+    },
+  });
+
+  try {
+    const result = await runRuntimeAgenticWorkflow(createAgentGraph(), session, 'configure cme', {
+      runId: 'cme-config',
+      timeoutMs: 1000,
+      maxTurns: 2,
+      evaluate: false,
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(calledTools, ['cme_setup', 'cme_source_add']);
+    assert.equal(calledTools.includes('cme_export_run'), false);
+    assert.equal((session.headlessPlan ?? []).some((step) => step.requiredCapability === 'external-source.export'), false);
+    assert.equal((session.headlessPlan ?? []).some((step) => step.operation === 'export'), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('CME export is dispatched only from an approved DAG task', async () => {
+  let executeCalls = 0;
+  const session = baseSession({
+    workspace: 'demo-workspace',
+    mcp: {
+      cme: {
+        status: 'connected',
+        tools: [{ name: 'agent_execute' }, { name: 'agent_status' }, { name: 'agent_cancel' }],
+      },
+    },
+    agentRegistrySnapshot: [cmeAgent()],
+    wikircConfig: { capabilityRouting: {} },
+    approvals: [],
+    headlessPlan: [plannedCmeExportTask({ status: 'waiting_approval' })],
+  });
+  const callTool = async (_mcp, _serverName, toolName) => {
+    if (toolName === 'agent_execute') executeCalls += 1;
+    throw new Error(`unexpected tool: ${toolName}`);
+  };
+
+  const result = await runRuntimeParallelPlan({ invoke: async () => assert.fail('no child loop') }, session, 'export cme', {
+    runId: 'cme-export-approval',
+    timeoutMs: 100,
+    maxTurns: 1,
+    callTool,
+    dispatcherPollIntervalMs: 1,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stalled, true);
+  assert.equal(result.reason, 'awaiting_approval');
+  assert.equal(executeCalls, 0);
+  assert.equal(session.headlessPlan[0].status, 'waiting_approval');
 });
 
 function buildSingleTaskAgent({ taskId, description, finalResponse }) {
@@ -312,6 +430,66 @@ function plannedDoctorTask(id, dependsOn) {
     idempotencyKey: null,
     progressWeight: 1,
     outputRefs: [],
+  };
+}
+
+function plannedCmeExportTask(overrides = {}) {
+  return {
+    step: 1,
+    id: 'cme-export',
+    label: 'Export CME',
+    description: 'Export CME',
+    status: 'pending',
+    dependsOn: [],
+    requiredCapability: 'external-source.export',
+    operation: 'export',
+    arguments: { source_name: 'docs' },
+    parallelizable: false,
+    inputRefs: [],
+    expectedOutputRefs: [{ type: 'directory', ref: 'raw/untracked' }],
+    locks: ['external-source:docs'],
+    requiresApproval: true,
+    approvalClass: 'external-source',
+    idempotencyKey: 'idem-cme-export',
+    progressWeight: 1,
+    outputRefs: [],
+    ...overrides,
+  };
+}
+
+function cmeAgent() {
+  return {
+    serverName: 'cme',
+    agentInstanceId: 'cme-main',
+    health: 'available',
+    description: {
+      contractVersion: '1',
+      agentType: 'cme',
+      agentInstanceId: 'cme-main',
+      displayName: 'CME',
+      capabilities: [{
+        id: 'external-source.export',
+        version: '1',
+        description: 'Export external source',
+        inputSchema: { type: 'object', additionalProperties: true },
+        outputSchema: { type: 'object', additionalProperties: true },
+        supportedOperations: ['export'],
+        mutationClass: 'external-source',
+        defaultRequiresApproval: true,
+      }],
+      orchestration: {
+        canPlan: false,
+        canExpandPlan: false,
+        canExecute: true,
+        canCancel: true,
+        canResume: false,
+        singleTaskOnly: true,
+        supportsIdempotency: true,
+        supportsParallelWorkers: false,
+      },
+      limits: { recommendedConcurrency: 1, maxConcurrency: 1, maxTaskDurationMs: 2000 },
+      health: { status: 'available' },
+    },
   };
 }
 

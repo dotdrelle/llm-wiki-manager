@@ -160,6 +160,7 @@ export async function execute(task, assignment, {
 function executeRequest(task, session) {
   return {
     taskId: String(task.id ?? task.step),
+    idempotencyKey: task.idempotencyKey ?? undefined,
     operation: task.operation,
     workspace: workspaceRequest(session),
     arguments: task.arguments && typeof task.arguments === 'object' ? task.arguments : {},

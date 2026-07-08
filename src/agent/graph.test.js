@@ -387,3 +387,50 @@ test('buildAgentSystemPrompt forbids inventing slash commands or arguments', () 
   assert.doesNotMatch(prompt, /executorQuery/);
   assert.doesNotMatch(prompt, /executor:"/);
 });
+
+// Guard: the system prompt must never show a connected tool's bare name
+// outside its qualified server__tool form. Bare mentions are what teach the
+// model to emit unqualified tool calls (the cme_status incident). The bare
+// name list comes from the session's declared servers, never from a manual
+// list (amendment A6). New prompt text or injected skill descriptions that
+// reintroduce a bare name must fail here.
+test('buildAgentSystemPrompt contains no unqualified tool names for connected servers', () => {
+  const session = sessionBase({
+    mcp: {
+      production: {
+        status: 'connected',
+        tools: [
+          { name: 'production_start_job' }, { name: 'production_job_status' },
+          { name: 'production_job_logs' }, { name: 'production_cancel_job' },
+          { name: 'production_list_jobs' }, { name: 'production_list_templates' },
+          { name: 'production_status' }, { name: 'agent_describe' },
+          { name: 'agent_plan' }, { name: 'agent_execute' },
+          { name: 'agent_status' }, { name: 'agent_cancel' },
+        ],
+      },
+      cme: {
+        status: 'connected',
+        tools: [
+          { name: 'cme_status' }, { name: 'cme_setup' },
+          { name: 'cme_sources_list' }, { name: 'cme_source_add' },
+          { name: 'cme_source_remove' }, { name: 'cme_export_run' },
+          { name: 'cme_export_status' }, { name: 'cme_export_cancel' },
+          { name: 'agent_describe' }, { name: 'agent_execute' },
+          { name: 'agent_status' }, { name: 'agent_cancel' },
+        ],
+      },
+    },
+  });
+  const prompt = buildAgentSystemPrompt({ session });
+  const offenders = [];
+  for (const [serverName, value] of Object.entries(session.mcp)) {
+    for (const tool of value.tools) {
+      // A bare occurrence is the tool name not embedded in a wider
+      // identifier: `production__production_start_job` does not match
+      // because the inner occurrence is preceded by `_`.
+      const bare = new RegExp(`(?<![\\w])${tool.name}(?![\\w])`);
+      if (bare.test(prompt)) offenders.push(`${serverName}:${tool.name}`);
+    }
+  }
+  assert.deepEqual(offenders, [], `Unqualified tool names found in system prompt: ${offenders.join(', ')}`);
+});

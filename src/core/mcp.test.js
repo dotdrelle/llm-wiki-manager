@@ -7,6 +7,7 @@ import {
   buildMcpStatus,
   callMcpTool,
   discoverMcpTools,
+  formatMcpToolsForAgent,
   resolveRetryPolicy,
   resolveToolCallName,
 } from './mcp.js';
@@ -61,6 +62,15 @@ test('resolveToolCallName resolves internal pseudo-server tools via extraServers
     { server: resolved.server, tool: resolved.tool, normalized: resolved.normalized },
     { server: 'wiki', tool: 'plan_set', normalized: true },
   );
+});
+
+test('formatMcpToolsForAgent advertises qualified server__tool names only', () => {
+  const listing = formatMcpToolsForAgent(resolveFixtureStatus);
+  assert.match(listing, /cme__cme_status/);
+  assert.match(listing, /production__production_start_job/);
+  // No bare tool name outside a qualified form.
+  assert.doesNotMatch(listing, /(?<![\w])cme_status(?![\w])/);
+  assert.doesNotMatch(listing, /(?<![\w])production_start_job(?![\w])/);
 });
 
 test('buildMcpStatus reads external MCP endpoints from mcp.endpoints.json', async () => {

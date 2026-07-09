@@ -612,6 +612,7 @@ export function buildAgentSystemPrompt(state) {
       'On failure: if a completed activity is failed/error/cancelled, call wiki__plan_done(step=N, status="failed") then stop with a clear error report.',
     ].filter(Boolean).join('\n'),
     'For service actions, recommend only available service primitives from Available primitives, with the exact service name when the primitive supports one.',
+    'Scope discipline: execute ONLY the action(s) the user explicitly requested. Never chain additional mutating operations (ingest, build, export, polish, delete, send…) that the user did not ask for — even when diagnostics or recommendations suggest them. Finish the requested work, then list the suggested follow-ups in your final answer and stop. Example: "applique les recommandations de config" means apply the config; it does NOT authorize launching the ingest those recommendations mention.',
     'Disambiguate export requests carefully.',
     'Confluence/CME/source export means exporting external Confluence sources into raw/untracked: use cme MCP tools (`cme__cme_export_run`, then `cme__cme_export_status`). Never use production `type=export` for Confluence source export.',
     'Wiki/deliverable/publication export means exporting generated deliverables from the wiki: use production MCP tools (`production__production_start_job` with `type:"export"` or pipeline steps). Require the deliverable path when exporting deliverables.',
@@ -791,6 +792,13 @@ export function createAgentGraph(options = {}) {
 
       if (result.tool_calls?.length > 0) {
         state.session._onStreamReset?.();
+        // Close the streaming conversation entry now: the text streamed so
+        // far is this iteration's narration. Without this, the next
+        // iteration's deltas append to the SAME entry with no separator and
+        // the chat becomes one glued wall of text ("…de la config.Voyons…").
+        // An empty finalize keeps the accumulated content and just drops the
+        // streaming flag; it is a no-op when nothing was streamed.
+        emitAgentEvent(state.session, 'assistant_message', 'llm', { content: '' });
         state.session._onStep?.(`[${iterations + 1}/${MAX_TOOL_ITERATIONS}] ${result.tool_calls.length} MCP action${result.tool_calls.length > 1 ? 's' : ''} queued…`);
         // On iteration 0 persist the user message too so it survives the loop.
         const newMessages = iterations === 0

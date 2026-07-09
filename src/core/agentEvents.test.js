@@ -416,3 +416,27 @@ test('reduceAgentEvents: plan patches are proposed, approved and applied with re
   assert.equal(projection.plan[1].status, 'pending');
   assert.equal(projection.planPatches[0].status, 'applied');
 });
+
+test('streamed narration split across tool iterations yields separate conversation entries', () => {
+  // graph.js finalizes the streaming entry (assistant_message content:'')
+  // before each tool batch so per-iteration narrations do not glue together
+  // into one wall of text.
+  const session = {};
+  dispatchAgentEvent(session, createAgentEvent('assistant_delta', { origin: 'llm', payload: { delta: 'Analyse des jobs récents.' } }));
+  dispatchAgentEvent(session, createAgentEvent('assistant_message', { origin: 'llm', payload: { content: '' } }));
+  dispatchAgentEvent(session, createAgentEvent('assistant_delta', { origin: 'llm', payload: { delta: 'Voyons les logs.' } }));
+  dispatchAgentEvent(session, createAgentEvent('assistant_message', { origin: 'llm', payload: { content: 'Voyons les logs.' } }));
+
+  const conversation = session.agentProjection.conversation;
+  assert.equal(conversation.length, 2);
+  assert.equal(conversation[0].content, 'Analyse des jobs récents.');
+  assert.equal(conversation[0].streaming ?? false, false);
+  assert.equal(conversation[1].content, 'Voyons les logs.');
+});
+
+test('empty assistant_message finalize is a no-op without a streaming entry', () => {
+  const session = {};
+  dispatchAgentEvent(session, createAgentEvent('assistant_message', { origin: 'llm', payload: { content: 'Réponse finale.' } }));
+  dispatchAgentEvent(session, createAgentEvent('assistant_message', { origin: 'llm', payload: { content: '' } }));
+  assert.equal(session.agentProjection.conversation.length, 1);
+});

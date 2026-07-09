@@ -138,6 +138,8 @@ const WIKI_PLAN_SET_TOOL = {
                   status: { type: 'string', enum: ['pending', 'queued', 'running', 'waiting', 'pending_approval', 'done', 'failed', 'cancelled', 'stalled', 'added_during_run'] },
                   dependsOn: { type: 'array', items: { type: 'string' } },
                   outputRefs: { type: 'array', items: { type: 'string' } },
+                  operation: { type: ['string', 'null'], description: 'Operation for the capability provider (e.g. ingest_plan, build).' },
+                  arguments: { type: 'object', description: 'Arguments passed to the provider agent_execute for this step.' },
                 },
                 required: ['description'],
               },
@@ -519,6 +521,21 @@ function normalizeDeclaredPlanStep(raw, index) {
     executor: null,
     executorQuery: null,
     outputRefs: Array.isArray(item.outputRefs) ? item.outputRefs.map(String) : [],
+    // Execution fields the deterministic dispatcher consumes (agent_execute):
+    // without them a capability step cannot actually run.
+    ...(item.operation != null ? { operation: String(item.operation) } : {}),
+    ...(item.arguments && typeof item.arguments === 'object' ? { arguments: item.arguments } : {}),
+    ...(item.groupId != null ? { groupId: String(item.groupId) } : {}),
+    ...(item.dependsOnGroup != null ? { dependsOnGroup: String(item.dependsOnGroup) } : {}),
+    ...(item.parallelizable != null ? { parallelizable: Boolean(item.parallelizable) } : {}),
+    ...(item.barrier ? { barrier: true } : {}),
+    ...(item.locks ? { locks: item.locks } : {}),
+    ...(item.requiresApproval != null ? { requiresApproval: Boolean(item.requiresApproval) } : {}),
+    ...(item.approvalClass ? { approvalClass: String(item.approvalClass) } : {}),
+    ...(item.approvalSummary ? { approvalSummary: String(item.approvalSummary) } : {}),
+    ...(item.idempotencyKey ? { idempotencyKey: String(item.idempotencyKey) } : {}),
+    ...(item.progressWeight != null ? { progressWeight: Number(item.progressWeight) } : {}),
+    ...(item.recommendedConcurrency != null ? { recommendedConcurrency: Number(item.recommendedConcurrency) } : {}),
   };
 }
 
@@ -592,7 +609,7 @@ export function buildAgentSystemPrompt(state) {
       '',
       'Task startup:',
       '  1. If the next MCP tool returns _activity.plan.steps, call that tool directly; the shell will create the visible plan from the returned activity.',
-      '  2. If the tool cannot declare its own plan, call wiki__plan_set before executing the first step. Prefer structured steps: {id, description, requiredCapability, dependsOn, outputRefs}; a legacy list of strings is still accepted.',
+      '  2. If the tool cannot declare its own plan, call wiki__plan_set before executing the first step. Prefer structured steps: {id, description, requiredCapability, operation, arguments, dependsOn, outputRefs}; capability steps need operation+arguments for the dispatcher to execute them; a legacy list of strings is still accepted.',
       '     Multi-tool example: wiki__plan_set(steps=[{id:"cme-export",description:"CME export",requiredCapability:"external-source.export",dependsOn:[],outputRefs:["raw/untracked"]},{id:"production",description:"Production pipeline",requiredCapability:"knowledge.pipeline",dependsOn:["cme-export"],outputRefs:["deliverables"]}])',
       '  3. Immediately execute the first step using the appropriate MCP tool. Do not start step 2 in the same turn unless one async pipeline tool owns and declares the whole sequence.',
       '  For synchronous steps (result is immediate, no _activity polling), call wiki__plan_done(step=1) after confirming success.',
@@ -616,10 +633,12 @@ export function buildAgentSystemPrompt(state) {
     'Disambiguate export requests carefully.',
     'Confluence/CME/source export means exporting external Confluence sources into raw/untracked: use cme MCP tools (`cme__cme_export_run`, then `cme__cme_export_status`). Never use production `type=export` for Confluence source export.',
     'Wiki/deliverable/publication export means exporting generated deliverables from the wiki: use production MCP tools (`production__production_start_job` with `type:"export"` or pipeline steps). Require the deliverable path when exporting deliverables.',
-    'For ingest/build/export/polish/pipeline workflows, use production MCP tools. Do not route these through direct /wiki shortcuts. To chain multiple sequential steps (e.g. build then polish), always use a single production__production_start_job call with type="pipeline" and steps=["build","polish"] — never start them as separate jobs: the first job is asynchronous and the second would run before it completes. For existing deliverables where content stability matters, pass stabilize:true so the build step preserves unchanged sections; keep polish in the pipeline when publication output is requested. Do not ask the user to confirm between steps; start the pipeline call directly.',
+    'For ingest/build/export/polish/pipeline workflows, use production MCP tools. Do not route these through direct /wiki shortcuts.',
+    'MULTI-DOCUMENT ingest (more than 2 files, or "ingest everything pending"): call production__agent_plan first, e.g. {capability:"knowledge.update", operation:"ingest", constraints:{maxConcurrency:3, requireApprovalForMutations:true}}. The shell integrates the returned task graph as the plan automatically and the orchestrator dispatches the per-document tasks IN PARALLEL with an approval gate. Do not call production__production_start_job for multi-document ingest — that creates one monolithic sequential job.',
+    'Single-document ingest or one-off jobs (doctor, one build, one export): production__production_start_job is fine. To chain sequential steps (e.g. build then polish) use ONE call with type="pipeline" and steps=["build","polish"] — never separate jobs (the first is asynchronous). For existing deliverables where content stability matters, pass stabilize:true. Do not ask the user to confirm between steps.',
     'Long-running MCP jobs: do not call the same status tool more than once consecutively. When chaining jobs sequentially: (1) start the job, report job/activity id and status; (2) check status once — if done, proceed to the next step immediately; (3) if still running, report status, list the remaining steps, and return control; (4) when re-invoked, check status first, then proceed. Do not spin-poll (status → status → status with no new action between). The shell activity panel monitors non-terminal jobs automatically.',
     'If production__production_start_job is returned as queued/waiting by the manager, report that it is waiting in the local queue and return control. Do not continue as if the production job has started.',
-    'For diagnostics, use /wiki run doctor when the user asks for doctor. Use /workspace init <name> [path] for low-level non-interactive workspace creation. In the interactive TUI, /new <name> opens the setup wizard. Use /wiki for index, or /wiki run index through the explicit backup hatch. Use /wiki run init only for explicit current-workspace llm-wiki init.',
+    'For diagnostics (doctor), use production__production_start_job with type="doctor" like any other production job; /wiki run doctor is only the fallback when the production MCP is not connected. Use /workspace init <name> [path] for low-level non-interactive workspace creation. In the interactive TUI, /new <name> opens the setup wizard. Use /wiki for index, or /wiki run index through the explicit backup hatch. Use /wiki run init only for explicit current-workspace llm-wiki init.',
     'If an action requires tools or skills not available yet, explain the limitation and name the expected primitive.',
     workspaceProfile
       ? `Workspace profile (.wiki/profile.md) — durable user preferences, apply these to every reply (tone, tutoiement/vouvoiement, formatting, etc.):\n${workspaceProfile}`
@@ -942,6 +961,41 @@ export function createAgentGraph(options = {}) {
             args = withActiveWorkspaceForExternalTool(state.session, server, tool, args);
             const result = await callMcpTool(state.session.mcp, server, tool, args, state.session._abortSignal);
             resultText = formatMcpToolResult(result);
+          }
+        }
+        {
+          const payload = parseJsonText(resultText);
+          // agent_plan (any provider) returned a task-graph fragment: declare it as
+          // the plan DETERMINISTICALLY. Asking the LLM to copy N tasks into
+          // wiki__plan_set would lose fields (a small local model dropped
+          // arguments/operations in testing) — the shell does the mapping.
+          if (/(^|__)agent_plan$/.test(tool) && Array.isArray(payload?.tasks) && payload.tasks.length > 0) {
+            const steps = payload.tasks.map((task, index) => normalizeDeclaredPlanStep({
+              id: task.id,
+              description: task.label ?? task.id ?? `Task ${index + 1}`,
+              requiredCapability: task.requiredCapability ?? payload.capability ?? null,
+              operation: task.operation ?? null,
+              arguments: task.arguments ?? {},
+              dependsOn: task.dependsOn ?? [],
+              outputRefs: (task.expectedOutputRefs ?? []).map((ref) => (ref && typeof ref === 'object' ? String(ref.ref ?? '') : String(ref))).filter(Boolean),
+              groupId: task.groupId ?? null,
+              dependsOnGroup: task.dependsOnGroup ?? null,
+              parallelizable: task.parallelizable,
+              barrier: task.barrier,
+              locks: task.locks,
+              requiresApproval: task.requiresApproval,
+              approvalClass: task.approvalClass,
+              approvalSummary: task.approvalSummary,
+              idempotencyKey: task.idempotencyKey,
+              progressWeight: task.progressWeight,
+              recommendedConcurrency: task.recommendedConcurrency,
+            }, index, state.session));
+            emitAgentEvent(state.session, 'plan_set', 'tool', { steps });
+            state.session._onStep?.(`Plan: ${steps.length} task(s) declared from ${server} fragment`);
+            resultText = `Task-graph fragment integrated as the current plan (${steps.length} task(s), groups: ${[...new Set(payload.tasks.map((task) => task.groupId).filter(Boolean))].join(', ') || 'none'}). The orchestrator will dispatch these tasks — do NOT call production tools for them yourself. Reply with a short summary and wait.`;
+          }
+          if (/(^|__)agent_plan$/.test(tool) && Array.isArray(payload?.tasks) && payload.tasks.length > 0) {
+            minimalPlanActive = false;
           }
         }
         if (server === 'production') {

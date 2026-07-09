@@ -671,3 +671,68 @@ test('agent graph survives more than 12 tool iterations (recursion limit)', asyn
     globalThis.fetch = originalFetch;
   }
 });
+
+test('agent graph auto-declares the plan from an agent_plan task-graph fragment', async () => {
+  // The bridge that makes parallel ingestion real: when the LLM calls
+  // production__agent_plan, the shell integrates the fragment as the plan
+  // deterministically (no lossy LLM copying) with the execution fields the
+  // dispatcher needs (operation, arguments, groups, barrier).
+  const fragment = {
+    capability: 'knowledge.update',
+    tasks: [
+      { id: 'ingest:a', label: 'Ingest a.md', requiredCapability: 'knowledge.update', operation: 'ingest_plan', arguments: { inputs: ['raw/untracked/a.md'] }, dependsOn: [], parallelizable: true, groupId: 'ingest', expectedOutputRefs: [{ type: 'file', ref: '.wiki/plans/a.json' }], requiresApproval: true, idempotencyKey: 'k'.repeat(64) },
+      { id: 'ingest:b', label: 'Ingest b.md', requiredCapability: 'knowledge.update', operation: 'ingest_plan', arguments: { inputs: ['raw/untracked/b.md'] }, dependsOn: [], parallelizable: true, groupId: 'ingest', expectedOutputRefs: [{ type: 'file', ref: '.wiki/plans/b.json' }], requiresApproval: true, idempotencyKey: 'k'.repeat(64) },
+      { id: 'ingest-apply', label: 'Apply ingest plans', requiredCapability: 'knowledge.update', operation: 'ingest_apply', arguments: { inputs: ['.wiki/plans/a.json', '.wiki/plans/b.json'] }, dependsOn: ['ingest:a', 'ingest:b'], barrier: true, dependsOnGroup: 'ingest', requiresApproval: true, idempotencyKey: 'k'.repeat(64) },
+    ],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    text: async () => JSON.stringify({ result: { content: [{ type: 'text', text: JSON.stringify(fragment) }] } }),
+  });
+  let calls = 0;
+  const session = sessionBase({
+    mcp: {
+      production: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3000/mcp/',
+        tools: [{ name: 'agent_plan', description: 'Propose a task graph', inputSchema: { type: 'object', properties: {} } }],
+      },
+    },
+    llm: {
+      async completeWithTools() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: 'plan-call',
+              type: 'function',
+              function: { name: 'production__agent_plan', arguments: JSON.stringify({ capability: 'knowledge.update', operation: 'ingest' }) },
+            }],
+          };
+        }
+        return { content: 'Plan intégré, en attente du dispatch.', message: { role: 'assistant', content: 'Plan intégré, en attente du dispatch.' }, tool_calls: null };
+      },
+    },
+  });
+
+  try {
+    const agent = createAgentGraph();
+    const result = await agent.invoke({ input: 'ingère les documents en attente', session });
+
+    assert.equal(result.response, 'Plan intégré, en attente du dispatch.');
+    assert.equal(session.headlessPlan.length, 3);
+    assert.deepEqual(session.headlessPlan.map((step) => step.operation), ['ingest_plan', 'ingest_plan', 'ingest_apply']);
+    assert.deepEqual(session.headlessPlan[0].arguments, { inputs: ['raw/untracked/a.md'] });
+    assert.equal(session.headlessPlan[0].parallelizable, true);
+    assert.equal(session.headlessPlan[2].barrier, true);
+    assert.deepEqual(session.headlessPlan[2].dependsOn, ['ingest:a', 'ingest:b']);
+    assert.equal(session.headlessPlan[0].requiredCapability, 'knowledge.update');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

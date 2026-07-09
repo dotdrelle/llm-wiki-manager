@@ -107,8 +107,11 @@ export async function pollActivitiesOnce(session, {
         const progress = payload?.progress ?? polledActivity.progress ?? {};
         const percent = Number(progress.percent ?? polledActivity.progress?.percent);
         const detail = progress.detail ?? progress.step ?? '';
-        const batch = progress.batchIndex != null && progress.batchCount != null
-          ? `batch ${progress.batchIndex}/${progress.batchCount}`
+        // The trace's batchIndex is 0-based and the human detail already says
+        // "Batch 1/2" — printing both gave "Batch 1/2 · batch 0/2". Display
+        // 1-based, and only when the detail doesn't already carry it.
+        const batch = progress.batchIndex != null && progress.batchCount != null && !/batch/i.test(String(detail))
+          ? `batch ${Number(progress.batchIndex) + 1}/${progress.batchCount}`
           : null;
         const lastEvent = progress.lastEvent ? String(progress.lastEvent) : null;
         const retry = progress.retryAt

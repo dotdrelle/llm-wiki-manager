@@ -160,3 +160,76 @@ function recoverySession() {
     }],
   };
 }
+
+test('recoveryManager fails unresolvable-capability tasks and interrupts the run', async () => {
+  const { store, root, runId, taskId } = storeWithActiveTask();
+  const session = recoverySession();
+  // A registry that DOES know capabilities, but not the task's one: the plan
+  // came from a hallucinated capability (the 0.12.1 incident) — re-attaching
+  // it would recreate a forever-waiting queue on every boot.
+  session.agentRegistrySnapshot = [{
+    agentInstanceId: 'production-main',
+    serverName: 'production',
+    health: 'available',
+    description: {
+      agentType: 'production',
+      contractVersion: '1',
+      capabilities: [{ id: 'knowledge.pipeline', version: '1' }],
+    },
+  }];
+  store.hydrateSession(session, { workspace: 'docs' });
+  const statusCalls = [];
+
+  try {
+    const result = await recoverActiveRuns({
+      store,
+      session,
+      workspace: 'docs',
+      callTool: async (_mcp, serverName, toolName, args) => {
+        statusCalls.push({ serverName, toolName, args });
+        return { content: [{ type: 'text', text: '{}' }] };
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.recovered.length, 0);
+    assert.equal(result.rescheduled.length, 0);
+    assert.equal(result.interrupted.length, 1);
+    assert.match(result.interrupted[0].reason, /unresolvable capability: document\.build/);
+    assert.deepEqual(statusCalls, [], 'no agent_status poll for an unresolvable task');
+    assert.equal(store.listTasks({ runId })[0].status, 'failed');
+    // The run must not come back as a zombie on the next boot.
+    assert.deepEqual(store.listRecoverableRuns({ workspace: 'docs' }), []);
+  } finally {
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('recoveryManager keeps recovering when the registry has no capability information', async () => {
+  const { store, root, runId, taskId } = storeWithActiveTask();
+  const session = recoverySession(); // snapshot without capability lists
+  store.hydrateSession(session, { workspace: 'docs' });
+
+  try {
+    const result = await recoverActiveRuns({
+      store,
+      session,
+      workspace: 'docs',
+      callTool: async (_mcp, _serverName, _toolName, args) => ({
+        content: [{ type: 'text', text: JSON.stringify({
+          jobId: args.jobId,
+          taskId,
+          status: 'done',
+          result: { status: 'succeeded', outputRefs: [], metrics: {} },
+        }) }],
+      }),
+    });
+
+    assert.equal(result.recovered.length, 1, 'uninformative registry must not block recovery');
+    assert.equal(store.listTasks({ runId })[0].status, 'done');
+  } finally {
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -480,6 +480,11 @@ function applyEvent(state, event) {
     case 'run_cancelled':
       state.status = 'cancelled';
       state.logs.push(String(event.payload?.message ?? 'Agent run cancelled.'));
+      // A cancelled run must not leave its plan steps "running/pending" and
+      // its activities spinning in the panels: mark every non-terminal one
+      // cancelled so the display reflects reality immediately.
+      cancelPendingPlanSteps(state.plan);
+      cancelActiveActivities(state.activities, event.ts);
       finishControlByRun(state.controlQueue, event.runId ?? event.payload?.runId ?? null, 'cancelled', event.ts);
       return;
     case 'run_error':
@@ -658,6 +663,22 @@ function markCoveredApprovalsApproved(approvals, grant, ts) {
     }
     approval.status = 'approved';
     approval.approvedAt = ts;
+  }
+}
+
+function cancelPendingPlanSteps(plan) {
+  for (const step of plan ?? []) {
+    if (!['done', 'failed', 'cancelled'].includes(String(step.status ?? ''))) step.status = 'cancelled';
+  }
+}
+
+function cancelActiveActivities(activities, ts) {
+  for (const activity of Object.values(activities ?? {})) {
+    if (activity && activity.terminal !== true) {
+      activity.status = 'cancelled';
+      activity.terminal = true;
+      activity.updatedAt = ts ?? activity.updatedAt;
+    }
   }
 }
 

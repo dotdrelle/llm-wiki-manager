@@ -181,3 +181,32 @@ function registryIntervalFromEnv() {
   const value = Number(process.env.WIKI_MANAGER_AGENT_REGISTRY_INTERVAL_MS);
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 60000;
 }
+
+// Cancelling a runtime run must also cancel the asynchronous jobs it started:
+// the run's abort only stopped the manager-side loop while the agent kept
+// executing (an ingest subprocess ran on for minutes after "cancel requested",
+// with the panels frozen on its last known state). Best effort: prefer the
+// orchestration contract's agent_cancel, fall back to legacy *_cancel_job.
+export async function cancelActiveActivityJobs(session, { callTool = callMcpTool } = {}) {
+  const cancelled = [];
+  for (const activity of sessionActivities(session)) {
+    if (activity.terminal || !activity.poll) continue;
+    const jobId = activity.poll.args?.jobId ?? activity.id ?? null;
+    const server = activity.poll.server;
+    const endpoint = session.mcp?.[server];
+    if (!jobId || !endpoint || endpoint.status !== 'connected') continue;
+    const names = (endpoint.tools ?? []).map((tool) => String(tool.name ?? ''));
+    const cancelTool = names.find((name) => /(^|__)agent_cancel$/.test(name))
+      ?? names.find((name) => /_cancel_job$/.test(name))
+      ?? names.find((name) => /(^|__)[a-z]*_?cancel$/.test(name));
+    if (!cancelTool) continue;
+    try {
+      await callTool(session.mcp, server, cancelTool, { jobId });
+      emitRuntimeLog(session, `cancel: requested ${server}.${cancelTool} for job ${jobId}`);
+      cancelled.push({ server, jobId });
+    } catch (err) {
+      emitRuntimeLog(session, `cancel: ${server}.${cancelTool} failed for ${jobId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return cancelled;
+}

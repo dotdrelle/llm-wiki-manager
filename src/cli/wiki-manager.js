@@ -295,7 +295,7 @@ async function runRuntime(argv, agent) {
   const { defaultRuntimeStateDir, openRuntimeStore, RECOVERABLE_QUEUE_STATUSES } = await import('../runtime/store.js');
   const { startRuntimeServer } = await import('../runtime/server.js');
   const { recoverActiveRuns } = await import('../runtime/recoveryManager.js');
-  const { emitRuntimeLog, startActivitySupervisor } = await import('../runtime/supervisor.js');
+  const { emitRuntimeLog, startActivitySupervisor, cancelActiveActivityJobs } = await import('../runtime/supervisor.js');
   const { resolveRuntimeAuthToken } = await import('../runtime/auth.js');
   const { createSqliteQueueStore } = await import('../runtime/queueStore.js');
   const { createApprovalManager } = await import('../runtime/approvals.js');
@@ -639,6 +639,10 @@ async function runRuntime(argv, agent) {
       });
     } catch (err) {
       if (err?.name === 'AbortError') {
+        // Cancel the asynchronous agent jobs the run started: aborting only
+        // the manager loop left ingest subprocesses running for minutes with
+        // frozen panels.
+        await cancelActiveActivityJobs(session).catch(() => {});
         dispatchAgentEvent(session, createAgentEvent('run_cancelled', {
           origin: 'runtime',
           runId,

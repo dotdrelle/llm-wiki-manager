@@ -10,6 +10,7 @@ import {
   formatMcpToolsForAgent,
   resolveRetryPolicy,
   resolveToolCallName,
+  truncateToolResult,
 } from './mcp.js';
 
 const resolveFixtureStatus = {
@@ -514,5 +515,29 @@ test('callMcpTool parses SSE responses after keepalive comments', async () => {
     assert.equal(result.content[0].text, '{"ok":true}');
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test('truncateToolResult keeps short results intact and bounds long ones head+tail', () => {
+  assert.equal(truncateToolResult('short result', 100), 'short result');
+
+  const long = `START-${'x'.repeat(50000)}-END`;
+  const bounded = truncateToolResult(long, 1000);
+  assert.ok(bounded.length < 1200, `bounded length ${bounded.length} should stay near the cap`);
+  assert.match(bounded, /^START-/);
+  assert.match(bounded, /-END$/);
+  assert.match(bounded, /caractères tronqués/);
+});
+
+test('truncateToolResult honours WIKI_MANAGER_TOOL_RESULT_MAX_CHARS', () => {
+  const previous = process.env.WIKI_MANAGER_TOOL_RESULT_MAX_CHARS;
+  process.env.WIKI_MANAGER_TOOL_RESULT_MAX_CHARS = '500';
+  try {
+    const bounded = truncateToolResult('y'.repeat(5000));
+    assert.ok(bounded.length < 700);
+    assert.match(bounded, /caractères tronqués/);
+  } finally {
+    if (previous === undefined) delete process.env.WIKI_MANAGER_TOOL_RESULT_MAX_CHARS;
+    else process.env.WIKI_MANAGER_TOOL_RESULT_MAX_CHARS = previous;
   }
 });

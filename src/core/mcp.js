@@ -302,6 +302,26 @@ export function formatMcpToolResult(result) {
     .trim() || 'No result.';
 }
 
+const DEFAULT_TOOL_RESULT_MAX_CHARS = 16000;
+
+function toolResultMaxChars() {
+  const parsed = Number(process.env.WIKI_MANAGER_TOOL_RESULT_MAX_CHARS);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_TOOL_RESULT_MAX_CHARS;
+}
+
+// Bound what a tool result injects into the LLM context and the conversation
+// display. Apply this ONLY at those two exit points — never before payload
+// parsing (extractActivity/_activity detection needs the full text).
+// Head + tail are kept because errors and job ids often live at either end.
+export function truncateToolResult(text, maxChars = toolResultMaxChars()) {
+  const full = String(text ?? '');
+  if (full.length <= maxChars) return full;
+  const headLength = Math.floor(maxChars * 0.7);
+  const tailLength = Math.floor(maxChars * 0.2);
+  const omitted = full.length - headLength - tailLength;
+  return `${full.slice(0, headLength)}\n\n[… ${omitted} caractères tronqués — résultat complet dans les logs runtime …]\n\n${full.slice(-tailLength)}`;
+}
+
 let _cachedEnvRetryPolicy = null;
 function getEnvRetryPolicy() {
   if (!_cachedEnvRetryPolicy) {

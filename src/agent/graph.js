@@ -6,6 +6,7 @@ import {
   formatMcpToolResult,
   formatMcpToolsForAgent,
   resolveToolCallName,
+  truncateToolResult,
 } from '../core/mcp.js';
 import { formatSkillsForAgent, readOptionalText } from '../core/skills.js';
 import { handleSlashCommand } from '../commands/slash.js';
@@ -962,17 +963,21 @@ export function createAgentGraph(options = {}) {
           emitAgentEvent(state.session, 'plan_step_updated', 'tool', { step: 1, status: 'failed' });
         }
       }
+      // Bound the result at its two exit points only (LLM context + display).
+      // The full resultText above was already used for payload parsing and
+      // _activity extraction, which must never see a truncated document.
+      const boundedResult = truncateToolResult(resultText);
       emitAgentEvent(state.session, 'tool_call_result', 'tool', {
         callId: call.id,
         name: toolName,
         ok,
-        result: resultText,
+        result: boundedResult,
         summary: ok ? 'done' : 'failed',
       });
       toolResultMessages.push({
         role: 'tool',
         tool_call_id: call.id,
-        content: resultText,
+        content: boundedResult,
       });
     }
 

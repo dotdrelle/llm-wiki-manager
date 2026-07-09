@@ -84,6 +84,10 @@ export function useAgent(props: { agent: unknown; packageJson: Record<string, un
         onUpdate: props.refresh,
         onStep: props.addLog,
         chatMode: props.chatMode(),
+        // Without this, slash commands that target the runtime (/run kill,
+        // /run cancel, /run status) reported "Runtime unavailable" in the
+        // TUI even while the status bar showed "runtime: connected".
+        runtime: props.runtimeUrl ? { url: props.runtimeUrl } : null,
       });
       props.refresh();
       return result;

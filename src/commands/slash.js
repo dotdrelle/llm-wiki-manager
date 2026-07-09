@@ -996,6 +996,17 @@ export async function handleSlashCommand(line, context) {
       if (subcommand === 'list') return { output: formatQueue(context.session) };
       if (subcommand === 'clear') {
         const count = clearFinishedQueueItems(context.session);
+        // "Cleared 0" with a busy runtime is a dead end: the items the user
+        // wants gone are ACTIVE and runtime-managed — point at the commands
+        // that actually stop them.
+        const activeRuntimeItems = (context.session.jobQueue ?? [])
+          .filter((item) => item.origin === 'runtime' && !['done', 'failed', 'cancelled', 'expired'].includes(String(item.status ?? '').toLowerCase())).length;
+        const runActive = String(context.session.agentProjection?.status ?? '').toLowerCase() === 'running';
+        if (count === 0 && (activeRuntimeItems > 0 || runActive)) {
+          return {
+            output: `Cleared 0 finished queue items — ${activeRuntimeItems || 'des'} item(s) actifs sont gérés par le runtime${runActive ? ' (run en cours)' : ''}. Utilisez /run cancel (arrêt doux) ou /run kill (abort + purge complète).`,
+          };
+        }
         return { output: `Cleared ${count} finished queue item${count === 1 ? '' : 's'}.` };
       }
       if (subcommand === 'cancel') {

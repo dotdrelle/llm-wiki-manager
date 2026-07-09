@@ -819,7 +819,11 @@ export function applyRuntimeStateToShellSession(session, state) {
 // Actions/cancels/approvals still go to the runtime.
 export function shouldHandleFreeTextLocally(line, session, { llmAvailable = Boolean(session?.llm) } = {}) {
   const classification = classifyAgentInput(line, session);
-  if (!['converse', 'observe'].includes(classification.kind)) return { local: false, classification };
+  // cancel intents included: Donna interprets "supprime le job et la queue"
+  // and calls runtime__kill / runtime__cancel herself — no hardcoded regex
+  // deciding between soft and hard stop. The control lane remains the
+  // deterministic fallback when the local LLM is down.
+  if (!['converse', 'observe', 'cancel', 'approve', 'enqueue_run', 'ambiguous'].includes(classification.kind)) return { local: false, classification };
   if (!llmAvailable) return { local: false, classification, fallbackReason: 'local LLM unavailable' };
   return { local: true, classification };
 }
@@ -1780,6 +1784,9 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
 
 export async function runShell({ agent, packageJson, runtime = null }) {
   const session = createSession();
+  // Donna's runtime control tools (runtime__kill/cancel/status) read the
+  // endpoint from the session.
+  session.runtime = runtime;
   if (!input.isTTY || !output.isTTY) {
     await runPipeShell({ agent, packageJson, session });
     return;

@@ -48,6 +48,12 @@ function buildContinuationPrompt(session: any, completed: any[]): string {
 
 export function useSession(props: { agent: unknown; packageJson: Record<string, unknown>; runtime?: any }) {
   const session = createSession();
+  // Donna's runtime__kill/cancel/status/approve/enqueue tools (graph.js)
+  // read session.runtime.url directly — without this the OpenTUI session
+  // never had it set (only the legacy runShell path did), so those tools
+  // reported "Runtime not connected" even with the runtime up and the
+  // status bar showing "connected".
+  (session as any).runtime = props.runtime ?? null;
   const [version, setVersion] = createSignal(0);
   const [logs, setLogs] = createSignal<string[]>([]);
   const [runtimeState, setRuntimeState] = createSignal<any | null>(null);

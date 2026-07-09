@@ -266,9 +266,14 @@ test('free text routing keeps questions local even during an active run', () => 
   session.agentProjection = { status: 'running', activities: [], conversation: [] };
   assert.equal(shouldHandleFreeTextLocally('où en est le run', session).local, true);
   assert.equal(shouldHandleFreeTextLocally('salut', session).local, true);
-  // Control intents still go to the runtime for classification.
-  assert.equal(shouldHandleFreeTextLocally('stop le job', session).local, false);
-  assert.equal(shouldHandleFreeTextLocally('annule tout', session).local, false);
+  // Cancel intents are handled by Donna locally (runtime__kill/cancel tools);
+  // approvals stay on the deterministic control lane.
+  assert.equal(shouldHandleFreeTextLocally('stop le job', session).local, true);
+  assert.equal(shouldHandleFreeTextLocally('supprime le job et la queue', session).local, true);
+  // Approvals and "later" requests too: Donna owns runtime__approve and
+  // runtime__enqueue. Only plan modifications and new runs bypass her.
+  assert.equal(shouldHandleFreeTextLocally('approuve le run', session).local, true);
+  assert.equal(shouldHandleFreeTextLocally('fais le build plus tard', session).local, true);
 
   const offline = createSession();
   offline.llm = null;

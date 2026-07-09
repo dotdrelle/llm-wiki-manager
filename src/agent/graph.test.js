@@ -614,12 +614,22 @@ test('agent graph executes action inputs inside a runtime run instead of asking 
   }
 });
 
-test('agent graph still asks for clarification on ambiguous input outside a runtime run', async () => {
+test('agent graph lets Donna handle ambiguous input during a run with the control suite', async () => {
+  // The canned "Peux-tu préciser ?" regex answer is gone: Donna converses,
+  // armed with status/enqueue/cancel/kill/approve — and without write tools
+  // (a new MCP job must not fire alongside the active run).
+  const seenTools = [];
   const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
     agentProjection: { status: 'running', conversation: [], activities: [] },
     llm: {
-      async completeWithTools() {
-        throw new Error('LLM must not be called for an ambiguous interactive input');
+      async completeWithTools({ tools }) {
+        seenTools.push(...tools.map((tool) => tool.function.name));
+        return {
+          content: 'Un run est en cours — je peux le mettre en file pour après, veux-tu ?',
+          message: { role: 'assistant', content: 'Un run est en cours — je peux le mettre en file pour après, veux-tu ?' },
+          tool_calls: null,
+        };
       },
     },
   });
@@ -627,7 +637,11 @@ test('agent graph still asks for clarification on ambiguous input outside a runt
   const agent = createAgentGraph();
   const result = await agent.invoke({ input: 'lance un build', session });
 
-  assert.match(result.response, /Peux-tu préciser/);
+  assert.match(result.response, /mettre en file/);
+  assert.ok(seenTools.includes('runtime__enqueue'));
+  assert.ok(seenTools.includes('runtime__status'));
+  assert.ok(seenTools.includes('runtime__approve'));
+  assert.ok(!seenTools.includes('production__production_start_job'), 'no write MCP tools during an active run for ambiguous intents');
 });
 
 test('agent graph survives more than 12 tool iterations (recursion limit)', async () => {
@@ -732,6 +746,46 @@ test('agent graph auto-declares the plan from an agent_plan task-graph fragment'
     assert.equal(session.headlessPlan[2].barrier, true);
     assert.deepEqual(session.headlessPlan[2].dependsOn, ['ingest:a', 'ingest:b']);
     assert.equal(session.headlessPlan[0].requiredCapability, 'knowledge.update');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Donna interprets a cleanup request and calls runtime__kill herself', async () => {
+  // "supprime le job et la queue" previously hit a regex classifier that
+  // answered with canned text. Donna now owns runtime control tools.
+  let killPath = null;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    killPath = new URL(String(url)).pathname;
+    return { ok: true, status: 202, json: async () => ({ killed: true, runs: 1, tasks: 2, queued: 2 }), text: async () => '{}', headers: { get: () => null } };
+  };
+  let calls = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    agentProjection: { status: 'running', activities: [], conversation: [] },
+    llm: {
+      async completeWithTools({ tools }) {
+        calls += 1;
+        if (calls === 1) {
+          const names = tools.map((tool) => tool.function.name);
+          assert.ok(names.includes('runtime__kill'), 'control tools must be bound during an active run');
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{ id: 'kill-call', type: 'function', function: { name: 'runtime__kill', arguments: '{}' } }],
+          };
+        }
+        return { content: 'Run et queue purgés.', message: { role: 'assistant', content: 'Run et queue purgés.' }, tool_calls: null };
+      },
+    },
+  });
+
+  try {
+    const agent = createAgentGraph();
+    const result = await agent.invoke({ input: 'supprime le job et la queue', session });
+    assert.equal(result.response, 'Run et queue purgés.');
+    assert.equal(killPath, '/kill');
   } finally {
     globalThis.fetch = originalFetch;
   }

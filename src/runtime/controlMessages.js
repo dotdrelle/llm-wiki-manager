@@ -18,8 +18,8 @@ const CONTROL_MESSAGES = {
     fr: 'Modification de plan proposée. Approuvez-la explicitement pour l’appliquer au plan actif.',
   },
   ambiguous_control: {
-    en: 'The runtime cannot safely classify this message.',
-    fr: 'Le runtime ne peut pas classer ce message de façon sûre.',
+    en: 'A run is already active, and this looks like a new action. Say "queue it" to run it after the current run, "modify the run" to change the active plan, "cancel" to stop the current run first — or wait for it to finish.',
+    fr: 'Un run est déjà actif et ta demande ressemble à une nouvelle action. Dis « mets en file » pour l\'exécuter après le run en cours, « modifie le run » pour changer le plan actif, « annule » pour arrêter le run actuel — ou attends la fin.',
   },
   converse_while_running: {
     en: 'Runtime run is still active. This message was treated as conversation and did not create a queued run.',

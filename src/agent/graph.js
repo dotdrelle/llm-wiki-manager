@@ -15,6 +15,7 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
 import { updateWorkspaceProfilePreference } from '../core/profile.js';
 import { createCapabilityRegistry } from '../orchestrator/capabilityRegistry.js';
+import { fetchRuntimeState, postRuntimeCancel, postRuntimeControl, postRuntimeKill } from '../runtime/client.js';
 
 const MAX_TOOL_ITERATIONS = 80;
 const MAX_SPINNER_ARG_LENGTH = 96;
@@ -26,6 +27,7 @@ const MAX_PROFILE_CHARS = 4000;
 const INTERNAL_TOOL_SERVERS = {
   wiki: ['plan_set', 'plan_done'],
   shell: ['run_command', 'read_command', 'profile_update'],
+  runtime: ['kill', 'cancel', 'status', 'approve', 'enqueue'],
 };
 
 const AGENT_SLASH_COMMANDS = new Set([
@@ -106,6 +108,59 @@ const SHELL_PROFILE_UPDATE_TOOL = {
         },
       },
       required: ['preference'],
+    },
+  },
+};
+
+// Runtime control tools: Donna interprets the user's intent ("supprime le
+// job et la queue", "arrête tout", "où en est le run") and ACTS through
+// these, instead of a hardcoded regex classifier answering with canned text.
+const RUNTIME_KILL_TOOL = {
+  type: 'function',
+  function: {
+    name: 'runtime__kill',
+    description: 'Hard-stop the workspace runtime: abort the active run, cancel its agent jobs, mark persisted runs interrupted and purge the control queue. Use when the user asks to remove/kill/clean the current run, its jobs or the queue.',
+    parameters: { type: 'object', additionalProperties: false, properties: { runId: { type: 'string', description: 'Optional specific run id; omit to kill everything active in the workspace.' } } },
+  },
+};
+
+const RUNTIME_CANCEL_TOOL = {
+  type: 'function',
+  function: {
+    name: 'runtime__cancel',
+    description: 'Soft-cancel the active runtime run (graceful abort, no queue purge). Use for "annule le run" when the user does not ask to clean everything.',
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+  },
+};
+
+const RUNTIME_STATUS_TOOL = {
+  type: 'function',
+  function: {
+    name: 'runtime__status',
+    description: 'Read the runtime state: active run, plan steps, queue items, approvals. Use to answer questions about what is currently running or queued.',
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+  },
+};
+
+const RUNTIME_APPROVE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'runtime__approve',
+    description: 'Grant the pending approval of the active runtime run (mutating tasks wait on it). Use when the user consents in ANY phrasing: "vas-y", "ok pour l\'export", "approuve", "valide". Confirm what was approved.',
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+  },
+};
+
+const RUNTIME_ENQUEUE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'runtime__enqueue',
+    description: 'Queue a request to run AFTER the currently active runtime run finishes. Use when the user asks for a new action while a run is active and wants it done afterwards.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { input: { type: 'string', description: 'The request to execute after the current run, phrased as a complete instruction.' } },
+      required: ['input'],
     },
   },
 };
@@ -466,6 +521,50 @@ export function knownCapabilityIds(session) {
   }))].sort();
 }
 
+async function handleRuntimeControlTool(session, tool, args = {}) {
+  const url = session.runtime?.url ?? null;
+  if (!url) return 'Runtime not connected: no runtime URL available in this session.';
+  const workspace = session.workspace ?? null;
+  try {
+    if (tool === 'kill') {
+      const result = await postRuntimeKill({ url, workspace, runId: args.runId ?? null });
+      return `Runtime killed: ${result.runs ?? 0} run(s) interrupted, ${result.tasks ?? 0} task(s) cancelled, ${result.queued ?? 0} queued control request(s) purged.`;
+    }
+    if (tool === 'cancel') {
+      const result = await postRuntimeCancel({ url, workspace });
+      return result.cancelled ? 'Runtime run cancellation requested.' : `No active run to cancel${result.reason ? ` (${result.reason})` : ''}.`;
+    }
+    if (tool === 'approve') {
+      const result = await postRuntimeControl('message', { url, workspace, input: 'approve', intent: 'approve' });
+      return String(result?.explanation ?? (result?.accepted ? 'Approval granted.' : 'No pending approval found.'));
+    }
+    if (tool === 'enqueue') {
+      const result = await postRuntimeControl('message', { url, workspace, input: String(args.input ?? ''), intent: 'enqueue' });
+      return String(result?.explanation ?? 'Request queued for after the current run.');
+    }
+    if (tool === 'status') {
+      const state = await fetchRuntimeState({ url, workspace });
+      const plan = Array.isArray(state?.plan) ? state.plan : [];
+      const queue = Array.isArray(state?.queue) ? state.queue : [];
+      const controlQueue = Array.isArray(state?.controlQueue) ? state.controlQueue : [];
+      return JSON.stringify({
+        status: state?.status ?? 'unknown',
+        running: Boolean(state?.running),
+        runId: state?.runId ?? null,
+        plan: plan.map((step) => ({ id: step.id ?? step.step, description: step.description, status: step.status })),
+        queue: queue.map((item) => ({ id: item.id, status: item.status, tool: item.tool ?? item.type ?? null })),
+        controlQueue: controlQueue.filter((item) => item.status === 'queued').map((item) => ({ id: item.id, input: item.input })),
+        pendingApprovals: (Array.isArray(state?.approvals) ? state.approvals : [])
+          .filter((approval) => approval.status === 'pending_approval')
+          .map((approval) => ({ id: approval.id, reason: approval.reason ?? null })),
+      }, null, 2);
+    }
+    return `Unknown runtime tool: ${tool}`;
+  } catch (err) {
+    return `Runtime control error (${tool}): ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
 function handleWikiTool(session, tool, args) {
   if (tool === 'plan_set') {
     const steps = Array.isArray(args.steps) ? args.steps : [];
@@ -643,6 +742,7 @@ export function buildAgentSystemPrompt(state) {
     workspaceProfile
       ? `Workspace profile (.wiki/profile.md) — durable user preferences, apply these to every reply (tone, tutoiement/vouvoiement, formatting, etc.):\n${workspaceProfile}`
       : null,
+    'Runtime control: you have runtime__status, runtime__cancel, runtime__kill, runtime__approve and runtime__enqueue. When the user asks to stop, remove, clean or kill the current run, its jobs or the queue ("supprime le job et la queue", "arr\u00eate tout"), call runtime__kill (or runtime__cancel for a soft stop of just the run) and confirm what was stopped. For questions about what is running or queued, call runtime__status and answer from its data. When the user consents to a pending approval in any phrasing ("vas-y", "ok pour l\'export"), call runtime__approve. When the user asks for a NEW action while a run is active, do not execute it: propose runtime__enqueue (run it after) or, if they insist it replaces the current work, runtime__kill then the new action.',
     'When the user explicitly asks you to remember, persist, or update durable preference/profile information, call wiki__profile_update when it is available; otherwise call shell__profile_update. Do not just acknowledge in text without calling a profile update tool.',
   ].filter(Boolean).join('\n');
 
@@ -689,7 +789,7 @@ export function classifyAgentInput(input, session) {
   if (/\b(valide tout|approve all|approve|approuve|valid[eé]|ok pour tout|go pour tout)\b/i.test(lower)) {
     return { kind: 'approve', confidence: 0.86, reason: 'approval_request', activeRun: hasActiveRun };
   }
-  if (/\b(cancel|annule|stop|arr[eê]te|interromps|abort)\b/i.test(lower)) {
+  if (/\b(cancel|annule|stop|arr[eê]te|interromps|abort|supprime|kill|tue|purge|vide la (file|queue)|nettoie la (file|queue))\b/i.test(lower)) {
     return { kind: 'cancel', confidence: 0.86, reason: 'cancel_request', activeRun: hasActiveRun };
   }
   if (/\b(plus tard|later|ensuite|apr[eè]s ce run|enqueue|mets en file|met en file|futur|next run|future run)\b/i.test(lower)) {
@@ -716,14 +816,18 @@ export function classifyAgentInput(input, session) {
   return { kind: 'converse', confidence: 0.62, reason: 'plain_conversation', activeRun: hasActiveRun };
 }
 
-function toolsForClassification(classification, writeTools) {
-  if (classification.activeRun && ['converse', 'observe'].includes(classification.kind)) {
-    // Read-only during an active run — plus profile updates: appending a
-    // durable user preference is safe, and "ajoute dans mon profil …" must
-    // work at any time (the prompt mandates a tool call, not a bare ack).
-    return [SHELL_READ_COMMAND_TOOL, SHELL_PROFILE_UPDATE_TOOL];
+function toolsForClassification(classification, writeTools, session = null) {
+  const controlTools = session?.runtime?.url
+    ? [RUNTIME_STATUS_TOOL, RUNTIME_CANCEL_TOOL, RUNTIME_KILL_TOOL, RUNTIME_APPROVE_TOOL, RUNTIME_ENQUEUE_TOOL]
+    : [];
+  if (classification.activeRun && ['converse', 'observe', 'ambiguous', 'approve', 'cancel', 'enqueue_run'].includes(classification.kind)) {
+    // During an active run Donna gets read + profile + the runtime control
+    // suite: she can answer, approve, enqueue for later, soft-cancel or
+    // kill — but she must not fire new MCP jobs alongside the run (that is
+    // what runtime__enqueue is for). No canned regex answers anywhere.
+    return [SHELL_READ_COMMAND_TOOL, SHELL_PROFILE_UPDATE_TOOL, ...controlTools];
   }
-  return [SHELL_READ_COMMAND_TOOL, ...writeTools];
+  return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...writeTools];
 }
 
 export function createAgentGraph(options = {}) {
@@ -768,14 +872,6 @@ export function createAgentGraph(options = {}) {
         classification,
       });
     }
-    if (iterations === 0 && classification.kind === 'ambiguous') {
-      return {
-        response: 'Je peux répondre sur le run en cours, modifier ce run, mettre une nouvelle demande en file, approuver, ou annuler. Peux-tu préciser ce que tu veux faire ?',
-        pendingToolCalls: null,
-        readyToStream: false,
-        inputClassification: classification,
-      };
-    }
 
     const writeTools = [
       SHELL_RUN_COMMAND_TOOL,
@@ -784,7 +880,7 @@ export function createAgentGraph(options = {}) {
       WIKI_PLAN_DONE_TOOL,
       ...buildLlmTools(state.session.mcp),
     ];
-    const tools = toolsForClassification(classification, writeTools);
+    const tools = toolsForClassification(classification, writeTools, state.session);
     const system = buildAgentSystemPrompt(state);
 
     // On iteration 0: prior history is in state.messages, user input must be appended.
@@ -941,6 +1037,8 @@ export function createAgentGraph(options = {}) {
         } else if (server === 'shell' && tool === 'profile_update') {
           const result = await updateWorkspaceProfilePreference(state.session, args.preference);
           resultText = JSON.stringify(result, null, 2);
+        } else if (server === 'runtime') {
+          resultText = await handleRuntimeControlTool(state.session, tool, args);
         } else if (server !== 'shell') {
           await awaitRunApproval(state.session, { runId, tool: toolName });
           await awaitToolApproval(state.session, {

@@ -338,6 +338,12 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     const target = conversationMessages(session);
     const backed = runtimeConversationRefsByWorkspace.get(workspace) ?? [];
     runtimeConversationRefsByWorkspace.set(workspace, backed);
+    // The merge is index-aligned with the runtime conversation array. If that
+    // array got SHORTER (runtime restart, projection reset), keeping stale
+    // refs would make every new runtime entry silently overwrite an old
+    // backed entry instead of appearing in the chat. Drop the refs and let
+    // the new conversation append cleanly.
+    if (runtimeConversation.length < backed.length) backed.length = 0;
     if (backed.length === 0 && target.length === 0 && !runtimeConversation.some((message: any) => message?._pending)) {
       backed.push(...runtimeConversation.map((message: any) => ({
         role: message.role === 'assistant' ? 'donna' : message.role,

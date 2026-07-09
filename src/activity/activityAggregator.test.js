@@ -58,3 +58,35 @@ test('aggregateActivity exposes initial synthesis and grouped display lines', ()
   assert.ok(activity.lines.some((line) => /\[\.\.\.\] customer-data\.enrich - 63 %/.test(line.label)));
   assert.ok(activity.lines.some((line) => /\[ \] publish - en attente/.test(line.label)));
 });
+
+test('aggregateActivity keeps activities not attached to any plan task visible', () => {
+  // Regression: a done one-step minimal plan (production_status) masked the
+  // actually-running ingest activity started outside the plan.
+  const state = {
+    plan: [{
+      id: 'status-check',
+      step: 1,
+      description: 'production.production_status',
+      status: 'done',
+      groupId: '1',
+    }],
+    activities: [
+      {
+        key: 'production:prod_192444',
+        id: 'prod_192444',
+        label: 'Ingest b87acaf6-Comite.md',
+        source: 'production',
+        status: 'running',
+        terminal: false,
+        progress: { percent: 15, detail: 'LLM running' },
+      },
+    ],
+  };
+
+  const aggregated = aggregateActivity(state, []);
+  const labels = aggregated.lines.map((line) => line.label).join('\n');
+  assert.match(labels, /\[x\] .* done/, 'the done plan group stays visible');
+  assert.match(labels, /Ingest b87acaf6/, 'the unattached running ingest must appear');
+  const ingestLine = aggregated.lines.find((line) => /Ingest/.test(line.label));
+  assert.equal(ingestLine.status, 'running');
+});

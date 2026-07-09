@@ -10,14 +10,38 @@ export function aggregateActivity(state = {}, events = []) {
   const activities = Array.isArray(state.activities) ? state.activities : [];
   const progress = calculateWeightedProgress(tasks, activities);
   const groups = groupTasks(tasks);
+  const deduped = deduplicateActivities(activities);
+  // Group lines only cover activities attached to plan tasks. An activity
+  // started OUTSIDE the plan (e.g. the agent calls production_start_job
+  // directly after a minimal one-step plan) must still be visible: without
+  // this, the panel showed a done "production_status" step while the actual
+  // ingest ran invisibly at 15%.
   const lines = groups.length > 0
-    ? groups.map((group) => groupLine(group, activities))
-    : deduplicateActivities(activities).map(activityLine);
+    ? [
+      ...groups.map((group) => groupLine(group, activities)),
+      ...unattachedActivities(tasks, deduped).map(activityLine),
+    ]
+    : deduped.map(activityLine);
   return {
     initialSynthesis: initialSynthesisFromState(state, events),
     progress,
     lines,
   };
+}
+
+function unattachedActivities(tasks, activities) {
+  const attachedKeys = new Set(tasks
+    .flatMap((task) => [task.activityKey, task.ownerActivityKey, task._activityKey])
+    .filter(Boolean)
+    .map(String));
+  const taskIds = new Set(tasks.map((task) => String(task.id ?? task.step ?? '')).filter(Boolean));
+  return activities.filter((activity) => {
+    const keys = [activity.key, activity.id].filter(Boolean).map(String);
+    if (keys.some((value) => attachedKeys.has(value))) return false;
+    const stepId = String(activity?.progress?.stepId ?? '');
+    if (stepId && taskIds.has(stepId)) return false;
+    return true;
+  });
 }
 
 function groupTasks(tasks) {

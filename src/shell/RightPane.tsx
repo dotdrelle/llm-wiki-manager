@@ -223,31 +223,72 @@ export function ActivityPanel(props: { activities: any[]; width: number }) {
   );
 }
 
+type LogSegment = { text: string; fg: string };
+
+// Per-line coloring: 'runtime' source tag in violet, HH:MM:SS in blue,
+// message tinted by nature (errors red, warnings amber, activity teal).
+// Continuation lines of a wrapped entry are indented and dimmed so each
+// entry reads as one visual block instead of an undifferentiated wall.
+function logMessageColor(message: string): string {
+  if (/\b(error|failed|exception|unavailable|introuvable|HTTP 4\d\d|HTTP 5\d\d)\b/i.test(message)) return '#F38BA8';
+  if (/\b(warn|warning|avertissement|fallback|retry|expired|stale)\b/i.test(message)) return '#FBBF24';
+  if (/^(activity|job)\b/i.test(message)) return '#8BD5CA';
+  return '#AAB7C4';
+}
+
+function logRenderLines(logs: string[], width: number): LogSegment[][] {
+  const out: LogSegment[][] = [];
+  for (const raw of logs) {
+    const sourceMatch = String(raw).match(/^(runtime)\s+(.*)$/);
+    const source = sourceMatch ? sourceMatch[1] : null;
+    const rest = sourceMatch ? sourceMatch[2] : String(raw);
+    const parts = logLineParts(rest);
+    const prefix: LogSegment[] = [];
+    if (source) prefix.push({ text: `${source} `, fg: '#C6A0F6' });
+    if (parts.time) prefix.push({ text: `${parts.time} `, fg: '#89B4FA' });
+    const prefixLength = prefix.reduce((total, segment) => total + segment.text.length, 0);
+    const messageColor = logMessageColor(parts.message);
+    const wrapped = wrapLine(parts.message, Math.max(8, width - prefixLength));
+    wrapped.forEach((text, index) => {
+      if (index === 0) {
+        out.push([...prefix, { text, fg: messageColor }]);
+      } else {
+        const indent = ' '.repeat(Math.min(prefixLength, 4));
+        out.push([{ text: `${indent}${text}`, fg: messageColor === '#F38BA8' ? messageColor : '#7F8C8D' }]);
+      }
+    });
+  }
+  return out;
+}
+
 export function LogPanel(props: { logs: string[]; width: number; filter?: string }) {
   const lineWidth = () => Math.max(8, props.width - 2);
   const filteredLogs = () => filterRuntimeLogs(props.logs, props.filter ?? '');
-  const visibleLines = () => filteredLogs().flatMap((line) => wrapLine(line, lineWidth())).slice(-24);
-  const logLineAt = (index: number) => visibleLines()[index] ?? '';
+  const visibleLines = createMemo(() => logRenderLines(filteredLogs(), lineWidth()).slice(-24));
+  const segmentsAt = (index: number): LogSegment[] => visibleLines()[index] ?? [];
   return (
     <box flexGrow={1} flexDirection="column" padding={1}>
       <text width={lineWidth()} fg="#D6DEE8" content="Logs / Trace" />
       <box flexGrow={1} flexDirection="column" overflow="hidden">
         <Index each={LOG_SLOTS}>
           {(slot) => {
-            const line = () => logLineAt(slot());
-            const parts = createMemo(() => logLineParts(line()));
-            const timeWidth = () => parts().time ? Math.min(parts().time!.length + 1, lineWidth()) : 0;
-            const messageWidth = () => Math.max(1, lineWidth() - timeWidth());
+            const segments = () => segmentsAt(slot());
+            const segmentAt = (position: number): LogSegment => segments()[position] ?? { text: '', fg: '#AAB7C4' };
+            const usedWidth = (upTo: number) => segments().slice(0, upTo).reduce((total, segment) => total + segment.text.length, 0);
+            const widthFor = (position: number) => {
+              const segment = segmentAt(position);
+              if (!segment.text) return 0;
+              // Last visible segment absorbs the remaining width.
+              return position === segments().length - 1
+                ? Math.max(1, lineWidth() - usedWidth(position))
+                : Math.min(segment.text.length, lineWidth() - usedWidth(position));
+            };
             return (
-              <Show
-                when={parts().time}
-                fallback={<text width={lineWidth()} fg="#AAB7C4" content={line()} />}
-              >
-                <box height={1} flexDirection="row" overflow="hidden">
-                  <text width={timeWidth()} fg="#89B4FA" content={`${parts().time} `} />
-                  <text width={messageWidth()} fg="#AAB7C4" content={parts().message} />
-                </box>
-              </Show>
+              <box height={1} flexDirection="row" overflow="hidden">
+                <text width={widthFor(0)} fg={segmentAt(0).fg} content={segmentAt(0).text} />
+                <text width={widthFor(1)} fg={segmentAt(1).fg} content={segmentAt(1).text} />
+                <text width={widthFor(2)} fg={segmentAt(2).fg} content={segmentAt(2).text} />
+              </box>
             );
           }}
         </Index>

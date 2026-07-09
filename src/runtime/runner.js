@@ -839,10 +839,12 @@ export async function replanRuntimeRun(session, input, trigger, {
         steps: mergedSteps,
       },
     }));
-    if (hasMutatingReplanStep(steps)) {
-      session._runApprovalRequired = true;
-      session._runApprovalResolved = false;
-    }
+    // Every replan requires approval: deciding "is this step mutating?" with
+    // a verb regex was a safety judgement made by pattern-matching — a
+    // missed verb silently skipped the approval gate. Replans are rare
+    // (technical failures only) and re-executing work deserves a human OK.
+    session._runApprovalRequired = true;
+    session._runApprovalResolved = false;
     return { ok: true, steps };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };
@@ -953,10 +955,6 @@ function normalizeReplan(steps) {
     .map((step) => formatPlanStep(step).trim())
     .filter(Boolean)
     .slice(0, 12);
-}
-
-function hasMutatingReplanStep(steps) {
-  return steps.some((step) => /\b(build|copy|ingest|import|export|polish|pipeline|write|create|delete|update|send|deploy|publish|generate|construire|copier|importer|exporter|publier|envoyer|supprimer|modifier|creer|générer|generer)\b/i.test(step));
 }
 
 function mergeReplanWithCompleted(plan, steps) {

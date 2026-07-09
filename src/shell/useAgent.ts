@@ -54,6 +54,11 @@ export function useAgent(props: { agent: unknown; packageJson: Record<string, un
           const explanation = (outcome as any).result?.explanation ?? 'Request added to the queue.';
           conversationMessages(props.session).push({ role: 'command', content: String(explanation) });
           props.addLog('runtime: control queued');
+        } else if ((outcome as any).result?.explanation) {
+          // Control-lane kinds (cancel / approve / observe / modify_run…):
+          // surface the server's localized explanation instead of an error.
+          conversationMessages(props.session).push({ role: 'command', content: String((outcome as any).result.explanation) });
+          props.addLog(`runtime: ${outcome.kind}`);
         } else {
           conversationMessages(props.session).push({ role: 'command', content: `Runtime error: ${outcome.message}` });
           props.addLog(`runtime error: ${outcome.message}`);

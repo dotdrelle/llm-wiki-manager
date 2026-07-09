@@ -258,16 +258,44 @@ test('free text routing keeps questions local and sends actions to the runtime',
   assert.equal(action.classification.kind, 'start_run');
 });
 
-test('free text routing defers to the runtime when a run is active or LLM is down', () => {
+test('free text routing keeps questions local even during an active run', () => {
+  // The chat must stay available during a run: a status question or small
+  // talk answered locally (read-only tools) — never enqueued as a future run.
   const session = createSession();
   session.llm = { completeWithTools: () => {} };
   session.agentProjection = { status: 'running', activities: [], conversation: [] };
-  // Active run → existing 409/control-message path, even for questions.
-  assert.equal(shouldHandleFreeTextLocally('où en est le run', session).local, false);
+  assert.equal(shouldHandleFreeTextLocally('où en est le run', session).local, true);
+  assert.equal(shouldHandleFreeTextLocally('salut', session).local, true);
+  // Control intents still go to the runtime for classification.
+  assert.equal(shouldHandleFreeTextLocally('stop le job', session).local, false);
+  assert.equal(shouldHandleFreeTextLocally('annule tout', session).local, false);
 
   const offline = createSession();
   offline.llm = null;
   const fallback = shouldHandleFreeTextLocally('donne moi la config du cme', offline);
   assert.equal(fallback.local, false);
   assert.match(fallback.fallbackReason ?? '', /LLM unavailable/);
+});
+
+test('submitRuntimeRun sends a control message instead of /run while a run is active', async () => {
+  const paths = [];
+  const restore = stubFetch(async (url) => {
+    paths.push(pathOf(url));
+    return jsonResponse(200, {
+      accepted: true,
+      kind: 'cancel',
+      classification: { kind: 'cancel' },
+      explanation: 'Runtime cancellation requested.',
+    });
+  });
+  try {
+    const session = createSession();
+    session.agentProjection = { status: 'running', activities: [], conversation: [] };
+    const outcome = await submitRuntimeRun('stop le job', { runtime: { url: 'http://runtime.test' }, session });
+    assert.deepEqual(paths, ['/control'], 'active run must use the control lane, not POST /run');
+    assert.equal(outcome.kind, 'cancel');
+    assert.match(outcome.result?.explanation ?? '', /cancellation requested/i);
+  } finally {
+    restore();
+  }
 });

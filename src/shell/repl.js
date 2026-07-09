@@ -812,14 +812,13 @@ export function applyRuntimeStateToShellSession(session, state) {
 // Submits a prompt to the shared runtime. If the workspace is already busy
 // (HTTP 409 from POST /run), route the input through the runtime control lane
 // so status questions and plan-change proposals do not become future runs.
-// A plain question or small talk must never start a runtime run: it would
-// create a persisted run, a plan, and (on failure) replans — for a sentence
-// that only needed an answer. Route those to the local agent instead.
-// Anything else (actions, approvals, cancels, enqueues) still goes to the
-// runtime, and an active run keeps the existing 409/control-message path.
+// A plain question or small talk must never start a runtime run (nor be
+// enqueued as a future one): it only needs an answer. Route converse/observe
+// to the local agent EVEN during an active run — the chat is supposed to stay
+// available, and the graph already restricts tools to read-only in that case.
+// Actions/cancels/approvals still go to the runtime.
 export function shouldHandleFreeTextLocally(line, session, { llmAvailable = Boolean(session?.llm) } = {}) {
   const classification = classifyAgentInput(line, session);
-  if (runtimeRunActive(session)) return { local: false, classification };
   if (!['converse', 'observe'].includes(classification.kind)) return { local: false, classification };
   if (!llmAvailable) return { local: false, classification, fallbackReason: 'local LLM unavailable' };
   return { local: true, classification };
@@ -828,6 +827,15 @@ export function shouldHandleFreeTextLocally(line, session, { llmAvailable = Bool
 export async function submitRuntimeRun(line, { runtime, session }) {
   const workspace = session.workspace ?? null;
   try {
+    if (runtimeRunActive(session)) {
+      // POST /run during an active run blindly ENQUEUES a future run server-
+      // side (202 queued) — the 409→control fallback below never fires, so
+      // "stop le job" / "annule" ended up in the queue instead of being
+      // classified. Send an explicit control message: the server classifies
+      // it (cancel aborts the run, approve grants, modify proposes a patch).
+      const result = await postRuntimeControl('message', { url: runtime.url, workspace, input: line });
+      return { kind: result?.kind ?? 'control', result };
+    }
     const result = await postRuntimeRun(line, { url: runtime.url, workspace });
     if (result?.queued || result?.kind === 'enqueue_run' || result?.kind === 'enqueue') {
       return { kind: 'queued', result };
@@ -1624,6 +1632,11 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
             } else if (outcome.kind === 'ambiguous') {
               conversationMessages(session).push({ role: 'command', content: String(outcome.result?.explanation ?? 'Runtime could not classify that message. Use /queue for a future run, or ask/status more explicitly.') });
               activityLines = [...activityLines, 'runtime: ambiguous control'].slice(-LOWER_DETAIL_ROWS);
+            } else if (outcome.result?.explanation) {
+              // cancel / approve / modify_run and any future control kinds:
+              // always surface the server's localized explanation.
+              conversationMessages(session).push({ role: 'command', content: String(outcome.result.explanation) });
+              activityLines = [...activityLines, `runtime: ${outcome.kind}`].slice(-LOWER_DETAIL_ROWS);
             } else {
               conversationMessages(session).push({ role: 'command', content: `Runtime error: ${outcome.message}` });
               activityLines = [...activityLines, `runtime error: ${outcome.message}`].slice(-LOWER_DETAIL_ROWS);

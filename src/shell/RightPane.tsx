@@ -16,7 +16,9 @@ type QueueItem = {
 type QueueInfo = { active: number; current: number; frozen: number };
 type LogLineParts = { time: string | null; message: string };
 
-const ACTIVITY_SLOTS = Array.from({ length: 6 }, (_, index) => index);
+// 4 slots (was 6): items can now span up to 5 lines each (wrapped label +
+// wrapped status/error), so fewer, readable entries beat more, truncated ones.
+const ACTIVITY_SLOTS = Array.from({ length: 4 }, (_, index) => index);
 const LOG_SLOTS = Array.from({ length: 24 }, (_, index) => index);
 
 function wrapLine(value: string, width: number) {
@@ -70,7 +72,18 @@ function queueColor(status: string) {
 function activityLine(activity: any) {
   const detail = activity?.progress?.detail ?? null;
   const phase = activity?.progress?.step ?? activity?.progress?.phase ?? activity?.progress?.currentStep ?? null;
-  return [activity?.status ?? 'unknown', detail ?? phase].filter(Boolean).join(' · ');
+  // On failure the error message is the information that matters — surface
+  // it instead of repeating the bare status the label color already conveys.
+  const error = activityErrorText(activity);
+  return [activity?.status ?? 'unknown', error ?? detail ?? phase].filter(Boolean).join(' · ');
+}
+
+function activityErrorText(activity: any): string | null {
+  const status = String(activity?.status ?? '').toLowerCase();
+  if (!['failed', 'error', 'cancelled', 'canceled'].includes(status)) return null;
+  const error = activity?.error ?? activity?.result?.error ?? activity?.progress?.detail ?? null;
+  const text = error == null ? '' : String(error).replace(/\s+/g, ' ').trim();
+  return text || null;
 }
 
 function activityPercentBadge(activity: any): { text: string; bg: string; fg: string } | null {
@@ -127,13 +140,19 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
     <box flexShrink={0} flexDirection="column" padding={1}>
       <text width={lineWidth()} fg="#D6DEE8" content={fit(title(), lineWidth())} />
       <Index each={props.plan}>
-        {(step) => (
-          <text
-            width={lineWidth()}
-            fg={planStepColor(step(), firstPending())}
-            content={fit(`${icon(step().status)} ${step().step}. ${step().description}`, lineWidth())}
-          />
-        )}
+        {(step) => {
+          // Wrap step descriptions over up to 2 lines instead of truncating —
+          // "Ingest des 39 documents raw/untrac…" hid the actual target.
+          const lines = () => wrapLine(`${icon(step().status)} ${step().step}. ${step().description}`, lineWidth()).slice(0, 2);
+          return (
+            <box flexDirection="column">
+              <text width={lineWidth()} fg={planStepColor(step(), firstPending())} content={lines()[0]} />
+              <Show when={lines()[1]}>
+                <text width={lineWidth()} fg={planStepColor(step(), firstPending())} content={`    ${fit(lines()[1], Math.max(8, lineWidth() - 4))}`} />
+              </Show>
+            </box>
+          );
+        }}
       </Index>
     </box>
   );
@@ -141,7 +160,7 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
 
 export function ActivityPanel(props: { activities: any[]; width: number }) {
   const lineWidth = () => Math.max(8, props.width - 2);
-  const visible = () => props.activities.slice(-6).reverse();
+  const visible = () => props.activities.slice(-ACTIVITY_SLOTS.length).reverse();
   const activityAt = (index: number) => visible()[index] ?? null;
   return (
     <box flexShrink={0} flexDirection="column" padding={1}>
@@ -150,21 +169,39 @@ export function ActivityPanel(props: { activities: any[]; width: number }) {
         <Index each={ACTIVITY_SLOTS}>
           {(slot) => {
             const activity = () => activityAt(slot());
-            const label = () => {
+            // Wrap instead of hard-truncating: a 40-column pane cut labels to
+            // "Appliquer la config recommandée (doct…" and hid the one thing
+            // that mattered. Labels get up to 2 lines, the status/error line
+            // up to 2 lines; empty continuation lines are not rendered.
+            const labelLines = () => {
               const item = activity();
-              if (!item) return '';
-              return fit(item.progress?.label ?? item.label ?? `${item.source ?? 'mcp'} ${item.kind ?? 'job'}`, lineWidth());
+              if (!item) return [''];
+              const label = String(item.progress?.label ?? item.label ?? `${item.source ?? 'mcp'} ${item.kind ?? 'job'}`);
+              const lines = wrapLine(label, lineWidth()).slice(0, 2);
+              if (lines.length === 2 && String(label).length > lines[0].length + lines[1].length) {
+                lines[1] = fit(lines[1], lineWidth());
+              }
+              return lines;
             };
             const badge = () => activityPercentBadge(activity());
             const badgeLen = () => badge()?.text.length ?? 0;
+            const statusLines = () => {
+              const item = activity();
+              if (!item) return [''];
+              return wrapLine(activityLine(item), Math.max(8, lineWidth() - badgeLen())).slice(0, 2);
+            };
+            const statusColor = () => (activityErrorText(activity()) ? '#F38BA8' : '#AAB7C4');
             return (
               <box flexDirection="column" marginTop={slot() === 0 ? 1 : 0}>
-                <text width={lineWidth()} fg={activityColor(activity()?.status)} content={label()} />
+                <text width={lineWidth()} fg={activityColor(activity()?.status)} content={labelLines()[0]} />
+                <Show when={labelLines()[1]}>
+                  <text width={lineWidth()} fg={activityColor(activity()?.status)} content={labelLines()[1]} />
+                </Show>
                 <box height={1} flexDirection="row">
                   <text
                     width={lineWidth() - badgeLen()}
-                    fg="#AAB7C4"
-                    content={activity() ? fit(activityLine(activity()), lineWidth() - badgeLen()) : ''}
+                    fg={statusColor()}
+                    content={activity() ? fit(statusLines()[0], lineWidth() - badgeLen()) : ''}
                   />
                   <text
                     width={badgeLen()}
@@ -173,6 +210,9 @@ export function ActivityPanel(props: { activities: any[]; width: number }) {
                     content={badge()?.text ?? ''}
                   />
                 </box>
+                <Show when={statusLines()[1]}>
+                  <text width={lineWidth()} fg={statusColor()} content={fit(statusLines()[1], lineWidth())} />
+                </Show>
                 <text width={lineWidth()} fg="#7F8C8D" content={activity() ? fit(updatedLine(activity()), lineWidth()) : ''} />
               </box>
             );

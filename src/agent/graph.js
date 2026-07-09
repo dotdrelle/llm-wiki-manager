@@ -724,8 +724,17 @@ export function createAgentGraph(options = {}) {
       state.session._onStep?.('Agent: planning next action…');
     }
 
+    // Inside a runtime run the input IS the task to execute (the runtime
+    // already accepted it as a run): the interactive control-message
+    // classifier must not apply. Without this, agentProjection.status is
+    // 'running' during every run, so any action verb ("lance l'ingestion")
+    // matched the active-run 'ambiguous' branch and returned a canned
+    // clarification instead of executing — the run ended silently.
+    const runtimeExecution = Boolean(state.session._currentRunIdentity);
     const classification = iterations === 0
-      ? classifyAgentInput(state.input, state.session)
+      ? (runtimeExecution
+        ? { kind: 'execute_run', confidence: 1, reason: 'runtime_run_execution', activeRun: true }
+        : classifyAgentInput(state.input, state.session))
       : (state.inputClassification ?? { kind: 'modify_run', confidence: 1, reason: 'tool_iteration' });
     if (iterations === 0) {
       state.session._onStep?.(`Agent: classified input as ${classification.kind}`);
@@ -992,11 +1001,22 @@ export function createAgentGraph(options = {}) {
     return END;
   }
 
-  return new StateGraph(AgentState)
+  const compiled = new StateGraph(AgentState)
     .addNode('orchestrator', orchestratorNode)
     .addNode('tool_executor', toolExecutorNode)
     .addEdge(START, 'orchestrator')
     .addConditionalEdges('orchestrator', routeOrchestrator)
     .addEdge('tool_executor', 'orchestrator')
     .compile();
+
+  // LangGraph's default recursionLimit is 25 super-steps. Each tool round
+  // costs two of them (orchestrator + tool_executor), so runs died with
+  // GRAPH_RECURSION_LIMIT around iteration 12 — far below the intended
+  // MAX_TOOL_ITERATIONS budget — before finishing their work (observed as
+  // `knowledge.update — error 0%` with no production job ever created).
+  // Bake a limit matching the iteration budget into every invocation.
+  const recursionLimit = MAX_TOOL_ITERATIONS * 2 + 10;
+  return {
+    invoke: (state, config = {}) => compiled.invoke(state, { recursionLimit, ...config }),
+  };
 }

@@ -580,3 +580,94 @@ test('buildAgentSystemPrompt anchors the real capability list', () => {
   const withoutAgents = buildAgentSystemPrompt({ session: sessionBase() });
   assert.match(withoutAgents, /No orchestration capabilities discovered yet/);
 });
+
+test('agent graph executes action inputs inside a runtime run instead of asking for clarification', async () => {
+  // Regression: during a runtime run agentProjection.status is 'running', so
+  // the interactive classifier turned every action verb into 'ambiguous' and
+  // returned a canned clarification — "lance l'ingestion" did nothing.
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({ result: { content: [{ type: 'text', text: '{"ok":true}' }] } }),
+    };
+  };
+  const session = sessionBase({
+    agentProjection: { status: 'running', conversation: [], activities: [] },
+    _currentRunIdentity: { runId: 'run-ingest', turnId: 'run-ingest:turn-1', workspace: 'docs' },
+    llm: toolCallingLlm(),
+  });
+
+  try {
+    const agent = createAgentGraph();
+    const result = await agent.invoke({ input: "lance l'ingestion des documents", session });
+
+    assert.equal(result.response, 'Done.');
+    assert.equal(fetchCalls, 1, 'the MCP tool must actually be called');
+    assert.doesNotMatch(result.response, /Peux-tu préciser/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('agent graph still asks for clarification on ambiguous input outside a runtime run', async () => {
+  const session = sessionBase({
+    agentProjection: { status: 'running', conversation: [], activities: [] },
+    llm: {
+      async completeWithTools() {
+        throw new Error('LLM must not be called for an ambiguous interactive input');
+      },
+    },
+  });
+
+  const agent = createAgentGraph();
+  const result = await agent.invoke({ input: 'lance un build', session });
+
+  assert.match(result.response, /Peux-tu préciser/);
+});
+
+test('agent graph survives more than 12 tool iterations (recursion limit)', async () => {
+  // LangGraph's default recursionLimit (25) killed real runs around the 12th
+  // tool round with GRAPH_RECURSION_LIMIT. 20 rounds must now pass.
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    text: async () => JSON.stringify({ result: { content: [{ type: 'text', text: '{"ok":true}' }] } }),
+  });
+  let calls = 0;
+  const session = sessionBase({
+    _currentRunIdentity: { runId: 'run-long', turnId: 'run-long:turn-1', workspace: 'docs' },
+    llm: {
+      async completeWithTools() {
+        calls += 1;
+        if (calls <= 20) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: `call-${calls}`,
+              type: 'function',
+              function: { name: 'production__production_start_job', arguments: '{"type":"doctor"}' },
+            }],
+          };
+        }
+        return { content: 'Terminé.', message: { role: 'assistant', content: 'Terminé.' }, tool_calls: null };
+      },
+    },
+  });
+
+  try {
+    const agent = createAgentGraph();
+    const result = await agent.invoke({ input: 'inspecte tout puis lance le doctor', session });
+    assert.equal(result.response, 'Terminé.');
+    assert.equal(calls, 21);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

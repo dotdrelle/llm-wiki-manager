@@ -13,6 +13,7 @@ import { extractActivity, formatActivitySummary, parseJsonText, sessionActivitie
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
 import { updateWorkspaceProfilePreference } from '../core/profile.js';
+import { createCapabilityRegistry } from '../orchestrator/capabilityRegistry.js';
 
 const MAX_TOOL_ITERATIONS = 80;
 const MAX_SPINNER_ARG_LENGTH = 96;
@@ -448,9 +449,43 @@ function emitAgentEvent(session, type, origin, payload = {}) {
   dispatchAgentEvent(session, createAgentEvent(type, { origin, payload }));
 }
 
+// Capability ids currently provided by discovered, orchestrable, healthy
+// agents. This is the live registry the dispatcher will resolve against —
+// a plan declaring anything outside this set can only stall forever.
+export function knownCapabilityIds(session) {
+  const registry = session?.capabilityRegistry ?? createCapabilityRegistry({
+    agents: session?.agentRegistrySnapshot ?? session?.agents ?? [],
+  });
+  const snapshot = typeof registry.snapshot === 'function' ? registry.snapshot() : registry;
+  return [...new Set(Object.keys(snapshot ?? {}).map((key) => {
+    const index = key.lastIndexOf('@');
+    return index > 0 ? key.slice(0, index) : key;
+  }))].sort();
+}
+
 function handleWikiTool(session, tool, args) {
   if (tool === 'plan_set') {
     const steps = Array.isArray(args.steps) ? args.steps : [];
+    // Reject fantasy capabilities BEFORE the plan exists: once registered,
+    // unresolvable steps become tasks that wait forever and flood the queue.
+    // A tool-level error (not an exception) lets the LLM correct itself in
+    // the same turn. An empty registry (discovery not done yet) skips the
+    // check rather than blocking legitimate early plans.
+    const known = knownCapabilityIds(session);
+    if (known.length > 0) {
+      const unknown = [...new Set(steps
+        .map((step) => (step && typeof step === 'object' ? step.requiredCapability : null))
+        .filter(Boolean)
+        .map(String)
+        .filter((capability) => !known.includes(capability.includes('@') ? capability.slice(0, capability.lastIndexOf('@')) : capability)))];
+      if (unknown.length > 0) {
+        return `Plan rejected: unknown capabilities [${unknown.join(', ')}]. `
+          + `Available capabilities: ${known.join(', ')}. `
+          + 'Redeclare the plan using only available capabilities, or use requiredCapability: null for a step you execute yourself.';
+      }
+    } else if (steps.some((step) => step && typeof step === 'object' && step.requiredCapability)) {
+      session._onStep?.('plan_set: capability registry empty, validation skipped');
+    }
     emitAgentEvent(session, 'plan_set', 'tool', {
       steps: steps.map((raw, i) => normalizeDeclaredPlanStep(raw, i, session)),
     });
@@ -546,6 +581,13 @@ export function buildAgentSystemPrompt(state) {
       'You have two internal planning tools: wiki__plan_set and wiki__plan_done.',
       'Prefer MCP tools that declare their own plan via _activity.plan.steps — when such a tool returns _activity, the shell creates and tracks the plan automatically without requiring wiki__plan_set.',
       'Use wiki__plan_set when the MCP tool cannot declare its own plan or when the task spans multiple independent tools (e.g. CME export then email report). For a single self-describing async job, wiki__plan_set is optional.',
+      '',
+      (() => {
+        const capabilityIds = knownCapabilityIds(state.session);
+        return capabilityIds.length > 0
+          ? `Known orchestration capabilities — the ONLY values allowed in requiredCapability: ${capabilityIds.join(', ')}. Never invent capability names; a plan declaring an unknown capability will be rejected. A step you execute yourself directly takes requiredCapability: null.`
+          : 'No orchestration capabilities discovered yet: declare plan steps with requiredCapability: null and execute them yourself with the connected MCP tools.';
+      })(),
       '',
       'Task startup:',
       '  1. If the next MCP tool returns _activity.plan.steps, call that tool directly; the shell will create the visible plan from the returned activity.',

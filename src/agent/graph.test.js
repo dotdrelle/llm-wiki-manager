@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildAgentSystemPrompt, createAgentGraph } from './graph.js';
+import { buildAgentSystemPrompt, classifyAgentInput, createAgentGraph, knownCapabilityIds } from './graph.js';
 
 function sessionBase(overrides = {}) {
   return {
@@ -433,4 +433,150 @@ test('buildAgentSystemPrompt contains no unqualified tool names for connected se
     }
   }
   assert.deepEqual(offenders, [], `Unqualified tool names found in system prompt: ${offenders.join(', ')}`);
+});
+
+test('classifyAgentInput routes information requests to observe, not runs', () => {
+  const session = sessionBase();
+  // The original incident: a config question must never become a run.
+  assert.equal(classifyAgentInput('donne moi la config du cme', session).kind, 'observe');
+  assert.equal(classifyAgentInput('montre la configuration du workspace', session).kind, 'observe');
+  assert.equal(classifyAgentInput('où en est le run', session).kind, 'observe');
+  assert.equal(classifyAgentInput('explique le build', session).kind, 'observe');
+  assert.equal(classifyAgentInput("qu'est-ce que le pipeline polish ?", session).kind, 'observe');
+});
+
+test('classifyAgentInput routes action requests to start_run without an active run', () => {
+  const session = sessionBase();
+  assert.equal(classifyAgentInput('lance le pipeline complet', session).kind, 'start_run');
+  assert.equal(classifyAgentInput('configure le cme avec ce token', session).kind, 'start_run');
+  assert.equal(classifyAgentInput('lance le run', session).kind, 'start_run');
+  assert.equal(classifyAgentInput('exporte les deliverables', session).kind, 'start_run');
+});
+
+test('classifyAgentInput keeps small talk as converse and active-run branches intact', () => {
+  const session = sessionBase();
+  assert.equal(classifyAgentInput('bonjour', session).kind, 'converse');
+  assert.equal(classifyAgentInput('merci beaucoup', session).kind, 'converse');
+  const activeSession = sessionBase({ agentProjection: { status: 'running' } });
+  assert.equal(classifyAgentInput('lance un build', activeSession).kind, 'ambiguous');
+  assert.equal(classifyAgentInput('annule tout', activeSession).kind, 'cancel');
+});
+
+function orchestrableAgentSnapshot() {
+  return [{
+    agentInstanceId: 'production-1',
+    serverName: 'production',
+    health: 'available',
+    description: {
+      contractVersion: '1',
+      agentType: 'production',
+      displayName: 'Production agent',
+      capabilities: [
+        { id: 'knowledge.pipeline', version: '1' },
+        { id: 'external-source.export', version: '1' },
+      ],
+    },
+  }];
+}
+
+test('knownCapabilityIds reflects the discovered registry snapshot', () => {
+  const session = sessionBase({ agentRegistrySnapshot: orchestrableAgentSnapshot() });
+  assert.deepEqual(knownCapabilityIds(session), ['external-source.export', 'knowledge.pipeline']);
+  assert.deepEqual(knownCapabilityIds(sessionBase()), []);
+});
+
+test('agent graph rejects plan steps declaring unknown capabilities', async () => {
+  let calls = 0;
+  let rejectionSeen = null;
+  const session = sessionBase({
+    agentRegistrySnapshot: orchestrableAgentSnapshot(),
+    llm: {
+      async completeWithTools({ messages }) {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: 'plan-call',
+              type: 'function',
+              function: {
+                name: 'wiki__plan_set',
+                arguments: JSON.stringify({
+                  steps: [
+                    { id: 'create', description: 'Create config file', requiredCapability: 'file.creation' },
+                    { id: 'validate', description: 'Validate config', requiredCapability: 'file.validation', dependsOn: ['create'] },
+                  ],
+                }),
+              },
+            }],
+          };
+        }
+        rejectionSeen = messages.map((message) => String(message.content ?? '')).join('\n');
+        return {
+          content: 'Understood, no plan registered.',
+          message: { role: 'assistant', content: 'Understood, no plan registered.' },
+          tool_calls: null,
+        };
+      },
+    },
+  });
+
+  const agent = createAgentGraph();
+  await agent.invoke({ input: 'Configure CME', session });
+
+  assert.equal(session.headlessPlan ?? null, null, 'rejected plan must not be registered');
+  assert.match(rejectionSeen ?? '', /Plan rejected: unknown capabilities \[file\.creation, file\.validation\]/);
+  assert.match(rejectionSeen ?? '', /external-source\.export, knowledge\.pipeline/);
+});
+
+test('agent graph accepts plan steps with known capabilities and null capability', async () => {
+  let calls = 0;
+  const session = sessionBase({
+    agentRegistrySnapshot: orchestrableAgentSnapshot(),
+    llm: {
+      async completeWithTools() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: 'plan-call',
+              type: 'function',
+              function: {
+                name: 'wiki__plan_set',
+                arguments: JSON.stringify({
+                  steps: [
+                    { id: 'export', description: 'Export sources', requiredCapability: 'external-source.export' },
+                    { id: 'report', description: 'Summarize results', requiredCapability: null, dependsOn: ['export'] },
+                  ],
+                }),
+              },
+            }],
+          };
+        }
+        return {
+          content: 'Plan ready.',
+          message: { role: 'assistant', content: 'Plan ready.' },
+          tool_calls: null,
+        };
+      },
+    },
+  });
+
+  const agent = createAgentGraph();
+  const result = await agent.invoke({ input: 'Export then report', session });
+
+  assert.equal(result.response, 'Plan ready.');
+  assert.deepEqual(session.headlessPlan.map((step) => step.id), ['export', 'report']);
+});
+
+test('buildAgentSystemPrompt anchors the real capability list', () => {
+  const withAgents = buildAgentSystemPrompt({ session: sessionBase({ agentRegistrySnapshot: orchestrableAgentSnapshot() }) });
+  assert.match(withAgents, /Known orchestration capabilities — the ONLY values allowed in requiredCapability: external-source\.export, knowledge\.pipeline/);
+  assert.match(withAgents, /Never invent capability names/);
+
+  const withoutAgents = buildAgentSystemPrompt({ session: sessionBase() });
+  assert.match(withoutAgents, /No orchestration capabilities discovered yet/);
 });

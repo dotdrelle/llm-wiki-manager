@@ -251,6 +251,10 @@ export function terminalFailures(activities) {
   );
 }
 
+export function isCancelledStatus(status) {
+  return ['cancelled', 'canceled'].includes(String(status ?? '').toLowerCase());
+}
+
 export function formatActivityError(source, action, err) {
   const message = err instanceof Error ? err.message : String(err);
   const lines = message

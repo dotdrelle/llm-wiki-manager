@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeActivity, extractActivity, rememberActivity, rememberActivityFromPayload } from './activity.js';
+import { normalizeActivity, extractActivity, isCancelledStatus, rememberActivity, rememberActivityFromPayload } from './activity.js';
 
 test('normalizeActivity: plan.steps preserved with id and label', () => {
   const a = normalizeActivity({
@@ -27,6 +27,14 @@ test('normalizeActivity: plan null when steps is empty array', () => {
 test('normalizeActivity: plan null when no plan field', () => {
   const a = normalizeActivity({ id: '1', status: 'running' });
   assert.equal(a.plan, null);
+});
+
+test('isCancelledStatus recognizes both cancellation spellings', () => {
+  assert.equal(isCancelledStatus('cancelled'), true);
+  assert.equal(isCancelledStatus('canceled'), true);
+  assert.equal(isCancelledStatus('CANCELLED'), true);
+  assert.equal(isCancelledStatus('failed'), false);
+  assert.equal(isCancelledStatus(null), false);
 });
 
 test('normalizeActivity: step id falls back to 1-based index when missing', () => {

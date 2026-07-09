@@ -370,6 +370,154 @@ test('runRuntimeAgenticWorkflow replans after terminal activity error', async ()
   }
 });
 
+test('runRuntimeAgenticWorkflow treats user-cancelled activity as terminal cancellation without replan', async () => {
+  const originalFetch = globalThis.fetch;
+  let pollAttempts = 0;
+  const events = [];
+  globalThis.fetch = async () => {
+    pollAttempts += 1;
+    return mcpActivityResponse({
+      id: 'job-cancelled',
+      source: 'production',
+      label: 'Production build',
+      status: 'cancelled',
+      terminal: true,
+    });
+  };
+  const session = {
+    mcp: {
+      production: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3000/mcp/',
+        retry: { maxAttempts: 1, backoffMs: 0 },
+      },
+    },
+    activities: {},
+    headlessPlan: null,
+    llm: {
+      async completeWithTools() {
+        assert.fail('cancelled activity must not call evaluator or replanner');
+      },
+    },
+    _onAgentEvent: (event) => events.push(event),
+  };
+  const agent = {
+    async invoke({ session: turnSession }) {
+      dispatchAgentEvent(turnSession, createAgentEvent('activity_upserted', {
+        payload: {
+          activity: runningPollableActivity('job-cancelled', 'Production build'),
+        },
+      }));
+      return { response: 'Started build.' };
+    },
+  };
+
+  try {
+    const result = await runRuntimeAgenticWorkflow(agent, session, 'Build workspace', {
+      runId: 'run-cancelled-activity',
+      timeoutMs: 1000,
+      maxTurns: 1,
+      maxReplans: 1,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.cancelled, true);
+    assert.equal(pollAttempts, 1);
+    assert.equal(events.some((event) => event.type === 'run_replanned'), false);
+    assert.ok(events.some((event) => event.type === 'run_cancelled' && event.payload?.cancelled === true));
+    assert.equal(session.agentProjection.status, 'cancelled');
+    assert.match(session.agentProjection.logs.join('\n'), /run ended by user cancellation \(no replan\)/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('runRuntimeAgenticWorkflow replans from failed activity when another activity is cancelled', async () => {
+  const originalFetch = globalThis.fetch;
+  const events = [];
+  const pollStatuses = new Map([
+    ['job-failed', {
+      id: 'job-failed',
+      source: 'production',
+      label: 'Production build',
+      status: 'failed',
+      terminal: true,
+      error: 'build failed',
+    }],
+    ['job-cancelled', {
+      id: 'job-cancelled',
+      source: 'production',
+      label: 'Production cleanup',
+      status: 'cancelled',
+      terminal: true,
+    }],
+  ]);
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = JSON.parse(String(options.body ?? '{}'));
+    return mcpActivityResponse(pollStatuses.get(body.params?.arguments?.jobId));
+  };
+  const session = {
+    mcp: {
+      production: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3000/mcp/',
+        retry: { maxAttempts: 1, backoffMs: 0 },
+      },
+    },
+    activities: {},
+    headlessPlan: null,
+    llm: {
+      async completeWithTools({ system }) {
+        if (/replanner/.test(system)) return { content: '{"steps":["Retry build"]}' };
+        return { content: '{"ok":true,"reason":"Build complete.","suggestedAction":null}' };
+      },
+    },
+    _onAgentEvent: (event) => events.push(event),
+  };
+  let turns = 0;
+  const agent = {
+    async invoke({ session: turnSession }) {
+      turns += 1;
+      if (turns === 1) {
+        dispatchAgentEvent(turnSession, createAgentEvent('activity_upserted', {
+          payload: { activity: runningPollableActivity('job-failed', 'Production build') },
+        }));
+        dispatchAgentEvent(turnSession, createAgentEvent('activity_upserted', {
+          payload: { activity: runningPollableActivity('job-cancelled', 'Production cleanup') },
+        }));
+        return { response: 'Started build.' };
+      }
+      const pending = turnSession.headlessPlan?.find((step) => step.status === 'pending');
+      if (pending) {
+        dispatchAgentEvent(turnSession, createAgentEvent('plan_step_updated', {
+          origin: 'tool',
+          payload: { taskId: pending.id, status: 'done' },
+        }));
+      }
+      return { response: 'Retry done.' };
+    },
+  };
+
+  try {
+    const result = await runRuntimeAgenticWorkflow(agent, session, 'Build workspace', {
+      runId: 'run-failed-and-cancelled',
+      timeoutMs: 1000,
+      maxTurns: 3,
+      maxReplans: 1,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(turns, 2);
+    assert.equal(events.some((event) => event.type === 'run_cancelled'), false);
+    assert.ok(events.some((event) => event.type === 'run_replanned'));
+    assert.equal(session.agentProjection.replans[0].reason, 'Production build ended with failed: build failed');
+    assert.deepEqual(session.agentProjection.replans[0].plan, ['Retry build']);
+    assert.equal(session.agentProjection.status, 'done');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('runRuntimeAgenticWorkflow stops after replan budget is exhausted', async () => {
   const session = {
     activities: {},
@@ -704,6 +852,30 @@ function productionAgent() {
       },
       health: { status: 'available' },
     },
+  };
+}
+
+function runningPollableActivity(id, label) {
+  return {
+    id,
+    source: 'production',
+    label,
+    status: 'running',
+    terminal: false,
+    poll: { server: 'production', tool: 'production_job_status', args: { jobId: id }, intervalMs: 0 },
+  };
+}
+
+function mcpActivityResponse(activity) {
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    text: async () => JSON.stringify({
+      result: {
+        content: [{ type: 'text', text: JSON.stringify({ _activity: activity }) }],
+      },
+    }),
   };
 }
 

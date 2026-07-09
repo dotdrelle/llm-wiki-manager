@@ -1,5 +1,5 @@
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { sessionActivities, terminalFailures } from '../core/activity.js';
+import { isCancelledStatus, sessionActivities, terminalFailures } from '../core/activity.js';
 import { runAgenticLoop, throwIfAborted } from '../core/agentLoop.js';
 import { formatPlanStatus } from '../core/plan.js';
 import { readyPlanTasks, sanitizePlanForExecution } from '../core/planPatch.js';
@@ -133,6 +133,19 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
           currentInput = buildReplannedRunPrompt(input, trigger, replanned.steps);
           continue;
         }
+      }
+      if (!trigger && isCancelledOnlyLoopResult(result)) {
+        dispatchAgentEvent(session, createAgentEvent('run_cancelled', {
+          origin: 'runtime',
+          runId,
+          payload: {
+            runId,
+            cancelled: true,
+            message: 'Runtime run cancelled by user.',
+          },
+        }));
+        emitRuntimeLog(session, 'runtime: run ended by user cancellation (no replan)');
+        return { ok: false, result, cancelled: true };
       }
       dispatchAgentEvent(session, createAgentEvent('run_error', {
         origin: 'runtime',
@@ -847,7 +860,12 @@ function replanTriggerFromLoopResult(result) {
     };
   }
   const failures = terminalFailures(result.completed ?? []);
-  const failure = failures[0];
+  const technical = failures.filter((failure) => !isCancelledStatus(failure.status));
+  const cancelled = failures.filter((failure) => isCancelledStatus(failure.status));
+  if (cancelled.length > 0 && technical.length === 0 && (result.failures ?? []).every(isCancelledTaskFailure)) {
+    return null;
+  }
+  const failure = technical[0];
   if (failure) {
     return {
       kind: 'activity_error',
@@ -859,7 +877,7 @@ function replanTriggerFromLoopResult(result) {
   // The parallel scheduler can fail a task before it ever produces an
   // _activity (e.g. a thrown error on the first turn) — that failure lives
   // in result.failures, not in any activity, so it must be checked too.
-  const taskFailure = (result.failures ?? [])[0];
+  const taskFailure = (result.failures ?? []).find((failure) => !isCancelledTaskFailure(failure));
   if (!taskFailure) return null;
   return {
     kind: 'task_error',
@@ -867,6 +885,25 @@ function replanTriggerFromLoopResult(result) {
     suggestedAction: taskFailure.error ?? null,
     activity: null,
   };
+}
+
+function isCancelledTaskFailure(failure) {
+  return failure?.cancelled === true
+    || failure?.result?.cancelled === true
+    || isCancelledStatus(failure?.status)
+    || isCancelledStatus(failure?.result?.status);
+}
+
+function isCancelledOnlyLoopResult(result) {
+  const failures = terminalFailures(result.completed ?? []);
+  const technicalActivities = failures.filter((failure) => !isCancelledStatus(failure.status));
+  const cancelledActivities = failures.filter((failure) => isCancelledStatus(failure.status));
+  const taskFailures = result.failures ?? [];
+  const technicalTasks = taskFailures.filter((failure) => !isCancelledTaskFailure(failure));
+  const cancelledTasks = taskFailures.filter(isCancelledTaskFailure);
+  return technicalActivities.length === 0
+    && technicalTasks.length === 0
+    && (cancelledActivities.length > 0 || cancelledTasks.length > 0);
 }
 
 function runtimeLoopErrorMessage(result) {

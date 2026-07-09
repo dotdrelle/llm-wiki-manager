@@ -144,3 +144,39 @@ test('/use loads only workspaces and /config use switches wikirc profiles', asyn
     else process.env.WIKI_WORKSPACES_DIR = previousDir;
   }
 });
+
+test('/queue cancel refuses runtime-managed items instead of fake-cancelling locally', async () => {
+  // syncRuntimeState replaces session.jobQueue with the runtime queue and tags
+  // origin:'runtime' — a local cancel would be reverted by the next SSE sync,
+  // so the command must redirect the user to /run kill / /run cancel.
+  const session = {
+    jobQueue: [
+      { id: 'q-runtime-1', status: 'waiting', workspace: 'demo', tool: 'agent_execute', origin: 'runtime' },
+      { id: 'q-local-1', status: 'waiting', workspace: 'demo', server: 'production', tool: 'production_start_job' },
+    ],
+  };
+
+  const refused = await handleSlashCommand('/queue cancel q-runtime-1', {
+    packageJson: { version: 'test' },
+    session,
+  });
+  assert.match(refused.output ?? '', /runtime/i);
+  assert.match(refused.output ?? '', /\/run kill/);
+  assert.equal(session.jobQueue[0].status, 'waiting', 'runtime item must not be flipped locally');
+
+  const cancelled = await handleSlashCommand('/queue cancel q-local-1', {
+    packageJson: { version: 'test' },
+    session,
+  });
+  assert.match(cancelled.output ?? '', /Cancelled/i);
+  assert.equal(session.jobQueue[1].status, 'cancelled');
+});
+
+test('/queue cancel reports unknown ids that are not runtime-managed', async () => {
+  const session = { jobQueue: [] };
+  const result = await handleSlashCommand('/queue cancel nope', {
+    packageJson: { version: 'test' },
+    session,
+  });
+  assert.match(result.output ?? '', /Unknown queue item/i);
+});

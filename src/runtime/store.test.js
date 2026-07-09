@@ -606,6 +606,38 @@ test('runtime store persists cancelled run status', () => {
   store.close();
 });
 
+test('runtime store interrupts runs by runId and does not recover killed runs after reopen', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  for (const runId of ['run-kill', 'run-keep']) {
+    store.persistEvent(createAgentEvent('run_started', {
+      origin: 'test',
+      runId,
+      workspace: 'docs',
+      payload: { input: runId, workspace: 'docs' },
+    }));
+    store.persistEvent(createAgentEvent('task.created', {
+      origin: 'test',
+      runId,
+      taskId: `${runId}:task`,
+      workspace: 'docs',
+      payload: { runId, task: { ...plannedTask(`${runId}:task`), status: 'running' } },
+    }));
+  }
+
+  assert.equal(store.interruptRuns({ workspace: 'docs', runId: 'run-kill' }), 1);
+  assert.equal(store.cancelActiveTasksForInterruptedRuns({ workspace: 'docs', runId: 'run-kill' }), 1);
+  assert.equal(store.listRuns().find((run) => run.id === 'run-kill').status, 'interrupted');
+  assert.equal(store.listRuns().find((run) => run.id === 'run-keep').status, 'running');
+  assert.equal(store.listTasks({ runId: 'run-kill' })[0].status, 'cancelled');
+  assert.equal(store.listTasks({ runId: 'run-keep' })[0].status, 'running');
+  store.close();
+
+  const reopened = openRuntimeStore({ stateDir });
+  assert.deepEqual(reopened.listRecoverableRuns({ workspace: 'docs' }).map((run) => run.id), ['run-keep']);
+  reopened.close();
+});
+
 test('runtime store migrates legacy databases without workspace columns', () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
   const db = new DatabaseSync(join(stateDir, 'runtime.db'));

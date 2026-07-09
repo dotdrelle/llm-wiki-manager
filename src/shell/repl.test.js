@@ -191,3 +191,49 @@ test('runtime status exposes the disconnected reason', () => {
     '⚠ Runtime indisponible : token mismatch — /agent désactivé, /chat reste possible',
   );
 });
+
+test('/run kill posts to the runtime kill endpoint', async () => {
+  let calledUrl = null;
+  const restore = stubFetch(async (url) => {
+    calledUrl = new URL(String(url));
+    return jsonResponse(202, { killed: true, runs: 1, tasks: 2 });
+  });
+  try {
+    const session = createSession();
+    session.workspace = 'docs';
+
+    const result = await runLine('/run kill', {
+      agent: null,
+      packageJson: { version: 'test' },
+      session,
+      runtime: { url: 'http://runtime.test' },
+    });
+
+    assert.equal(result.exit, false);
+    assert.equal(calledUrl.pathname, '/kill');
+    assert.equal(calledUrl.searchParams.get('workspace'), 'docs');
+    assert.match(conversationMessages(session).at(-1).content, /Runtime kill requested: 1 run, 2 tasks cancelled/);
+  } finally {
+    restore();
+  }
+});
+
+test('/queue cancel on a runtime workflow id points to run cancellation commands', async () => {
+  const session = createSession();
+  session.workspace = 'docs';
+  session.jobQueue = [];
+  session.workflow = {
+    nodes: [{ id: 'task:runtime-a', type: 'task', label: 'Runtime task', status: 'pending' }],
+    relations: [],
+  };
+
+  const result = await runLine('/queue cancel task:runtime-a', {
+    agent: null,
+    packageJson: { version: 'test' },
+    session,
+  });
+
+  assert.equal(result.exit, false);
+  assert.match(conversationMessages(session).at(-1).content, /Item géré par le runtime/);
+  assert.match(conversationMessages(session).at(-1).content, /\/run kill/);
+});

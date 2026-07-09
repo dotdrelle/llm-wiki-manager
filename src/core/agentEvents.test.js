@@ -279,6 +279,16 @@ test('reduceAgentEvents: control queue is event sourced and follows run status',
         createdAt: '2026-01-01T00:00:00.000Z',
       },
     }),
+    createAgentEvent('control_enqueued', {
+      origin: 'runtime',
+      workspace: 'docs',
+      payload: {
+        id: 'control-2',
+        workspace: 'docs',
+        input: 'Never run',
+        createdAt: '2026-01-01T00:00:01.000Z',
+      },
+    }),
     createAgentEvent('control_started', {
       origin: 'runtime',
       runId: 'run-control-1',
@@ -290,12 +300,19 @@ test('reduceAgentEvents: control queue is event sourced and follows run status',
       runId: 'run-control-1',
       workspace: 'docs',
     }),
+    createAgentEvent('control_cancelled', {
+      origin: 'runtime',
+      workspace: 'docs',
+      payload: { id: 'control-2' },
+    }),
   ]);
 
-  assert.equal(projection.controlQueue.length, 1);
+  assert.equal(projection.controlQueue.length, 2);
   assert.equal(projection.controlQueue[0].id, 'control-1');
   assert.equal(projection.controlQueue[0].status, 'done');
   assert.equal(projection.controlQueue[0].runId, 'run-control-1');
+  assert.equal(projection.controlQueue[1].id, 'control-2');
+  assert.equal(projection.controlQueue[1].status, 'cancelled');
 });
 
 test('reduceAgentEvents: activity-owned plan is used when no orchestrator plan exists', () => {

@@ -43,6 +43,7 @@ import {
   listDocumentUploads,
   storeAndMaybeConvertDocument,
 } from '../core/documentIntake.js';
+import { fetchRuntimeState, postRuntimeCancel, postRuntimeKill } from '../runtime/client.js';
 
 export function printVersion(packageJson) {
   console.log(packageJson.version);
@@ -632,6 +633,8 @@ ${helpPair('/upload convert pending', 'Convert pending', '/uploads clean', 'Clea
 ${helpPair('/wiki', 'Run wiki index', '/wiki run <args>', 'Raw wiki CLI')}
 ${helpPair('/chat', 'Chat mode', '/agent', 'Agent mode')}
 ${helpPair('/openui', 'Open web UI in browser', '', '')}
+${helpPair('/run status', 'Runtime status', '/run kill', 'Kill runtime run(s)')}
+${helpPair('/run cancel', 'Cancel active run', '', '')}
 ${helpPair('/queue', 'MCP job queue', '/queue clear', 'Clear finished')}
 ${helpPair('/queue cancel <id>', 'Cancel queued/running', '', '')}
 ${helpPair('/clear', 'Clear screen', '/exit', 'Exit')}
@@ -674,6 +677,37 @@ function rawCommandResult(command, output) {
     rawOutput: true,
     agentTrigger: rawCommandAgentPrompt(command, output),
   };
+}
+
+function formatRuntimeRunStatus(state) {
+  const status = state?.status ?? 'unknown';
+  const runId = state?.runId ? ` run=${state.runId}` : '';
+  const queued = Array.isArray(state?.controlQueue)
+    ? state.controlQueue.filter((item) => item.status === 'queued').length
+    : 0;
+  const tasks = Array.isArray(state?.workflow?.nodes)
+    ? state.workflow.nodes.filter((node) => node.type === 'task' && !['done', 'failed', 'cancelled'].includes(String(node.status))).length
+    : 0;
+  return `runtime: ${status}${runId} · queued=${queued} · activeTasks=${tasks}`;
+}
+
+function runtimeManagedItemId(context, id) {
+  const runtimeState = typeof context.runtimeState === 'function' ? context.runtimeState() : context.runtimeState;
+  const states = [runtimeState, context.session].filter(Boolean);
+  return states.some((state) =>
+    runtimeQueueMatches(state, id)
+    || runtimeWorkflowMatches(state.workflow, id));
+}
+
+function runtimeQueueMatches(state, id) {
+  return Array.isArray(state?.queue) && state.queue.some((item) => String(item.id) === String(id));
+}
+
+function runtimeWorkflowMatches(workflow, id) {
+  if (!workflow || typeof workflow !== 'object') return false;
+  const target = String(id);
+  return (Array.isArray(workflow.nodes) && workflow.nodes.some((node) => String(node.id) === target || String(node.itemId ?? node.taskId ?? '') === target))
+    || (Array.isArray(workflow.relations) && workflow.relations.some((relation) => String(relation.from) === target || String(relation.to) === target));
 }
 
 export async function handleSlashCommand(line, context) {
@@ -937,6 +971,25 @@ export async function handleSlashCommand(line, context) {
       }
       return { output: 'Usage: /mcp <status|endpoints|tools|call> [mcp]' };
     }
+    case 'run': {
+      const subcommand = args[1] ?? 'status';
+      const runtime = context.runtime ?? {};
+      const url = runtime.url;
+      if (!url) return { output: 'Runtime unavailable. Start/connect the runtime before using /run.' };
+      if (subcommand === 'status') {
+        const state = await fetchRuntimeState({ url, workspace: context.session.workspace ?? null });
+        return { output: formatRuntimeRunStatus(state) };
+      }
+      if (subcommand === 'cancel') {
+        const result = await postRuntimeCancel({ url, workspace: context.session.workspace ?? null });
+        return { output: result.cancelled ? 'Runtime cancel requested.' : `Runtime cancel skipped: ${result.reason ?? 'no active run'}` };
+      }
+      if (subcommand === 'kill') {
+        const result = await postRuntimeKill({ url, workspace: context.session.workspace ?? null, runId: args[2] ?? null });
+        return { output: `Runtime kill requested: ${result.runs ?? 0} run${result.runs === 1 ? '' : 's'}, ${result.tasks ?? 0} task${result.tasks === 1 ? '' : 's'} cancelled.` };
+      }
+      return { output: 'Usage: /run [status|cancel|kill [runId]]' };
+    }
     case 'queue': {
       const subcommand = args[1] ?? 'list';
       if (subcommand === 'list') return { output: formatQueue(context.session) };
@@ -947,6 +1000,14 @@ export async function handleSlashCommand(line, context) {
       if (subcommand === 'cancel') {
         const id = args[2];
         if (!id) return { output: 'Usage: /queue cancel <id>' };
+        // Runtime-managed items must be refused BEFORE the local cancel:
+        // syncRuntimeState replaces session.jobQueue with the runtime queue,
+        // so cancelQueueItem would "succeed" locally and the next SSE sync
+        // would silently revert the item to waiting (fake cancel).
+        const localItem = (context.session.jobQueue ?? []).find((item) => String(item.id) === String(id));
+        if (localItem?.origin === 'runtime' || (!localItem && runtimeManagedItemId(context, id))) {
+          return { output: 'Item géré par le runtime — utilisez /run kill (global) ou /run cancel au lieu de /queue cancel.' };
+        }
         const result = await cancelQueueItem(context.session, id);
         return { output: result.message };
       }

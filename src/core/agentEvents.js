@@ -39,6 +39,7 @@ const SESSION_PROJECTION_EVENTS = new Set([
   'approval.rejected',
   'control_enqueued',
   'control_started',
+  'control_cancelled',
   'agent.registered',
   'agent.health_changed',
   'run_done',
@@ -502,6 +503,14 @@ function applyEvent(state, event) {
         runId: event.runId ?? event.payload?.runId ?? null,
         status: 'running',
         startedAt: event.payload?.startedAt ?? event.ts,
+        updatedAt: event.ts,
+      });
+      return;
+    case 'control_cancelled':
+      upsertControlItem(state.controlQueue, {
+        id: event.payload?.id ?? null,
+        status: 'cancelled',
+        finishedAt: event.payload?.finishedAt ?? event.ts,
         updatedAt: event.ts,
       });
       return;

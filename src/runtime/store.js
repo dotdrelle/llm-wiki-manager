@@ -279,6 +279,11 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     SET status = 'interrupted', updated_at = ?
     WHERE workspace = ? AND status IN (${RECOVERABLE_RUN_STATUSES.map(() => '?').join(', ')})
   `);
+  const interruptRunByIdStatement = db.prepare(`
+    UPDATE runs
+    SET status = 'interrupted', updated_at = ?
+    WHERE id = ? AND (? IS NULL OR workspace = ?) AND status IN (${RECOVERABLE_RUN_STATUSES.map(() => '?').join(', ')})
+  `);
   const upsertQueueItem = db.prepare(`
     INSERT INTO queue_items (
       id, workspace, server, tool, args, lock_key, status, reason, job_id, activity_key,
@@ -413,6 +418,25 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   `);
   const deleteTaskDependenciesStatement = db.prepare('DELETE FROM task_dependencies WHERE run_id = ? AND task_id = ?');
   const updateTaskStatusStatement = db.prepare('UPDATE tasks SET status = ?, declaration = ?, updated_at = ? WHERE run_id = ? AND id = ?');
+  const listActiveTasksForInterruptedRunsStatement = db.prepare(`
+    SELECT tasks.*
+    FROM tasks
+    JOIN runs ON runs.id = tasks.run_id
+    WHERE runs.workspace = ?
+      AND runs.status = 'interrupted'
+      AND tasks.status IN ('pending', 'pending_approval', 'waiting_approval', 'running', 'starting', 'blocked')
+    ORDER BY tasks.run_id ASC, tasks.id ASC
+  `);
+  const listActiveTasksForInterruptedRunByIdStatement = db.prepare(`
+    SELECT tasks.*
+    FROM tasks
+    JOIN runs ON runs.id = tasks.run_id
+    WHERE runs.id = ?
+      AND (? IS NULL OR runs.workspace = ?)
+      AND runs.status = 'interrupted'
+      AND tasks.status IN ('pending', 'pending_approval', 'waiting_approval', 'running', 'starting', 'blocked')
+    ORDER BY tasks.run_id ASC, tasks.id ASC
+  `);
   const insertTaskDependencyStatement = db.prepare(`
     INSERT OR IGNORE INTO task_dependencies (run_id, task_id, depends_on_task_id, created_at)
     VALUES (?, ?, ?, ?)
@@ -619,11 +643,31 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       .map((row) => row.workspace);
   }
 
-  function interruptRuns({ workspace, reason = 'Runtime restart recovery failed.' } = {}) {
-    if (!workspace) return 0;
+  function interruptRuns({ workspace, runId = null, reason = 'Runtime restart recovery failed.' } = {}) {
+    if (!workspace && !runId) return 0;
     const now = new Date().toISOString();
-    const result = interruptRunsStatement.run(now, workspace, ...RECOVERABLE_RUN_STATUSES);
+    const result = runId
+      ? interruptRunByIdStatement.run(now, String(runId), workspace ?? null, workspace ?? null, ...RECOVERABLE_RUN_STATUSES)
+      : interruptRunsStatement.run(now, workspace, ...RECOVERABLE_RUN_STATUSES);
     return Number(result.changes ?? 0);
+  }
+
+  function cancelActiveTasksForInterruptedRuns({ workspace = null, runId = null } = {}) {
+    if (!workspace && !runId) return 0;
+    const now = new Date().toISOString();
+    const tasks = runId
+      ? listActiveTasksForInterruptedRunByIdStatement.all(String(runId), workspace ?? null, workspace ?? null).map(rowToTask)
+      : listActiveTasksForInterruptedRunsStatement.all(workspace).map(rowToTask);
+    for (const task of tasks) {
+      updateTaskStatusStatement.run(
+        'cancelled',
+        JSON.stringify({ ...task.declaration, status: 'cancelled' }),
+        now,
+        task.runId,
+        task.id,
+      );
+    }
+    return tasks.length;
   }
 
   function saveQueue(queue = [], { workspace = null } = {}) {
@@ -1121,6 +1165,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     listRecoverableRuns,
     listRecoverableWorkspaces,
     interruptRuns,
+    cancelActiveTasksForInterruptedRuns,
     saveQueue,
     listQueue,
     listTasks,

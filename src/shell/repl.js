@@ -74,6 +74,7 @@ const COMMAND_COMPLETION_DESCRIPTIONS = {
   '/chat': 'Switch free text to direct LLM chat without tools.',
   '/agent': 'Switch free text to the LangGraph agent with tools.',
   '/openui': 'Open the workspace web UI in the browser.',
+  '/run': 'Inspect, cancel, or kill runtime runs.',
   '/approve': 'Approve a pending runtime run or tool.',
 };
 
@@ -89,6 +90,9 @@ const SUBCOMMAND_COMPLETION_DESCRIPTIONS = {
   '/upload:convert': 'Convert one stored upload or all pending uploads.',
   '/uploads:clean': 'Clean old stored document uploads.',
   '/uploads:list': 'List uploaded documents.',
+  '/run:status': 'Show runtime run status.',
+  '/run:cancel': 'Cancel the active runtime run.',
+  '/run:kill': 'Hard-kill runtime run(s).',
   '/queue': 'Inspect or cancel queued MCP jobs.',
   '/queue:cancel': 'Cancel a queued or running queue item.',
   '/queue:clear': 'Clear finished queue items.',
@@ -136,7 +140,7 @@ export function createSession() {
     wikircConfig: null,
     language: null,
     mcp: null,
-    commands: ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'upload', 'uploads', 'clear', 'chat', 'agent', 'openui', 'queue', 'approve'],
+    commands: ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'upload', 'uploads', 'clear', 'chat', 'agent', 'openui', 'run', 'queue', 'approve'],
     chatMode: true,
     llm: null,
     activities: {},
@@ -241,6 +245,7 @@ function completionValuesFor(parts, inputBuffer, session) {
   if (command === '/upload' && parts[1] === 'convert' && tokenIndex === 2) return ['pending'];
   if (command === '/uploads' && tokenIndex === 1) return ['clean', 'list'];
   if (command === '/uploads' && previousToken === 'clean') return ['--older-than'];
+  if (command === '/run' && tokenIndex === 1) return ['status', 'cancel', 'kill'];
   if (command === '/queue' && tokenIndex === 1) return ['cancel', 'clear'];
   if (command === '/queue' && previousToken === 'cancel') {
     return (session.jobQueue ?? [])
@@ -786,7 +791,10 @@ export function applyRuntimeStateToShellSession(session, state) {
   session.activities = Object.fromEntries(
     session.agentProjection.activities.map((activity) => [activity.key, { ...activity }]),
   );
-  if (Array.isArray(state.queue)) session.jobQueue = state.queue.map((item) => ({ ...item }));
+  // Runtime queue items replace the local jobQueue wholesale on every sync.
+  // Tag their origin so /queue cancel can refuse to fake-cancel them locally
+  // (a local status flip would be silently reverted by the next SSE sync).
+  if (Array.isArray(state.queue)) session.jobQueue = state.queue.map((item) => ({ ...item, origin: 'runtime' }));
   const production = session.agentProjection.activities.filter((activity) => activity.source === 'production').at(-1);
   if (production) {
     session.productionActivity = {
@@ -1164,7 +1172,7 @@ function directChatUnavailableText(session) {
   return 'Direct chat unavailable: no streaming LLM configured.';
 }
 
-export async function runLine(line, { agent, packageJson, session, onUpdate, onStep, chatMode = session.chatMode ?? true }) {
+export async function runLine(line, { agent, packageJson, session, onUpdate, onStep, chatMode = session.chatMode ?? true, runtime = null }) {
   const trimmed = stripHtml(line).trim();
   if (!trimmed) return { exit: false };
 
@@ -1175,7 +1183,7 @@ export async function runLine(line, { agent, packageJson, session, onUpdate, onS
 
   if (trimmed.startsWith('/')) {
     onStep?.(`Shell: ${trimmed}`);
-    const result = await handleSlashCommand(trimmed, { packageJson, session, onStep });
+    const result = await handleSlashCommand(trimmed, { packageJson, session, onStep, runtime });
     const messages = conversationMessages(session);
     const handoffRawToAgent = Boolean(result.rawOutput && result.agentTrigger && agent);
     if (result.output) {
@@ -1599,7 +1607,7 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
             const message = recordRuntimeUnavailableAgentInput(session, line, runtime);
             activityLines = [...activityLines, message ?? 'runtime: disconnected'].slice(-LOWER_DETAIL_ROWS);
           } else {
-            const result = await runLine(line, { agent, packageJson, session, onUpdate: rerender, onStep });
+            const result = await runLine(line, { agent, packageJson, session, onUpdate: rerender, onStep, runtime });
             done = result.exit;
             aborted = result.aborted ?? false;
           }

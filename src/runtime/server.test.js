@@ -287,6 +287,158 @@ test('runtime server returns the accepted run id and passes it to the runner', a
   }
 });
 
+test('runtime server kill aborts active run and interrupts workspace work', async (t) => {
+  let abortSeen = false;
+  let cancelCalled = false;
+  let interruptArgs = null;
+  let taskCancelArgs = null;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'running' }),
+        listEvents: () => [],
+        interruptRuns: (args) => {
+          interruptArgs = args;
+          return 1;
+        },
+        cancelActiveTasksForInterruptedRuns: (args) => {
+          taskCancelArgs = args;
+          return 3;
+        },
+      },
+      session: { controlQueue: [{ id: 'control-1', workspace: 'docs', status: 'queued' }] },
+      run: async (_context, _body, { signal }) => {
+        signal.addEventListener('abort', () => { abortSeen = true; }, { once: true });
+        await new Promise(() => {});
+      },
+      cancel: async () => {
+        cancelCalled = true;
+      },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const base = `http://127.0.0.1:${handle.port}`;
+    const runResponse = await fetch(`${base}/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: 'build', workspace: 'docs' }),
+    });
+    assert.equal(runResponse.status, 202);
+
+    const killResponse = await fetch(`${base}/kill?workspace=docs`, { method: 'POST' });
+    assert.equal(killResponse.status, 202);
+    assert.deepEqual(await killResponse.json(), {
+      killed: true,
+      workspace: 'docs',
+      runId: null,
+      runs: 1,
+      tasks: 3,
+      queued: 1,
+    });
+    assert.equal(abortSeen, true);
+    assert.equal(cancelCalled, true);
+    assert.equal(interruptArgs.workspace, 'docs');
+    assert.equal(interruptArgs.runId, null);
+    assert.deepEqual(taskCancelArgs, { workspace: 'docs', runId: null });
+  } finally {
+    await handle.close();
+  }
+});
+
+test('runtime server kill succeeds without an active run', async (t) => {
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'idle' }),
+        listEvents: () => [],
+        interruptRuns: () => 0,
+        cancelActiveTasksForInterruptedRuns: () => 0,
+      },
+      session: {},
+      run: async () => {},
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/kill?workspace=docs`, { method: 'POST' });
+    assert.equal(response.status, 202);
+    assert.deepEqual(await response.json(), {
+      killed: true,
+      workspace: 'docs',
+      runId: null,
+      runs: 0,
+      tasks: 0,
+      queued: 0,
+    });
+  } finally {
+    await handle.close();
+  }
+});
+
+test('runtime server kill can target a specific run id', async (t) => {
+  let interruptArgs = null;
+  let taskCancelArgs = null;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'idle' }),
+        listEvents: () => [],
+        interruptRuns: (args) => {
+          interruptArgs = args;
+          return 1;
+        },
+        cancelActiveTasksForInterruptedRuns: (args) => {
+          taskCancelArgs = args;
+          return 2;
+        },
+      },
+      session: {},
+      run: async () => {},
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/kill?workspace=docs&runId=run-1`, { method: 'POST' });
+    assert.equal(response.status, 202);
+    assert.equal((await response.json()).runId, 'run-1');
+    assert.equal(interruptArgs.runId, 'run-1');
+    assert.deepEqual(taskCancelArgs, { workspace: 'docs', runId: 'run-1' });
+  } finally {
+    await handle.close();
+  }
+});
+
 test('runtime server state exposes active run identity while running', async (t) => {
   let releaseRun;
   const context = {

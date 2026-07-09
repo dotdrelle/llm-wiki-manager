@@ -274,6 +274,16 @@ export function startRuntimeServer({
         sendJson(response, 202, { cancelled: true, workspace: context.workspace ?? workspace ?? null });
         return;
       }
+      if (request.method === 'POST' && url.pathname === '/kill') {
+        const body = await readJson(request);
+        const workspace = workspaceFromBody(body) ?? workspaceFromUrl(url);
+        const runId = url.searchParams.get('runId') ?? body.runId ?? null;
+        const context = await resolveContext({ workspace });
+        const result = await killRuntimeRuns(context, { workspace, runId });
+        publishState(context.workspace ?? workspace ?? null, context);
+        sendJson(response, 202, result);
+        return;
+      }
       if (request.method === 'POST' && url.pathname === '/shutdown') {
         const workspace = workspaceFromUrl(url);
         const context = await resolveContext({ workspace });
@@ -353,6 +363,23 @@ export function startRuntimeServer({
     const workspace = workspaceFromBody(body) ?? workspaceFromUrl(url);
     const context = await resolveContext({ workspace });
     return { body, workspace, context };
+  }
+
+  async function killRuntimeRuns(context, { workspace = null, runId = null } = {}) {
+    const targetWorkspace = context?.workspace ?? workspace ?? null;
+    const targetRunId = runId ? String(runId) : null;
+    if (!targetRunId || targetRunId === context?.currentRunId) {
+      context?.currentAbortController?.abort();
+      await cancel?.(context);
+    }
+    const runs = typeof store.interruptRuns === 'function'
+      ? store.interruptRuns({ workspace: targetWorkspace, runId: targetRunId, reason: 'Runtime run killed by user.' })
+      : 0;
+    const tasks = typeof store.cancelActiveTasksForInterruptedRuns === 'function'
+      ? store.cancelActiveTasksForInterruptedRuns({ workspace: targetWorkspace, runId: targetRunId })
+      : 0;
+    const queued = cancelQueuedControlItems(context?.session, targetWorkspace);
+    return { killed: true, workspace: targetWorkspace, runId: targetRunId, runs, tasks, queued };
   }
 
   function startRuntimeRun(context, body, { controlItemId = null } = {}) {
@@ -470,6 +497,34 @@ function explainControlState(status) {
 
 function controlQueueFor(session) {
   return Array.isArray(session?.controlQueue) ? session.controlQueue : [];
+}
+
+function cancelQueuedControlItems(session, workspace = null) {
+  const now = new Date().toISOString();
+  const counted = new Set();
+  let count = 0;
+  for (const queue of [controlQueueFor(session), session?.agentProjection?.controlQueue].filter(Array.isArray)) {
+    for (const item of queue) {
+      if (item.status !== 'queued') continue;
+      if (workspace && item.workspace && item.workspace !== workspace) continue;
+      item.status = 'cancelled';
+      item.finishedAt = now;
+      item.updatedAt = now;
+      const id = item.id ?? item.runId ?? `${item.input}:${item.createdAt}`;
+      if (!counted.has(id)) {
+        counted.add(id);
+        if (session) {
+          dispatchAgentEvent(session, createAgentEvent('control_cancelled', {
+            origin: 'runtime',
+            workspace: item.workspace ?? workspace ?? null,
+            payload: { id, finishedAt: now },
+          }));
+        }
+        count += 1;
+      }
+    }
+  }
+  return count;
 }
 
 function readOnlyControlResponse(kind, classification, status, explanation, { accepted = true, extra = {} } = {}) {

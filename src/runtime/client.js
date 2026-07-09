@@ -10,6 +10,14 @@ function runtimeEndpoint(url, path, workspace = null) {
   return endpoint.toString();
 }
 
+function runtimeEndpointWithParams(url, path, params = {}) {
+  const endpoint = new URL(`${base(url)}${path}`);
+  for (const [key, value] of Object.entries(params)) {
+    if (value != null && value !== '') endpoint.searchParams.set(key, String(value));
+  }
+  return endpoint.toString();
+}
+
 export function runtimeUrlFromEnv() {
   return process.env.WIKI_MANAGER_RUNTIME_URL ?? 'http://127.0.0.1:7788';
 }
@@ -94,6 +102,20 @@ export async function postRuntimeCancel({
     headers: runtimeHeaders(token),
   });
   if (!response.ok && response.status !== 501) throw new Error(`Runtime cancel failed: HTTP ${response.status}`);
+  return response.json();
+}
+
+export async function postRuntimeKill({
+  url = runtimeUrlFromEnv(),
+  token = runtimeToken(),
+  workspace = null,
+  runId = null,
+} = {}) {
+  const response = await fetch(runtimeEndpointWithParams(url, '/kill', { workspace, runId }), {
+    method: 'POST',
+    headers: runtimeHeaders(token),
+  });
+  if (!response.ok && response.status !== 501) throw new Error(`Runtime kill failed: HTTP ${response.status}`);
   return response.json();
 }
 

@@ -610,7 +610,16 @@ export function formatLlmUnavailableMessage(reason) {
   return `⚠ LLM injoignable : ${clean || 'raison inconnue'}`;
 }
 
-function classifyAgentInput(input, session) {
+// Verbs that clearly request work (a runtime run), in French and English.
+// "configure/configurer" is an action; the nouns "config/configuration" are
+// NOT matched here — asking for a config is an observe request.
+const ACTION_REQUEST_PATTERN = /\b(lance|relance|d[eé]marre|start|ex[eé]cute|execute|g[eé]n[eè]re|generate|build|construis|exporte?|ingest\w*|ing[eè]re|importe?|convert(?:is|it|s)?|cr[eé]e|create|polish|publie|publish|d[eé]ploie|deploy|envoie|send|configure[rsz]?|setup|installe|update|mets? [aà] jour|supprime|delete|efface|nettoie|clean|r[eé]pare|fix|corrige)\b/i;
+
+// Explicit explanation/question markers dominate action verbs: "explique le
+// build" is a question about the build, not a request to build.
+const EXPLANATION_REQUEST_PATTERN = /\b(explique|explain|pourquoi|why|comment|how|c'est quoi|qu'est[- ]ce)\b/i;
+
+export function classifyAgentInput(input, session) {
   const lower = String(input ?? '').toLowerCase();
   const hasActiveRun = session?.agentProjection?.status === 'running'
     || sessionActivities(session).some((activity) => !activity.terminal);
@@ -623,7 +632,13 @@ function classifyAgentInput(input, session) {
   if (/\b(plus tard|later|ensuite|apr[eè]s ce run|enqueue|mets en file|met en file|futur|next run|future run)\b/i.test(lower)) {
     return { kind: 'enqueue_run', confidence: 0.8, reason: 'future_run_request', activeRun: hasActiveRun };
   }
-  if (/\b(o[uù] en es[t-]|status|statut|progress|progression|run|job|queue|logs?|explique|explain|inspect|show|montre|quoi de neuf)\b/i.test(lower)) {
+  if (EXPLANATION_REQUEST_PATTERN.test(lower)) {
+    return { kind: 'observe', confidence: 0.86, reason: 'explanation_request', activeRun: hasActiveRun };
+  }
+  // Observe markers only win when no action verb is present: "où en est le
+  // run" is observe, "lance le run" is an action request.
+  if (/\b(o[uù] en es[t-]|status|statut|progress|progression|run|job|queue|logs?|inspect|show|montre|affiche|donne|liste|list|quel(?:le)?s?|combien|config(?:uration)?|quoi de neuf)\b/i.test(lower)
+    && !ACTION_REQUEST_PATTERN.test(lower)) {
     return { kind: 'observe', confidence: 0.86, reason: 'status_or_explanation_request', activeRun: hasActiveRun };
   }
   if (hasActiveRun && /\b(ajoute|add|change|modifie|modify|remplace|replace|retire|remove|skip|ignore|plan|step|t[aâ]che)\b/i.test(lower)) {
@@ -631,6 +646,9 @@ function classifyAgentInput(input, session) {
   }
   if (hasActiveRun && /\b(lance|run|g[eé]n[eè]re|build|export|cr[eé]e|create|send|envoie|ingest|convert|importe|import)\b/i.test(lower)) {
     return { kind: 'ambiguous', confidence: 0.45, reason: 'active_run_action_is_ambiguous', activeRun: hasActiveRun };
+  }
+  if (ACTION_REQUEST_PATTERN.test(lower)) {
+    return { kind: 'start_run', confidence: 0.8, reason: 'action_request', activeRun: hasActiveRun };
   }
   return { kind: 'converse', confidence: 0.62, reason: 'plain_conversation', activeRun: hasActiveRun };
 }

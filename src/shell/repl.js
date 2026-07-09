@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { stdin as input, stdout as output } from 'node:process';
 import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
-import { buildAgentSystemPrompt, formatLlmUnavailableMessage } from '../agent/graph.js';
+import { buildAgentSystemPrompt, classifyAgentInput, formatLlmUnavailableMessage } from '../agent/graph.js';
 import { handleSlashCommand } from '../commands/slash.js';
 import { serviceDescription, serviceNames as composeServiceNames } from '../core/compose.js';
 import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
@@ -811,6 +811,19 @@ export function applyRuntimeStateToShellSession(session, state) {
 // Submits a prompt to the shared runtime. If the workspace is already busy
 // (HTTP 409 from POST /run), route the input through the runtime control lane
 // so status questions and plan-change proposals do not become future runs.
+// A plain question or small talk must never start a runtime run: it would
+// create a persisted run, a plan, and (on failure) replans — for a sentence
+// that only needed an answer. Route those to the local agent instead.
+// Anything else (actions, approvals, cancels, enqueues) still goes to the
+// runtime, and an active run keeps the existing 409/control-message path.
+export function shouldHandleFreeTextLocally(line, session, { llmAvailable = Boolean(session?.llm) } = {}) {
+  const classification = classifyAgentInput(line, session);
+  if (runtimeRunActive(session)) return { local: false, classification };
+  if (!['converse', 'observe'].includes(classification.kind)) return { local: false, classification };
+  if (!llmAvailable) return { local: false, classification, fallbackReason: 'local LLM unavailable' };
+  return { local: true, classification };
+}
+
 export async function submitRuntimeRun(line, { runtime, session }) {
   const workspace = session.workspace ?? null;
   try {
@@ -1582,7 +1595,19 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
             syncRuntimeState();
           }
         } else {
-          if (runtime?.url && !session.chatMode && !line.trim().startsWith('/')) {
+          const freeTextRouting = (runtime?.url && !session.chatMode && !line.trim().startsWith('/'))
+            ? shouldHandleFreeTextLocally(line, session)
+            : null;
+          if (freeTextRouting?.local) {
+            // Question/small talk → local agent (read tools), no runtime run.
+            activityLines = [...activityLines, `agent: ${freeTextRouting.classification.kind} handled locally`].slice(-LOWER_DETAIL_ROWS);
+            const result = await runLine(line, { agent, packageJson, session, onUpdate: rerender, onStep, runtime });
+            done = result.exit;
+            aborted = result.aborted ?? false;
+          } else if (runtime?.url && !session.chatMode && !line.trim().startsWith('/')) {
+            if (freeTextRouting?.fallbackReason) {
+              activityLines = [...activityLines, `runtime: ${freeTextRouting.fallbackReason}, routing to runtime run`].slice(-LOWER_DETAIL_ROWS);
+            }
             conversationMessages(session).push({ role: 'user', content: line });
             const outcome = await submitRuntimeRun(line, { runtime, session });
             if (outcome.kind === 'accepted') {

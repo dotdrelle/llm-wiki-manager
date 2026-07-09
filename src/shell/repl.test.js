@@ -11,6 +11,7 @@ import {
   runLine,
   runtimeStatusLine,
   runtimeUnavailableAgentMessage,
+  shouldHandleFreeTextLocally,
   submitRuntimeRun,
 } from './repl.js';
 
@@ -236,4 +237,35 @@ test('/queue cancel on a runtime workflow id points to run cancellation commands
   assert.equal(result.exit, false);
   assert.match(conversationMessages(session).at(-1).content, /Item géré par le runtime/);
   assert.match(conversationMessages(session).at(-1).content, /\/run kill/);
+});
+
+test('free text routing keeps questions local and sends actions to the runtime', () => {
+  const session = createSession();
+  session.llm = { completeWithTools: () => {} };
+
+  // The original incident: a config question must never start a run.
+  const question = shouldHandleFreeTextLocally('donne moi la config du cme', session);
+  assert.equal(question.local, true);
+  assert.equal(question.classification.kind, 'observe');
+
+  const smallTalk = shouldHandleFreeTextLocally('bonjour', session);
+  assert.equal(smallTalk.local, true);
+
+  const action = shouldHandleFreeTextLocally('lance le pipeline complet', session);
+  assert.equal(action.local, false);
+  assert.equal(action.classification.kind, 'start_run');
+});
+
+test('free text routing defers to the runtime when a run is active or LLM is down', () => {
+  const session = createSession();
+  session.llm = { completeWithTools: () => {} };
+  session.agentProjection = { status: 'running', activities: [], conversation: [] };
+  // Active run → existing 409/control-message path, even for questions.
+  assert.equal(shouldHandleFreeTextLocally('où en est le run', session).local, false);
+
+  const offline = createSession();
+  offline.llm = null;
+  const fallback = shouldHandleFreeTextLocally('donne moi la config du cme', offline);
+  assert.equal(fallback.local, false);
+  assert.match(fallback.fallbackReason ?? '', /LLM unavailable/);
 });

@@ -237,11 +237,23 @@ function logMessageColor(message: string): string {
 }
 
 function logRenderLines(logs: string[], width: number): LogSegment[][] {
-  const out: LogSegment[][] = [];
+  // Newest entry FIRST (descending): the freshest information belongs at the
+  // top of the pane. Wrapped continuation lines stay attached below their
+  // entry's first line.
+  const blocks: LogSegment[][][] = [];
   for (const raw of logs) {
-    const sourceMatch = String(raw).match(/^(runtime)\s+(.*)$/);
+    blocks.push(logEntryLines(raw, width));
+  }
+  return blocks.reverse().flat();
+}
+
+function logEntryLines(raw: string, width: number): LogSegment[][] {
+  const out: LogSegment[][] = [];
+  for (const item of [raw]) {
+    const rawLine = item;
+    const sourceMatch = String(rawLine).match(/^(runtime)\s+(.*)$/);
     const source = sourceMatch ? sourceMatch[1] : null;
-    const rest = sourceMatch ? sourceMatch[2] : String(raw);
+    const rest = sourceMatch ? sourceMatch[2] : String(rawLine);
     const parts = logLineParts(rest);
     const prefix: LogSegment[] = [];
     if (source) prefix.push({ text: `${source} `, fg: '#C6A0F6' });
@@ -264,7 +276,7 @@ function logRenderLines(logs: string[], width: number): LogSegment[][] {
 export function LogPanel(props: { logs: string[]; width: number; filter?: string }) {
   const lineWidth = () => Math.max(8, props.width - 2);
   const filteredLogs = () => filterRuntimeLogs(props.logs, props.filter ?? '');
-  const visibleLines = createMemo(() => logRenderLines(filteredLogs(), lineWidth()).slice(-24));
+  const visibleLines = createMemo(() => logRenderLines(filteredLogs(), lineWidth()).slice(0, 24));
   const segmentsAt = (index: number): LogSegment[] => visibleLines()[index] ?? [];
   return (
     <box flexGrow={1} flexDirection="column" padding={1}>

@@ -126,7 +126,10 @@ function App(props: {
   const conversationRows = createMemo(() => Math.max(4, dimensions().height - 5 - chatInputHeight()));
   const rightColumns = createMemo(() => {
     const width = dimensions().width;
-    return Math.max(26, Math.min(44, Math.floor(width * 0.32)));
+    // 38% / cap 56 (was 32% / cap 44): the Plan/Activity/Logs panes carry job
+    // labels, file names and error messages — 40 columns truncated everything
+    // into unreadable stubs.
+    return Math.max(30, Math.min(56, Math.floor(width * 0.38)));
   });
   const leftColumns = createMemo(() => Math.max(32, dimensions().width - rightColumns() - 1));
   const conversationColumns = createMemo(() => {

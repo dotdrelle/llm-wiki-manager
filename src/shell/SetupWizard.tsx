@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { useKeyboard } from '@opentui/solid';
+import { useKeyboard, usePaste } from '@opentui/solid';
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js';
 import { fallbackModels, normalizeProvider } from '../core/modelFetch.js';
 import {
@@ -605,6 +605,18 @@ export function SetupWizard(props: {
       return execFileSync('xclip', ['-selection', 'clipboard', '-o'], { encoding: 'utf8' });
     } catch { return ''; }
   }
+
+  // Terminal paste (Cmd+V/middle-click) arrives as a bracketed-paste block.
+  // openTUI's key parser swallows the \x1b[200~/\x1b[201~ markers and emits a
+  // dedicated `paste` event instead of key events — the text NEVER reaches
+  // useKeyboard, so the legacy bracketed-paste branch below can't fire.
+  usePaste((event: any) => {
+    if (busy() || step().kind !== 'text') return;
+    const raw = event?.text
+      ?? (event?.bytes != null ? Buffer.from(event.bytes).toString('utf8') : '');
+    const pasted = String(raw).replace(/\r\n?/g, '\n').replace(/\n+$/, '').split('\n').join(' ');
+    if (pasted) setInput((value) => value + pasted);
+  });
 
   useKeyboard((key: any) => {
     if (busy()) return;

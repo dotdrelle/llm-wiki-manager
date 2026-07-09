@@ -259,6 +259,30 @@ test('replanRuntimeRun preserves completed outputs when replacing remaining work
   assert.deepEqual(session.headlessPlan[1].dependsOn, ['export']);
 });
 
+test('replanRuntimeRun normalizes object steps without leaking object strings', async () => {
+  const session = {
+    activities: {},
+    headlessPlan: [{ step: 1, id: 'done', description: 'Done', status: 'done' }],
+    llm: {
+      async completeWithTools({ system }) {
+        assert.match(system, /Each step MUST be a plain string, not an object\./);
+        return { content: '{"steps":["a",{"description":"b"},{"id":"c"},{},null]}' };
+      },
+    },
+  };
+
+  const result = await replanRuntimeRun(session, 'Build deliverable', {
+    kind: 'activity_error',
+    reason: 'Build failed.',
+  }, { runId: 'run-replan-object-steps', replansLeft: 1 });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.steps, ['a', 'b', 'c']);
+  assert.deepEqual(session.agentProjection.replans[0].plan, ['a', 'b', 'c']);
+  assert.deepEqual(session.headlessPlan.slice(1).map((step) => step.description), ['a', 'b', 'c']);
+  assert.equal(JSON.stringify(session.headlessPlan).includes('[object Object]'), false);
+});
+
 test('replanRuntimeRun requires runtime approval for mutating replanned work', async () => {
   const session = {
     activities: {},

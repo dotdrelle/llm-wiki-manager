@@ -1,7 +1,7 @@
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { isCancelledStatus, sessionActivities, terminalFailures } from '../core/activity.js';
 import { runAgenticLoop, throwIfAborted } from '../core/agentLoop.js';
-import { formatPlanStatus } from '../core/plan.js';
+import { formatPlanStatus, formatPlanStep } from '../core/plan.js';
 import { readyPlanTasks, sanitizePlanForExecution } from '../core/planPatch.js';
 import { createAssignmentManager } from '../orchestrator/assignmentManager.js';
 import { createAttemptManager } from '../orchestrator/attemptManager.js';
@@ -813,6 +813,7 @@ export async function replanRuntimeRun(session, input, trigger, {
         'Given the original objective, current plan, and failure reason, return only the remaining steps required.',
         'Do not include steps that are already done.',
         'Return only JSON with this exact shape: {"steps":["..."]}.',
+        'Each step MUST be a plain string, not an object.',
       ].join('\n'),
       tools: [],
       messages: [{ role: 'user', content: buildReplanPrompt(input, session, trigger) }],
@@ -949,7 +950,7 @@ function buildReplannedRunPrompt(input, trigger, steps) {
 function normalizeReplan(steps) {
   if (!Array.isArray(steps)) return [];
   return steps
-    .map((step) => String(step ?? '').trim())
+    .map((step) => formatPlanStep(step).trim())
     .filter(Boolean)
     .slice(0, 12);
 }

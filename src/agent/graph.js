@@ -698,7 +698,12 @@ export function classifyAgentInput(input, session) {
 }
 
 function toolsForClassification(classification, writeTools) {
-  if (classification.activeRun && ['converse', 'observe'].includes(classification.kind)) return [SHELL_READ_COMMAND_TOOL];
+  if (classification.activeRun && ['converse', 'observe'].includes(classification.kind)) {
+    // Read-only during an active run — plus profile updates: appending a
+    // durable user preference is safe, and "ajoute dans mon profil …" must
+    // work at any time (the prompt mandates a tool call, not a bare ack).
+    return [SHELL_READ_COMMAND_TOOL, SHELL_PROFILE_UPDATE_TOOL];
+  }
   return [SHELL_READ_COMMAND_TOOL, ...writeTools];
 }
 

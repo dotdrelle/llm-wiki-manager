@@ -70,11 +70,18 @@ function groupLine(group, activities) {
     status = `${done}/${total}`;
   }
   const agents = activeAgents > 0 ? ` - ${activeAgents} agent${activeAgents > 1 ? 's' : ''}` : '';
+  // While a task is running, expose ITS live progress as the group percent.
+  // The completion ratio (done/total tasks) said 0% while the label showed
+  // the real activity progress ("— 1 %"), so the TUI badge contradicted the
+  // text. Fall back to the task-completion ratio when nothing is running.
+  const percent = running.length > 0 && activeProgress != null
+    ? Math.round(activeProgress)
+    : (total > 0 ? Math.round((done / total) * 100) : null);
   return {
     id: `group:${group.id}`,
     label: `${icon} ${group.label} - ${status}${agents}`,
     status,
-    progress: { done, total, percent: total > 0 ? Math.round((done / total) * 100) : null },
+    progress: { done, total, percent },
     activeAgents,
   };
 }

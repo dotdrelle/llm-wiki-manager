@@ -345,6 +345,25 @@ async function runRuntime(argv, agent) {
         store.persistEvent(event);
         serverHandle?.publish(event);
       };
+      // Control requests queued in a PREVIOUS runtime process must not
+      // auto-run at boot: a "stop le job" typed last night starting hours
+      // later as a fresh run violates least surprise. Expire them — the
+      // user can always resubmit.
+      const staleControl = (session.controlQueue ?? []).filter((item) => item.status === 'queued');
+      for (const item of staleControl) {
+        dispatchAgentEvent(session, createAgentEvent('control_cancelled', {
+          origin: 'runtime',
+          workspace,
+          payload: { id: item.id, reason: 'stale_at_boot' },
+        }));
+      }
+      if (staleControl.length > 0) {
+        dispatchAgentEvent(session, createAgentEvent('runtime_log', {
+          origin: 'runtime',
+          workspace,
+          payload: { message: `runtime: expired ${staleControl.length} stale queued control request(s) from a previous session` },
+        }));
+      }
       session._onRuntimeError = (err) => {
         const message = err instanceof Error ? err.message : String(err);
         dispatchAgentEvent(session, createAgentEvent('run_error', {

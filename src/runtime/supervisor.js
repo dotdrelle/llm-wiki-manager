@@ -98,8 +98,52 @@ export async function pollActivitiesOnce(session, {
           payload: { activity: polledActivity },
         }));
         syncQueueWithActivity(session, polledActivity);
-        emitRuntimeLog(session, `activity: ${polledActivity.label} -> ${polledActivity.status}`);
+        // Only log when something actually changed: the poll fires every
+        // second and an unchanged "activity: X -> running" line repeated
+        // dozens of times drowned Logs/Trace and looked like a frozen system.
+        // The line itself carries the operational signal (current file,
+        // percent, batch, last trace event, retry/backoff) so the panel
+        // reads as a narrative of the job, not a heartbeat.
+        const progress = payload?.progress ?? polledActivity.progress ?? {};
+        const percent = Number(progress.percent ?? polledActivity.progress?.percent);
+        const detail = progress.detail ?? progress.step ?? '';
+        const batch = progress.batchIndex != null && progress.batchCount != null
+          ? `batch ${progress.batchIndex}/${progress.batchCount}`
+          : null;
+        const lastEvent = progress.lastEvent ? String(progress.lastEvent) : null;
+        const retry = progress.retryAt
+          ? `retry ${progress.retryAt}`
+          : (progress.waitMs ? `wait ${progress.waitMs}ms` : null);
+        const progressKey = `${polledActivity.status}:${Number.isFinite(percent) ? Math.round(percent) : ''}:${detail}:${batch ?? ''}:${lastEvent ?? ''}:${retry ?? ''}`;
+        session._activityLogKeys ??= {};
+        if (session._activityLogKeys[key] !== progressKey) {
+          session._activityLogKeys[key] = progressKey;
+          const progressLabel = [
+            Number.isFinite(percent) ? `${Math.round(percent)}%` : null,
+            detail ? String(detail) : null,
+            batch,
+            lastEvent,
+            retry,
+          ].filter(Boolean).join(' · ');
+          emitRuntimeLog(session, `activity: ${polledActivity.label} -> ${polledActivity.status}${progressLabel ? ` (${progressLabel})` : ''}`);
+        }
+        // Stream NEW job-log lines into Logs/Trace: document names, chunking,
+        // LLM call/token summaries and errors live in the job log, not in the
+        // status fields. Diff against the last line already shown.
+        const logTail = Array.isArray(payload?.logTail) ? payload.logTail.map(String) : [];
+        if (logTail.length > 0) {
+          session._activityLogCursors ??= {};
+          const lastSeen = session._activityLogCursors[key];
+          const lastIndex = lastSeen ? logTail.lastIndexOf(lastSeen) : -1;
+          for (const line of logTail.slice(lastIndex + 1)) {
+            const clean = line.trim();
+            if (clean) emitRuntimeLog(session, `job ${polledActivity.id ?? key}: ${clean}`);
+          }
+          session._activityLogCursors[key] = logTail.at(-1);
+        }
         if (polledActivity.terminal) {
+          delete session._activityLogKeys[key];
+          delete session._activityLogCursors?.[key];
           await startNextQueuedJob(session, {
             addLog: (message) => emitRuntimeLog(session, message),
           });

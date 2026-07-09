@@ -61,7 +61,12 @@ export function normalizeRuntimeLog(input, { session = null } = {}) {
 }
 
 export function formatRuntimeLogPayload(payload = {}, ts = null) {
-  if (payload?.message != null && !payload.event) return String(payload.message);
+  // Plain messages get the same time prefix as structured events: untimed
+  // lines ended up visually glued at the bottom of Logs/Trace, out of
+  // chronology with the shell's own timestamped lines.
+  if (payload?.message != null && !payload.event) {
+    return [timeLabel(ts), String(payload.message)].filter(Boolean).join(' ');
+  }
   const time = timeLabel(ts);
   const event = eventLabel(payload.event);
   const fields = ORDERED_FIELDS

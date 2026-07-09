@@ -80,5 +80,7 @@ test('emitRuntimeLog accepts structured payloads and preserves legacy strings', 
   assert.match(session.agentProjection.logs[0], /ASSIGNED/);
   assert.match(session.agentProjection.logs[0], /run=run-structured/);
   assert.match(session.agentProjection.logs[0], /workspace=docs/);
-  assert.equal(session.agentProjection.logs[1], 'legacy line');
+  // Legacy plain messages now carry the same HH:MM:SS prefix as structured
+  // events so the Logs/Trace panel stays chronologically readable.
+  assert.match(session.agentProjection.logs[1], /^\d{2}:\d{2}:\d{2} legacy line$/);
 });

@@ -25,3 +25,6 @@ WIKI_MANAGER_AGENT_SHELL.md
 !package.json
 !pnpm-lock.yaml
 !tsconfig.json
+# Build provenance written by scripts/check-versions.js (prepack) — must be
+# tracked and packed so a global install can display <version>+<sha>.
+!src/core/buildInfo.json

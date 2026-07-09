@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -90,6 +90,27 @@ if (process.env.CHECK_DOCKER_IMAGES === '1') {
       addCheck(`docker image ${image}`, '<missing>', targetVersion);
     }
   }
+}
+
+// Persist build provenance so a packed/global install displays
+// `<version>+<sha>` (--version, shell status bar) and any drift between an
+// installed copy and the repo is visible at a glance. Runs at
+// prepack/prepublishOnly, so every published tarball carries the commit it
+// was built from.
+try {
+  const managerRoot = resolve(repoRoot, 'llm-wiki-manager');
+  const commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+    cwd: managerRoot,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  }).trim() || null;
+  writeFileSync(
+    resolve(managerRoot, 'src/core/buildInfo.json'),
+    `${JSON.stringify({ version: targetVersion, commit }, null, 2)}\n`,
+  );
+  console.log(`ok build info: ${targetVersion}+${commit ?? 'dev'}`);
+} catch {
+  console.log('ok build info: <git unavailable, buildInfo.json not written>');
 }
 
 const failed = checks.filter((check) => !check.ok);

@@ -44,9 +44,10 @@ import {
   storeAndMaybeConvertDocument,
 } from '../core/documentIntake.js';
 import { fetchRuntimeState, postRuntimeCancel, postRuntimeKill } from '../runtime/client.js';
+import { versionWithBuild } from '../core/buildInfo.js';
 
 export function printVersion(packageJson) {
-  console.log(packageJson.version);
+  console.log(versionWithBuild(packageJson));
 }
 
 const styles = {

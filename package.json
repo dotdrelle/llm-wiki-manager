@@ -1,6 +1,6 @@
 {
   "name": "@dotdrelle/wiki-manager",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "description": "Agentic shell and orchestration cockpit for llm-wiki workspaces.",
   "license": "PolyForm-Noncommercial-1.0.0",
   "author": "dotrelle",
@@ -11,7 +11,7 @@
   },
   "scripts": {
     "start": "bun ./bin/wiki-manager.js",
-    "test": "node --test src/agent/graph.test.js src/contracts/schemas.test.js src/core/activity.test.js src/core/agentEvents.test.js src/core/runtimeLog.test.js src/activity/activityAggregator.test.js src/graph/runGraphProjector.test.js src/core/workflow.test.js src/core/planPatch.test.js src/core/agentLoop.test.js src/core/plan.test.js src/core/mcp.test.js src/core/documentIntake.test.js src/core/dockerCompose.test.js src/core/wikiWorkspace.test.js src/core/wikirc.test.js src/core/modelFetch.test.js src/core/startupCheck.test.js src/core/queueStore.test.js src/orchestrator/agentRegistry.test.js src/orchestrator/capabilityRegistry.test.js src/orchestrator/capabilityResolver.test.js src/orchestrator/planValidator.test.js src/orchestrator/planIntegrator.test.js src/orchestrator/scheduler.test.js src/orchestrator/attemptManager.test.js src/orchestrator/resultAggregator.test.js src/orchestrator/approvalPolicy.test.js src/commands/slash.test.js src/shell/repl.test.js src/runtime/store.test.js src/runtime/controlMessages.test.js src/runtime/recoveryManager.test.js src/runtime/server.test.js src/runtime/supervisor.test.js src/runtime/runner.test.js src/runtime/runner.e2e.test.js src/runtime/donna-contract.test.js src/runtime/auth.test.js",
+    "test": "node --test src/agent/graph.test.js src/contracts/schemas.test.js src/core/activity.test.js src/core/buildInfo.test.js src/core/agentEvents.test.js src/core/runtimeLog.test.js src/activity/activityAggregator.test.js src/graph/runGraphProjector.test.js src/core/workflow.test.js src/core/planPatch.test.js src/core/agentLoop.test.js src/core/plan.test.js src/core/mcp.test.js src/core/documentIntake.test.js src/core/dockerCompose.test.js src/core/wikiWorkspace.test.js src/core/wikirc.test.js src/core/modelFetch.test.js src/core/startupCheck.test.js src/core/queueStore.test.js src/orchestrator/agentRegistry.test.js src/orchestrator/capabilityRegistry.test.js src/orchestrator/capabilityResolver.test.js src/orchestrator/planValidator.test.js src/orchestrator/planIntegrator.test.js src/orchestrator/scheduler.test.js src/orchestrator/attemptManager.test.js src/orchestrator/resultAggregator.test.js src/orchestrator/approvalPolicy.test.js src/commands/slash.test.js src/shell/repl.test.js src/runtime/store.test.js src/runtime/controlMessages.test.js src/runtime/recoveryManager.test.js src/runtime/server.test.js src/runtime/supervisor.test.js src/runtime/runner.test.js src/runtime/runner.e2e.test.js src/runtime/donna-contract.test.js src/runtime/auth.test.js",
     "check-versions": "node scripts/check-versions.js",
     "prepack": "node scripts/check-versions.js",
     "prepublishOnly": "node scripts/check-versions.js",

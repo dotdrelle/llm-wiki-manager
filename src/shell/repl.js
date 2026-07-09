@@ -16,6 +16,7 @@ import { listSkills } from '../core/skills.js';
 import { listWikircProfiles } from '../core/wikirc.js';
 import { listWorkspaces } from '../core/workspaces.js';
 import { fetchRuntimeState, postRuntimeApprove, postRuntimeCancel, postRuntimeControl, postRuntimeRun, postRuntimeShutdown, streamRuntimeEvents } from '../runtime/client.js';
+import { versionWithBuild } from '../core/buildInfo.js';
 
 marked.use(markedTerminal());
 // marked-terminal's text renderer extracts token.text (raw string) instead of
@@ -897,7 +898,7 @@ function renderScreen({ packageJson, session, messages, inputBuffer, busy = fals
   const prompt = promptFor(session);
   const title = '';
   const context = [
-    `wiki-manager ${packageJson.version}`,
+    `wiki-manager ${versionWithBuild(packageJson)}`,
     session.workspace ? session.workspace : 'no workspace',
     session.wikirc?.profile ? session.wikirc.profile : 'no wikirc',
     session.language ? session.language : 'no language',

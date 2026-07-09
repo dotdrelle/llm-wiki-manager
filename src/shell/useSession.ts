@@ -2,6 +2,7 @@ import { writeFileSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import { formatMcpToolResult, callMcpTool } from '../core/mcp.js';
+import { versionWithBuild } from '../core/buildInfo.js';
 import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { formatPlanStatus, formatCompletedActivities, formatPlanStep } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
@@ -139,7 +140,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   const statusLine = createMemo(() => {
     version();
     return [
-      `wiki-manager ${props.packageJson.version ?? ''}`.trim(),
+      `wiki-manager ${versionWithBuild(props.packageJson)}`.trim(),
       session.workspace ? session.workspace : 'no workspace',
       session.wikirc?.profile ? session.wikirc.profile : 'no wikirc',
       session.language ? session.language : 'no language',

@@ -832,7 +832,7 @@ export async function submitRuntimeRun(line, { runtime, session }) {
     if (result?.queued || result?.kind === 'enqueue_run' || result?.kind === 'enqueue') {
       return { kind: 'queued', result };
     }
-    return { kind: 'accepted' };
+    return { kind: 'accepted', result };
   } catch (err) {
     if (err?.status !== 409) {
       return { kind: 'error', message: err instanceof Error ? err.message : String(err) };

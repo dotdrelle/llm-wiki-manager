@@ -1,6 +1,6 @@
 import { createSignal } from 'solid-js';
 import { postRuntimeCancel } from '../runtime/client.js';
-import { conversationMessages, recordRuntimeUnavailableAgentInput, runLine, submitRuntimeRun } from './repl.js';
+import { conversationMessages, recordRuntimeUnavailableAgentInput, runLine, shouldHandleFreeTextLocally, submitRuntimeRun } from './repl.js';
 
 export function useAgent(props: { agent: unknown; packageJson: Record<string, unknown>; session: Record<string, any>; chatMode: () => boolean; runtimeUrl?: string | null; runtimeUnavailableReason?: string | null; refresh: () => void; addLog: (line: string) => void; onRuntimeAccepted?: () => void }) {
   const [busy, setBusy] = createSignal(false);
@@ -18,7 +18,17 @@ export function useAgent(props: { agent: unknown; packageJson: Record<string, un
     props.addLog(`input: ${trimmed}`);
 
     try {
-      if (props.runtimeUrl && !props.chatMode() && !trimmed.startsWith('/')) {
+      // Questions and small talk are answered by the local agent: the reply
+      // shows up in the chat immediately and no runtime run (plan, SQLite
+      // state, replans) is created for a sentence that only needed an answer.
+      // Actions still go to the runtime below.
+      const freeTextRouting = (props.runtimeUrl && !props.chatMode() && !trimmed.startsWith('/'))
+        ? shouldHandleFreeTextLocally(trimmed, props.session)
+        : null;
+      if (props.runtimeUrl && !props.chatMode() && !trimmed.startsWith('/') && !freeTextRouting?.local) {
+        if (freeTextRouting?.fallbackReason) {
+          props.addLog(`runtime: ${freeTextRouting.fallbackReason}, routing to runtime run`);
+        }
         // Marked _pending so mergeRuntimeConversation (useSession.ts) can
         // confirm this exact entry instead of pushing a second copy once the
         // same user message comes back from the runtime's own /state.
@@ -29,6 +39,13 @@ export function useAgent(props: { agent: unknown; packageJson: Record<string, un
         });
         if (outcome.kind === 'accepted') {
           props.onRuntimeAccepted?.();
+          const runId = (outcome as any).result?.runId ?? null;
+          // Light, immediate feedback in the chat: without it an accepted run
+          // is invisible until its first activity lands in the side panels.
+          conversationMessages(props.session).push({
+            role: 'command',
+            content: `▶ Run accepté${runId ? ` (${String(runId).slice(0, 8)})` : ''} — progression dans le panneau Activity, réponse ici à la fin du run.`,
+          });
           props.addLog('runtime: run accepted');
         } else if (outcome.kind === 'queued') {
           // The server localizes control-lane acknowledgements from the
@@ -44,13 +61,16 @@ export function useAgent(props: { agent: unknown; packageJson: Record<string, un
         props.refresh();
         return { exit: false, runtime: true };
       }
-      if (!props.chatMode() && !trimmed.startsWith('/')) {
+      if (!props.chatMode() && !trimmed.startsWith('/') && !freeTextRouting?.local) {
         const message = recordRuntimeUnavailableAgentInput(props.session, trimmed, {
           error: props.runtimeUnavailableReason ?? 'runtime introuvable',
         });
         props.addLog(message ?? 'runtime: disconnected');
         props.refresh();
         return { exit: false, runtimeUnavailable: true };
+      }
+      if (freeTextRouting?.local) {
+        props.addLog(`agent: ${freeTextRouting.classification.kind} handled locally`);
       }
       const result = await runLine(trimmed, {
         agent: props.agent,

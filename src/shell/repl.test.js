@@ -82,7 +82,9 @@ test('submitRuntimeRun reports acceptance without throwing', async () => {
   try {
     const session = createSession();
     const outcome = await submitRuntimeRun('build the doc', { runtime: { url: 'http://runtime.test' }, session });
-    assert.deepEqual(outcome, { kind: 'accepted' });
+    // The accepted payload is passed through so callers can surface the runId
+    // in the chat (immediate feedback that the run started).
+    assert.deepEqual(outcome, { kind: 'accepted', result: { accepted: true, runId: 'run-1' } });
   } finally {
     restore();
   }

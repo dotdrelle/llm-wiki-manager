@@ -242,15 +242,19 @@ export function startRuntimeServer({
           }
           validateContractInDev('runRequest', { ...body, input });
           if (context.running) {
-            const item = enqueueControlRequest(context, input);
-            sendJson(response, 202, {
-              accepted: true,
-              queued: true,
-              kind: 'enqueue_run',
-              item,
-              ...controlStatus(context, store),
-              explanation: controlMessage(context?.session, 'queued_for_future_run'),
+            // Blind enqueueing made every message typed during a run
+            // invisible until the run ended (serve UI symptom: "no result
+            // until the job finished or was stopped"). Classify instead:
+            // observe → immediate status explanation, cancel → abort,
+            // ambiguous action → explicit choices, explicit "later" intent
+            // (body.intent = 'enqueue') → enqueue as before.
+            const result = await handleControlMessage(context, store, input, {
+              intent: body.intent,
+              startNextControlRequest,
+              cancel,
+              approve,
             });
+            sendJson(response, result.statusCode, result.body);
             return;
           }
           const accepted = startRuntimeRun(context, body);

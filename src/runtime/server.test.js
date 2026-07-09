@@ -224,15 +224,18 @@ test('runtime server accepts only one active run', async (t) => {
       fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: 'second' }),
+        // Messages during an active run are now CLASSIFIED (observe answers
+        // immediately, cancel aborts…) — enqueueing a future run is the
+        // explicit intent.
+        body: JSON.stringify({ input: 'second', intent: 'enqueue' }),
       }),
     ]);
 
     assert.deepEqual([first.status, second.status], [202, 202]);
     const bodies = [await first.json(), await second.json()];
-    const acceptedRun = bodies.find((body) => body.accepted && !body.queued);
-    const queuedRun = bodies.find((body) => body.queued);
-    assert.equal(queuedRun.kind, 'enqueue_run');
+    const acceptedRun = bodies.find((body) => body.runId && body.accepted);
+    const queuedRun = bodies.find((body) => body.kind === 'enqueue_run');
+    assert.equal(queuedRun.accepted, true);
     assert.equal(acceptedRun.accepted, true);
     assert.match(acceptedRun.runId, /^[0-9a-f-]{36}$/);
     assert.equal(runCount, 1);
@@ -550,10 +553,10 @@ test('runtime server isolates active runs by workspace', async (t) => {
     const queued = await fetch(`${url}?workspace=acme`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: 'third' }),
+      body: JSON.stringify({ input: 'third', intent: 'enqueue' }),
     });
     assert.equal(queued.status, 202);
-    assert.equal((await queued.json()).queued, true);
+    assert.equal((await queued.json()).kind, 'enqueue_run');
     assert.deepEqual(runWorkspaces.sort(), ['acme', 'docs']);
   } finally {
     releases.get('acme')?.();
@@ -1328,6 +1331,68 @@ test('runtime server rejects config switching while a run is active', async (t) 
     });
     assert.equal(response.status, 409);
   } finally {
+    await handle.close();
+  }
+});
+
+test('runtime server answers control messages posted to /run during an active run', async (t) => {
+  let releaseRun;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'running' }),
+        listEvents: () => [],
+      },
+      session: {},
+      run: async () => {
+        await new Promise((resolve) => { releaseRun = resolve; });
+      },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const url = `http://127.0.0.1:${handle.port}/run`;
+    const started = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: 'lance le pipeline' }),
+    });
+    assert.equal(started.status, 202);
+
+    // A status question must be answered NOW, not parked until the run ends
+    // (regression: serve UI got no result until the job finished/stopped).
+    const observe = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: 'où en est le run ?' }),
+    });
+    assert.equal(observe.status, 200);
+    const observeBody = await observe.json();
+    assert.equal(observeBody.kind, 'observe');
+    assert.ok(String(observeBody.explanation ?? '').length > 0, 'observe must carry an explanation');
+
+    // A cancel must abort the active run instead of being enqueued.
+    const cancel = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: 'annule le run' }),
+    });
+    assert.equal(cancel.status, 200);
+    const cancelBody = await cancel.json();
+    assert.equal(cancelBody.kind, 'cancel');
+    assert.equal(cancelBody.accepted, true);
+  } finally {
+    releaseRun?.();
     await handle.close();
   }
 });

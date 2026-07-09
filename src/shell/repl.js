@@ -834,11 +834,26 @@ export async function submitRuntimeRun(line, { runtime, session }) {
       // classified. Send an explicit control message: the server classifies
       // it (cancel aborts the run, approve grants, modify proposes a patch).
       const result = await postRuntimeControl('message', { url: runtime.url, workspace, input: line });
-      return { kind: result?.kind ?? 'control', result };
+      // The client-side "run active" flag can be STALE (projection still says
+      // running right after a run ended). The server's answer carries the
+      // truth: if the runtime is actually idle and only produced a canned
+      // read-only reply ("Runtime is idle."), the user's input was meant to
+      // START a run — fall through to POST /run instead of dead-ending.
+      const idleCannedReply = result?.running === false
+        && ['converse', 'observe', 'ambiguous'].includes(String(result?.kind ?? ''));
+      if (!idleCannedReply) {
+        return { kind: result?.kind ?? 'control', result };
+      }
     }
     const result = await postRuntimeRun(line, { url: runtime.url, workspace });
     if (result?.queued || result?.kind === 'enqueue_run' || result?.kind === 'enqueue') {
       return { kind: 'queued', result };
+    }
+    if (result?.kind && !result?.runId) {
+      // The server was actually running (stale idle flag client-side) and
+      // classified our input as a control message — surface its kind and
+      // localized explanation instead of pretending a run was accepted.
+      return { kind: result.kind, result };
     }
     return { kind: 'accepted', result };
   } catch (err) {

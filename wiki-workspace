@@ -228,6 +228,12 @@ agents_compose() {
         shift
       fi
       [[ $# -eq 0 ]] || die "agents up accepts only --pull"
+      ensure_agent_tokens
+      ensure_endpoints_file
+      # The .env may have just been created above — recompute the env-file
+      # flag so freshly generated tokens reach the containers on first run.
+      compose_env_args=()
+      [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
       mkdir -p "$agents_data_dir/cme" "$agents_data_dir/documents/input" "$agents_data_dir/documents/output" "$agents_data_dir/documents/uploads"
       mkdir -p "$workspaces_root"
       $do_pull && _agents_dc pull
@@ -380,6 +386,33 @@ ensure_runtime_node() {
   version="$("$node_bin" -p 'process.versions.node' 2>/dev/null)" || die "could not execute Node runtime: $node_bin"
   major="${version%%.*}"
   [[ "$major" =~ ^[0-9]+$ && "$major" -ge 22 ]] || die "runtime requires Node.js 22+ for node:sqlite; $node_bin is Node $version"
+}
+
+ensure_agent_tokens() {
+  # The external agents (cme, documents, mailer) authenticate with tokens
+  # from the manager .env — generate any missing one, exactly like the
+  # workspace and runtime tokens are generated. Leaving them empty made a
+  # fresh install start agents nobody could talk to.
+  local key token
+  for key in CME_MCP_AUTH_TOKEN DOCUMENTS_MCP_AUTH_TOKEN MAILER_MCP_AUTH_TOKEN; do
+    token="$(env_value "$MANAGER_ENV_FILE" "$key" "")"
+    if [[ -z "$token" ]]; then
+      token="$(generate_token)"
+      mkdir -p "$(dirname "$MANAGER_ENV_FILE")"
+      set_env_value "$MANAGER_ENV_FILE" "$key" "$token"
+      printf 'Generated %s in %s\n' "$key" "$MANAGER_ENV_FILE"
+    fi
+  done
+}
+
+ensure_endpoints_file() {
+  # Without mcp.endpoints.json the shell never connects to the agents it
+  # just started (and `agents status` refuses to run). Seed it from the
+  # packaged example; the \${VAR} placeholders resolve against the .env.
+  if [[ ! -f "$MANAGER_ENDPOINTS_FILE" && -f "$ROOT_DIR/mcp.endpoints.example.json" ]]; then
+    cp "$ROOT_DIR/mcp.endpoints.example.json" "$MANAGER_ENDPOINTS_FILE"
+    printf 'Created %s from packaged example\n' "$MANAGER_ENDPOINTS_FILE"
+  fi
 }
 
 ensure_manager_runtime_token() {

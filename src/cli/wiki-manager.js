@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadManagerEnv } from '../core/env.js';
+import { ensureManagerScaffold, loadManagerEnv } from '../core/env.js';
 loadManagerEnv();
 import { createAgentGraph } from '../agent/graph.js';
 import { handleSlashCommand, printHelp, printVersion, refreshMcpRuntimeStatus } from '../commands/slash.js';
@@ -735,6 +735,8 @@ async function runRuntime(argv, agent) {
 
 export async function runCli(argv) {
   if (argv[0] === 'runtime') {
+    const scaffolded = ensureManagerScaffold({ log: (message) => console.log(`[wiki-manager] ${message}`) });
+    if (scaffolded.length > 0) loadManagerEnv();
     const agent = createAgentGraph();
     await runRuntime(argv.slice(1), agent);
     return;
@@ -788,6 +790,12 @@ export async function runCli(argv) {
       throw new Error('Interactive TUI requires Bun. Run: bun ./bin/wiki-manager.js');
     }
     const { runOpenTuiShell, runStartupWizard } = await import('../shell/tui.tsx');
+    // Fresh directory → copy mcp.endpoints.json/.env from the packaged
+    // examples so external agents (cme, mailer, documents) connect out of
+    // the box. Done here (and in `runtime`), NOT at import time: --version
+    // in a random cwd must not litter files.
+    const scaffolded = ensureManagerScaffold({ log: (message) => console.log(`[wiki-manager] ${message}`) });
+    if (scaffolded.length > 0) loadManagerEnv();
     const gaps = await runChecks();
     if (gaps.length > 0) await runStartupWizard(gaps);
     let runtime = null;

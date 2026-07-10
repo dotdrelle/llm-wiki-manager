@@ -1,6 +1,6 @@
 <svg viewBox="0 0 1000 780" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" role="img">
 <title>wikiLLM functional diagram</title>
-<desc>Inputs split into external sources (Confluence, docs/files/mails, notes) and structural template/build-context/skills from a marketplace. Orchestrator is agentic (LangGraph), multi-model / multi-API. MCP calls split into internal MCP (production engine per workspace) and external MCP (shared, replaceable toolbox: cme, documents, atlassian, google-workspace, mailer, exa) plus a generic future slot. Outputs: core wiki and graph, deliverables kept up to date in Markdown, and email. Over a workspaces foundation.</desc>
+<desc>Inputs split into external sources (Confluence, docs/files/mails, notes) and structural template/build-context/skills from a marketplace. Orchestrator is agentic (LangGraph), multi-model / multi-API. MCP calls split into internal MCP (production engine per workspace) and external MCP (shared, replaceable toolbox: cme, documents, google-workspace, mailer, exa) plus a generic future slot. Outputs: core wiki and graph, deliverables kept up to date in Markdown, and email. Over a workspaces foundation.</desc>
 
 <style>
 .box { fill: #ffffff; stroke: #e2e2dd; stroke-width: 1.5; }
@@ -94,7 +94,7 @@
 <rect x="244" y="439" width="486" height="27" rx="7" class="box"/><rect x="244" y="439" width="5" height="27" rx="2.5" fill="#0f9d8f"/>
 <text x="261" y="456" class="t" font-size="11">agent-wiki-documents<tspan class="s" font-size="10"> — pdf / office / images → Markdown</tspan></text>
 <rect x="244" y="469" width="486" height="27" rx="7" class="box"/><rect x="244" y="469" width="5" height="27" rx="2.5" fill="#0f9d8f"/>
-<text x="261" y="486" class="t" font-size="11">agent-atlassian<tspan class="s" font-size="10"> — live Confluence / Jira</tspan></text>
+<text x="261" y="486" class="t" font-size="11">optional connector<tspan class="s" font-size="10"> — external MCP integration</tspan></text>
 <rect x="244" y="499" width="486" height="27" rx="7" class="box"/><rect x="244" y="499" width="5" height="27" rx="2.5" fill="#0f9d8f"/>
 <text x="261" y="516" class="t" font-size="11">google-workspace<tspan class="s" font-size="10"> — Drive · Docs · Gmail</tspan></text>
 <rect x="244" y="529" width="486" height="27" rx="7" class="box"/><rect x="244" y="529" width="5" height="27" rx="2.5" fill="#0f9d8f"/>

@@ -39,20 +39,6 @@ if [[ -n "$CACERT_PATH" ]]; then
   export CURL_CA_BUNDLE="$CACERT_PATH"
 fi
 
-BUN_BIN="$(command -v bun 2>/dev/null || true)"
-if [[ -z "$BUN_BIN" && -n "${BUN_INSTALL:-}" && -x "$BUN_INSTALL/bin/bun" ]]; then
-  BUN_BIN="$BUN_INSTALL/bin/bun"
-fi
-if [[ -z "$BUN_BIN" && -x "${HOME:-}/.bun/bin/bun" ]]; then
-  BUN_BIN="$HOME/.bun/bin/bun"
-fi
-if [[ -z "$BUN_BIN" ]]; then
-  printf '%s\n' \
-    'wiki-manager requires Bun >= 1.2.' \
-    'Install Bun from https://bun.sh/docs/installation or add it to PATH.' >&2
-  exit 127
-fi
-
 SCRIPT_SOURCE="${BASH_SOURCE[0]}"
 while [[ -L "$SCRIPT_SOURCE" ]]; do
   SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
@@ -64,5 +50,30 @@ while [[ -L "$SCRIPT_SOURCE" ]]; do
   fi
 done
 BIN_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+PACKAGE_DIR="$(cd "$BIN_DIR/.." && pwd)"
+
+BUN_BIN="$(command -v bun 2>/dev/null || true)"
+if [[ -z "$BUN_BIN" && -x "$PACKAGE_DIR/node_modules/.bin/bun" ]]; then
+  BUN_BIN="$PACKAGE_DIR/node_modules/.bin/bun"
+fi
+if [[ -z "$BUN_BIN" && -x "$PACKAGE_DIR/../../.bin/bun" ]]; then
+  BUN_BIN="$PACKAGE_DIR/../../.bin/bun"
+fi
+if [[ -z "$BUN_BIN" && -n "${BUN_INSTALL:-}" && -x "$BUN_INSTALL/bin/bun" ]]; then
+  BUN_BIN="$BUN_INSTALL/bin/bun"
+fi
+if [[ -z "$BUN_BIN" && -x "${HOME:-}/.bun/bin/bun" ]]; then
+  BUN_BIN="$HOME/.bun/bin/bun"
+fi
+if [[ -z "$BUN_BIN" ]]; then
+  printf '%s\n' \
+    'wiki-manager requires Bun >= 1.2.' \
+    'Reinstall @dotdrelle/wiki-manager or install Bun from https://bun.sh/docs/installation.' >&2
+  exit 127
+fi
+
+if [[ ${#ARGS[@]} -eq 0 ]]; then
+  exec "$BUN_BIN" "$BIN_DIR/wiki-manager.js"
+fi
 
 exec "$BUN_BIN" "$BIN_DIR/wiki-manager.js" "${ARGS[@]}"

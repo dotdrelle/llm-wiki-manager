@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export function userManagerDir() {
   return process.cwd();
@@ -29,6 +30,34 @@ export function managerEnvFile() {
 
 export function managerMcpEndpointsFile() {
   return join(managerStateDir(), 'mcp.endpoints.json');
+}
+
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+// First-run scaffolding: a fresh install directory has neither
+// mcp.endpoints.json nor .env, so the external agents (cme, mailer,
+// documents) silently never connect — /status shows no agents and Donna has
+// no CME tools to configure anything with. Copy the packaged examples so a
+// fresh directory works out of the box with the default agent ports; the
+// user only has to fill in tokens/keys.
+export function ensureManagerScaffold({ log = () => {} } = {}) {
+  const created = [];
+  const endpointsFile = managerMcpEndpointsFile();
+  const endpointsExample = join(packageRoot, 'mcp.endpoints.example.json');
+  if (!existsSync(endpointsFile) && existsSync(endpointsExample)) {
+    copyFileSync(endpointsExample, endpointsFile);
+    created.push('mcp.endpoints.json');
+  }
+  const envFile = managerEnvFile();
+  const envExample = join(packageRoot, '.env.example');
+  if (!existsSync(envFile) && existsSync(envExample)) {
+    copyFileSync(envExample, envFile);
+    created.push('.env');
+  }
+  if (created.length > 0) {
+    log(`scaffold: created ${created.join(' and ')} in ${managerStateDir()} from packaged example(s) — fill in tokens/keys (WIKI_WORKSPACES_DIR, *_MCP_AUTH_TOKEN…) before starting agents.`);
+  }
+  return created;
 }
 
 // Single source of truth for where `.agents-data` lives, shared by the

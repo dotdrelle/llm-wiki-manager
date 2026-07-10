@@ -55,7 +55,6 @@ services:
       - CME_MCP_AUTH_TOKEN
       - DOCUMENTS_MCP_AUTH_TOKEN
       - MAILER_MCP_AUTH_TOKEN
-      - ATLASSIAN_MCP_AUTH_TOKEN
       - WORKSPACE_NAME
       - DOCUMENT_INPUT_DIR=/documents/input
       - DOCUMENT_UPLOADS_DIR=/documents/uploads

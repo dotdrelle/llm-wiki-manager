@@ -30,12 +30,6 @@
       "headers": {
         "Authorization": "Bearer ${MAILER_MCP_AUTH_TOKEN}"
       }
-    },
-    "atlassian": {
-      "url": "http://host.docker.internal:9000/mcp",
-      "headers": {
-        "Authorization": "Bearer ${ATLASSIAN_MCP_AUTH_TOKEN}"
-      }
     }
   }
 }

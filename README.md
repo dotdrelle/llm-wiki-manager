@@ -36,6 +36,44 @@ everything — either with the mouse in a browser, or by talking to an assistant
 A **workspace** = a project. Each project is isolated: its documents, settings,
 and results never get mixed up with the others.
 
+## Installation and command modes
+
+The package can be installed either locally in a project or globally. The
+command used afterwards depends on the installation mode.
+
+### Local installation
+
+Use a local installation when the manager should be pinned in a project's
+`package.json`:
+
+```bash
+npm install @dotdrelle/wiki-manager
+npx wiki-manager
+npx wiki-workspace --help
+```
+
+`npm install` does not add `wiki-manager` or `wiki-workspace` to the shell's
+global `PATH`. Run local executables with `npx` (or `npm exec wiki-manager` and
+`npm exec wiki-workspace`). Bun is installed automatically as a package runtime;
+you do not need to add `~/.bun/bin` to `PATH`.
+
+### Global installation
+
+Use a global installation when the commands should be available directly from
+any directory:
+
+```bash
+npm install --global @dotdrelle/wiki-manager
+wiki-manager
+wiki-workspace --help
+```
+
+The global installation also installs the required Bun runtime. A separately
+installed Bun remains supported, but is not required.
+
+In both modes, launch the commands from the directory that should hold the
+manager state (`workspaces/`, `.env`, and `mcp.endpoints.json`).
+
 ## Functional overview
 
 The diagram below shows the whole picture at a glance: how **inputs** (external
@@ -54,14 +92,17 @@ chat** — all on the **shipped example**, with **no external source to
 configure**. External agents (Confluence, mail…) come later, only when you plug
 in real sources.
 
-> **Prerequisites:** Docker running and Node ≥ 22.
+> **Prerequisites:** Docker running and Node ≥ 22. Bun is installed with the npm
+> package.
 
-**1 — Install once, pick a home folder.**
+**1 — Install globally, pick a home folder.**
 The manager keeps its state (workspaces, `.env`, endpoints) in the directory
-where you launch it, so give it a home:
+where you launch it, so give it a home. This quick start uses the global mode;
+see [Installation and command modes](#installation-and-command-modes) for the
+local `npm install` + `npx` mode.
 
 ```bash
-npm i -g @dotdrelle/wiki-manager
+npm install --global @dotdrelle/wiki-manager
 mkdir -p ~/llm-wiki && cd ~/llm-wiki      # all manager state lives here
 ```
 
@@ -151,7 +192,7 @@ wiki-workspace wiki demo build            # or, in the shell: /skills run pipeli
 That's the whole loop. Next: the four ways to use it and how to configure the
 external agents (CME & co.) live in [docs/usage.md](https://raw.githubusercontent.com/dotdrelle/llm-wiki-manager/main/docs/usage.md); the detailed
 story is in [The journey](#the-journey-from-first-launch-to-first-result); and
-installing from source is in [Initial Setup](#initial-setup).
+installing from source is in [Installing from source](#installing-from-source).
 
 ## The journey: from first launch to first result
 
@@ -379,15 +420,15 @@ root `.env`; the wiki's **LLM keys** live in each workspace `.wikirc.yaml`.
 See the full, field-by-field reference in
 **[docs/configuration.md](https://raw.githubusercontent.com/dotdrelle/llm-wiki-manager/main/docs/configuration.md)**.
 
-## Initial Setup
+## Installing from source
 
 ```bash
 corepack enable
 pnpm install
 ```
 
-When installed through `npm`/`npx`/`bun`, `wiki-manager` keeps its state outside
-the package, in the directory where the command is launched:
+Whether installed locally, globally, or from source, `wiki-manager` keeps its
+state outside the package, in the directory where the command is launched:
 
 ```text
 ./workspaces/            # workspace registry

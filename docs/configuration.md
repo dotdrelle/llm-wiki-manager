@@ -102,8 +102,7 @@ UI. Values support `${VAR}` interpolation resolved from the process environment
 `*_MCP_AUTH_TOKEN` in the root `.env`, otherwise the agent rejects the call.
 External agents are workspace-agnostic — the active `/use <workspace>` is
 injected automatically on every call. `WIKI_MANAGER_ENDPOINTS_FILE` overrides the
-default `./mcp.endpoints.json` path. The shipped `mcp.endpoints.example.json`
-also shows an `atlassian` entry using `${ATLASSIAN_MCP_AUTH_TOKEN}`.
+default `./mcp.endpoints.json` path.
 
 Start the shared agents once for all workspaces:
 

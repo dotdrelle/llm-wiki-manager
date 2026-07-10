@@ -700,7 +700,7 @@ async function runDispatchedTask(task, {
       error: {
         code: 'dispatcher_error',
         message: err instanceof Error ? err.message : String(err),
-        retryable: false,
+        retryable: transientRuntimeError(err),
       },
     };
     await resultAggregator.accept(result, { task, assignment });
@@ -815,6 +815,11 @@ export async function evaluateRuntimeRun(session, input, {
   evaluate = true,
 } = {}) {
   if (!shouldEvaluate(evaluate)) return null;
+  const structured = structuredPlanEvaluation(session.headlessPlan);
+  if (structured) {
+    emitRuntimeLog(session, 'runtime: evaluating completed structured plan');
+    return structured;
+  }
   const llm = session.llm;
   if (!llm || typeof llm.completeWithTools !== 'function') {
     return fallbackEvaluation('Evaluator unavailable: no LLM completeWithTools client.');
@@ -836,6 +841,40 @@ export async function evaluateRuntimeRun(session, input, {
   } catch (err) {
     return fallbackEvaluation(`Evaluator unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+function structuredPlanEvaluation(plan) {
+  if (!Array.isArray(plan) || plan.length === 0) return null;
+  // Only provider TaskGraph tasks are authoritative. Legacy conversational
+  // plans contain prose/tool labels and still use the compatibility evaluator.
+  if (!plan.every((step) => step?.requiredCapability && step?.operation)) return null;
+  const statuses = plan.map((step) => String(step?.status ?? '').toLowerCase());
+  const failed = plan.filter((step) => ['failed', 'error', 'cancelled', 'canceled', 'stalled'].includes(String(step?.status ?? '').toLowerCase()));
+  const incomplete = plan.filter((step) => !['done', 'complete', 'completed', 'success', 'succeeded'].includes(String(step?.status ?? '').toLowerCase()));
+  if (failed.length > 0) {
+    return {
+      ok: false,
+      reason: `${failed.length} tâche(s) du plan ont échoué : ${failed.map((step) => step.label ?? step.description ?? step.id ?? step.step).join(', ')}.`,
+      suggestedAction: null,
+    };
+  }
+  if (incomplete.length > 0) {
+    return {
+      ok: false,
+      reason: `${incomplete.length} tâche(s) du plan ne sont pas terminées.`,
+      suggestedAction: null,
+    };
+  }
+  return {
+    ok: statuses.length > 0,
+    reason: `${statuses.length} tâche(s) du plan terminées avec succès.`,
+    suggestedAction: null,
+  };
+}
+
+function transientRuntimeError(error) {
+  const value = error instanceof Error ? error.message : String(error ?? '');
+  return /(?:429|timeout|temporar|throttl|rate.?limit|quota|busy|unavailable)/i.test(value);
 }
 
 function shouldEvaluate(value) {

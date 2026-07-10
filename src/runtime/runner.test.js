@@ -1,7 +1,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { finishRuntimeRun, replanRuntimeRun, runRuntimeAgenticWorkflow, runRuntimeParallelPlan } from './runner.js';
+import { evaluateRuntimeRun, finishRuntimeRun, replanRuntimeRun, runRuntimeAgenticWorkflow, runRuntimeParallelPlan } from './runner.js';
+
+test('evaluateRuntimeRun trusts a completed provider TaskGraph without asking an LLM to reinterpret it', async () => {
+  const session = {
+    headlessPlan: [{
+      id: 'ingest-a',
+      label: 'Ingest A.md',
+      requiredCapability: 'knowledge.update',
+      operation: 'ingest_plan',
+      status: 'done',
+    }],
+    llm: {
+      async completeWithTools() {
+        assert.fail('a structured terminal TaskGraph must not be reinterpreted by an LLM');
+      },
+    },
+  };
+
+  const evaluation = await evaluateRuntimeRun(session, 'ingère A.md');
+
+  assert.equal(evaluation.ok, true);
+  assert.match(evaluation.reason, /1 tâche/);
+});
 
 test('runRuntimeAgenticWorkflow completes conversational turns without evaluation or replan', async () => {
   const events = [];

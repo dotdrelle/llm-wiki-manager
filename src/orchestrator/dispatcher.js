@@ -57,7 +57,7 @@ export async function execute(task, assignment, {
       signal,
     ));
     if (accepted?.accepted === false || accepted?.ok === false) {
-      throw new Error(String(accepted.error ?? 'agent_execute rejected task'));
+      return rejectedTaskResult(task, assignment, accepted, attempt);
     }
     jobId = String(accepted.jobId ?? '');
     if (!jobId) throw new Error('agent_execute did not return jobId.');
@@ -216,6 +216,37 @@ function taskResultFromStatus(task, assignment, jobId, statusPayload, attempt = 
     error: result.error ?? null,
     rawStatus: statusPayload,
   };
+}
+
+function rejectedTaskResult(task, assignment, payload, attempt = null) {
+  const rawError = payload?.error;
+  const error = rawError && typeof rawError === 'object'
+    ? { ...rawError }
+    : {
+        code: String(rawError ?? 'execution_rejected'),
+        message: String(payload?.message ?? rawError ?? 'agent_execute rejected task'),
+        retryable: transientError(rawError ?? payload?.message),
+      };
+  return {
+    ok: false,
+    taskId: String(task.id ?? task.step),
+    attemptId: attempt?.attemptId ?? null,
+    jobId: payload?.activeJobId ?? null,
+    agentInstanceId: assignment.agentInstanceId,
+    status: 'failed',
+    outputRefs: [],
+    metrics: {},
+    error: {
+      code: String(error.code ?? 'execution_rejected'),
+      message: String(error.message ?? error.code ?? 'agent_execute rejected task'),
+      retryable: error.retryable === true || transientError(error.code) || transientError(error.message),
+    },
+    rawStatus: payload,
+  };
+}
+
+function transientError(value) {
+  return /(?:429|timeout|temporar|throttl|rate.?limit|quota|busy|unavailable)/i.test(String(value ?? ''));
 }
 
 function toolNameFor(session, serverName, baseName) {

@@ -119,7 +119,10 @@ export async function pollActivitiesOnce(session, {
         const retry = progress.retryAt
           ? `retry ${progress.retryAt}`
           : (progress.waitMs ? `wait ${progress.waitMs}ms` : null);
-        const progressKey = `${polledActivity.status}:${Number.isFinite(percent) ? Math.round(percent) : ''}:${detail}:${batch ?? ''}:${lastEvent ?? ''}:${retry ?? ''}`;
+        // retryAt/waitMs are scheduling metadata and may be recomputed on every
+        // status poll. They must remain visible in the first log line, but must
+        // not turn an unchanged quota/backoff state into a new trace event.
+        const progressKey = `${polledActivity.status}:${Number.isFinite(percent) ? Math.round(percent) : ''}:${detail}:${batch ?? ''}:${lastEvent ?? ''}`;
         session._activityLogKeys ??= {};
         if (session._activityLogKeys[key] !== progressKey) {
           session._activityLogKeys[key] = progressKey;

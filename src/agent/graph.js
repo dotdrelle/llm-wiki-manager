@@ -812,12 +812,12 @@ function toolsForClassification(classification, writeTools, session = null) {
   const capabilityRunTools = session?.runtime?.url && !classification.activeRun && knownCapabilityIds(session).length > 0
     ? [RUNTIME_DELEGATE_TOOL]
     : [];
-  if (classification.activeRun && classification.kind !== 'execute_run') {
+  if (classification.activeRun) {
     // During an active run Donna gets read + profile + the runtime control
     // suite: she can answer, approve, enqueue for later, soft-cancel or
     // kill — but she must not fire new MCP jobs alongside the run (that is
     // what runtime__enqueue is for). No canned regex answers anywhere.
-    return [SHELL_READ_COMMAND_TOOL, SHELL_PROFILE_UPDATE_TOOL, ...controlTools];
+    return [SHELL_READ_COMMAND_TOOL, ...controlTools];
   }
   if (session?.runtime?.url && classification.kind !== 'execute_run') {
     const readTools = writeTools.filter(isDonnaReadTool);

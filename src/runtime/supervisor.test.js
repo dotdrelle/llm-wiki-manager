@@ -41,6 +41,55 @@ test('pollActivitiesOnce updates activity through the event reducer', async () =
   assert.ok(session.agentProjection.logs.some((line) => line.includes('activity:')));
 });
 
+test('pollActivitiesOnce does not repeat an unchanged retry state when retryAt moves', async () => {
+  const session = {
+    mcp: { production: { status: 'connected' } },
+    activities: {},
+    headlessPlan: null,
+    jobQueue: [],
+  };
+  dispatchAgentEvent(session, createAgentEvent('activity_upserted', {
+    payload: {
+      activity: {
+        id: 'job-quota',
+        source: 'production',
+        label: 'Production · ingest',
+        status: 'running',
+        poll: { server: 'production', tool: 'production_job_status', args: { jobId: 'job-quota' }, intervalMs: 0 },
+      },
+    },
+  }));
+
+  let poll = 0;
+  const callTool = async () => {
+    poll += 1;
+    return {
+      content: [{ type: 'text', text: JSON.stringify({
+        _activity: {
+          id: 'job-quota',
+          source: 'production',
+          label: 'Production · ingest',
+          status: 'running',
+          terminal: false,
+          progress: {
+            percent: 15,
+            detail: 'LLM quota wait',
+            lastEvent: 'llm:rate-limit-wait',
+            retryAt: `2026-07-10T20:31:5${poll}.000Z`,
+          },
+        },
+      }) }],
+    };
+  };
+
+  await pollActivitiesOnce(session, { callTool });
+  await pollActivitiesOnce(session, { callTool });
+
+  const lines = session.agentProjection.logs.filter((line) => line.includes('activity: Production · ingest'));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /retry 2026-07-10T20:31:51\.000Z/);
+});
+
 test('pollActivitiesOnce retries transient MCP poll failures', async () => {
   const originalFetch = globalThis.fetch;
   let attempts = 0;

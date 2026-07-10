@@ -43,7 +43,7 @@ import {
   listDocumentUploads,
   storeAndMaybeConvertDocument,
 } from '../core/documentIntake.js';
-import { fetchRuntimeState, postRuntimeCancel, postRuntimeKill } from '../runtime/client.js';
+import { fetchRuntimeState, postRuntimeCancel, postRuntimeControl, postRuntimeKill, postRuntimeRun } from '../runtime/client.js';
 import { versionWithBuild } from '../core/buildInfo.js';
 
 export function printVersion(packageJson) {
@@ -629,6 +629,8 @@ ${helpPair('/wiki', 'Run wiki index', '/wiki run <args>', 'Raw wiki CLI')}
 ${helpPair('/chat', 'Chat mode', '/agent', 'Agent mode')}
 ${helpPair('/openui', 'Open web UI in browser', '', '')}
 ${helpPair('/run status', 'Runtime status', '/run kill', 'Kill runtime run(s)')}
+${helpPair('/run capability <id>', 'Deterministic capability run', '/approve', 'Grant pending approval')}
+${helpPair('/cancel', 'Cancel active run', '', '')}
 ${helpPair('/run cancel', 'Cancel active run', '', '')}
 ${helpPair('/queue', 'MCP job queue', '/queue clear', 'Clear finished')}
 ${helpPair('/queue cancel <id>', 'Cancel queued/running', '', '')}
@@ -966,6 +968,27 @@ export async function handleSlashCommand(line, context) {
       }
       return { output: 'Usage: /mcp <status|endpoints|tools|call> [mcp]' };
     }
+    case 'cancel': {
+      // Alias of /run cancel — people type /cancel when they want out.
+      const runtime = context.runtime ?? {};
+      if (!runtime.url) return { output: 'Runtime unavailable. Start/connect the runtime before using /cancel.' };
+      const result = await postRuntimeCancel({ url: runtime.url, workspace: context.session.workspace ?? null });
+      return { output: result.cancelled ? 'Runtime cancel requested.' : `Nothing to cancel${result.reason ? ` (${result.reason})` : ''} — use /run kill to purge everything.` };
+    }
+    case 'approve': {
+      // /approve was only wired in the legacy REPL — in the opentui TUI it
+      // returned "Unknown command", which made every approval time out and
+      // every requiresApproval plan stall forever.
+      const runtime = context.runtime ?? {};
+      if (!runtime.url) return { output: 'Runtime unavailable. Start/connect the runtime before using /approve.' };
+      const result = await postRuntimeControl('message', {
+        url: runtime.url,
+        workspace: context.session.workspace ?? null,
+        input: args.slice(1).join(' ') || 'approve',
+        intent: 'approve',
+      });
+      return { output: String(result?.explanation ?? (result?.accepted ? 'Approval granted.' : 'No pending approval found.')) };
+    }
     case 'run': {
       const subcommand = args[1] ?? 'status';
       const runtime = context.runtime ?? {};
@@ -979,11 +1002,34 @@ export async function handleSlashCommand(line, context) {
         const result = await postRuntimeCancel({ url, workspace: context.session.workspace ?? null });
         return { output: result.cancelled ? 'Runtime cancel requested.' : `Runtime cancel skipped: ${result.reason ?? 'no active run'}` };
       }
+      if (subcommand === 'capability') {
+        // Business-agnostic deterministic run: mirrors the capability
+        // registry instead of hardcoding an application verb. The agent's
+        // task graph is validated/integrated server-side before any LLM turn.
+        const capability = args[2];
+        if (!capability) return { output: 'Usage: /run capability <capability-id> [operation] [files…]' };
+        if (!context.session.workspace) return { output: 'No workspace loaded. Use /use <workspace> first.' };
+        const operation = args[3] && !args[3].includes('.') && !args[3].includes('/') ? args[3] : undefined;
+        const inputs = args.slice(operation ? 4 : 3);
+        const result = await postRuntimeRun(`Run de capability ${capability}${operation ? ` (${operation})` : ''} demandé via /run capability.`, {
+          url,
+          workspace: context.session.workspace,
+          capabilityPlan: {
+            capability,
+            ...(operation ? { operation } : {}),
+            ...(inputs.length > 0 ? { inputs } : {}),
+          },
+        });
+        if (result?.runId) {
+          return { output: `▶ Run de capability accepté (${String(result.runId).slice(0, 8)}) — le plan de l'agent sera intégré et dispatché en parallèle ; approbation demandée avant les mutations (« valide tout » ou /approve).` };
+        }
+        return { output: `Run non démarré: ${result?.explanation ?? result?.error ?? JSON.stringify(result)}` };
+      }
       if (subcommand === 'kill') {
         const result = await postRuntimeKill({ url, workspace: context.session.workspace ?? null, runId: args[2] ?? null });
         return { output: `Runtime kill requested: ${result.runs ?? 0} run${result.runs === 1 ? '' : 's'}, ${result.tasks ?? 0} task${result.tasks === 1 ? '' : 's'} cancelled.` };
       }
-      return { output: 'Usage: /run [status|cancel|kill [runId]]' };
+      return { output: 'Usage: /run [status|cancel|kill [runId]|capability <id> [operation] [files…]]' };
     }
     case 'queue': {
       const subcommand = args[1] ?? 'list';

@@ -52,6 +52,7 @@ export async function postRuntimeRun(input, {
   workspace = null,
   evaluate = undefined,
   replans = undefined,
+  capabilityPlan = undefined,
 } = {}) {
   const response = await fetch(runtimeEndpoint(url, '/run', workspace), {
     method: 'POST',
@@ -59,7 +60,7 @@ export async function postRuntimeRun(input, {
       ...runtimeHeaders(token),
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(Object.assign({ input, workspace }, evaluate !== undefined && { evaluate }, replans !== undefined && { replans })),
+    body: JSON.stringify(Object.assign({ input, workspace }, evaluate !== undefined && { evaluate }, replans !== undefined && { replans }, capabilityPlan !== undefined && { capabilityPlan })),
   });
   if (!response.ok) {
     const err = new Error(`Runtime run failed: HTTP ${response.status}`);

@@ -272,9 +272,16 @@ function renderMarkdownLines(lines: Array<{ text: string; isCode: boolean }>, ro
   for (let index = 0; index < lines.length; index += 1) {
     const { text, isCode } = lines[index];
     if (isCode) {
-      output.push(...wrapLine(text || ' ', columns).map((piece) => ({
-        segments: [{ text: piece || ' ', color: '#D6DEE8', bg: '#1A2235' }],
+      const blockStarts = index === 0 || !lines[index - 1].isCode;
+      const blockEnds = index === lines.length - 1 || !lines[index + 1].isCode;
+      // Blank line before/after the block + 2-space inner padding: fenced
+      // blocks used to render as a dense background slab glued to the text.
+      if (blockStarts) output.push({ segments: [{ text: ' ', color: '#D6DEE8' }] });
+      const innerWidth = Math.max(8, columns - 4);
+      output.push(...wrapLine(text || ' ', innerWidth).map((piece) => ({
+        segments: [{ text: `  ${(piece || ' ').padEnd(innerWidth)}  `, color: '#D6DEE8', bg: '#1A2235' }],
       })));
+      if (blockEnds) output.push({ segments: [{ text: ' ', color: '#D6DEE8' }] });
       continue;
     }
 

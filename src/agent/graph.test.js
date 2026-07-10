@@ -845,3 +845,83 @@ test('Donna interprets a cleanup request and calls runtime__kill herself', async
     globalThis.fetch = originalFetch;
   }
 });
+
+test('buildAgentSystemPrompt delegates pending inputs to the capability provider without filesystem fallback', () => {
+  const workspacePath = mkdtempSync(join(tmpdir(), 'facts-'));
+  try {
+    mkdirSync(join(workspacePath, 'raw', 'untracked'), { recursive: true });
+    writeFileSync(join(workspacePath, 'raw', 'untracked', 'note-a.md'), '# a\n');
+    const prompt = buildAgentSystemPrompt({ session: sessionBase({ workspacePath }) });
+    assert.match(prompt, /call the qualified `<provider>__agent_status` tool with \{capability, operation\}/);
+    assert.match(prompt, /report only its pendingInputs/);
+    assert.doesNotMatch(prompt, /note-a\.md/);
+    assert.doesNotMatch(prompt, /Workspace facts:/);
+  } finally {
+    rmSync(workspacePath, { recursive: true, force: true });
+  }
+});
+
+test('Donna reads pending inputs from the qualified capability provider status tool', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedArguments = null;
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    requestedArguments = request.params.arguments;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({ result: { content: [{
+        type: 'text',
+        text: JSON.stringify({
+          contractVersion: '1',
+          agentInstanceId: 'production-main',
+          capability: 'knowledge.update',
+          operation: 'ingest',
+          available: true,
+          pendingInputs: [{ type: 'file', ref: 'provider/source-a', label: 'source-a.md', mediaType: 'text/markdown' }],
+        }),
+      }] } }),
+    };
+  };
+  let calls = 0;
+  const session = sessionBase({
+    mcp: {
+      production: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3000/mcp/',
+        tools: [{
+          name: 'agent_status',
+          description: 'Read a job or discover capability inputs.',
+          inputSchema: { type: 'object', properties: { capability: { type: 'string' }, operation: { type: 'string' } } },
+        }],
+      },
+    },
+    llm: {
+      async completeWithTools({ messages }) {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: 'status-call',
+              type: 'function',
+              function: { name: 'production__agent_status', arguments: JSON.stringify({ capability: 'knowledge.update', operation: 'ingest' }) },
+            }],
+          };
+        }
+        assert.match(JSON.stringify(messages), /provider\/source-a/);
+        return { content: 'Un fichier est en attente : source-a.md.', message: { role: 'assistant', content: 'Un fichier est en attente : source-a.md.' }, tool_calls: null };
+      },
+    },
+  });
+
+  try {
+    const result = await createAgentGraph().invoke({ input: 'Quels fichiers sont en attente d’ingestion ?', session });
+    assert.equal(result.response, 'Un fichier est en attente : source-a.md.');
+    assert.deepEqual(requestedArguments, { capability: 'knowledge.update', operation: 'ingest' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -116,6 +116,29 @@ function App(props: {
   // sync at every call site.
   const [screen, setScreen] = createSignal<'startup' | 'setup' | 'main'>('startup');
   let ctrlCTimer: ReturnType<typeof setTimeout> | null = null;
+  let exiting = false;
+  // Single exit path: the owned-runtime shutdown MUST happen here, on the
+  // user's actual exit gesture. render() resolves at MOUNT, so code placed
+  // after `await runOpenTuiShell(...)` runs while the shell is still on
+  // screen — 0.12.9 shipped that and killed the runtime mid-session.
+  const exitShell = () => {
+    if (exiting) return;
+    exiting = true;
+    void (async () => {
+      const messages: string[] = [];
+      try {
+        if (props.runtime?.url) {
+          const { shutdownOwnedRuntime } = await import('../runtime/lifecycle.js');
+          await shutdownOwnedRuntime(props.runtime, { log: (message: string) => { messages.push(message); } });
+        }
+      } catch {
+        // Best effort: never block the exit on runtime cleanup.
+      }
+      renderer.destroy();
+      // Print AFTER destroy so the note survives on the restored terminal.
+      for (const message of messages) console.log(`[wiki-manager] ${message}`);
+    })();
+  };
   let copyHintTimer: ReturnType<typeof setTimeout> | null = null;
   let selectionCopyTimer: ReturnType<typeof setTimeout> | null = null;
   let startupKeyboardEventId = 0;
@@ -141,7 +164,7 @@ function App(props: {
       return;
     }
     void state.submitInput(value).then((result) => {
-      if (result?.exit) renderer.destroy();
+      if (result?.exit) exitShell();
     });
   };
 
@@ -263,7 +286,7 @@ function App(props: {
         return;
       }
       if (exitHint()) {
-        renderer.destroy();
+        exitShell();
         return;
       }
       setExitHint(true);
@@ -378,7 +401,7 @@ function App(props: {
         height={dimensions().height}
         keyboardEvent={startupKeyboardEvent()}
         onSelect={openAction}
-        onQuit={() => renderer.destroy()}
+        onQuit={() => exitShell()}
       />
     </Show>
   );

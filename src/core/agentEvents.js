@@ -490,6 +490,12 @@ function applyEvent(state, event) {
     case 'run_error':
       state.status = 'error';
       state.logs.push(String(event.payload?.message ?? 'Agent run failed.'));
+      // A dead run must not leave "pending" plan steps and spinning
+      // activities in the persisted projection: they reappeared as ghosts
+      // at every relaunch ("des trucs dans le plan qui n'existent pas") and
+      // /kill honestly reported 0 because nothing was actually running.
+      cancelPendingPlanSteps(state.plan);
+      cancelActiveActivities(state.activities, event.ts);
       finishControlByRun(state.controlQueue, event.runId ?? event.payload?.runId ?? null, 'failed', event.ts);
       return;
     case 'control_enqueued':

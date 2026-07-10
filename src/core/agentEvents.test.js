@@ -440,3 +440,29 @@ test('empty assistant_message finalize is a no-op without a streaming entry', ()
   dispatchAgentEvent(session, createAgentEvent('assistant_message', { origin: 'llm', payload: { content: '' } }));
   assert.equal(session.agentProjection.conversation.length, 1);
 });
+
+test('run_error cancels pending plan steps and active activities (no ghosts at relaunch)', () => {
+  const session = {};
+  dispatchAgentEvent(session, createAgentEvent('plan_set', {
+    origin: 'runtime',
+    payload: { steps: [
+      { id: 'a', description: 'Ingest a.md', status: 'pending', requiredCapability: 'knowledge.update', operation: 'ingest_plan' },
+      { id: 'b', description: 'Ingest b.md', status: 'done' },
+    ] },
+  }));
+  dispatchAgentEvent(session, createAgentEvent('activity_upserted', {
+    origin: 'runtime_poll',
+    payload: { activity: { key: 'production:j1', id: 'j1', label: 'Ingest', status: 'running', terminal: false } },
+  }));
+  dispatchAgentEvent(session, createAgentEvent('run_error', {
+    origin: 'runtime',
+    payload: { message: 'Plan is stalled: no_ready_plan_task' },
+  }));
+
+  const plan = session.agentProjection.plan;
+  assert.equal(plan.find((step) => step.id === 'a').status, 'cancelled');
+  assert.equal(plan.find((step) => step.id === 'b').status, 'done', 'completed work stays done');
+  const activity = session.agentProjection.activities.find((item) => item.id === 'j1');
+  assert.equal(activity.status, 'cancelled');
+  assert.equal(activity.terminal, true);
+});

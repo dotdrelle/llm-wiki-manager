@@ -6,7 +6,12 @@ import test from 'node:test';
 import { createBudgetManager } from './budgetManager.js';
 import { readyTasks } from './dependencyResolver.js';
 import { createLockManager } from './lockManager.js';
-import { effectiveConcurrency, startReadyTasks } from './scheduler.js';
+import {
+  effectiveConcurrency,
+  resolveCapabilityConcurrency,
+  resolvePlanConcurrency,
+  startReadyTasks,
+} from './scheduler.js';
 
 test('dependencyResolver holds a barrier task until its dependsOnGroup is done', () => {
   const plan = [
@@ -74,6 +79,40 @@ test('scheduler.effectiveConcurrency returns the minimum effective concurrency',
   const provider = { capability: { limits: { maxConcurrency: 2 } }, maxConcurrency: 5 };
 
   assert.equal(effectiveConcurrency(group, agent, donna, provider), 2);
+});
+
+test('scheduler uses the relevant agent declaration instead of hard-capping plans at three', () => {
+  const plan = [{ id: 'task-1', requiredCapability: 'ingest' }];
+  const agents = [{
+    description: {
+      capabilities: [{ id: 'ingest' }],
+      limits: { recommendedConcurrency: 10, maxConcurrency: 12 },
+    },
+  }];
+
+  assert.equal(resolvePlanConcurrency({ plan, agents }), 10);
+  assert.equal(resolvePlanConcurrency({ plan, agents, configured: 3 }), 3);
+  assert.equal(resolvePlanConcurrency({ plan, agents, configured: 20 }), 10);
+});
+
+test('scheduler ignores unrelated agents and falls back to three without declarations', () => {
+  const plan = [{ id: 'task-1', requiredCapability: 'ingest' }];
+  const agents = [{
+    description: {
+      capabilities: [{ id: 'production' }],
+      limits: { recommendedConcurrency: 1 },
+    },
+  }];
+
+  assert.equal(resolvePlanConcurrency({ plan, agents }), 3);
+});
+
+test('capability constraints can lower but never raise an agent declaration', () => {
+  const agent = { description: { limits: { recommendedConcurrency: 6, maxConcurrency: 10 } } };
+
+  assert.equal(resolveCapabilityConcurrency(agent), 6);
+  assert.equal(resolveCapabilityConcurrency(agent, 2), 2);
+  assert.equal(resolveCapabilityConcurrency(agent, 20), 6);
 });
 
 test('startReadyTasks starts only ready tasks and respects lock starvation', () => {

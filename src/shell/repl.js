@@ -18,7 +18,15 @@ import { listWorkspaces } from '../core/workspaces.js';
 import { fetchRuntimeState, postRuntimeApprove, postRuntimeCancel, postRuntimeControl, postRuntimeRun, postRuntimeShutdown, streamRuntimeEvents } from '../runtime/client.js';
 import { versionWithBuild } from '../core/buildInfo.js';
 
-marked.use(markedTerminal());
+// Code blocks: marked-terminal's default paints a dense background block
+// glued to the surrounding text. Indent the content, keep a plain style and
+// guarantee a blank line before/after so fenced blocks breathe in the chat.
+const CODE_INDENT = '  ';
+const CODE_TINT = '\u001b[38;5;152m'; // soft blue-grey, readable on dark bg
+const CODE_RESET = '\u001b[0m';
+marked.use(markedTerminal({
+  code: (code) => `\n${String(code).split('\n').map((line) => `${CODE_INDENT}${CODE_TINT}${line}${CODE_RESET}`).join('\n')}\n`,
+}));
 // marked-terminal's text renderer extracts token.text (raw string) instead of
 // calling parseInline(token.tokens), so inline Markdown inside list items is
 // silently dropped. Patch it to call parseInline when tokens are available.
@@ -75,7 +83,7 @@ const COMMAND_COMPLETION_DESCRIPTIONS = {
   '/chat': 'Switch free text to direct LLM chat without tools.',
   '/agent': 'Switch free text to the LangGraph agent with tools.',
   '/openui': 'Open the workspace web UI in the browser.',
-  '/run': 'Inspect, cancel, or kill runtime runs.',
+  '/run': 'Inspect, cancel, kill runtime runs, or start a capability run.',
   '/approve': 'Approve a pending runtime run or tool.',
 };
 
@@ -141,7 +149,7 @@ export function createSession() {
     wikircConfig: null,
     language: null,
     mcp: null,
-    commands: ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'upload', 'uploads', 'clear', 'chat', 'agent', 'openui', 'run', 'queue', 'approve'],
+    commands: ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'upload', 'uploads', 'clear', 'chat', 'agent', 'openui', 'run', 'cancel', 'queue', 'approve'],
     chatMode: true,
     llm: null,
     activities: {},
@@ -246,7 +254,7 @@ function completionValuesFor(parts, inputBuffer, session) {
   if (command === '/upload' && parts[1] === 'convert' && tokenIndex === 2) return ['pending'];
   if (command === '/uploads' && tokenIndex === 1) return ['clean', 'list'];
   if (command === '/uploads' && previousToken === 'clean') return ['--older-than'];
-  if (command === '/run' && tokenIndex === 1) return ['status', 'cancel', 'kill'];
+  if (command === '/run' && tokenIndex === 1) return ['status', 'cancel', 'kill', 'capability'];
   if (command === '/queue' && tokenIndex === 1) return ['cancel', 'clear'];
   if (command === '/queue' && previousToken === 'cancel') {
     return (session.jobQueue ?? [])

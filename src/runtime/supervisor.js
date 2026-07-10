@@ -1,3 +1,5 @@
+import { openSync, readSync, closeSync, fstatSync } from 'node:fs';
+import { isAbsolute, join, normalize, resolve } from 'node:path';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
@@ -144,9 +146,19 @@ export async function pollActivitiesOnce(session, {
           }
           session._activityLogCursors[key] = logTail.at(-1);
         }
+        // The job log is terse — the actual narrative (per-document plans,
+        // LLM calls with token counts, apply operations) lives in the
+        // engine's trace file, whose path the status exposes. Tail it from
+        // the host and surface the significant events.
+        if (progress.traceFile) {
+          for (const line of readNewTraceLines(session, key, progress.traceFile)) {
+            emitRuntimeLog(session, `trace: ${line}`);
+          }
+        }
         if (polledActivity.terminal) {
           delete session._activityLogKeys[key];
           delete session._activityLogCursors?.[key];
+          delete session._activityTraceCursors?.[key];
           await startNextQueuedJob(session, {
             addLog: (message) => emitRuntimeLog(session, message),
           });
@@ -209,4 +221,53 @@ export async function cancelActiveActivityJobs(session, { callTool = callMcpTool
     }
   }
   return cancelled;
+}
+
+// Trace events worth surfacing in the chat-side log: plan/apply milestones,
+// LLM calls (with token counts), warnings and errors. The raw trace is far
+// chattier — streaming everything would recreate the noise the dedupe killed.
+const TRACE_EVENT_PATTERN = /\b(llm:start|llm:end|llm:json|llm:error|ingest:plan|ingest:operations|ingest:apply|ingest:source|build:template|retrieval:|embedding:|WARN|ERROR)\b/;
+const TRACE_MAX_BYTES_PER_POLL = 64 * 1024;
+const TRACE_MAX_LINES_PER_POLL = 12;
+
+export function readNewTraceLines(session, key, traceFile) {
+  const workspacePath = session?.workspacePath;
+  if (!workspacePath) return [];
+  // The trace path comes from an agent payload: never let it escape the
+  // workspace directory.
+  const resolved = resolve(workspacePath, normalize(String(traceFile)));
+  if (isAbsolute(String(traceFile)) || !resolved.startsWith(resolve(workspacePath))) return [];
+  let fd;
+  try {
+    fd = openSync(resolved, 'r');
+    const size = fstatSync(fd).size;
+    session._activityTraceCursors ??= {};
+    let offset = session._activityTraceCursors[key];
+    // First sighting (or file rotation): start near the end, not at byte 0 —
+    // replaying a long history would flood the panel.
+    if (offset == null || offset > size) offset = Math.max(0, size - 4096);
+    if (size <= offset) return [];
+    const length = Math.min(size - offset, TRACE_MAX_BYTES_PER_POLL);
+    const buffer = Buffer.alloc(length);
+    readSync(fd, buffer, 0, length, offset);
+    const chunk = buffer.toString('utf8');
+    // Only advance past COMPLETE lines so a partially-written line is
+    // re-read whole on the next poll.
+    const lastNewline = chunk.lastIndexOf('\n');
+    if (lastNewline === -1) return [];
+    session._activityTraceCursors[key] = offset + Buffer.byteLength(chunk.slice(0, lastNewline + 1), 'utf8');
+    return chunk
+      .slice(0, lastNewline)
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && TRACE_EVENT_PATTERN.test(line))
+      .slice(0, TRACE_MAX_LINES_PER_POLL)
+      // Strip the ISO timestamp + elapsed prefix: the runtime log adds its
+      // own clock, and the double timestamp ate half the panel width.
+      .map((line) => line.replace(/^\S+\s+\+[\d.]+(?:ms|s|m|h)\s+(INFO|WARN|ERROR)\s+/, (_m, level) => (level === 'INFO' ? '' : `${level} `)));
+  } catch {
+    return [];
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }

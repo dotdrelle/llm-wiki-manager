@@ -713,7 +713,9 @@ test('runRuntimeParallelPlan fails cleanly when scheduler budget is exceeded', a
   assert.equal(result.budgetExceeded, true);
   assert.equal(result.reason, 'max_tasks_exceeded');
   assert.ok(session.agentEvents.some((event) => event.type === 'run_error' && event.payload?.budget?.reason === 'max_tasks_exceeded'));
-  assert.equal(session.headlessPlan[0].status, 'pending');
+  // run_error now cancels leftover pending steps: a dead run must not leave
+  // ghost work in the panels or reappear at the next relaunch.
+  assert.equal(session.headlessPlan[0].status, 'cancelled');
 });
 
 test('runRuntimeParallelPlan retries a retryable task on a fallback agent', async () => {
@@ -915,3 +917,36 @@ async function waitFor(predicate, timeoutMs = 500) {
   }
   assert.fail('condition was not met before timeout');
 }
+
+test('runtime runs are seeded with the chat that preceded them', async () => {
+  // "Donna n'a pas de contexte" was literally true: runs started with an
+  // empty history, so the model reinvented the missing context. The seed
+  // carries the prior exchanges, minus the run's own triggering message.
+  const { conversationSeed } = await import('./runner.js');
+  const session = {
+    agentProjection: {
+      conversation: [
+        { role: 'user', content: 'peux-tu configurer le CME ?' },
+        { role: 'assistant', content: 'CME configuré sur confluent.meteo.fr. Veux-tu ingérer les documents en attente ?' },
+        { role: 'user', content: 'oui lance l\'ingestion' },
+      ],
+    },
+  };
+
+  const seed = conversationSeed(session, "oui lance l'ingestion");
+  assert.deepEqual(seed.map((message) => message.role), ['user', 'assistant']);
+  assert.match(seed[1].content, /confluent\.meteo\.fr/);
+
+  // Long entries are clipped, empty/technical roles dropped.
+  const noisy = {
+    agentProjection: {
+      conversation: [
+        { role: 'command', content: 'Runtime is idle.' },
+        { role: 'assistant', content: 'x'.repeat(5000) },
+      ],
+    },
+  };
+  const clipped = conversationSeed(noisy, 'autre demande');
+  assert.equal(clipped.length, 1);
+  assert.equal(clipped[0].content.length, 2000);
+});

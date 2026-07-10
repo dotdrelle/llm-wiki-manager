@@ -9,6 +9,30 @@ export function resolveSchedulerConcurrency(value = process.env.WIKI_MANAGER_SCH
     : DEFAULT_SCHEDULER_CONCURRENCY;
 }
 
+export function resolvePlanConcurrency({ plan = [], agents = [], configured = null } = {}) {
+  const capabilities = new Set(plan.map((task) => task?.requiredCapability).filter(Boolean).map(String));
+  const assignedAgents = new Set(plan.map((task) => task?.agentInstanceId).filter(Boolean).map(String));
+  const relevantAgents = agents.filter((agent) => {
+    const id = String(agent?.agentInstanceId ?? agent?.description?.agentInstanceId ?? '');
+    if (id && assignedAgents.has(id)) return true;
+    return (agent?.description?.capabilities ?? []).some((capability) => capabilities.has(String(capability?.id ?? '')));
+  });
+  const values = [
+    positiveInteger(configured),
+    ...plan.flatMap(concurrencyValues),
+    ...relevantAgents.flatMap(concurrencyValues),
+  ].filter(Boolean);
+  return values.length > 0 ? Math.max(1, Math.min(...values)) : DEFAULT_SCHEDULER_CONCURRENCY;
+}
+
+export function resolveCapabilityConcurrency(agent = null, ...constraints) {
+  const values = [
+    ...concurrencyValues(agent),
+    ...constraints.map(positiveInteger),
+  ].filter(Boolean);
+  return values.length > 0 ? Math.max(1, Math.min(...values)) : DEFAULT_SCHEDULER_CONCURRENCY;
+}
+
 export function effectiveConcurrency(group = null, agent = null, donna = null, provider = null) {
   const limits = [
     ...concurrencyValues(donna),

@@ -131,6 +131,38 @@ const agentDescriptionSchema = {
   },
 };
 
+const pendingInputSchema = {
+  $id: 'https://dotdrelle.dev/wiki-manager/contracts/pending-input/v1',
+  title: 'PendingInput',
+  schemaVersion: '1',
+  type: 'object',
+  required: ['type', 'ref'],
+  additionalProperties: true,
+  properties: {
+    type: { type: 'string', minLength: 1 },
+    ref: { type: 'string', minLength: 1 },
+    label: nullableString,
+    mediaType: nullableString,
+  },
+};
+
+const capabilityStatusSchema = {
+  $id: 'https://dotdrelle.dev/wiki-manager/contracts/capability-status/v1',
+  title: 'CapabilityStatus',
+  schemaVersion: '1',
+  type: 'object',
+  required: ['contractVersion', 'agentInstanceId', 'capability', 'operation', 'available', 'pendingInputs'],
+  additionalProperties: true,
+  properties: {
+    contractVersion: { type: 'string', minLength: 1 },
+    agentInstanceId: { type: 'string', minLength: 1 },
+    capability: { type: 'string', minLength: 1 },
+    operation: { type: 'string', minLength: 1 },
+    available: { type: 'boolean' },
+    pendingInputs: { type: 'array', items: pendingInputSchema },
+  },
+};
+
 const taskGroupSchema = {
   $id: 'https://dotdrelle.dev/wiki-manager/contracts/task-group/v1',
   title: 'TaskGroup',
@@ -424,6 +456,7 @@ export const contractSchemas = {
   outputReference: outputReferenceSchema,
   capabilityDescription: capabilityDescriptionSchema,
   agentDescription: agentDescriptionSchema,
+  capabilityStatus: capabilityStatusSchema,
   retryPolicy: retryPolicySchema,
   taskGroup: taskGroupSchema,
   plannedTask: plannedTaskSchema,

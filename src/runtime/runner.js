@@ -9,10 +9,16 @@ import { createBudgetManager, BudgetExceededError } from '../orchestrator/budget
 import { createDispatcher } from '../orchestrator/dispatcher.js';
 import { assertValidatedFragment } from '../orchestrator/planValidator.js';
 import { createResultAggregator } from '../orchestrator/resultAggregator.js';
-import { drainActive, resolveSchedulerConcurrency, startReadyTasks } from '../orchestrator/scheduler.js';
+import { drainActive, resolvePlanConcurrency, startReadyTasks } from '../orchestrator/scheduler.js';
 import { emitRuntimeLog, pollActivitiesOnce } from './supervisor.js';
 
-const DEFAULT_MAX_REPLANS = 2;
+// 0 by default: automatic replans turn evaluator/replanner TEXT into
+// executable pseudo-tasks (no capability, no operation) that stall at 0%
+// and pile up as replan-1/2/3 ghost work — the same disease as the removed
+// text-plan extraction. Failures now end with an honest report; the user
+// (or a stronger model) decides what to do next. Re-enable explicitly with
+// WIKI_MANAGER_REPLANNER_MAX_REPLANS if desired.
+const DEFAULT_MAX_REPLANS = 0;
 
 async function waitForRuntimeActivities(session, startedActivities, { timeoutMs, signal, pollBusy }) {
   const deadline = Date.now() + timeoutMs;
@@ -43,13 +49,35 @@ async function waitForRuntimeActivities(session, startedActivities, { timeoutMs,
   return { ok: false, timedOut: true, completed: tracked };
 }
 
-export async function runRuntimeAgenticLoop(agent, session, initialInput, { signal, timeoutMs, maxTurns, runId, pollBusy, parallelHandoff = false }) {
+// Last chat exchanges (user/assistant) that preceded this run, so the run's
+// LLM knows WHAT was agreed before acting. Long messages are clipped: the
+// context is for grounding, not for re-reading novels.
+// Env knobs (documented in .env.example): every tunable introduced by the
+// grounding/orchestration work is overridable — nothing business-critical
+// is frozen in code.
+export function conversationSeed(session, currentInput, { limit = 12, maxChars = 2000 } = {}) {
+  const conversation = Array.isArray(session.agentProjection?.conversation)
+    ? session.agentProjection.conversation
+    : [];
+  const seed = conversation
+    .filter((message) => ['user', 'assistant'].includes(message?.role) && String(message?.content ?? '').trim())
+    .slice(-limit)
+    .map((message) => ({ role: message.role, content: String(message.content).slice(0, maxChars) }));
+  // The run's own triggering user message is appended by the loop itself —
+  // drop it from the seed to avoid sending it twice.
+  const last = seed.at(-1);
+  if (last && last.role === 'user' && last.content === String(currentInput ?? '').slice(0, maxChars)) seed.pop();
+  return seed;
+}
+
+export async function runRuntimeAgenticLoop(agent, session, initialInput, { signal, timeoutMs, maxTurns, runId, pollBusy, parallelHandoff = false, initialMessages = [] }) {
   return runAgenticLoop(agent, session, initialInput, {
     signal,
     timeoutMs,
     maxTurns,
     runId,
     parallelHandoff,
+    initialMessages,
     deterministicTerminalSummary: true,
     abortMessage: 'Runtime run cancelled.',
     waitForActivities: (turnSession, startedActivities, waitOptions) =>
@@ -107,6 +135,9 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
 } = {}) {
   let currentInput = initialInput ?? input;
   let replansLeft = Math.max(0, Math.floor(Number(maxReplans) || 0));
+  // Computed ONCE at run start: the pre-run chat. Re-computing inside the
+  // loop would re-ingest this run's own turns and duplicate them.
+  const runConversationSeed = conversationSeed(session, currentInput);
 
   while (true) {
     sanitizeSessionPlanForExecution(session, runId);
@@ -127,6 +158,7 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
         runId,
         pollBusy,
         parallelHandoff: true,
+        initialMessages: runConversationSeed,
       });
     if (result.ok && result.handoff) continue;
     if (!result.ok) {
@@ -212,6 +244,20 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
             continue;
           }
         }
+        // Surface the verdict in the CHAT: the work that ran stays done, the
+        // user sees why the evaluator was unsatisfied and decides — no
+        // self-generated follow-up tasks.
+        dispatchAgentEvent(session, createAgentEvent('assistant_message', {
+          origin: 'runtime',
+          runId,
+          payload: {
+            content: [
+              `Le run est terminé mais l'évaluation le juge incomplet : ${evaluation.reason}`,
+              evaluation.suggestedAction ? `Piste suggérée : ${evaluation.suggestedAction}` : null,
+              'Aucune tâche supplémentaire n\'a été créée automatiquement — dis-moi si tu veux poursuivre.',
+            ].filter(Boolean).join('\n'),
+          },
+        }));
         dispatchAgentEvent(session, createAgentEvent('run_error', {
           origin: 'runtime',
           runId,
@@ -240,7 +286,7 @@ export async function runRuntimeParallelPlan(agent, session, input, {
   maxTurns,
   runId = null,
   pollBusy,
-  concurrency = resolveSchedulerConcurrency(),
+  concurrency = null,
   fragment = null,
   assignmentManager = null,
   attemptManager = null,
@@ -252,7 +298,15 @@ export async function runRuntimeParallelPlan(agent, session, input, {
   dispatcherPollIntervalMs = 250,
 } = {}) {
   if (fragment != null) assertValidatedFragment(fragment);
-  const limit = Math.max(1, Math.floor(Number(concurrency) || 1));
+  const agents = session.agentRegistry?.snapshot?.() ?? session.agentRegistrySnapshot ?? [];
+  const configuredConcurrency = Number(concurrency) > 0
+    ? Number(concurrency)
+    : Number(process.env.WIKI_MANAGER_CAPABILITY_CONCURRENCY || process.env.WIKI_MANAGER_SCHEDULER_CONCURRENCY);
+  const limit = resolvePlanConcurrency({
+    plan: session.headlessPlan ?? [],
+    agents,
+    configured: configuredConcurrency,
+  });
   const active = new Map();
   const attempts = attemptManager ?? createAttemptManager();
   const assigner = assignmentManager ?? createAssignmentManager({ session });
@@ -278,6 +332,15 @@ export async function runRuntimeParallelPlan(agent, session, input, {
   sanitizeSessionPlanForExecution(session, runId);
   ensurePlanProjection(session, runId);
   emitRuntimeLog(session, `scheduler: parallel plan enabled (concurrency ${limit})`);
+  let approvalNoticeSent = false;
+  // Interactive approvals do NOT expire: the user has /approve, "valide
+  // tout", /cancel and /run kill — an arbitrary timer only created mystery
+  // failures. A deadline exists only when explicitly configured (headless
+  // runs, CI) via the session or the env escape hatch.
+  const configuredApprovalWait = Number(session._approvalTimeoutMs) > 0
+    ? Number(session._approvalTimeoutMs)
+    : (Number(process.env.WIKI_MANAGER_APPROVAL_TIMEOUT_MS) > 0 ? Number(process.env.WIKI_MANAGER_APPROVAL_TIMEOUT_MS) : null);
+  const approvalDeadline = configuredApprovalWait ? Date.now() + configuredApprovalWait : Infinity;
 
   try {
     while (true) {
@@ -370,6 +433,44 @@ export async function runRuntimeParallelPlan(agent, session, input, {
           }));
           emitRuntimeLog(session, `scheduler: budget exceeded (${exceeded.reason})`);
           return { ok: false, budgetExceeded: true, reason: exceeded.reason, budget: exceeded, completed: sessionActivities(session), failures };
+        }
+        const needingApproval = pending.filter((step) => step.requiresApproval === true);
+        if (needingApproval.length > 0) {
+          // The plan is only blocked on a HUMAN decision — wait for it
+          // (bounded) instead of declaring the run stalled. Announce once in
+          // the chat: users cannot approve what they never saw asked.
+          if (!approvalNoticeSent) {
+            approvalNoticeSent = true;
+            dispatchAgentEvent(session, createAgentEvent('assistant_message', {
+              origin: 'runtime',
+              runId,
+              payload: {
+                content: [
+                  `⏸ Approbation requise avant exécution : ${needingApproval.length} tâche(s) mutante(s) en attente.`,
+                  ...needingApproval.slice(0, 5).map((step) => `  - ${step.description ?? step.id}`),
+                  needingApproval.length > 5 ? `  … et ${needingApproval.length - 5} autre(s).` : null,
+                  'Réponds « valide tout » (ou tape /approve) pour lancer, « annule » pour abandonner.',
+                ].filter(Boolean).join('\n'),
+              },
+            }));
+            emitRuntimeLog(session, `scheduler: waiting for approval (${needingApproval.length} task(s))`);
+          }
+          if (Date.now() < approvalDeadline) {
+            await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
+            continue;
+          }
+          // Configured timeout (headless/CI) reached: say it PLAINLY in the
+          // chat and let run_error clean the plan/activities so nothing
+          // lingers in the panels.
+          emitRuntimeLog(session, 'scheduler: approval wait timed out');
+          dispatchAgentEvent(session, createAgentEvent('assistant_message', {
+            origin: 'runtime',
+            runId,
+            payload: {
+              content: `⏱ Approbation non reçue dans le délai imparti — run arrêté, ${needingApproval.length} tâche(s) annulée(s). Relance la demande quand tu veux.`,
+            },
+          }));
+          return { ok: false, stalled: true, reason: 'awaiting_approval', completed: sessionActivities(session), failures };
         }
         const reason = pending.every((step) => approvalWaitingStatus(step.status)) ? 'awaiting_approval' : 'no_ready_plan_task';
         emitRuntimeLog(session, `scheduler: stalled (${reason})`);
@@ -1016,7 +1117,7 @@ function formatRecentConversation(session, n = 12) {
     .join('\n');
 }
 
-function resolveMaxReplans(value = process.env.WIKI_MANAGER_REPLANNER_MAX_REPLANS) {
+function resolveMaxReplans(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : DEFAULT_MAX_REPLANS;
 }

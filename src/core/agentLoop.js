@@ -1,7 +1,7 @@
 import { buildAgentSystemPrompt, formatLlmUnavailableMessage } from '../agent/graph.js';
 import { createAgentEvent, dispatchAgentEvent } from './agentEvents.js';
 import { activitySnapshot, newNonTerminalActivities } from './activity.js';
-import { extractHeadlessPlan, formatCompletedActivities, formatPlanStatus } from './plan.js';
+import { formatCompletedActivities, formatPlanStatus } from './plan.js';
 import { formatReadyTaskPrompt, nextReadyPlanTask, readyPlanTasks, sanitizePlanForExecution } from './planPatch.js';
 
 export function abortError(message = 'Agent run cancelled.') {
@@ -70,9 +70,13 @@ export async function runAgenticLoop(agent, session, initialInput, {
   onMaxTurns = null,
   abortMessage = 'Agent run cancelled.',
   parallelHandoff = false,
+  initialMessages = [],
 } = {}) {
   if (!waitForActivities) throw new Error('runAgenticLoop requires waitForActivities.');
-  const conversationHistory = [];
+  // Seeded with the chat that led to this run: a run that starts amnesiac
+  // receives an orphan sentence ("lance l'ingestion") and the model invents
+  // the missing context — the root of most "Donna répond sans savoir".
+  const conversationHistory = [...initialMessages];
   let currentInput = initialInput;
 
   for (let turn = 1; turn <= maxTurns; turn += 1) {
@@ -95,21 +99,16 @@ export async function runAgenticLoop(agent, session, initialInput, {
       { role: 'assistant', content: response },
     );
 
-    if (turn === 1) {
-      if (session.headlessPlan === null) {
-        const extractedPlan = extractHeadlessPlan(response);
-        if (extractedPlan) {
-          dispatchAgentEvent(session, createAgentEvent('plan_set', {
-            origin: planOrigin,
-            runId,
-            payload: { steps: extractedPlan },
-          }));
-          onPlanExtracted?.({ steps: session.headlessPlan ?? extractedPlan, fallback: true });
-        }
-      } else {
-        onPlanAlreadySet?.({ steps: session.headlessPlan });
-      }
+    if (turn === 1 && session.headlessPlan !== null) {
+      onPlanAlreadySet?.({ steps: session.headlessPlan });
     }
+    // NOTE: the deprecated text-plan extraction is gone. It converted any
+    // numbered list in a chatty LLM answer into an executable plan — the
+    // model's own questions ("Souhaitez-vous que je vous guide ?") became
+    // pending tasks, each step re-invoked the LLM, which produced another
+    // list… an infinite work-inventing loop. Plans now come ONLY from
+    // explicit channels: wiki__plan_set, _activity.plan.steps, or an
+    // integrated agent_plan fragment. Prose stays prose.
     sanitizeSessionPlan(session, { runId });
 
     const newPending = newNonTerminalActivities(snapshot, session);

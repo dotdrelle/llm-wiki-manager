@@ -236,3 +236,17 @@ test('agent description contract validates orchestrable agent capabilities', () 
   assert.equal(validateContract('capabilityDescription', description.capabilities[0]).ok, true);
   assert.equal(validateContract('agentDescription', { ...description, health: { status: 'offline' } }).ok, false);
 });
+
+test('capability status contract carries dynamic pending inputs without prescribing storage paths', () => {
+  const status = {
+    contractVersion: '1',
+    agentInstanceId: 'production-main',
+    capability: 'knowledge.update',
+    operation: 'ingest',
+    available: true,
+    pendingInputs: [{ type: 'file', ref: 'provider-owned/source-a', label: 'source-a.md', mediaType: 'text/markdown' }],
+  };
+
+  assert.equal(validateContract('capabilityStatus', status).ok, true);
+  assert.equal(validateContract('capabilityStatus', { ...status, pendingInputs: [{ type: 'file' }] }).ok, false);
+});

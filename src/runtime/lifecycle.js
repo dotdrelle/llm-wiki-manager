@@ -109,7 +109,7 @@ export async function runtimeHealthOrNull(url = runtimeUrlFromEnv(), token = run
 // alive after exit produced zombie runtimes running yesterday's code and
 // yesterday's endpoints. Nuance preserved: if a run is active anywhere, the
 // runtime is left alive so the run survives the shell (that promise stays).
-export async function shutdownOwnedRuntime(runtime, { log = () => {} } = {}) {
+export async function shutdownOwnedRuntime(runtime, { log = (_message) => {} } = {}) {
   if (!runtime?.url || !runtime?.started) return { action: 'kept', reason: 'not_owned' };
   try {
     const health = await runtimeHealthOrNull(runtime.url, runtime.token);

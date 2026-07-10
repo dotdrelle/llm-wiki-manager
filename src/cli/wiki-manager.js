@@ -15,6 +15,7 @@ import { extractActivity, parseJsonText, sessionActivities, terminalFailures } f
 import { syncActivitiesToPlan, formatPlanStatus } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
+import { resolveCapabilityConcurrency } from '../orchestrator/scheduler.js';
 // Runtime modules use node:sqlite (Node.js built-in unavailable in Bun).
 // They are imported dynamically so the shell / TUI path never loads them.
 
@@ -628,6 +629,71 @@ async function runRuntime(argv, agent) {
         : undefined;
       supervisor?.setRunSignal(signal);
       session._onStep = (message) => emitRuntimeLog(session, message);
+      // Deterministic capability run (/ingest): ask the capable agent for its
+      // task-graph fragment and integrate it as the plan BEFORE any LLM turn.
+      // The parallel path must not depend on a small model deciding to call
+      // agent_plan by itself.
+      if (body.capabilityPlan?.capability) {
+        const { validateFragment } = await import('../orchestrator/planValidator.js');
+        const { integrate } = await import('../orchestrator/planIntegrator.js');
+        const registry = session.capabilityRegistry ?? null;
+        const agents = session.agentRegistry?.snapshot?.() ?? session.agentRegistrySnapshot ?? [];
+        const provider = agents.find((item) => (item.description?.capabilities ?? [])
+          .some((capability) => capability.id === body.capabilityPlan.capability));
+        if (!provider?.serverName) {
+          throw new Error(`No agent provides capability ${body.capabilityPlan.capability}.`);
+        }
+        const fragment = parseJsonText(formatMcpToolResult(await callMcpTool(session.mcp, provider.serverName, 'agent_plan', {
+          capability: body.capabilityPlan.capability,
+          operation: body.capabilityPlan.operation ?? undefined,
+          workspace: { revision: String(Date.now()) },
+          constraints: {
+            // The agent declares its capacity. Request/env values are only
+            // constraints: they may lower that capacity, never raise it.
+            maxConcurrency: resolveCapabilityConcurrency(
+              provider,
+              body.capabilityPlan.maxConcurrency,
+              process.env.WIKI_MANAGER_CAPABILITY_CONCURRENCY,
+            ),
+            requireApprovalForMutations: body.capabilityPlan.requireApproval !== false,
+          },
+          ...(Array.isArray(body.capabilityPlan.inputs) && body.capabilityPlan.inputs.length > 0
+            ? { arguments: { inputs: body.capabilityPlan.inputs } }
+            : {}),
+        })));
+        if (!Array.isArray(fragment?.tasks) || fragment.tasks.length === 0) {
+          dispatchAgentEvent(session, createAgentEvent('assistant_message', {
+            origin: 'runtime',
+            runId,
+            payload: { content: `Aucune tâche à planifier pour ${body.capabilityPlan.capability} (${fragment?.summary?.initialSynthesis?.[0] ?? 'fragment vide'}).` },
+          }));
+          dispatchAgentEvent(session, createAgentEvent('run_done', { origin: 'runtime', runId, payload: { runId } }));
+          return;
+        }
+        // Full official integration path — NOT a bare plan_set: integrate()
+        // validates the fragment, persists the tasks, and CREATES the
+        // approval requests the scheduler's approvalCovered() filter waits
+        // for. A bare plan_set left requiresApproval tasks unreachable
+        // forever (stalled as no_ready_plan_task with nothing to approve).
+        const validation = validateFragment(fragment, {
+          registry,
+          run: { plannerAgentInstanceId: provider.agentInstanceId ?? provider.serverName },
+        });
+        if (!validation.ok) {
+          throw new Error(`Capability plan rejected: ${validation.errors.map((error) => error.message ?? error.code ?? String(error)).join('; ')}`);
+        }
+        const integrated = integrate(runId, validation.normalizedFragment, {
+          registry,
+          session,
+          store,
+          workspace: session.workspace ?? null,
+          enforceApprovalCoverage: true,
+        });
+        if (!integrated.ok) {
+          throw new Error(`Capability plan integration failed: ${(integrated.errors ?? []).map((error) => error.message ?? error.code ?? String(error)).join('; ')}`);
+        }
+        emitRuntimeLog(session, `capability-plan: ${fragment.tasks.length} task(s) integrated from ${provider.serverName}.agent_plan (${body.capabilityPlan.capability}); approvals: ${(session.agentProjection?.approvals ?? []).filter((approval) => approval.status === 'pending_approval').length} pending`);
+      }
       await runRuntimeAgenticWorkflow(agent, session, input, {
         signal,
         timeoutMs,
@@ -811,11 +877,11 @@ export async function runCli(argv) {
       runtime = unavailableRuntime(err);
       console.error(`Runtime unavailable: ${runtime.error}`);
     }
+    // The owned-runtime shutdown happens inside the TUI's own exit paths
+    // (see tui.tsx onShellExit): render() resolves at MOUNT, so anything
+    // after this await would run while the shell is still on screen —
+    // 0.12.9 shipped exactly that bug and killed the runtime under the user.
     await runOpenTuiShell({ agent, packageJson, runtime });
-    if (runtime?.url) {
-      const { shutdownOwnedRuntime } = await import('../runtime/lifecycle.js');
-      await shutdownOwnedRuntime(runtime, { log: (message) => console.log(`[wiki-manager] ${message}`) });
-    }
     return;
   }
 

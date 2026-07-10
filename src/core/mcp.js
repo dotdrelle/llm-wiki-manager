@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
 
-const WIKI_MANAGER_VERSION = '0.12.11';
+const WIKI_MANAGER_VERSION = '0.12.12';
 
 function envValue(key) {
   const filePath = managerEnvFile();
@@ -305,8 +305,7 @@ export function formatMcpToolResult(result) {
 const DEFAULT_TOOL_RESULT_MAX_CHARS = 16000;
 
 function toolResultMaxChars() {
-  const parsed = Number(process.env.WIKI_MANAGER_TOOL_RESULT_MAX_CHARS);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_TOOL_RESULT_MAX_CHARS;
+  return DEFAULT_TOOL_RESULT_MAX_CHARS;
 }
 
 // Bound what a tool result injects into the LLM context and the conversation

@@ -284,3 +284,34 @@ async function waitFor(predicate, timeoutMs = 250) {
   }
   assert.fail('Timed out waiting for condition.');
 }
+
+test('readNewTraceLines streams significant trace events with a per-activity cursor', async () => {
+  const { readNewTraceLines } = await import('./supervisor.js');
+  const { mkdtempSync, writeFileSync, appendFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const workspacePath = mkdtempSync(join(tmpdir(), 'trace-tail-'));
+  try {
+    const rel = '.wiki/logs/ingest-test.log';
+    const abs = join(workspacePath, rel);
+    (await import('node:fs')).mkdirSync(join(workspacePath, '.wiki/logs'), { recursive: true });
+    writeFileSync(abs, '2026-07-10T13:00:00.000Z +10ms INFO llm:start label=ingest_plan promptChars=42000\n');
+    const session = { workspacePath };
+
+    const first = readNewTraceLines(session, 'k1', rel);
+    assert.deepEqual(first, ['llm:start label=ingest_plan promptChars=42000']);
+
+    // No new content → nothing re-emitted.
+    assert.deepEqual(readNewTraceLines(session, 'k1', rel), []);
+
+    appendFileSync(abs, '2026-07-10T13:01:00.000Z +70s INFO noise: irrelevant heartbeat\n2026-07-10T13:02:00.000Z +130s WARN embedding:neutralized-input status=413\n');
+    const second = readNewTraceLines(session, 'k1', rel);
+    assert.deepEqual(second, ['WARN embedding:neutralized-input status=413']);
+
+    // Path traversal attempts are refused.
+    assert.deepEqual(readNewTraceLines(session, 'k1', '../../etc/passwd'), []);
+    assert.deepEqual(readNewTraceLines(session, 'k1', '/etc/passwd'), []);
+  } finally {
+    rmSync(workspacePath, { recursive: true, force: true });
+  }
+});

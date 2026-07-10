@@ -27,7 +27,7 @@ const MAX_PROFILE_CHARS = 4000;
 const INTERNAL_TOOL_SERVERS = {
   wiki: ['plan_set', 'plan_done'],
   shell: ['run_command', 'read_command', 'profile_update'],
-  runtime: ['kill', 'cancel', 'status', 'approve', 'enqueue'],
+  runtime: ['kill', 'cancel', 'status', 'approve', 'enqueue', 'start_capability_run'],
 };
 
 const AGENT_SLASH_COMMANDS = new Set([
@@ -161,6 +161,24 @@ const RUNTIME_ENQUEUE_TOOL = {
       additionalProperties: false,
       properties: { input: { type: 'string', description: 'The request to execute after the current run, phrased as a complete instruction.' } },
       required: ['input'],
+    },
+  },
+};
+
+const RUNTIME_CAPABILITY_RUN_TOOL = {
+  type: 'function',
+  function: {
+    name: 'runtime__start_capability_run',
+    description: 'Start a DETERMINISTIC orchestrated run for a discovered capability: the runtime asks the capable agent for its task graph (agent_plan), validates and integrates it, creates the approval requests, and dispatches the tasks in parallel. Use this whenever the user asks for multi-document or multi-step work covered by a known capability (e.g. ingest everything pending → capability "knowledge.update", operation "ingest"). Do NOT call production tools directly for such requests.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        capability: { type: 'string', description: 'Capability id from the known list (e.g. knowledge.update).' },
+        operation: { type: 'string', description: 'Operation supported by the capability (e.g. ingest, build).' },
+        inputs: { type: 'array', items: { type: 'string' }, description: 'Optional file subset; omit to cover everything pending.' },
+      },
+      required: ['capability'],
     },
   },
 };
@@ -522,6 +540,33 @@ export function knownCapabilityIds(session) {
   }))].sort();
 }
 
+// Deterministic fragment→plan mapping, shared by the agent_plan tool bridge
+// and the /ingest-style direct capability runs: the parallel path must not
+// depend on an LLM copying fields correctly.
+export function planStepsFromFragment(payload) {
+  const tasks = Array.isArray(payload?.tasks) ? payload.tasks : [];
+  return tasks.map((task, index) => normalizeDeclaredPlanStep({
+    id: task.id,
+    description: task.label ?? task.id ?? `Task ${index + 1}`,
+    requiredCapability: task.requiredCapability ?? payload.capability ?? null,
+    operation: task.operation ?? null,
+    arguments: task.arguments ?? {},
+    dependsOn: task.dependsOn ?? [],
+    outputRefs: (task.expectedOutputRefs ?? []).map((ref) => (ref && typeof ref === 'object' ? String(ref.ref ?? '') : String(ref))).filter(Boolean),
+    groupId: task.groupId ?? null,
+    dependsOnGroup: task.dependsOnGroup ?? null,
+    parallelizable: task.parallelizable,
+    barrier: task.barrier,
+    locks: task.locks,
+    requiresApproval: task.requiresApproval,
+    approvalClass: task.approvalClass,
+    approvalSummary: task.approvalSummary,
+    idempotencyKey: task.idempotencyKey,
+    progressWeight: task.progressWeight,
+    recommendedConcurrency: task.recommendedConcurrency,
+  }, index));
+}
+
 async function handleRuntimeControlTool(session, tool, args = {}) {
   const url = session.runtime?.url ?? null;
   if (!url) return 'Runtime not connected: no runtime URL available in this session.';
@@ -538,6 +583,23 @@ async function handleRuntimeControlTool(session, tool, args = {}) {
     if (tool === 'approve') {
       const result = await postRuntimeControl('message', { url, workspace, input: 'approve', intent: 'approve' });
       return String(result?.explanation ?? (result?.accepted ? 'Approval granted.' : 'No pending approval found.'));
+    }
+    if (tool === 'start_capability_run') {
+      const { postRuntimeRun } = await import('../runtime/client.js');
+      const result = await postRuntimeRun(`Run de capability ${args.capability}${args.operation ? ` (${args.operation})` : ''} demandé par Donna.`, {
+        url,
+        workspace,
+        capabilityPlan: {
+          capability: String(args.capability ?? ''),
+          ...(args.operation ? { operation: String(args.operation) } : {}),
+          ...(Array.isArray(args.inputs) && args.inputs.length > 0 ? { inputs: args.inputs.map(String) } : {}),
+          // No concurrency dictated here: the runtime reads the provider's
+          // own declared capacity (agent_describe limits).
+        },
+      });
+      return result?.runId
+        ? `Run de capability accepté (${String(result.runId).slice(0, 8)}) : le plan sera intégré et dispatché en parallèle ; une approbation sera demandée avant les mutations (l'utilisateur peut dire « valide tout » ou taper /approve). Suis la progression dans Activity.`
+        : `Run non démarré : ${result?.explanation ?? result?.error ?? JSON.stringify(result)}`;
     }
     if (tool === 'enqueue') {
       const result = await postRuntimeControl('message', { url, workspace, input: String(args.input ?? ''), intent: 'enqueue' });
@@ -694,6 +756,7 @@ export function buildAgentSystemPrompt(state) {
     'When calling a tool, emit no preliminary narration. Call it directly; the PLAN and Activity panels show progress. After completion, keep the final response concise and proportional to the result.',
     'For connector configuration/setup/update requests, if a matching setup/configuration tool is connected and the required arguments are known, call it immediately. If the connector or tool is not connected, say which concrete capability is missing and recommend the exact service/status primitive to inspect it. Do not invent a pending connector action in plain text.',
     'For workspace-scoped external MCP tools, the orchestrator enforces workspace injection. Use the active workspace for configuration, source, import, export, conversion, and generation tools unless a tool is explicitly job-scoped and only requires a job id.',
+    'Dynamic capability inputs are owned by the agent that provides the capability. To answer which inputs are pending or available, call the qualified `<provider>__agent_status` tool with {capability, operation} and report only its pendingInputs. Never infer this state from /uploads or a hardcoded workspace directory. If no capable agent/status tool is connected, say that the pending inputs cannot be determined.',
     'You can call shell__run_command for safe manager slash commands such as /workspace list, /workspace init <name> [path], /use <workspace>, /config, /status, /services, /skills, /skills show <name>, and /skills run <name>.',
     'Skills are workflow instructions, not executable code. When a user asks to run a skill, inspect it, propose the concrete primitive/tool plan, and ask for confirmation before costly or mutating actions.',
     [
@@ -737,7 +800,7 @@ export function buildAgentSystemPrompt(state) {
     'Confluence/CME/source export means exporting external Confluence sources into raw/untracked: use cme MCP tools (`cme__cme_export_run`, then `cme__cme_export_status`). Never use production `type=export` for Confluence source export.',
     'Wiki/deliverable/publication export means exporting generated deliverables from the wiki: use production MCP tools (`production__production_start_job` with `type:"export"` or pipeline steps). Require the deliverable path when exporting deliverables.',
     'For ingest/build/export/polish/pipeline workflows, use production MCP tools. Do not route these through direct /wiki shortcuts.',
-    'MULTI-DOCUMENT ingest (more than 2 files, or "ingest everything pending"): call production__agent_plan first, e.g. {capability:"knowledge.update", operation:"ingest", constraints:{maxConcurrency:3, requireApprovalForMutations:true}}. The shell integrates the returned task graph as the plan automatically and the orchestrator dispatches the per-document tasks IN PARALLEL with an approval gate. Do not call production__production_start_job for multi-document ingest — that creates one monolithic sequential job.',
+    'MULTI-DOCUMENT ingest (more than 2 files, or "ingest everything pending") and any multi-step capability work: when runtime__start_capability_run is available, call it (e.g. {capability:"knowledge.update", operation:"ingest"}) — the runtime integrates the agent task graph deterministically and dispatches IN PARALLEL with an approval gate. Inside a runtime run (no runtime tools), call production__agent_plan instead; the shell integrates the fragment automatically. Never call production__production_start_job for multi-document ingest — that creates one monolithic sequential job.',
     'Single-document ingest or one-off jobs (doctor, one build, one export): production__production_start_job is fine. To chain sequential steps (e.g. build then polish) use ONE call with type="pipeline" and steps=["build","polish"] — never separate jobs (the first is asynchronous). For existing deliverables where content stability matters, pass stabilize:true. Do not ask the user to confirm between steps.',
     'Long-running MCP jobs: do not call the same status tool more than once consecutively. When chaining jobs sequentially: (1) start the job, report job/activity id and status; (2) check status once — if done, proceed to the next step immediately; (3) if still running, report status, list the remaining steps, and return control; (4) when re-invoked, check status first, then proceed. Do not spin-poll (status → status → status with no new action between). The shell activity panel monitors non-terminal jobs automatically.',
     'If production__production_start_job is returned as queued/waiting by the manager, report that it is waiting in the local queue and return control. Do not continue as if the production job has started.',
@@ -824,6 +887,9 @@ function toolsForClassification(classification, writeTools, session = null) {
   const controlTools = session?.runtime?.url
     ? [RUNTIME_STATUS_TOOL, RUNTIME_CANCEL_TOOL, RUNTIME_KILL_TOOL, RUNTIME_APPROVE_TOOL, RUNTIME_ENQUEUE_TOOL]
     : [];
+  const capabilityRunTools = session?.runtime?.url && !classification.activeRun
+    ? [RUNTIME_CAPABILITY_RUN_TOOL]
+    : [];
   if (classification.activeRun && ['converse', 'observe', 'ambiguous', 'approve', 'cancel', 'enqueue_run'].includes(classification.kind)) {
     // During an active run Donna gets read + profile + the runtime control
     // suite: she can answer, approve, enqueue for later, soft-cancel or
@@ -831,7 +897,7 @@ function toolsForClassification(classification, writeTools, session = null) {
     // what runtime__enqueue is for). No canned regex answers anywhere.
     return [SHELL_READ_COMMAND_TOOL, SHELL_PROFILE_UPDATE_TOOL, ...controlTools];
   }
-  return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...writeTools];
+  return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...writeTools];
 }
 
 export function createAgentGraph(options = {}) {
@@ -1107,26 +1173,7 @@ export function createAgentGraph(options = {}) {
           // wiki__plan_set would lose fields (a small local model dropped
           // arguments/operations in testing) — the shell does the mapping.
           if (/(^|__)agent_plan$/.test(tool) && Array.isArray(payload?.tasks) && payload.tasks.length > 0) {
-            const steps = payload.tasks.map((task, index) => normalizeDeclaredPlanStep({
-              id: task.id,
-              description: task.label ?? task.id ?? `Task ${index + 1}`,
-              requiredCapability: task.requiredCapability ?? payload.capability ?? null,
-              operation: task.operation ?? null,
-              arguments: task.arguments ?? {},
-              dependsOn: task.dependsOn ?? [],
-              outputRefs: (task.expectedOutputRefs ?? []).map((ref) => (ref && typeof ref === 'object' ? String(ref.ref ?? '') : String(ref))).filter(Boolean),
-              groupId: task.groupId ?? null,
-              dependsOnGroup: task.dependsOnGroup ?? null,
-              parallelizable: task.parallelizable,
-              barrier: task.barrier,
-              locks: task.locks,
-              requiresApproval: task.requiresApproval,
-              approvalClass: task.approvalClass,
-              approvalSummary: task.approvalSummary,
-              idempotencyKey: task.idempotencyKey,
-              progressWeight: task.progressWeight,
-              recommendedConcurrency: task.recommendedConcurrency,
-            }, index, state.session));
+            const steps = planStepsFromFragment(payload);
             emitAgentEvent(state.session, 'plan_set', 'tool', { steps });
             state.session._onStep?.(`Plan: ${steps.length} task(s) declared from ${server} fragment`);
             resultText = `Task-graph fragment integrated as the current plan (${steps.length} task(s), groups: ${[...new Set(payload.tasks.map((task) => task.groupId).filter(Boolean))].join(', ') || 'none'}). The orchestrator will dispatch these tasks — do NOT call production tools for them yourself. Reply with a short summary and wait.`;

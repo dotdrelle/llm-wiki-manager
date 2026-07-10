@@ -129,23 +129,25 @@ test('runAgenticLoop can finish from terminal activity facts without another LLM
   assert.match(result.summary, /output: deliverables\/result\.md/);
 });
 
-test('runAgenticLoop extracts a fallback numbered plan from first response', async () => {
+test('runAgenticLoop never turns a chatty numbered answer into a plan', async () => {
+  // Regression guard for the removed text-plan extraction: the model's own
+  // numbered prose ("1. … 2. … Souhaitez-vous… ?") used to become pending
+  // tasks and re-invoke the LLM in an infinite work-inventing loop. A chatty
+  // answer with no declared plan and no activity is simply a COMPLETE reply.
   const session = {
     activities: {},
     headlessPlan: null,
   };
   const result = await runAgenticLoop({
     async invoke() {
-      return { response: '1. Collect sources\n2. Build page' };
+      return { response: '1. Collect sources\n2. Build page\nSouhaitez-vous que je vous guide ?' };
     },
   }, session, 'Plan task', {
-    maxTurns: 1,
+    maxTurns: 3,
     timeoutMs: 1000,
     waitForActivities: async () => assert.fail('No activities should be waited for.'),
   });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.maxTurns, true);
-  assert.equal(session.headlessPlan.length, 2);
-  assert.equal(session.headlessPlan[0].description, 'Collect sources');
+  assert.equal(result.ok, true, 'the run completes with the reply instead of inventing steps');
+  assert.equal(session.headlessPlan, null);
 });

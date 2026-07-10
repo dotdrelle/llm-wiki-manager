@@ -677,6 +677,9 @@ async function runRuntime(argv, agent) {
     port,
     store,
     getContext: getWorkspaceContext,
+    listActiveRuns: () => [...contexts.values()]
+      .filter((context) => context?.running)
+      .map((context) => ({ workspace: context.workspace ?? null, runId: context.currentRunId ?? null })),
     run: executeRun,
     cancel: (context) => emitRuntimeLog(context.session, 'runtime: cancel requested'),
     resume: ({ workspace }) => recoverRuntime({ workspace, manual: true }),
@@ -801,12 +804,18 @@ export async function runCli(argv) {
     let runtime = null;
     try {
       const { ensureRuntime } = await import('../runtime/lifecycle.js');
-      runtime = await ensureRuntime();
+      // If the manager files were just scaffolded, a pre-existing runtime
+      // predates them: restart it so its sessions load the new endpoints.
+      runtime = await ensureRuntime({ forceRestart: scaffolded.length > 0 });
     } catch (err) {
       runtime = unavailableRuntime(err);
       console.error(`Runtime unavailable: ${runtime.error}`);
     }
     await runOpenTuiShell({ agent, packageJson, runtime });
+    if (runtime?.url) {
+      const { shutdownOwnedRuntime } = await import('../runtime/lifecycle.js');
+      await shutdownOwnedRuntime(runtime, { log: (message) => console.log(`[wiki-manager] ${message}`) });
+    }
     return;
   }
 
@@ -821,4 +830,8 @@ export async function runCli(argv) {
     }
   }
   await runShell({ agent, packageJson, runtime });
+  if (runtime?.url) {
+    const { shutdownOwnedRuntime } = await import('../runtime/lifecycle.js');
+    await shutdownOwnedRuntime(runtime, { log: (message) => console.log(`[wiki-manager] ${message}`) });
+  }
 }

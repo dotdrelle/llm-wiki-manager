@@ -38,8 +38,8 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 // mcp.endpoints.json nor .env, so the external agents (cme, mailer,
 // documents) silently never connect — /status shows no agents and Donna has
 // no CME tools to configure anything with. Copy the packaged examples so a
-// fresh directory works out of the box with the default agent ports; the
-// user only has to fill in tokens/keys.
+// fresh directory works out of the box with the default agent ports. Optional
+// credentials can be added later for the external services the user enables.
 export function ensureManagerScaffold({ log = () => {} } = {}) {
   const created = [];
   const endpointsFile = managerMcpEndpointsFile();
@@ -55,7 +55,7 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
     created.push('.env');
   }
   if (created.length > 0) {
-    log(`scaffold: created ${created.join(' and ')} in ${managerStateDir()} from packaged example(s) — fill in tokens/keys (WIKI_WORKSPACES_DIR, *_MCP_AUTH_TOKEN…) before starting agents.`);
+    log(`configuration initialized successfully in ${managerStateDir()} — created ${created.join(' and ')} from packaged defaults. Optional credentials can be added later for external services.`);
   }
   return created;
 }

@@ -20,6 +20,7 @@ export function startRuntimeServer({
   approve,
   configProfiles,
   useConfigProfile,
+  listActiveRuns = null,
   exitOnShutdown = process.env.WIKI_MANAGER_RUNTIME_CHILD === '1',
 } = {}) {
   const clients = new Set();
@@ -52,10 +53,14 @@ export function startRuntimeServer({
       if (request.method === 'GET' && url.pathname === '/health') {
         const workspace = workspaceFromUrl(url);
         const context = workspace ? await resolveContext({ workspace }) : null;
+        // activeRuns spans ALL workspace contexts: the shell uses it at exit
+        // to decide whether shutting down its own runtime would kill work.
+        const activeRuns = typeof listActiveRuns === 'function' ? listActiveRuns() : [];
         sendJson(response, 200, {
           ok: true,
           status: context?.running ? 'running' : 'idle',
           workspace: context?.workspace ?? workspace ?? null,
+          activeRuns,
           dbPath: store.dbPath,
           cacertPath: activeCacertPath(),
           nodeExtraCaCerts: process.env.NODE_EXTRA_CA_CERTS ?? null,

@@ -3,6 +3,7 @@ import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { patchWikircProfile } from './wikirc.js';
+import { managerEnvFile, managerMcpEndpointsFile } from './env.js';
 import { createWorkspace, findWorkspace, isValidWorkspaceName, listWorkspaces, managerRoot, workspacesDir } from './workspaces.js';
 
 const execFileAsync = promisify(execFile);
@@ -39,6 +40,13 @@ export async function startAgents(options = {}) {
       env: {
         ...process.env,
         WIKI_WORKSPACES_DIR: workspacesDir(),
+        // cwd is the npm package root (the script and compose files live
+        // there), so the manager files MUST be pinned explicitly: without
+        // these, wiki-workspace resolved .env and mcp.endpoints.json against
+        // $PWD and generated agent tokens into the PACKAGE directory — the
+        // user's .env stayed empty on a fresh install.
+        WIKI_MANAGER_ENV_FILE: managerEnvFile(),
+        WIKI_MANAGER_ENDPOINTS_FILE: managerMcpEndpointsFile(),
       },
       timeout: options.timeout ?? 180_000,
       maxBuffer: options.maxBuffer ?? 1024 * 1024 * 8,

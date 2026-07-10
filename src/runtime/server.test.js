@@ -1396,3 +1396,31 @@ test('runtime server answers control messages posted to /run during an active ru
     await handle.close();
   }
 });
+
+test('runtime health reports active runs across workspaces', async (t) => {
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: { dbPath: ':memory:', getState: () => ({ status: 'idle' }), listEvents: () => [] },
+      session: {},
+      // The shell reads this at exit: shutting down its own runtime must not
+      // kill a run that is supposed to survive the shell.
+      listActiveRuns: () => [{ workspace: 'juno', runId: 'run-1234abcd' }],
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const health = await (await fetch(`http://127.0.0.1:${handle.port}/health`)).json();
+    assert.deepEqual(health.activeRuns, [{ workspace: 'juno', runId: 'run-1234abcd' }]);
+  } finally {
+    await handle.close();
+  }
+});

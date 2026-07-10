@@ -71,6 +71,13 @@ if [[ -z "$BUN_BIN" ]]; then
     'Reinstall @dotdrelle/wiki-manager or install Bun from https://bun.sh/docs/installation.' >&2
   exit 127
 fi
+if ! "$BUN_BIN" --version >/dev/null 2>&1; then
+  printf '%s\n' \
+    'The bundled Bun runtime is installed but not initialized.' \
+    'Local install:  npm approve-scripts bun' \
+    'Global install: npm install -g --allow-scripts=bun @dotdrelle/wiki-manager' >&2
+  exit 126
+fi
 
 if [[ ${#ARGS[@]} -eq 0 ]]; then
   exec "$BUN_BIN" "$BIN_DIR/wiki-manager.js"

@@ -251,11 +251,7 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
           origin: 'runtime',
           runId,
           payload: {
-            content: [
-              `Le run est terminé mais l'évaluation le juge incomplet : ${evaluation.reason}`,
-              evaluation.suggestedAction ? `Piste suggérée : ${evaluation.suggestedAction}` : null,
-              'Aucune tâche supplémentaire n\'a été créée automatiquement — dis-moi si tu veux poursuivre.',
-            ].filter(Boolean).join('\n'),
+            content: `Le run est terminé mais l'évaluation le juge incomplet : ${evaluation.reason}`,
           },
         }));
         dispatchAgentEvent(session, createAgentEvent('run_error', {

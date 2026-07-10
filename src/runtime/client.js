@@ -70,6 +70,25 @@ export async function postRuntimeRun(input, {
   return response.json();
 }
 
+export async function postRuntimeDelegate(objective, {
+  url = runtimeUrlFromEnv(),
+  token = runtimeToken(),
+  workspace = null,
+} = {}) {
+  const response = await fetch(runtimeEndpoint(url, '/delegate', workspace), {
+    method: 'POST',
+    headers: { ...runtimeHeaders(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ objective, workspace }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const err = new Error(payload.error ?? `Runtime delegation failed: HTTP ${response.status}`);
+    err.status = response.status;
+    throw err;
+  }
+  return payload;
+}
+
 export async function postRuntimeControl(action, {
   url = runtimeUrlFromEnv(),
   token = runtimeToken(),

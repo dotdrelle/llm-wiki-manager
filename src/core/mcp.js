@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
 
-const WIKI_MANAGER_VERSION = '0.12.12';
+const WIKI_MANAGER_VERSION = '0.13.0';
 
 function envValue(key) {
   const filePath = managerEnvFile();
@@ -502,6 +502,7 @@ export function buildLlmTools(mcpStatus) {
     for (const tool of value.tools ?? []) {
       tools.push({
         type: 'function',
+        readOnly: tool.annotations?.readOnlyHint === true,
         function: {
           name: `${serverName}__${tool.name}`,
           description: clarifyToolDescription(serverName, tool.name, tool.description),

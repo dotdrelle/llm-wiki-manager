@@ -74,6 +74,23 @@ test('applyRuntimeStateToShellSession projects runtime state into shell session'
   assert.deepEqual(conversationMessages(session), []);
 });
 
+test('direct chat system prompt forbids unsolicited next steps', async () => {
+  const session = createSession();
+  let systemPrompt = '';
+  session.llm = {
+    async *stream({ system }) {
+      systemPrompt = system;
+      yield 'Réponse concise.';
+    },
+  };
+
+  await runLine('bonjour', { agent: null, packageJson: { version: 'test' }, session, chatMode: true });
+
+  assert.match(systemPrompt, /Never add a "Next steps", "Prochaines étapes", "À suivre"/);
+  assert.match(systemPrompt, /unless the user explicitly asks what to do next/);
+  assert.equal(conversationMessages(session).at(-1).content, 'Réponse concise.');
+});
+
 test('submitRuntimeRun reports acceptance without throwing', async () => {
   const restore = stubFetch(async (url) => {
     assert.equal(pathOf(url), '/run');
@@ -241,37 +258,34 @@ test('/queue cancel on a runtime workflow id points to run cancellation commands
   assert.match(conversationMessages(session).at(-1).content, /\/run kill/);
 });
 
-test('free text routing keeps questions local and sends actions to the runtime', () => {
+test('agent mode sends every free-text turn to Donna', () => {
   const session = createSession();
   session.llm = { completeWithTools: () => {} };
 
-  // The original incident: a config question must never start a run.
   const question = shouldHandleFreeTextLocally('donne moi la config du cme', session);
   assert.equal(question.local, true);
-  assert.equal(question.classification.kind, 'observe');
+  assert.equal(question.classification.kind, 'agent_turn');
 
   const smallTalk = shouldHandleFreeTextLocally('bonjour', session);
   assert.equal(smallTalk.local, true);
 
   const action = shouldHandleFreeTextLocally('lance le pipeline complet', session);
-  assert.equal(action.local, false);
-  assert.equal(action.classification.kind, 'start_run');
+  assert.equal(action.local, true);
+  assert.equal(action.classification.kind, 'agent_turn');
+
+  const pending = shouldHandleFreeTextLocally('as ton des fichier en attente d ingestion', session);
+  assert.equal(pending.local, true);
+  assert.equal(pending.classification.kind, 'agent_turn');
 });
 
-test('free text routing keeps questions local even during an active run', () => {
-  // The chat must stay available during a run: a status question or small
-  // talk answered locally (read-only tools) — never enqueued as a future run.
+test('Donna keeps receiving free text during an active run', () => {
   const session = createSession();
   session.llm = { completeWithTools: () => {} };
   session.agentProjection = { status: 'running', activities: [], conversation: [] };
   assert.equal(shouldHandleFreeTextLocally('où en est le run', session).local, true);
   assert.equal(shouldHandleFreeTextLocally('salut', session).local, true);
-  // Cancel intents are handled by Donna locally (runtime__kill/cancel tools);
-  // approvals stay on the deterministic control lane.
   assert.equal(shouldHandleFreeTextLocally('stop le job', session).local, true);
   assert.equal(shouldHandleFreeTextLocally('supprime le job et la queue', session).local, true);
-  // Approvals and "later" requests too: Donna owns runtime__approve and
-  // runtime__enqueue. Only plan modifications and new runs bypass her.
   assert.equal(shouldHandleFreeTextLocally('approuve le run', session).local, true);
   assert.equal(shouldHandleFreeTextLocally('fais le build plus tard', session).local, true);
 

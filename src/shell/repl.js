@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { stdin as input, stdout as output } from 'node:process';
 import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
-import { buildAgentSystemPrompt, classifyAgentInput, formatLlmUnavailableMessage } from '../agent/graph.js';
+import { buildAgentSystemPrompt, formatLlmUnavailableMessage } from '../agent/graph.js';
 import { handleSlashCommand } from '../commands/slash.js';
 import { serviceDescription, serviceNames as composeServiceNames } from '../core/compose.js';
 import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
@@ -292,6 +292,7 @@ function buildDirectChatSystemPrompt(session) {
   return [
     'You are Donna, the llm-wiki-manager chat assistant.',
     'Answer directly and concisely. Do not claim to have called tools or changed files.',
+    'Never add a "Next steps", "Prochaines étapes", "À suivre", options, or suggestions section unless the user explicitly asks what to do next. End after answering the question.',
     'If the user asks for an action that needs workspace commands, MCP tools, services, files, or mutations, say to ask as an agent action instead of pretending to execute it.',
     `Reply language: ${language}.`,
     `Current workspace: ${workspace}.`,
@@ -817,21 +818,10 @@ export function applyRuntimeStateToShellSession(session, state) {
   return true;
 }
 
-// Submits a prompt to the shared runtime. If the workspace is already busy
-// (HTTP 409 from POST /run), route the input through the runtime control lane
-// so status questions and plan-change proposals do not become future runs.
-// A plain question or small talk must never start a runtime run (nor be
-// enqueued as a future one): it only needs an answer. Route converse/observe
-// to the local agent EVEN during an active run — the chat is supposed to stay
-// available, and the graph already restricts tools to read-only in that case.
-// Actions/cancels/approvals still go to the runtime.
-export function shouldHandleFreeTextLocally(line, session, { llmAvailable = Boolean(session?.llm) } = {}) {
-  const classification = classifyAgentInput(line, session);
-  // cancel intents included: Donna interprets "supprime le job et la queue"
-  // and calls runtime__kill / runtime__cancel herself — no hardcoded regex
-  // deciding between soft and hard stop. The control lane remains the
-  // deterministic fallback when the local LLM is down.
-  if (!['converse', 'observe', 'cancel', 'approve', 'enqueue_run', 'ambiguous'].includes(classification.kind)) return { local: false, classification };
+// In agent mode, Donna receives every free-text turn and decides whether to
+// answer or call an exposed tool. Slash commands remain the deterministic UI.
+export function shouldHandleFreeTextLocally(_line, session, { llmAvailable = Boolean(session?.llm) } = {}) {
+  const classification = { kind: 'agent_turn', confidence: 1, reason: 'agent_mode_llm_decision' };
   if (!llmAvailable) return { local: false, classification, fallbackReason: 'local LLM unavailable' };
   return { local: true, classification };
 }

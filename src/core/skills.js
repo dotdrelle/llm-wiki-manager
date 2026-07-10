@@ -69,32 +69,6 @@ function readWorkspaceManifest(workspacePath) {
   }
 }
 
-function readWorkspaceManifestSkill(workspacePath, loadedManifest = null) {
-  const loaded = loadedManifest ?? readWorkspaceManifest(workspacePath);
-  if (!loaded) return null;
-  const { manifest, manifestPath } = loaded;
-  const name = String(manifest.name || basename(workspacePath)).trim();
-  if (!SKILL_NAME_RE.test(name)) return null;
-  const entrypoints = manifest.entrypoints && typeof manifest.entrypoints === 'object'
-    ? manifest.entrypoints
-    : {};
-  const claude = safeRelativeEntry(entrypoints.claude, 'CLAUDE.md');
-  const body = readOptionalText(join(workspacePath, claude));
-  return {
-    name,
-    title: String(manifest.title || name).trim(),
-    description: String(manifest.description || '').trim(),
-    params: [],
-    body,
-    scope: 'workspace',
-    path: manifestPath,
-    manifest,
-    entrypoints,
-    version: manifest.version ? String(manifest.version) : null,
-    language: manifest.language ? String(manifest.language) : null,
-  };
-}
-
 function workspaceUiSkillDir(loadedManifest = null) {
   if (!loadedManifest) return DEFAULT_UI_SKILL_DIR;
   const { manifest } = loadedManifest;
@@ -119,8 +93,6 @@ export function listSkills(session = {}) {
   const skills = [];
   if (session.workspacePath) {
     const loadedManifest = readWorkspaceManifest(session.workspacePath);
-    const manifestSkill = readWorkspaceManifestSkill(session.workspacePath, loadedManifest);
-    if (manifestSkill) skills.push(manifestSkill);
     skills.push(...collectDirectorySkills(join(session.workspacePath, workspaceUiSkillDir(loadedManifest)), 'workspace'));
   }
 

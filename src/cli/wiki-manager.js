@@ -591,6 +591,55 @@ async function runRuntime(argv, agent) {
     };
   }
 
+  async function prepareDelegation(context, { objective }) {
+    const { resolveObjective } = await import('../orchestrator/objectiveResolver.js');
+    const { validateFragment } = await import('../orchestrator/planValidator.js');
+    const session = context.session;
+    const selection = await resolveObjective(objective, session);
+    const provider = selection.provider;
+    const fragment = parseJsonText(formatMcpToolResult(await callMcpTool(
+      session.mcp,
+      provider.serverName,
+      'agent_plan',
+      {
+        capability: selection.capability,
+        operation: selection.operation,
+        objective,
+        workspace: { revision: String(Date.now()) },
+        constraints: {
+          maxConcurrency: resolveCapabilityConcurrency(
+            provider,
+            undefined,
+            process.env.WIKI_MANAGER_CAPABILITY_CONCURRENCY,
+          ),
+          requireApprovalForMutations: true,
+        },
+      },
+    )));
+    if (!Array.isArray(fragment?.tasks) || fragment.tasks.length === 0) {
+      throw new Error(fragment?.summary?.initialSynthesis?.[0] ?? `No task was planned for ${selection.capability}/${selection.operation}.`);
+    }
+    const validation = validateFragment(fragment, {
+      registry: session.capabilityRegistry ?? null,
+      run: { plannerAgentInstanceId: provider.agentInstanceId ?? provider.serverName },
+    });
+    if (!validation.ok) {
+      throw new Error(`Delegated plan rejected: ${validation.errors.map((error) => error.message ?? error.code ?? String(error)).join('; ')}`);
+    }
+    return {
+      capability: selection.capability,
+      operation: selection.operation,
+      provider: { serverName: provider.serverName, agentInstanceId: provider.agentInstanceId ?? provider.serverName },
+      fragment: validation.normalizedFragment,
+      summary: {
+        capability: selection.capability,
+        operation: selection.operation,
+        agent: provider.agentInstanceId ?? provider.serverName,
+        tasks: validation.normalizedFragment.tasks.length,
+      },
+    };
+  }
+
   async function executeRun(context, body, { signal } = {}) {
     const session = context.session;
     const supervisor = context.supervisor;
@@ -629,6 +678,22 @@ async function runRuntime(argv, agent) {
         : undefined;
       supervisor?.setRunSignal(signal);
       session._onStep = (message) => emitRuntimeLog(session, message);
+      if (body.preparedDelegation?.fragment) {
+        const { integrate } = await import('../orchestrator/planIntegrator.js');
+        const prepared = body.preparedDelegation;
+        const integrated = integrate(runId, prepared.fragment, {
+          registry: session.capabilityRegistry ?? null,
+          session,
+          store,
+          workspace: session.workspace ?? null,
+          enforceApprovalCoverage: true,
+        });
+        if (!integrated.ok) {
+          throw new Error(`Delegated plan integration failed: ${(integrated.errors ?? []).map((error) => error.message ?? error.code ?? String(error)).join('; ')}`);
+        }
+        emitRuntimeLog(session, `delegation: ${prepared.fragment.tasks.length} validated task(s) integrated from ${prepared.provider.serverName}.agent_plan (${prepared.capability}/${prepared.operation})`);
+        body._planReady?.resolve?.({ runId, planRevision: session.agentProjection?.planRevision ?? 0 });
+      }
       // Deterministic capability run (/ingest): ask the capable agent for its
       // task-graph fragment and integrate it as the plan BEFORE any LLM turn.
       // The parallel path must not depend on a small model deciding to call
@@ -704,6 +769,7 @@ async function runRuntime(argv, agent) {
         ...(maxReplans === undefined ? {} : { maxReplans }),
       });
     } catch (err) {
+      body._planReady?.reject?.(err);
       if (err?.name === 'AbortError') {
         // Cancel the asynchronous agent jobs the run started: aborting only
         // the manager loop left ingest subprocesses running for minutes with
@@ -747,6 +813,7 @@ async function runRuntime(argv, agent) {
       .filter((context) => context?.running)
       .map((context) => ({ workspace: context.workspace ?? null, runId: context.currentRunId ?? null })),
     run: executeRun,
+    delegate: prepareDelegation,
     cancel: (context) => emitRuntimeLog(context.session, 'runtime: cancel requested'),
     resume: ({ workspace }) => recoverRuntime({ workspace, manual: true }),
     approve: async ({ workspace, runId, itemId, approvalId }) => {

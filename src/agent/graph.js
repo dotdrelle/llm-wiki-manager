@@ -15,7 +15,7 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
 import { updateWorkspaceProfilePreference } from '../core/profile.js';
 import { createCapabilityRegistry } from '../orchestrator/capabilityRegistry.js';
-import { fetchRuntimeState, postRuntimeCancel, postRuntimeControl, postRuntimeKill } from '../runtime/client.js';
+import { fetchRuntimeState, postRuntimeCancel, postRuntimeControl, postRuntimeDelegate, postRuntimeKill } from '../runtime/client.js';
 
 const MAX_TOOL_ITERATIONS = 80;
 const MAX_SPINNER_ARG_LENGTH = 96;
@@ -27,7 +27,7 @@ const MAX_PROFILE_CHARS = 4000;
 const INTERNAL_TOOL_SERVERS = {
   wiki: ['plan_set', 'plan_done'],
   shell: ['run_command', 'read_command', 'profile_update'],
-  runtime: ['kill', 'cancel', 'status', 'approve', 'enqueue', 'start_capability_run'],
+  runtime: ['kill', 'cancel', 'status', 'approve', 'enqueue', 'delegate'],
 };
 
 const AGENT_SLASH_COMMANDS = new Set([
@@ -40,8 +40,8 @@ const AGENT_SLASH_COMMANDS = new Set([
   'services',
   'skills',
   'upload',
-  'uploads',
   'queue',
+  'openui',
 ]);
 
 const SHELL_RUN_COMMAND_TOOL = {
@@ -50,7 +50,7 @@ const SHELL_RUN_COMMAND_TOOL = {
     name: 'shell__run_command',
     description: [
       'Run a deterministic wiki-manager slash command inside the current shell session.',
-      'Allowed commands: /workspace list, /workspace init <name> [path], /use <workspace>, /config, /status, /services, /skills, /skills show <name>, /skills run <name>, /upload <path>, /upload convert <id|pending>, /uploads.',
+      'Allowed commands: /workspace list, /workspace init <name> [path], /use <workspace>, /config, /status, /services, /skills, /skills show <name>, /skills run <name>, /upload <path>, /upload convert <id|pending>.',
       'Do not use for arbitrary system shell commands, /workspace delete, /mcp call, /wiki run, /start, /stop, /logs, or /exit.',
     ].join(' '),
     parameters: {
@@ -73,7 +73,7 @@ const SHELL_READ_COMMAND_TOOL = {
     name: 'shell__read_command',
     description: [
       'Run a read-only deterministic wiki-manager slash command inside the current shell session.',
-      'Allowed commands: /help, /version, /config, /config list, /config status, /status, /services, /skills, /skills list, /skills show <name>, /uploads, /uploads list, /queue.',
+      'Allowed commands: /help, /version, /config, /config list, /config status, /status, /services, /skills, /skills list, /skills show <name>, /queue.',
       'Do not use for workspace creation/deletion, uploads conversion, service start/stop, MCP calls, wiki runs, or any mutation.',
     ].join(' '),
     parameters: {
@@ -165,20 +165,18 @@ const RUNTIME_ENQUEUE_TOOL = {
   },
 };
 
-const RUNTIME_CAPABILITY_RUN_TOOL = {
+const RUNTIME_DELEGATE_TOOL = {
   type: 'function',
   function: {
-    name: 'runtime__start_capability_run',
-    description: 'Start a DETERMINISTIC orchestrated run for a discovered capability: the runtime asks the capable agent for its task graph (agent_plan), validates and integrates it, creates the approval requests, and dispatches the tasks in parallel. Use this whenever the user asks for multi-document or multi-step work covered by a known capability (e.g. ingest everything pending → capability "knowledge.update", operation "ingest"). Do NOT call production tools directly for such requests.',
+    name: 'runtime__delegate',
+    description: 'Delegate the user objective to the runtime. Pass the objective in natural language without choosing a capability, operation, agent, plan, file list, or implementation. The runtime resolves the agent, obtains and validates the real plan before accepting the run.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        capability: { type: 'string', description: 'Capability id from the known list (e.g. knowledge.update).' },
-        operation: { type: 'string', description: 'Operation supported by the capability (e.g. ingest, build).' },
-        inputs: { type: 'array', items: { type: 'string' }, description: 'Optional file subset; omit to cover everything pending.' },
+        objective: { type: 'string', description: 'The complete user objective, preserving scope and constraints but containing no invented technical identifiers.' },
       },
-      required: ['capability'],
+      required: ['objective'],
     },
   },
 };
@@ -269,10 +267,26 @@ const AgentState = Annotation.Root({
   streamContext: Annotation(),
   streamedInline: Annotation(),
   retryWithoutTool: Annotation({ default: () => false }),
+  invalidResponseRetries: Annotation({ default: () => 0 }),
 });
 
 function commandList(session) {
-  return session.commands.map((command) => `/${command}`).join(', ');
+  return session.commands
+    .filter((command) => AGENT_SLASH_COMMANDS.has(command))
+    .map((command) => `/${command}`)
+    .join(', ');
+}
+
+export function invalidSuggestedSlashCommands(content, session) {
+  const allowed = new Set((session?.commands ?? []).filter((command) => AGENT_SLASH_COMMANDS.has(command)));
+  const candidates = new Set();
+  for (const line of String(content ?? '').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    const standalone = trimmed.match(/^\/([a-z][\w-]*)\b/i);
+    if (standalone) candidates.add(standalone[1].toLowerCase());
+    for (const match of line.matchAll(/`\/([a-z][\w-]*)\b/gi)) candidates.add(match[1].toLowerCase());
+  }
+  return [...candidates].filter((command) => !allowed.has(command)).sort();
 }
 
 function summarizeToolArguments(rawArguments) {
@@ -384,8 +398,7 @@ function assertAgentReadSlashCommandAllowed(commandLine) {
     command === 'services' ||
     command === 'queue' ||
     (command === 'config' && ['', 'list', 'status'].includes(subcommand)) ||
-    (command === 'skills' && ['', 'list', 'show'].includes(subcommand)) ||
-    (command === 'uploads' && ['', 'list'].includes(subcommand));
+    (command === 'skills' && ['', 'list', 'show'].includes(subcommand));
   if (!allowed) {
     throw new Error(`Read-only command is not available to the agent: /${parts.join(' ')}`);
   }
@@ -530,14 +543,18 @@ function emitAgentEvent(session, type, origin, payload = {}) {
 // agents. This is the live registry the dispatcher will resolve against —
 // a plan declaring anything outside this set can only stall forever.
 export function knownCapabilityIds(session) {
-  const registry = session?.capabilityRegistry ?? createCapabilityRegistry({
-    agents: session?.agentRegistrySnapshot ?? session?.agents ?? [],
-  });
+  const registry = capabilityRegistryForSession(session);
   const snapshot = typeof registry.snapshot === 'function' ? registry.snapshot() : registry;
   return [...new Set(Object.keys(snapshot ?? {}).map((key) => {
     const index = key.lastIndexOf('@');
     return index > 0 ? key.slice(0, index) : key;
   }))].sort();
+}
+
+function capabilityRegistryForSession(session) {
+  return session?.capabilityRegistry ?? createCapabilityRegistry({
+    agents: session?.agentRegistrySnapshot ?? session?.agents ?? [],
+  });
 }
 
 // Deterministic fragment→plan mapping, shared by the agent_plan tool bridge
@@ -584,22 +601,13 @@ async function handleRuntimeControlTool(session, tool, args = {}) {
       const result = await postRuntimeControl('message', { url, workspace, input: 'approve', intent: 'approve' });
       return String(result?.explanation ?? (result?.accepted ? 'Approval granted.' : 'No pending approval found.'));
     }
-    if (tool === 'start_capability_run') {
-      const { postRuntimeRun } = await import('../runtime/client.js');
-      const result = await postRuntimeRun(`Run de capability ${args.capability}${args.operation ? ` (${args.operation})` : ''} demandé par Donna.`, {
-        url,
-        workspace,
-        capabilityPlan: {
-          capability: String(args.capability ?? ''),
-          ...(args.operation ? { operation: String(args.operation) } : {}),
-          ...(Array.isArray(args.inputs) && args.inputs.length > 0 ? { inputs: args.inputs.map(String) } : {}),
-          // No concurrency dictated here: the runtime reads the provider's
-          // own declared capacity (agent_describe limits).
-        },
-      });
+    if (tool === 'delegate') {
+      const objective = String(args.objective ?? '').trim();
+      if (!objective) return 'Delegation rejected: missing objective.';
+      const result = await postRuntimeDelegate(objective, { url, workspace });
       return result?.runId
-        ? `Run de capability accepté (${String(result.runId).slice(0, 8)}) : le plan sera intégré et dispatché en parallèle ; une approbation sera demandée avant les mutations (l'utilisateur peut dire « valide tout » ou taper /approve). Suis la progression dans Activity.`
-        : `Run non démarré : ${result?.explanation ?? result?.error ?? JSON.stringify(result)}`;
+        ? `Délégation acceptée (${String(result.runId).slice(0, 8)}) après validation du plan réel : ${result.delegation?.tasks ?? 0} tâche(s), ${result.delegation?.agent ?? 'agent résolu'}. L'approbation porte sur ce plan.`
+        : `Délégation refusée : ${result?.error ?? JSON.stringify(result)}`;
     }
     if (tool === 'enqueue') {
       const result = await postRuntimeControl('message', { url, workspace, input: String(args.input ?? ''), intent: 'enqueue' });
@@ -749,68 +757,25 @@ export function buildAgentSystemPrompt(state) {
     formatQueue(state.session),
     'Available skills:',
     skills,
-    'You can call MCP tools directly using the provided tool functions.',
+    'In interactive agent mode you may call only the read-only tools and runtime control/delegation tools actually provided to you.',
     'When the user asks for an action that can be performed with connected MCP tools or safe primitives, do not answer with future intent such as "I will call...", "I am going to run...", or "launching..." unless you also call the tool in the same turn. Either call the tool now, ask for the exact missing required arguments, or explain the concrete blocker.',
     'Execution truthfulness: never invent a job id, status, percentage, duration, generated file, file content, URL, command, or tool result. An action is executed only when you call an available tool and receive its result. Examples and placeholders are forbidden in execution reports.',
     'After any completed action, give a short factual summary based only on the tool result: outcome and concrete outputs or references actually returned. Mention a viewing primitive only when it exists in Available primitives and is relevant. Do not interpret generated content, propose verification checklists, invent next steps, or suggest commands unless the user explicitly asks.',
+    'Never add a "Next steps", "Prochaines étapes", "À suivre", options, or suggestions section unless the user explicitly asks what to do next. End after the requested result or the concrete error.',
     'When calling a tool, emit no preliminary narration. Call it directly; the PLAN and Activity panels show progress. After completion, keep the final response concise and proportional to the result.',
-    'For connector configuration/setup/update requests, if a matching setup/configuration tool is connected and the required arguments are known, call it immediately. If the connector or tool is not connected, say which concrete capability is missing and recommend the exact service/status primitive to inspect it. Do not invent a pending connector action in plain text.',
-    'For workspace-scoped external MCP tools, the orchestrator enforces workspace injection. Use the active workspace for configuration, source, import, export, conversion, and generation tools unless a tool is explicitly job-scoped and only requires a job id.',
-    'Dynamic capability inputs are owned by the agent that provides the capability. To answer which inputs are pending or available, call the qualified `<provider>__agent_status` tool with {capability, operation} and report only its pendingInputs. Never infer this state from /uploads or a hardcoded workspace directory. If no capable agent/status tool is connected, say that the pending inputs cannot be determined.',
-    'You can call shell__run_command for safe manager slash commands such as /workspace list, /workspace init <name> [path], /use <workspace>, /config, /status, /services, /skills, /skills show <name>, and /skills run <name>.',
-    'Skills are workflow instructions, not executable code. When a user asks to run a skill, inspect it, propose the concrete primitive/tool plan, and ask for confirmation before costly or mutating actions.',
-    [
-      state.session.headless ? 'HEADLESS MODE ACTIVE. Execute the requested skill or task autonomously using available safe primitives and MCP tools. Do not ask for interactive confirmation unless the request is genuinely ambiguous or outside the loaded workspace.' : null,
-      '',
-      'You have two internal planning tools: wiki__plan_set and wiki__plan_done.',
-      'Prefer MCP tools that declare their own plan via _activity.plan.steps — when such a tool returns _activity, the shell creates and tracks the plan automatically without requiring wiki__plan_set.',
-      'Use wiki__plan_set when the MCP tool cannot declare its own plan or when the task spans multiple independent tools (e.g. CME export then email report). For a single self-describing async job, wiki__plan_set is optional.',
-      '',
-      (() => {
-        const capabilityIds = knownCapabilityIds(state.session);
-        return capabilityIds.length > 0
-          ? `Known orchestration capabilities — the ONLY values allowed in requiredCapability: ${capabilityIds.join(', ')}. Never invent capability names; a plan declaring an unknown capability will be rejected. A step you execute yourself directly takes requiredCapability: null.`
-          : 'No orchestration capabilities discovered yet: declare plan steps with requiredCapability: null and execute them yourself with the connected MCP tools.';
-      })(),
-      '',
-      'Task startup:',
-      '  1. If the next MCP tool returns _activity.plan.steps, call that tool directly; the shell will create the visible plan from the returned activity.',
-      '  2. If the tool cannot declare its own plan, call wiki__plan_set before executing the first step. Prefer structured steps: {id, description, requiredCapability, operation, arguments, dependsOn, outputRefs}; capability steps need operation+arguments for the dispatcher to execute them; a legacy list of strings is still accepted.',
-      '     Multi-tool example: wiki__plan_set(steps=[{id:"cme-export",description:"CME export",requiredCapability:"external-source.export",dependsOn:[],outputRefs:["raw/untracked"]},{id:"production",description:"Production pipeline",requiredCapability:"knowledge.pipeline",dependsOn:["cme-export"],outputRefs:["deliverables"]}])',
-      '  3. Immediately execute the first step using the appropriate MCP tool. Do not start step 2 in the same turn unless one async pipeline tool owns and declares the whole sequence.',
-      '  For synchronous steps (result is immediate, no _activity polling), call wiki__plan_done(step=1) after confirming success.',
-      '  For async MCP jobs (returns _activity with poll), the orchestrator tracks completion automatically.',
-      '',
-      state.session.headless ? [
-        'Headless follow-up turns — the orchestrator re-invokes you with:',
-        '  (a) the original task,',
-        '  (b) the current plan status — [✓] done / [✗] failed / [ ] pending,',
-        '  (c) the just-completed activities.',
-        '  Read the plan status. Find the first [ ] pending step. Execute it only.',
-        '  Never re-execute a [✓] or [✗] step. Never skip a [ ] step.',
-        '',
-        'Final turn — when all steps are [✓] or [✗]: respond with a concise summary. Do not start new actions.',
-      ].join('\n') : null,
-      '',
-      'On failure: if a completed activity is failed/error/cancelled, call wiki__plan_done(step=N, status="failed") then stop with a clear error report.',
-    ].filter(Boolean).join('\n'),
+    'Configuration, connector, import, export, conversion, generation, and every other mutation are actions: delegate the objective to the runtime instead of calling an external tool directly.',
+    'For any question about the current workspace inventory or what is waiting there, call wiki__wiki_workspace_status first and answer only from its result. This is the canonical read-only workspace state; do not reconstruct it from upload, connector, or production tools.',
+    'Skills are documentation only in this stabilized version. Never execute a skill from conversation; delegate the user objective.',
     'For service actions, recommend only available service primitives from Available primitives, with the exact service name when the primitive supports one.',
-    'Scope discipline: execute ONLY the action(s) the user explicitly requested. Never chain additional mutating operations (ingest, build, export, polish, delete, send…) that the user did not ask for — even when diagnostics or recommendations suggest them. Finish the requested work, then list the suggested follow-ups in your final answer and stop. Example: "applique les recommandations de config" means apply the config; it does NOT authorize launching the ingest those recommendations mention.',
-    'Disambiguate export requests carefully.',
-    'Confluence/CME/source export means exporting external Confluence sources into raw/untracked: use cme MCP tools (`cme__cme_export_run`, then `cme__cme_export_status`). Never use production `type=export` for Confluence source export.',
-    'Wiki/deliverable/publication export means exporting generated deliverables from the wiki: use production MCP tools (`production__production_start_job` with `type:"export"` or pipeline steps). Require the deliverable path when exporting deliverables.',
-    'For ingest/build/export/polish/pipeline workflows, use production MCP tools. Do not route these through direct /wiki shortcuts.',
-    'MULTI-DOCUMENT ingest (more than 2 files, or "ingest everything pending") and any multi-step capability work: when runtime__start_capability_run is available, call it (e.g. {capability:"knowledge.update", operation:"ingest"}) — the runtime integrates the agent task graph deterministically and dispatches IN PARALLEL with an approval gate. Inside a runtime run (no runtime tools), call production__agent_plan instead; the shell integrates the fragment automatically. Never call production__production_start_job for multi-document ingest — that creates one monolithic sequential job.',
-    'Single-document ingest or one-off jobs (doctor, one build, one export): production__production_start_job is fine. To chain sequential steps (e.g. build then polish) use ONE call with type="pipeline" and steps=["build","polish"] — never separate jobs (the first is asynchronous). For existing deliverables where content stability matters, pass stabilize:true. Do not ask the user to confirm between steps.',
-    'Long-running MCP jobs: do not call the same status tool more than once consecutively. When chaining jobs sequentially: (1) start the job, report job/activity id and status; (2) check status once — if done, proceed to the next step immediately; (3) if still running, report status, list the remaining steps, and return control; (4) when re-invoked, check status first, then proceed. Do not spin-poll (status → status → status with no new action between). The shell activity panel monitors non-terminal jobs automatically.',
-    'If production__production_start_job is returned as queued/waiting by the manager, report that it is waiting in the local queue and return control. Do not continue as if the production job has started.',
-    'For diagnostics (doctor), use production__production_start_job with type="doctor" like any other production job; /wiki run doctor is only the fallback when the production MCP is not connected. Use /workspace init <name> [path] for low-level non-interactive workspace creation. In the interactive TUI, /new <name> opens the setup wizard. Use /wiki for index, or /wiki run index through the explicit backup hatch. Use /wiki run init only for explicit current-workspace llm-wiki init.',
+    'Scope discipline: execute ONLY the action(s) the user explicitly requested. Never chain additional mutating operations (ingest, build, export, polish, delete, send…) that the user did not ask for — even when diagnostics or recommendations suggest them. Finish with the requested result and stop. Example: "applique les recommandations de config" means apply the config; it does NOT authorize launching the ingest those recommendations mention.',
+    'For any requested action, call runtime__delegate with the user objective only. Never choose a capability, operation, agent, plan, or implementation yourself. The runtime resolves the registry and validates the provider plan before accepting. Never call <provider>__agent_plan, <provider>__agent_execute, legacy production__production_start_job, wiki__plan_set, or wiki__plan_done from interactive chat.',
+    'For workspace inventory and page listings, use the connected wiki MCP read tools. Never invent or call a /wiki shell command through shell__run_command. Use /workspace init <name> [path] for low-level non-interactive workspace creation; in the interactive TUI, /new <name> opens the setup wizard.',
     'If an action requires tools or skills not available yet, explain the limitation and name the expected primitive.',
     workspaceProfile
       ? `Workspace profile (.wiki/profile.md) — durable user preferences, apply these to every reply (tone, tutoiement/vouvoiement, formatting, etc.):\n${workspaceProfile}`
       : null,
     'Runtime control: you have runtime__status, runtime__cancel, runtime__kill, runtime__approve and runtime__enqueue. When the user asks to stop, remove, clean or kill the current run, its jobs or the queue ("supprime le job et la queue", "arr\u00eate tout"), call runtime__kill (or runtime__cancel for a soft stop of just the run) and confirm what was stopped. For questions about what is running or queued, call runtime__status and answer from its data. When the user consents to a pending approval in any phrasing ("vas-y", "ok pour l\'export"), call runtime__approve. When the user asks for a NEW action while a run is active, do not execute it: propose runtime__enqueue (run it after) or, if they insist it replaces the current work, runtime__kill then the new action.',
-    'When the user explicitly asks you to remember, persist, or update durable preference/profile information, call wiki__profile_update when it is available; otherwise call shell__profile_update. Do not just acknowledge in text without calling a profile update tool.',
+    'Durable profile updates are actions in this stabilized version: delegate them instead of writing directly.',
   ].filter(Boolean).join('\n');
 
   return customPrompt ? `${customPrompt}\n\n${agentContext}` : agentContext;
@@ -840,64 +805,36 @@ export function formatLlmUnavailableMessage(reason) {
   return `⚠ LLM injoignable : ${clean || 'raison inconnue'}`;
 }
 
-// Verbs that clearly request work (a runtime run), in French and English.
-// "configure/configurer" is an action; the nouns "config/configuration" are
-// NOT matched here — asking for a config is an observe request.
-const ACTION_REQUEST_PATTERN = /\b(lance|relance|d[eé]marre|start|ex[eé]cute|execute|g[eé]n[eè]re|generate|build|construis|exporte?|ingest\w*|ing[eè]re|importe?|convert(?:is|it|s)?|cr[eé]e|create|polish|publie|publish|d[eé]ploie|deploy|envoie|send|configure[rsz]?|setup|installe|update|mets? [aà] jour|supprime|delete|efface|nettoie|clean|r[eé]pare|fix|corrige)\b/i;
-
-// Explicit explanation/question markers dominate action verbs: "explique le
-// build" is a question about the build, not a request to build.
-const EXPLANATION_REQUEST_PATTERN = /\b(explique|explain|pourquoi|why|comment|how|c'est quoi|qu'est[- ]ce)\b/i;
-
-export function classifyAgentInput(input, session) {
-  const lower = String(input ?? '').toLowerCase();
-  const hasActiveRun = session?.agentProjection?.status === 'running'
-    || sessionActivities(session).some((activity) => !activity.terminal);
-  if (/\b(valide tout|approve all|approve|approuve|valid[eé]|ok pour tout|go pour tout)\b/i.test(lower)) {
-    return { kind: 'approve', confidence: 0.86, reason: 'approval_request', activeRun: hasActiveRun };
-  }
-  if (/\b(cancel|annule|stop|arr[eê]te|interromps|abort|supprime|kill|tue|purge|vide la (file|queue)|nettoie la (file|queue))\b/i.test(lower)) {
-    return { kind: 'cancel', confidence: 0.86, reason: 'cancel_request', activeRun: hasActiveRun };
-  }
-  if (/\b(plus tard|later|ensuite|apr[eè]s ce run|enqueue|mets en file|met en file|futur|next run|future run)\b/i.test(lower)) {
-    return { kind: 'enqueue_run', confidence: 0.8, reason: 'future_run_request', activeRun: hasActiveRun };
-  }
-  if (EXPLANATION_REQUEST_PATTERN.test(lower)) {
-    return { kind: 'observe', confidence: 0.86, reason: 'explanation_request', activeRun: hasActiveRun };
-  }
-  // Observe markers only win when no action verb is present: "où en est le
-  // run" is observe, "lance le run" is an action request.
-  if (/\b(o[uù] en es[t-]|status|statut|progress|progression|run|job|queue|logs?|inspect|show|montre|affiche|donne|liste|list|quel(?:le)?s?|combien|config(?:uration)?|quoi de neuf)\b/i.test(lower)
-    && !ACTION_REQUEST_PATTERN.test(lower)) {
-    return { kind: 'observe', confidence: 0.86, reason: 'status_or_explanation_request', activeRun: hasActiveRun };
-  }
-  if (hasActiveRun && /\b(ajoute|add|change|modifie|modify|remplace|replace|retire|remove|skip|ignore|plan|step|t[aâ]che)\b/i.test(lower)) {
-    return { kind: 'modify_run', confidence: 0.78, reason: 'active_run_change_request', activeRun: hasActiveRun };
-  }
-  if (hasActiveRun && /\b(lance|run|g[eé]n[eè]re|build|export|cr[eé]e|create|send|envoie|ingest|convert|importe|import)\b/i.test(lower)) {
-    return { kind: 'ambiguous', confidence: 0.45, reason: 'active_run_action_is_ambiguous', activeRun: hasActiveRun };
-  }
-  if (ACTION_REQUEST_PATTERN.test(lower)) {
-    return { kind: 'start_run', confidence: 0.8, reason: 'action_request', activeRun: hasActiveRun };
-  }
-  return { kind: 'converse', confidence: 0.62, reason: 'plain_conversation', activeRun: hasActiveRun };
-}
-
 function toolsForClassification(classification, writeTools, session = null) {
   const controlTools = session?.runtime?.url
     ? [RUNTIME_STATUS_TOOL, RUNTIME_CANCEL_TOOL, RUNTIME_KILL_TOOL, RUNTIME_APPROVE_TOOL, RUNTIME_ENQUEUE_TOOL]
     : [];
-  const capabilityRunTools = session?.runtime?.url && !classification.activeRun
-    ? [RUNTIME_CAPABILITY_RUN_TOOL]
+  const capabilityRunTools = session?.runtime?.url && !classification.activeRun && knownCapabilityIds(session).length > 0
+    ? [RUNTIME_DELEGATE_TOOL]
     : [];
-  if (classification.activeRun && ['converse', 'observe', 'ambiguous', 'approve', 'cancel', 'enqueue_run'].includes(classification.kind)) {
+  if (classification.activeRun && classification.kind !== 'execute_run') {
     // During an active run Donna gets read + profile + the runtime control
     // suite: she can answer, approve, enqueue for later, soft-cancel or
     // kill — but she must not fire new MCP jobs alongside the run (that is
     // what runtime__enqueue is for). No canned regex answers anywhere.
     return [SHELL_READ_COMMAND_TOOL, SHELL_PROFILE_UPDATE_TOOL, ...controlTools];
   }
+  if (session?.runtime?.url && classification.kind !== 'execute_run') {
+    const readTools = writeTools.filter(isDonnaReadTool);
+    return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...readTools];
+  }
   return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...writeTools];
+}
+
+function isDonnaReadTool(item) {
+  const name = String(item?.function?.name ?? '');
+  if (!name || name.startsWith('shell__') || name === 'wiki__plan_set' || name === 'wiki__plan_done') return false;
+  if (item?.readOnly === true) return true;
+  const tool = name.includes('__') ? name.slice(name.indexOf('__') + 2) : name;
+  return tool === 'wiki_workspace_status'
+    || tool === 'agent_describe'
+    || tool === 'agent_status'
+    || /(?:^|_)(?:status|list|search|read|get)$/.test(tool);
 }
 
 export function createAgentGraph(options = {}) {
@@ -933,7 +870,13 @@ export function createAgentGraph(options = {}) {
     const classification = iterations === 0
       ? (runtimeExecution
         ? { kind: 'execute_run', confidence: 1, reason: 'runtime_run_execution', activeRun: true }
-        : classifyAgentInput(state.input, state.session))
+        : {
+            kind: 'agent_turn',
+            confidence: 1,
+            reason: 'agent_mode_llm_decision',
+            activeRun: state.session?.agentProjection?.status === 'running'
+              || sessionActivities(state.session).some((activity) => !activity.terminal),
+          })
       : (state.inputClassification ?? { kind: 'modify_run', confidence: 1, reason: 'tool_iteration' });
     if (iterations === 0) {
       state.session._onStep?.(`Agent: classified input as ${classification.kind}`);
@@ -1038,6 +981,33 @@ export function createAgentGraph(options = {}) {
         };
       }
 
+      const invalidCommands = invalidSuggestedSlashCommands(result.content, state.session);
+      if (invalidCommands.length > 0) {
+        state.session._onStreamReset?.();
+        const retries = Number(state.invalidResponseRetries ?? 0);
+        if (retries < 2) {
+          state.session._onStep?.(`Agent: invalid command rejected (/${invalidCommands.join(', /')}); retrying…`);
+          return {
+            pendingToolCalls: null,
+            messages: [
+              ...(iterations === 0 ? [{ role: 'user', content: state.input }] : []),
+              result.message ?? { role: 'assistant', content: result.content ?? '' },
+              {
+                role: 'user',
+                content: `Your response proposed unavailable slash command(s): /${invalidCommands.join(', /')}. Rewrite the answer without them. Mention only commands listed in Available primitives; use connected tools for everything else.`,
+              },
+            ],
+            toolIterations: iterations + 1,
+            readyToStream: false,
+            inputClassification: classification,
+            invalidResponseRetries: retries + 1,
+          };
+        }
+        const failure = `Réponse rejetée : commande inexistante proposée par Donna (/${invalidCommands.join(', /')}).`;
+        emitAgentEvent(state.session, 'assistant_message', 'agent_guard', { content: failure });
+        return { response: failure, pendingToolCalls: null, readyToStream: false };
+      }
+
       if (useStreamWithTools) {
         emitAgentEvent(state.session, 'assistant_message', 'llm', { content: result.content ?? '' });
         // Text was streamed inline via session._onStream — no second LLM call needed.
@@ -1106,7 +1076,7 @@ export function createAgentGraph(options = {}) {
       });
       // Immediate visible plan for any MCP call that doesn't yet have an _activity plan.
       let minimalPlanActive = false;
-      if (!isInternalWikiTool && server !== 'shell' && !state.session.headlessPlan) {
+      if (!isInternalWikiTool && server !== 'shell' && server !== 'runtime' && !state.session.headlessPlan) {
         minimalPlanActive = true;
         emitAgentEvent(state.session, 'plan_set', 'tool', {
           steps: [{ step: 1, id: null, description: toolName, status: 'running', _activityKey: null }],
@@ -1250,6 +1220,7 @@ export function createAgentGraph(options = {}) {
   function routeOrchestrator(state) {
     if (state.pendingToolCalls?.length > 0) return 'tool_executor';
     if (state.retryWithoutTool) return 'orchestrator';
+    if (state.invalidResponseRetries > 0 && state.response == null && !state.streamedInline) return 'orchestrator';
     return END;
   }
 

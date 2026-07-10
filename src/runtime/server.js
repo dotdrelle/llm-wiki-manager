@@ -15,6 +15,7 @@ export function startRuntimeServer({
   session = null,
   getContext,
   run,
+  delegate,
   cancel,
   resume,
   approve,
@@ -271,6 +272,36 @@ export function startRuntimeServer({
         }
         return;
       }
+      if (request.method === 'POST' && url.pathname === '/delegate') {
+        const { body, context } = await resolveBodyContext(request, url);
+        const objective = String(body.objective ?? '').trim();
+        if (!objective) {
+          sendJson(response, 400, { error: 'Missing objective.' });
+          return;
+        }
+        if (context.running) {
+          sendJson(response, 409, { error: 'A runtime run is already active.' });
+          return;
+        }
+        if (typeof delegate !== 'function') {
+          sendJson(response, 501, { error: 'Runtime delegation is unavailable.' });
+          return;
+        }
+        try {
+          const prepared = await delegate(context, { objective, workspace: body.workspace ?? context.workspace ?? null });
+          const started = startRuntimeRun(context, {
+            input: objective,
+            workspace: body.workspace ?? context.workspace ?? null,
+            preparedDelegation: prepared,
+            evaluate: false,
+          }, { waitForPlan: true });
+          await started.ready;
+          sendJson(response, 202, { accepted: true, runId: started.runId, workspace: started.workspace, delegation: prepared.summary ?? null });
+        } catch (err) {
+          sendJson(response, 422, { error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
       if (request.method === 'POST' && url.pathname === '/cancel') {
         const workspace = workspaceFromUrl(url);
         const context = await resolveContext({ workspace });
@@ -391,14 +422,22 @@ export function startRuntimeServer({
     return { killed: true, workspace: targetWorkspace, runId: targetRunId, runs, tasks, queued };
   }
 
-  function startRuntimeRun(context, body, { controlItemId = null } = {}) {
+  function startRuntimeRun(context, body, { controlItemId = null, waitForPlan = false } = {}) {
     const runId = randomUUID();
     const runWorkspace = context.workspace ?? body.workspace ?? null;
     context.running = true;
     context.currentAbortController = new AbortController();
     context.currentRunId = runId;
     context.currentRunWorkspace = runWorkspace;
-    const runBody = { ...body, workspace: runWorkspace, runId };
+    let resolveReady;
+    let rejectReady;
+    const ready = waitForPlan ? new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; }) : null;
+    const runBody = {
+      ...body,
+      workspace: runWorkspace,
+      runId,
+      ...(waitForPlan ? { _planReady: { resolve: resolveReady, reject: rejectReady } } : {}),
+    };
     if (controlItemId) {
       dispatchAgentEvent(context.session, createAgentEvent('control_started', {
         origin: 'runtime',
@@ -410,6 +449,7 @@ export function startRuntimeServer({
     const runPromise = run(context, runBody, { signal: context.currentAbortController.signal, runId });
     runPromise
       .catch((err) => {
+        rejectReady?.(err);
         context.session?._onRuntimeError?.(err);
       })
       .finally(() => {
@@ -420,7 +460,7 @@ export function startRuntimeServer({
         publishState(runWorkspace, context);
         void startNextControlRequest(context);
       });
-    return { accepted: true, runId, workspace: runWorkspace };
+    return { accepted: true, runId, workspace: runWorkspace, ...(ready ? { ready } : {}) };
   }
 
   function startNextControlRequest(context) {

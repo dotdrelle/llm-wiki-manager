@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildAgentSystemPrompt, classifyAgentInput, createAgentGraph, knownCapabilityIds } from './graph.js';
+import { buildAgentSystemPrompt, createAgentGraph, invalidSuggestedSlashCommands, knownCapabilityIds } from './graph.js';
 
 function sessionBase(overrides = {}) {
   return {
@@ -181,6 +181,156 @@ test('agent graph does not pre-filter mutating MCP tools for config questions', 
   assert.ok(seenTools.includes('wiki__plan_set'));
   assert.ok(seenTools.includes('production__production_start_job'));
   assert.ok(seenTools.includes('shell__run_command'));
+});
+
+test('interactive Donna delegates provider execution to the runtime orchestrator', async () => {
+  const seenTools = [];
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    agentRegistrySnapshot: ingestAgentSnapshot(),
+    mcp: {
+      production: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3000/mcp/',
+        tools: [
+          { name: 'agent_plan', description: 'Plan tasks', inputSchema: { type: 'object', properties: {} } },
+          { name: 'agent_execute', description: 'Execute a task', inputSchema: { type: 'object', properties: {} } },
+          { name: 'agent_status', description: 'Read task status', inputSchema: { type: 'object', properties: {} } },
+          { name: 'production_start_job', description: 'Legacy job start', inputSchema: { type: 'object', properties: {} } },
+          { name: 'production_status', description: 'Read production status', inputSchema: { type: 'object', properties: {} } },
+        ],
+      },
+    },
+    llm: {
+      async completeWithTools({ tools }) {
+        seenTools.push(...tools.map((tool) => tool.function.name));
+        return { content: 'Prêt.', message: { role: 'assistant', content: 'Prêt.' }, tool_calls: null };
+      },
+    },
+  });
+
+  await createAgentGraph().invoke({ input: 'bonjour', session });
+
+  assert.ok(seenTools.includes('runtime__delegate'));
+  assert.ok(seenTools.includes('production__agent_status'));
+  assert.ok(seenTools.includes('production__production_status'));
+  assert.ok(!seenTools.includes('production__agent_plan'));
+  assert.ok(!seenTools.includes('production__agent_execute'));
+  assert.ok(!seenTools.includes('production__production_start_job'));
+  assert.ok(!seenTools.includes('wiki__plan_set'));
+  assert.ok(!seenTools.includes('wiki__plan_done'));
+});
+
+function ingestAgentSnapshot() {
+  return [{
+    agentInstanceId: 'production-ingest',
+    serverName: 'production',
+    health: 'available',
+    description: {
+      contractVersion: '1',
+      agentType: 'production',
+      displayName: 'Production',
+      capabilities: [{
+        id: 'knowledge.update',
+        version: '1',
+        supportedOperations: ['ingest', 'ingest_plan', 'ingest_apply'],
+      }],
+    },
+  }];
+}
+
+test('runtime delegation tool accepts only the natural-language objective', async () => {
+  let delegationTool = null;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    agentRegistrySnapshot: ingestAgentSnapshot(),
+    llm: {
+      async completeWithTools({ tools }) {
+        delegationTool = tools.find((tool) => tool.function.name === 'runtime__delegate');
+        return { content: 'Prêt.', message: { role: 'assistant', content: 'Prêt.' }, tool_calls: null };
+      },
+    },
+  });
+
+  await createAgentGraph().invoke({ input: 'bonjour', session });
+
+  assert.deepEqual(Object.keys(delegationTool.function.parameters.properties), ['objective']);
+  assert.deepEqual(delegationTool.function.parameters.required, ['objective']);
+});
+
+test('Donna delegates the objective without choosing technical identifiers', async () => {
+  const originalFetch = globalThis.fetch;
+  let request = null;
+  globalThis.fetch = async (url, options) => {
+    request = { url: String(url), body: JSON.parse(options.body) };
+    return { ok: true, status: 202, json: async () => ({ accepted: true, runId: 'run-1', delegation: { tasks: 5, agent: 'production' } }) };
+  };
+  let calls = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    agentRegistrySnapshot: ingestAgentSnapshot(),
+    llm: {
+      async completeWithTools({ messages }) {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: 'delegate',
+              type: 'function',
+              function: { name: 'runtime__delegate', arguments: '{"objective":"Ingérer tous les fichiers en attente"}' },
+            }],
+          };
+        }
+        return { content: 'Plan validé.', message: { role: 'assistant', content: 'Plan validé.' }, tool_calls: null };
+      },
+    },
+  });
+
+  try {
+    await createAgentGraph().invoke({ input: 'ingère tout', session });
+    assert.match(request.url, /\/delegate/);
+    assert.deepEqual(request.body, { objective: 'Ingérer tous les fichiers en attente', workspace: 'docs' });
+    assert.equal('capability' in request.body, false);
+    assert.equal('operation' in request.body, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('runtime status does not manufacture a plan', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ status: 'idle', running: false, plan: [], queue: [], controlQueue: [], approvals: [] }),
+  });
+  let calls = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    llm: {
+      async completeWithTools() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{ id: 'status', type: 'function', function: { name: 'runtime__status', arguments: '{}' } }],
+          };
+        }
+        return { content: 'Aucun run actif.', message: { role: 'assistant', content: 'Aucun run actif.' }, tool_calls: null };
+      },
+    },
+  });
+
+  try {
+    const result = await createAgentGraph().invoke({ input: 'où en est le travail ?', session });
+    assert.equal(result.response, 'Aucun run actif.');
+    assert.equal(session.headlessPlan ?? null, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('agent graph binds the full toolset for a "remember my preference" request, not just read-only tools', async () => {
@@ -388,6 +538,71 @@ test('buildAgentSystemPrompt forbids inventing slash commands or arguments', () 
   assert.doesNotMatch(prompt, /executor:"/);
 });
 
+test('workspace package manifest is not exposed as an executable skill', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wiki-manager-skills-'));
+  try {
+    mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
+    writeFileSync(join(root, 'skill.yaml'), [
+      'name: basic',
+      'description: Demo workspace package',
+      'entrypoints:',
+      '  uiSkillDir: .wiki/skills',
+    ].join('\n'));
+    writeFileSync(join(root, '.wiki', 'skills', 'ingest.md'), [
+      '---',
+      'name: ingest',
+      'description: Ingest pending sources',
+      '---',
+      'Use the production capability.',
+    ].join('\n'));
+
+    const prompt = buildAgentSystemPrompt({ session: sessionBase({ workspacePath: root }) });
+    assert.doesNotMatch(prompt, /\/basic:/);
+    assert.match(prompt, /\/ingest: Ingest pending sources/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('system prompt forbids unsolicited next-step sections', () => {
+  const prompt = buildAgentSystemPrompt({ session: sessionBase() });
+  assert.match(prompt, /Never add a "Next steps", "Prochaines étapes", "À suivre"/);
+  assert.match(prompt, /unless the user explicitly asks what to do next/);
+  assert.doesNotMatch(prompt, /list the suggested follow-ups/);
+});
+
+test('slash-command output guard rejects commands outside the real agent command set', () => {
+  const session = sessionBase({ commands: ['status', 'wiki', 'openui'] });
+  assert.deepEqual(
+    invalidSuggestedSlashCommands('Vérifiez avec :\n```bash\n/wiki list_pages\n```', session),
+    ['wiki'],
+  );
+  assert.deepEqual(invalidSuggestedSlashCommands('Le résultat est disponible dans `/openui`.', session), []);
+});
+
+test('Donna retries instead of displaying an invented slash command', async () => {
+  let calls = 0;
+  const session = sessionBase({
+    commands: ['status', 'openui'],
+    llm: {
+      async completeWithTools() {
+        calls += 1;
+        if (calls === 1) {
+          const content = 'Vérifiez ensuite avec :\n```bash\n/wiki list_pages\n```';
+          return { content, message: { role: 'assistant', content }, tool_calls: null };
+        }
+        const content = 'Ingestion terminée. Le résultat est disponible dans `/openui`.';
+        return { content, message: { role: 'assistant', content }, tool_calls: null };
+      },
+    },
+  });
+
+  const result = await createAgentGraph().invoke({ input: 'résume le résultat', session });
+  assert.equal(calls, 2);
+  assert.equal(result.response, 'Ingestion terminée. Le résultat est disponible dans `/openui`.');
+  assert.doesNotMatch(result.response, /wiki list_pages/);
+});
+
 // Guard: the system prompt must never show a connected tool's bare name
 // outside its qualified server__tool form. Bare mentions are what teach the
 // model to emit unqualified tool calls (the cme_status incident). The bare
@@ -433,33 +648,6 @@ test('buildAgentSystemPrompt contains no unqualified tool names for connected se
     }
   }
   assert.deepEqual(offenders, [], `Unqualified tool names found in system prompt: ${offenders.join(', ')}`);
-});
-
-test('classifyAgentInput routes information requests to observe, not runs', () => {
-  const session = sessionBase();
-  // The original incident: a config question must never become a run.
-  assert.equal(classifyAgentInput('donne moi la config du cme', session).kind, 'observe');
-  assert.equal(classifyAgentInput('montre la configuration du workspace', session).kind, 'observe');
-  assert.equal(classifyAgentInput('où en est le run', session).kind, 'observe');
-  assert.equal(classifyAgentInput('explique le build', session).kind, 'observe');
-  assert.equal(classifyAgentInput("qu'est-ce que le pipeline polish ?", session).kind, 'observe');
-});
-
-test('classifyAgentInput routes action requests to start_run without an active run', () => {
-  const session = sessionBase();
-  assert.equal(classifyAgentInput('lance le pipeline complet', session).kind, 'start_run');
-  assert.equal(classifyAgentInput('configure le cme avec ce token', session).kind, 'start_run');
-  assert.equal(classifyAgentInput('lance le run', session).kind, 'start_run');
-  assert.equal(classifyAgentInput('exporte les deliverables', session).kind, 'start_run');
-});
-
-test('classifyAgentInput keeps small talk as converse and active-run branches intact', () => {
-  const session = sessionBase();
-  assert.equal(classifyAgentInput('bonjour', session).kind, 'converse');
-  assert.equal(classifyAgentInput('merci beaucoup', session).kind, 'converse');
-  const activeSession = sessionBase({ agentProjection: { status: 'running' } });
-  assert.equal(classifyAgentInput('lance un build', activeSession).kind, 'ambiguous');
-  assert.equal(classifyAgentInput('annule tout', activeSession).kind, 'cancel');
 });
 
 function orchestrableAgentSnapshot() {
@@ -572,13 +760,11 @@ test('agent graph accepts plan steps with known capabilities and null capability
   assert.deepEqual(session.headlessPlan.map((step) => step.id), ['export', 'report']);
 });
 
-test('buildAgentSystemPrompt anchors the real capability list', () => {
+test('buildAgentSystemPrompt assigns capability resolution exclusively to the runtime', () => {
   const withAgents = buildAgentSystemPrompt({ session: sessionBase({ agentRegistrySnapshot: orchestrableAgentSnapshot() }) });
-  assert.match(withAgents, /Known orchestration capabilities — the ONLY values allowed in requiredCapability: external-source\.export, knowledge\.pipeline/);
-  assert.match(withAgents, /Never invent capability names/);
-
-  const withoutAgents = buildAgentSystemPrompt({ session: sessionBase() });
-  assert.match(withoutAgents, /No orchestration capabilities discovered yet/);
+  assert.match(withAgents, /call runtime__delegate with the user objective only/);
+  assert.match(withAgents, /Never choose a capability, operation, agent, plan, or implementation yourself/);
+  assert.doesNotMatch(withAgents, /ONLY values allowed in requiredCapability/);
 });
 
 test('agent graph executes action inputs inside a runtime run instead of asking for clarification', async () => {
@@ -846,14 +1032,14 @@ test('Donna interprets a cleanup request and calls runtime__kill herself', async
   }
 });
 
-test('buildAgentSystemPrompt delegates pending inputs to the capability provider without filesystem fallback', () => {
+test('buildAgentSystemPrompt uses the canonical wiki workspace status without filesystem fallback', () => {
   const workspacePath = mkdtempSync(join(tmpdir(), 'facts-'));
   try {
     mkdirSync(join(workspacePath, 'raw', 'untracked'), { recursive: true });
     writeFileSync(join(workspacePath, 'raw', 'untracked', 'note-a.md'), '# a\n');
     const prompt = buildAgentSystemPrompt({ session: sessionBase({ workspacePath }) });
-    assert.match(prompt, /call the qualified `<provider>__agent_status` tool with \{capability, operation\}/);
-    assert.match(prompt, /report only its pendingInputs/);
+    assert.match(prompt, /call wiki__wiki_workspace_status first/);
+    assert.match(prompt, /canonical read-only workspace state/);
     assert.doesNotMatch(prompt, /note-a\.md/);
     assert.doesNotMatch(prompt, /Workspace facts:/);
   } finally {
@@ -861,7 +1047,7 @@ test('buildAgentSystemPrompt delegates pending inputs to the capability provider
   }
 });
 
-test('Donna reads pending inputs from the qualified capability provider status tool', async () => {
+test('Donna reads workspace inventory from the canonical wiki status tool', async () => {
   const originalFetch = globalThis.fetch;
   let requestedArguments = null;
   globalThis.fetch = async (_url, options) => {
@@ -874,12 +1060,9 @@ test('Donna reads pending inputs from the qualified capability provider status t
       text: async () => JSON.stringify({ result: { content: [{
         type: 'text',
         text: JSON.stringify({
-          contractVersion: '1',
-          agentInstanceId: 'production-main',
-          capability: 'knowledge.update',
-          operation: 'ingest',
-          available: true,
-          pendingInputs: [{ type: 'file', ref: 'provider/source-a', label: 'source-a.md', mediaType: 'text/markdown' }],
+          pendingSources: { count: 2, files: ['raw/untracked/a.md', 'raw/untracked/b.md'] },
+          templates: { count: 1, files: ['templates/report.md'] },
+          deliverables: { count: 0, files: [] },
         }),
       }] } }),
     };
@@ -887,13 +1070,13 @@ test('Donna reads pending inputs from the qualified capability provider status t
   let calls = 0;
   const session = sessionBase({
     mcp: {
-      production: {
+      wiki: {
         status: 'connected',
         url: 'http://127.0.0.1:3000/mcp/',
         tools: [{
-          name: 'agent_status',
-          description: 'Read a job or discover capability inputs.',
-          inputSchema: { type: 'object', properties: { capability: { type: 'string' }, operation: { type: 'string' } } },
+          name: 'wiki_workspace_status',
+          description: 'Read the canonical local workspace inventory.',
+          inputSchema: { type: 'object', properties: {} },
         }],
       },
     },
@@ -907,20 +1090,20 @@ test('Donna reads pending inputs from the qualified capability provider status t
             tool_calls: [{
               id: 'status-call',
               type: 'function',
-              function: { name: 'production__agent_status', arguments: JSON.stringify({ capability: 'knowledge.update', operation: 'ingest' }) },
+              function: { name: 'wiki__wiki_workspace_status', arguments: '{}' },
             }],
           };
         }
-        assert.match(JSON.stringify(messages), /provider\/source-a/);
-        return { content: 'Un fichier est en attente : source-a.md.', message: { role: 'assistant', content: 'Un fichier est en attente : source-a.md.' }, tool_calls: null };
+        assert.match(JSON.stringify(messages), /raw\/untracked\/a\.md/);
+        return { content: 'Deux fichiers sont en attente : a.md et b.md.', message: { role: 'assistant', content: 'Deux fichiers sont en attente : a.md et b.md.' }, tool_calls: null };
       },
     },
   });
 
   try {
-    const result = await createAgentGraph().invoke({ input: 'Quels fichiers sont en attente d’ingestion ?', session });
-    assert.equal(result.response, 'Un fichier est en attente : source-a.md.');
-    assert.deepEqual(requestedArguments, { capability: 'knowledge.update', operation: 'ingest' });
+    const result = await createAgentGraph().invoke({ input: 'as ton des fichier en attente d ingestion', session });
+    assert.equal(result.response, 'Deux fichiers sont en attente : a.md et b.md.');
+    assert.deepEqual(requestedArguments, {});
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -513,9 +513,6 @@ export async function refreshMcpRuntimeStatus(session) {
 
 async function statusText(session) {
   const states = await refreshMcpRuntimeStatus(session);
-  const services = session.workspacePath
-    ? await composeServices(session).catch(() => [])
-    : [];
   const workspaceStats = collectWorkspaceStats(session);
   const workspaceColumn = sectionBlock('Workspace', [
     `workspace: ${session.workspace ?? '-'}`,
@@ -530,9 +527,6 @@ async function statusText(session) {
     `model: ${session.wikircConfig?.llm?.model ?? '-'}`,
     `baseUrl: ${session.wikircConfig?.llm?.baseUrl ?? '-'}`,
   ]);
-  const servicesColumn = sectionBlock('Services', services.length > 0
-    ? services.map((service) => `- ${service}`)
-    : ['No workspace loaded.']);
   const runtimeColumn = sectionBlock('Runtime', (states ? serviceStatesText(states) : 'Docker runtime not available or no workspace loaded.').split('\n'));
   const mcpColumn = sectionBlock('MCP', formatMcpStatus(session.mcp).split('\n'));
   const mcpToolsColumn = sectionBlock('MCP tool summary', formatMcpToolSummary(session.mcp).split('\n'));
@@ -542,7 +536,7 @@ async function statusText(session) {
     '',
     workspaceStatsText(workspaceStats),
     '',
-    twoColumns(servicesColumn, runtimeColumn),
+    runtimeColumn,
     '',
     twoColumns(mcpColumn, mcpToolsColumn),
   ].join('\n');

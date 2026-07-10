@@ -686,6 +686,61 @@ test('agent graph survives more than 12 tool iterations (recursion limit)', asyn
   }
 });
 
+test('runtime action retries a text-only hallucination and requires a real tool call', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    text: async () => JSON.stringify({ result: { content: [{ type: 'text', text: '{"ok":true,"outputs":["deliverables/result.md"]}' }] } }),
+  });
+  let calls = 0;
+  let retryMessages = [];
+  const session = sessionBase({
+    _currentRunIdentity: { runId: 'run-build', turnId: 'run-build:turn-1', workspace: 'docs' },
+    llm: {
+      async completeWithTools({ messages }) {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: 'Build terminé, faux-job-123, rapport.pdf.',
+            message: { role: 'assistant', content: 'Build terminé, faux-job-123, rapport.pdf.' },
+            tool_calls: null,
+          };
+        }
+        if (calls === 2) {
+          retryMessages = messages;
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: 'build-call',
+              type: 'function',
+              function: { name: 'production__production_start_job', arguments: '{"type":"build"}' },
+            }],
+          };
+        }
+        return {
+          content: 'Build terminé. Résultat : deliverables/result.md. Disponible dans /openui.',
+          message: { role: 'assistant', content: 'Build terminé. Résultat : deliverables/result.md. Disponible dans /openui.' },
+          tool_calls: null,
+        };
+      },
+    },
+  });
+
+  try {
+    const result = await createAgentGraph().invoke({ input: 'lance le build', session });
+    assert.equal(calls, 3);
+    assert.match(retryMessages.at(-1).content, /called no tool/);
+    assert.doesNotMatch(result.response, /faux-job-123|rapport\.pdf/);
+    assert.match(result.response, /deliverables\/result\.md/);
+    assert.equal(session.headlessPlan?.[0]?.status, 'done');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('agent graph auto-declares the plan from an agent_plan task-graph fragment', async () => {
   // The bridge that makes parallel ingestion real: when the LLM calls
   // production__agent_plan, the shell integrates the fragment as the plan

@@ -66,6 +66,7 @@ export async function runAgenticLoop(agent, session, initialInput, {
   onPendingSteps = null,
   onActivitiesStarted = null,
   onActivitiesCompleted = null,
+  deterministicTerminalSummary = false,
   onMaxTurns = null,
   abortMessage = 'Agent run cancelled.',
   parallelHandoff = false,
@@ -149,6 +150,11 @@ export async function runAgenticLoop(agent, session, initialInput, {
     const completed = waitResult.completed ?? [];
     const summary = formatCompletedActivities(completed);
     onActivitiesCompleted?.({ completed, summary });
+    const unfinished = (session.headlessPlan ?? []).some((step) =>
+      ['pending', 'pending_approval', 'running', 'starting', 'queued'].includes(String(step.status ?? '').toLowerCase()));
+    if (deterministicTerminalSummary && !unfinished) {
+      return { ok: true, completed, summary, deterministicSummary: true };
+    }
     if (parallelHandoff && readyPlanTasks(session.headlessPlan).length > 1) {
       return { ok: true, handoff: true };
     }

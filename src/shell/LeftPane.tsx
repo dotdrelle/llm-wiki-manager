@@ -375,7 +375,10 @@ function conversationLines(messages: Array<{ role: string; content: string }>, c
     let inFence = false;
     const lines: Array<{ text: string; isCode: boolean }> = [];
     for (const line of raw.split('\n')) {
-      if (/^(`{2,3}|~{2,3})/.test(line)) { inFence = !inFence; continue; }
+      // LLM responses often indent fenced blocks as part of a list. Accept
+      // leading whitespace so ```bash / ~~~ fences are rendered as code
+      // instead of leaking their Markdown markers into the conversation.
+      if (/^\s*(`{3,}|~{3,})/.test(line)) { inFence = !inFence; continue; }
       lines.push({ text: line, isCode: inFence });
     }
     return [

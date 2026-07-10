@@ -48,7 +48,7 @@ Use a local installation when the manager should be pinned in a project's
 
 ```bash
 npm install @dotdrelle/wiki-manager
-npm approve-scripts bun  # only when npm reports that Bun's postinstall is pending
+npm approve-scripts bun@1.3.14  # only when npm reports that Bun's postinstall is pending
 npx wiki-manager
 npx wiki-workspace --help
 ```
@@ -57,8 +57,8 @@ npx wiki-workspace --help
 global `PATH`. Run local executables with `npx` (or `npm exec wiki-manager` and
 `npm exec wiki-workspace`). Bun is installed automatically as a package runtime;
 you do not need to add `~/.bun/bin` to `PATH`. Recent npm versions may require
-the explicit `npm approve-scripts bun` security approval shown above before the
-first launch.
+the explicit `npm approve-scripts bun@1.3.14` security approval shown above
+before the first launch.
 
 ### Global installation
 

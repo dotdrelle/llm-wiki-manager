@@ -77,8 +77,56 @@ test('runAgenticLoop waits for new activities and continues with a completion su
   assert.equal(result.ok, true);
   assert.equal(inputs.length, 2);
   assert.match(inputs[1], /Completed activities:/);
-  assert.match(inputs[1], /production job-1: done/);
-  assert.deepEqual(callbacks, ['started:1', '- production job-1: done']);
+  assert.match(inputs[1], /- job: done/);
+  assert.deepEqual(callbacks, ['started:1', '- job: done']);
+});
+
+test('runAgenticLoop can finish from terminal activity facts without another LLM turn', async () => {
+  const session = { activities: {}, headlessPlan: null };
+  let turns = 0;
+  const result = await runAgenticLoop({
+    async invoke({ session: turnSession }) {
+      turns += 1;
+      dispatchAgentEvent(turnSession, createAgentEvent('activity_upserted', {
+        payload: {
+          activity: {
+            id: 'job-build',
+            source: 'production',
+            kind: 'build',
+            label: 'Build workspace',
+            status: 'running',
+            terminal: false,
+          },
+        },
+      }));
+      return { response: 'Job started.' };
+    },
+  }, session, 'Build workspace', {
+    maxTurns: 3,
+    timeoutMs: 1000,
+    deterministicTerminalSummary: true,
+    waitForActivities: async (turnSession) => {
+      dispatchAgentEvent(turnSession, createAgentEvent('activity_upserted', {
+        payload: {
+          activity: {
+            id: 'job-build',
+            source: 'production',
+            kind: 'build',
+            label: 'Build workspace',
+            status: 'done',
+            terminal: true,
+            outputRefs: ['deliverables/result.md'],
+          },
+        },
+      }));
+      return { ok: true, completed: Object.values(turnSession.activities) };
+    },
+  });
+
+  assert.equal(turns, 1);
+  assert.equal(result.deterministicSummary, true);
+  assert.match(result.summary, /build: done/);
+  assert.match(result.summary, /output: deliverables\/result\.md/);
 });
 
 test('runAgenticLoop extracts a fallback numbered plan from first response', async () => {

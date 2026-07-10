@@ -50,6 +50,7 @@ export async function runRuntimeAgenticLoop(agent, session, initialInput, { sign
     maxTurns,
     runId,
     parallelHandoff,
+    deterministicTerminalSummary: true,
     abortMessage: 'Runtime run cancelled.',
     waitForActivities: (turnSession, startedActivities, waitOptions) =>
       waitForRuntimeActivities(turnSession, startedActivities, { ...waitOptions, pollBusy }),
@@ -77,6 +78,14 @@ export async function runRuntimeAgenticLoop(agent, session, initialInput, { sign
     },
     onActivitiesStarted: ({ activities }) => {
       emitRuntimeLog(session, `agentic-loop: ${activities.length} new activity(s), waiting`);
+    },
+    onActivitiesCompleted: ({ summary }) => {
+      emitRuntimeLog(session, `agentic-loop: completed activities:\n${summary}`);
+      dispatchAgentEvent(session, createAgentEvent('assistant_message', {
+        origin: 'runtime',
+        runId,
+        payload: { content: summary || 'Action terminée.' },
+      }));
     },
     onMaxTurns: ({ maxTurns: totalTurns }) => {
       emitRuntimeLog(session, `agentic-loop: max turns (${totalTurns}) reached`);

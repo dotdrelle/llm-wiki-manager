@@ -141,10 +141,17 @@ export function formatConfigValue(value) {
 }
 
 export function formatCompletedActivities(activities) {
-  return activities
-    .filter((a) => a.terminal)
-    .map((a) => `- ${a.source} ${a.id ?? a.kind}: ${a.status}${a.error ? ` (${a.error})` : ''}`)
-    .join('\n');
+  const terminal = activities.filter((activity) => activity.terminal);
+  const lines = terminal.map((activity) => {
+    const label = activity.kind ?? activity.label ?? `${activity.source} ${activity.id ?? 'activity'}`;
+    return `- ${label}: ${activity.status}${activity.error ? ` (${activity.error})` : ''}`;
+  });
+  const outputs = [...new Set(terminal.flatMap((activity) => activity.outputRefs ?? []).map((ref) => {
+    if (ref && typeof ref === 'object') return String(ref.ref ?? ref.path ?? ref.url ?? '').trim();
+    return String(ref ?? '').trim();
+  }).filter(Boolean))];
+  if (outputs.length > 0) lines.push(...outputs.map((output) => `- output: ${output}`));
+  return lines.join('\n');
 }
 
 function findMatchingPlanStepByStructure(plan, activity) {

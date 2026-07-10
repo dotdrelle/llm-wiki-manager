@@ -250,6 +250,7 @@ const AgentState = Annotation.Root({
   readyToStream: Annotation(),
   streamContext: Annotation(),
   streamedInline: Annotation(),
+  retryWithoutTool: Annotation({ default: () => false }),
 });
 
 function commandList(session) {
@@ -688,6 +689,9 @@ export function buildAgentSystemPrompt(state) {
     skills,
     'You can call MCP tools directly using the provided tool functions.',
     'When the user asks for an action that can be performed with connected MCP tools or safe primitives, do not answer with future intent such as "I will call...", "I am going to run...", or "launching..." unless you also call the tool in the same turn. Either call the tool now, ask for the exact missing required arguments, or explain the concrete blocker.',
+    'Execution truthfulness: never invent a job id, status, percentage, duration, generated file, file content, URL, command, or tool result. An action is executed only when you call an available tool and receive its result. Examples and placeholders are forbidden in execution reports.',
+    'After any completed action, give a short factual summary based only on the tool result: outcome and concrete outputs or references actually returned. Mention a viewing primitive only when it exists in Available primitives and is relevant. Do not interpret generated content, propose verification checklists, invent next steps, or suggest commands unless the user explicitly asks.',
+    'When calling a tool, emit no preliminary narration. Call it directly; the PLAN and Activity panels show progress. After completion, keep the final response concise and proportional to the result.',
     'For connector configuration/setup/update requests, if a matching setup/configuration tool is connected and the required arguments are known, call it immediately. If the connector or tool is not connected, say which concrete capability is missing and recommend the exact service/status primitive to inspect it. Do not invent a pending connector action in plain text.',
     'For workspace-scoped external MCP tools, the orchestrator enforces workspace injection. Use the active workspace for configuration, source, import, export, conversion, and generation tools unless a tool is explicitly job-scoped and only requires a job id.',
     'You can call shell__run_command for safe manager slash commands such as /workspace list, /workspace init <name> [path], /use <workspace>, /config, /status, /services, /skills, /skills show <name>, and /skills run <name>.',
@@ -892,12 +896,14 @@ export function createAgentGraph(options = {}) {
 
     try {
       const useStreamWithTools = typeof llm.streamWithTools === 'function';
+      const suppressExecutionNarration = runtimeExecution && (iterations === 0 || state.retryWithoutTool);
       const result = useStreamWithTools
         ? await llm.streamWithTools({
             system,
             tools,
             messages: conversationMessages,
             onTextDelta: (delta) => {
+              if (suppressExecutionNarration) return;
               emitAgentEvent(state.session, 'assistant_delta', 'llm', { delta });
               state.session._onStream?.(delta);
             },
@@ -930,6 +936,39 @@ export function createAgentGraph(options = {}) {
           toolIterations: iterations + 1,
           readyToStream: false,
           inputClassification: classification,
+          retryWithoutTool: false,
+        };
+      }
+
+      if (runtimeExecution && iterations === 0 && !state.retryWithoutTool) {
+        state.session._onStreamReset?.();
+        state.session._onStep?.('Agent: action response rejected — no tool was called; retrying…');
+        return {
+          pendingToolCalls: null,
+          messages: [
+            { role: 'user', content: state.input },
+            result.message ?? { role: 'assistant', content: result.content ?? '' },
+            {
+              role: 'user',
+              content: 'Your previous response did not execute the requested action because it called no tool. Do not narrate or simulate execution. Call the appropriate available tool now. Never invent results.',
+            },
+          ],
+          toolIterations: 1,
+          readyToStream: false,
+          inputClassification: classification,
+          retryWithoutTool: true,
+        };
+      }
+
+      if (runtimeExecution && state.retryWithoutTool) {
+        state.session._onStreamReset?.();
+        const failure = 'Action non exécutée : Donna n’a appelé aucun outil disponible. Aucun job ni résultat n’a été créé.';
+        emitAgentEvent(state.session, 'assistant_message', 'agent_guard', { content: failure });
+        return {
+          response: failure,
+          pendingToolCalls: null,
+          readyToStream: false,
+          retryWithoutTool: false,
         };
       }
 
@@ -1163,6 +1202,7 @@ export function createAgentGraph(options = {}) {
 
   function routeOrchestrator(state) {
     if (state.pendingToolCalls?.length > 0) return 'tool_executor';
+    if (state.retryWithoutTool) return 'orchestrator';
     return END;
   }
 

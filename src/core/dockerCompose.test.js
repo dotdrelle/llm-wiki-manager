@@ -22,5 +22,7 @@ test('agent compose services run as the host uid and gid', async () => {
   const agentsCompose = YAML.parse(agentsRaw);
   assert.equal(agentsCompose.services.cme.user, '${UID:-1000}:${GID:-1000}');
   assert.equal(agentsCompose.services.documents.user, '${UID:-1000}:${GID:-1000}');
-  assert.equal(agentsCompose.services.mailer.user, '${UID:-1000}:${GID:-1000}');
+  // MailerSend was an external-connector experiment — removed from the
+  // default stack (the agent repo still exists for ad-hoc use).
+  assert.equal(agentsCompose.services.mailer, undefined);
 });

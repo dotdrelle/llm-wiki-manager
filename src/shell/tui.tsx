@@ -393,10 +393,13 @@ export async function runOpenTuiShell({
   packageJson: Record<string, unknown>;
   runtime?: any;
 }) {
-  await render(() => <App agent={agent} packageJson={packageJson} runtime={runtime} />, {
-    exitOnCtrlC: false,
-    useMouse: true,
-    targetFps: 30,
+  await new Promise<void>((resolve, reject) => {
+    render(() => <App agent={agent} packageJson={packageJson} runtime={runtime} />, {
+      exitOnCtrlC: false,
+      useMouse: true,
+      targetFps: 30,
+      onDestroy: resolve,
+    }).catch(reject);
   });
   return {};
 }

@@ -24,12 +24,6 @@
       "headers": {
         "Authorization": "Bearer ${DOCUMENTS_MCP_AUTH_TOKEN}"
       }
-    },
-    "mailer": {
-      "url": "http://host.docker.internal:${MAILER_MCP_PORT:-3335}/mcp/",
-      "headers": {
-        "Authorization": "Bearer ${MAILER_MCP_AUTH_TOKEN}"
-      }
     }
   }
 }

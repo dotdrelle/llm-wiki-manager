@@ -125,7 +125,7 @@ cp .env.example .env
 ```
 
 **3 — Start the shared agents.**
-Start the common toolbox once (Confluence export `cme`, `documents`, `mailer`).
+Start the common toolbox once (Confluence export `cme`, `documents`).
 They run in the background and serve every workspace.
 
 ```bash
@@ -223,7 +223,7 @@ Start the common toolbox once and for all (Confluence, documents, e-mail,
 production). These agents run in the background and serve **all your projects**:
 
 ```bash
-wiki-workspace agents up        # start cme, documents, mailer…
+wiki-workspace agents up        # start cme, documents…
 wiki-workspace agents status    # check they respond
 ```
 
@@ -368,7 +368,7 @@ of you in the browser (create → configure → start the agents → open).
 | [`agent-cme`](https://github.com/dotdrelle/agent-cme) | Global Confluence to Markdown MCP exporter; workspace injected automatically by Donna |
 | [`agent-wiki-production`](https://github.com/dotdrelle/agent-wiki-production) | Workspace-scoped production jobs: ingest, build, export, polish, pipeline |
 | [`agent-wiki-documents`](https://github.com/dotdrelle/agent-wiki-documents) | Document conversion MCP: PDF/Office/HTML/images → Markdown (OCR-capable) |
-| [`agent-mailer-api`](https://github.com/dotdrelle/agent-mailer-api) | Optional external mailer MCP endpoint |
+| [`agent-mailer-api`](https://github.com/dotdrelle/agent-mailer-api) | Optional external mailer MCP endpoint (user-side override, not in the default stack) |
 
 ## Workspace Model
 
@@ -414,7 +414,7 @@ keys** (`apiKey` + `baseUrl` that *reach a model*).
 
 | File | Owner | Scope | Holds |
 | --- | --- | --- | --- |
-| `.env` | manager | global | shared secrets: agent MCP tokens, MailerSend, OCR LLM, port overrides |
+| `.env` | manager | global | shared secrets: agent MCP tokens, OCR LLM, port overrides, variables for any user-declared external MCP |
 | `mcp.endpoints.json` | manager | global | where each external agent lives + which `Bearer`/header to send |
 | `workspaces/<name>/.env` | manager | per workspace | ports, workspace path, the wiki's own MCP tokens |
 | `workspaces/<name>/.wikirc.yaml` (+ `.wikirc.yaml.<profile>`) | workspace | per workspace | LLM & vector keys (provider/model/apiKey/baseUrl/retrieval) |
@@ -462,7 +462,7 @@ cp .env.example .env
 
 The `.env` file is loaded automatically by both `wiki-manager` (Node/Bun process)
 and `wiki-workspace` (Docker Compose). It sets `WORKSPACES_ROOT`, per-agent auth
-tokens, mailer credentials, and optional port overrides.
+tokens and optional port overrides; credentials of optional connectors you enable via the user override.
 
 ### External MCP endpoints
 
@@ -538,15 +538,39 @@ than tracking its own state.
 
 ### Starting external agents
 
-Start CME, documents, and mailer once for all workspaces:
+Start CME and documents once for all workspaces:
 
 ```bash
 wiki-workspace agents up
 ```
 
-This uses the packaged `agents.docker-compose.yml`. `WORKSPACES_ROOT` is resolved
+This uses the packaged `agents.docker-compose.yml` (it lives inside the npm
+package — never edit it, updates overwrite it). On first run, `agents up`
+generates the missing agent auth tokens into your manager `.env` and seeds
+`mcp.endpoints.json` from the packaged example. `WORKSPACES_ROOT` is resolved
 automatically from the manager workspaces directory. Agent state is stored under
 `./.agents-data/` unless `AGENTS_DATA_DIR` is set.
+
+#### Optional agents and user overrides
+
+Anything beyond the default stack (for example the MailerSend agent) is an
+external connector operated at the user's charge — built and published, but
+not part of the delivery. To enable one, create a file named
+`agents.docker-compose.override.yml` **next to your `.env`**:
+
+```bash
+cp "$(npm root -g)/@dotdrelle/wiki-manager/agents.docker-compose.mailer.example.yml" \
+   agents.docker-compose.override.yml
+```
+
+`agents up` includes it automatically when present (standard Docker Compose
+merge: new services are added, same-name keys override the defaults — you can
+also use it to pin a port or a variable of a default agent). The file is
+yours: wiki-manager never generates or overwrites it. Complete the setup by
+adding the connector's variables to your `.env` and its endpoint block to
+your `mcp.endpoints.json` — every variable an external MCP endpoint needs
+lives in the `.env` and is referenced as `${VAR_NAME}` from
+`mcp.endpoints.json`. Detailed steps are in the example file header.
 
 Workspace-native MCP servers (`llm-wiki`, `production`) stay configured through
 each workspace `.env`. External agents are workspace-agnostic: the active

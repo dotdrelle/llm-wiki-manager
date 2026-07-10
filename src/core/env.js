@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -51,7 +51,14 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
   const envFile = managerEnvFile();
   const envExample = join(packageRoot, '.env.example');
   if (!existsSync(envFile) && existsSync(envExample)) {
-    copyFileSync(envExample, envFile);
+    // Substitute the documentation placeholders with real paths: a copied
+    // WORKSPACES_ROOT=/path/to/workspaces silently broke agents compose
+    // mounts until manually edited.
+    const workspacesRoot = join(managerStateDir(), 'workspaces');
+    const content = readFileSync(envExample, 'utf8')
+      .replace(/^WORKSPACES_ROOT=.*$/m, `WORKSPACES_ROOT=${workspacesRoot}`)
+      .replace(/^# WIKI_WORKSPACES_DIR=.*$/m, `WIKI_WORKSPACES_DIR=${workspacesRoot}`);
+    writeFileSync(envFile, content);
     created.push('.env');
   }
   if (created.length > 0) {

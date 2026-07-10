@@ -86,7 +86,7 @@ Commands:
   up <workspace> [--open]           Start workspace stack: wiki + production
   list                              List configured workspaces
 
-  agents up [--pull]                Start all external agents (cme, documents, mailer)
+  agents up [--pull]                Start all external agents (cme, documents)
   agents down                       Stop all external agents
   agents logs [args...]             Follow external agent logs
   agents pull                       Pull latest external agent images
@@ -215,9 +215,15 @@ agents_compose() {
     local cacert_args=()
     WORKSPACES_ROOT="$workspaces_root" AGENTS_DATA_DIR="$agents_data_dir" \
       read_lines_into_array cacert_args cacert_compose_args "$agents_compose_file" "agents.cacert.compose.yml"
+    # User-owned override: optional external agents (e.g. mailer) live in a
+    # file the user maintains NEXT TO the .env — never generated, never
+    # overwritten by package updates.
+    local override_args=()
+    local user_override="$MANAGER_STATE_DIR/agents.docker-compose.override.yml"
+    [[ -f "$user_override" ]] && override_args+=(-f "$user_override")
     WORKSPACES_ROOT="$workspaces_root" AGENTS_DATA_DIR="$agents_data_dir" \
       docker compose --project-directory "$DEFAULT_MANAGER_DIR" \
-        ${compose_env_args[@]+"${compose_env_args[@]}"} -f "$agents_compose_file" ${cacert_args[@]+"${cacert_args[@]}"} -p wiki-agents "$@"
+        ${compose_env_args[@]+"${compose_env_args[@]}"} -f "$agents_compose_file" ${override_args[@]+"${override_args[@]}"} ${cacert_args[@]+"${cacert_args[@]}"} -p wiki-agents "$@"
   }
 
   case "$subcommand" in
@@ -245,8 +251,9 @@ agents_compose() {
       printf 'Workspaces root: %s\n' "$workspaces_root"
       printf 'Agents data:     %s\n' "$agents_data_dir"
       [[ -z "$CACERT_PATH" ]] || printf 'CA cert:         %s -> /wiki-manager-ca.pem\n' "$CACERT_PATH"
-      printf 'Agents: cme=:%s  documents=:%s  mailer=:%s\n' \
-        "${CME_MCP_PORT:-3336}" "${DOCUMENTS_MCP_PORT:-3337}" "${MAILER_MCP_PORT:-3335}"
+      printf 'Agents: cme=:%s  documents=:%s\n' \
+        "${CME_MCP_PORT:-3336}" "${DOCUMENTS_MCP_PORT:-3337}"
+      [[ ! -f "$MANAGER_STATE_DIR/agents.docker-compose.override.yml" ]] || printf 'User override: agents.docker-compose.override.yml included\n'
       ;;
     down)
       [[ $# -eq 0 ]] || die "agents down does not take arguments"
@@ -389,12 +396,12 @@ ensure_runtime_node() {
 }
 
 ensure_agent_tokens() {
-  # The external agents (cme, documents, mailer) authenticate with tokens
+  # The external agents (cme, documents) authenticate with tokens
   # from the manager .env — generate any missing one, exactly like the
   # workspace and runtime tokens are generated. Leaving them empty made a
   # fresh install start agents nobody could talk to.
   local key token
-  for key in CME_MCP_AUTH_TOKEN DOCUMENTS_MCP_AUTH_TOKEN MAILER_MCP_AUTH_TOKEN; do
+  for key in CME_MCP_AUTH_TOKEN DOCUMENTS_MCP_AUTH_TOKEN; do
     token="$(env_value "$MANAGER_ENV_FILE" "$key" "")"
     if [[ -z "$token" ]]; then
       token="$(generate_token)"

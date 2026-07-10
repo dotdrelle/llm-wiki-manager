@@ -17,6 +17,8 @@ workspaces/*
 !.github/workflows/*.yml
 
 !docker-compose.yml
+# Shipped example for the optional user-side agents override.
+!agents.docker-compose.mailer.example.yml
 docker-compose*.local.yml
 
 *.json

@@ -1,0 +1,36 @@
+# agents.docker-compose.mailer.example.yml — optional MailerSend agent
+#
+# The mailer agent is NOT part of the default delivery: it is an external
+# MCP connector operated at the user's charge. To enable it:
+#
+#   1. Copy this file NEXT TO YOUR .env (the directory where you run
+#      wiki-manager) under the name:  agents.docker-compose.override.yml
+#      That file is yours — wiki-manager never generates or overwrites it,
+#      and `wiki-workspace agents up` includes it automatically when present.
+#   2. Add to your .env:
+#        MAILER_MCP_AUTH_TOKEN=$(openssl rand -hex 32)
+#        MAILERSEND_API_KEY=...
+#        MAILERSEND_FROM_EMAIL=...
+#   3. Declare the endpoint in your mcp.endpoints.json:
+#        "mailer": {
+#          "url": "http://host.docker.internal:${MAILER_MCP_PORT:-3335}/mcp/",
+#          "headers": { "Authorization": "Bearer ${MAILER_MCP_AUTH_TOKEN}" }
+#        }
+#
+services:
+  mailer:
+    image: dotdrelle/agent-mailer-api:latest
+    user: "${UID:-1000}:${GID:-1000}"
+    ports:
+      - "${MAILER_MCP_PORT:-3335}:8080"
+    environment:
+      - MAILERSEND_API_KEY=${MAILERSEND_API_KEY:-}
+      - MAILERSEND_FROM_EMAIL=${MAILERSEND_FROM_EMAIL:-no-reply@example.com}
+      - MAILERSEND_FROM_NAME=${MAILERSEND_FROM_NAME:-Mailer Agent}
+      - MAILERSEND_USER_AGENT=${MAILERSEND_USER_AGENT:-curl/8.7.1}
+      - MAILERSEND_VERIFY_SSL=${MAILERSEND_VERIFY_SSL:-true}
+      - MAILERSEND_CA_CERT=${MAILERSEND_CA_CERT:-}
+      - MAILER_REQUIRE_CONFIRMATION=${MAILER_REQUIRE_CONFIRMATION:-true}
+      - MAILER_DRY_RUN=${MAILER_DRY_RUN:-false}
+      - MCP_AUTH_TOKEN=${MAILER_MCP_AUTH_TOKEN:-}
+    restart: unless-stopped

@@ -43,6 +43,29 @@ function normalizeExternalUrlForRuntime(url) {
   return url;
 }
 
+// Config-driven chat tool policy: the endpoints file's "chatAccess" block
+// declares, per server, which tools Donna may call in chat ("*" or a list),
+// plus a maxToolIterations budget. This replaces hard-coded heuristics with an
+// operator-owned, agnostic allow-list. Returns null if not configured, so the
+// caller falls back to the built-in two-tier default.
+export function readChatAccessConfig() {
+  const filePath = managerMcpEndpointsFile();
+  if (!existsSync(filePath)) return null;
+  let raw;
+  try { raw = JSON.parse(readFileSync(filePath, 'utf8')); } catch { return null; }
+  const chatAccess = raw?.chatAccess;
+  if (!chatAccess || typeof chatAccess !== 'object' || Array.isArray(chatAccess)) return null;
+  const servers = {};
+  for (const [name, entry] of Object.entries(chatAccess.servers ?? {})) {
+    if (entry?.allow === '*') servers[name] = { allow: '*' };
+    else if (Array.isArray(entry?.allow)) servers[name] = { allow: entry.allow.map(String).filter(Boolean) };
+  }
+  const maxToolIterations = Number.isFinite(Number(chatAccess.maxToolIterations)) && Number(chatAccess.maxToolIterations) > 0
+    ? Math.floor(Number(chatAccess.maxToolIterations))
+    : null;
+  return { maxToolIterations, servers };
+}
+
 function readExternalMcpEndpoints() {
   const filePath = managerMcpEndpointsFile();
   if (!existsSync(filePath)) return {};
@@ -103,6 +126,9 @@ const DEFAULT_MCP_RETRY_POLICY = {
 };
 
 export function buildMcpStatus(session) {
+  // Refresh the config-driven chat tool policy alongside MCP status so the
+  // graph always sees the current chatAccess allow-lists.
+  if (session) session.chatAccess = readChatAccessConfig();
   const workspaceEnv = session.workspaceEnv ?? {};
   const wikiMcpToken = session.wikircConfig?.mcp?.accessKey;
   const wikiMcpDetail = workspaceEnv.WIKI_MCP_PORT

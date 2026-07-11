@@ -845,7 +845,7 @@ export function buildAgentSystemPrompt(state) {
   // mutating provider tools (e.g. production__production_start_job) here teaches
   // a capable model to invoke them directly and bypass runtime__delegate.
   const mcpTools = formatMcpToolsForAgent(state.session.mcp, {
-    include: (qualifiedName) => !isOrchestrationBypassTool(qualifiedName),
+    include: (qualifiedName) => chatToolOffered(state.session, qualifiedName),
   });
   const skills = formatSkillsForAgent(state.session);
   const customPrompt = state.session.systemPrompt ?? null;
@@ -947,7 +947,7 @@ function toolsForClassification(classification, writeTools, session = null) {
     const directTools = writeTools.filter((item) => {
       const name = item?.function?.name;
       if (!name || name === 'shell__run_command' || name === 'shell__profile_update') return false;
-      return !isOrchestrationBypassTool(name);
+      return chatToolOffered(session, name);
     });
     return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...directTools];
   }
@@ -983,6 +983,26 @@ function isOrchestrationBypassTool(name) {
   return tool === 'agent_plan' || tool === 'agent_execute' || tool === 'production_start_job';
 }
 
+// Whether a connected MCP tool is offered to Donna in chat. If the operator
+// declared a chatAccess policy for the tool's server (mcp.endpoints.json), that
+// policy is authoritative ("*" or an explicit allow-list). Servers not covered
+// by chatAccess fall back to the built-in two-tier default (everything except
+// orchestration-bypass tools). Fully config-driven and agnostic — no tool name
+// hard-coded for configured servers.
+function chatToolOffered(session, name) {
+  const full = String(name ?? '');
+  if (!full) return false;
+  const sep = full.indexOf('__');
+  const server = sep === -1 ? '' : full.slice(0, sep);
+  const tool = sep === -1 ? full : full.slice(sep + 2);
+  const entry = session?.chatAccess?.servers?.[server];
+  if (entry) {
+    if (entry.allow === '*') return true;
+    return Array.isArray(entry.allow) && entry.allow.includes(tool);
+  }
+  return !isOrchestrationBypassTool(full);
+}
+
 function isReadOnlyMcpCall(session, server, tool) {
   const descriptor = (session?.mcp?.[server]?.tools ?? [])
     .find((item) => String(item?.name ?? '') === tool || String(item?.name ?? '').endsWith(`__${tool}`));
@@ -1001,7 +1021,12 @@ export function createAgentGraph(options = {}) {
     }
 
     const iterations = state.toolIterations ?? 0;
-    if (iterations >= MAX_TOOL_ITERATIONS) {
+    // Interactive chat turns honour the chatAccess maxToolIterations budget
+    // (keeps chat snappy); runtime run execution keeps the full cap.
+    const iterationCap = state.session._currentRunIdentity
+      ? MAX_TOOL_ITERATIONS
+      : (state.session?.chatAccess?.maxToolIterations ?? MAX_TOOL_ITERATIONS);
+    if (iterations >= iterationCap) {
       return {
         response: `[Donna] Tool-use cap reached after ${iterations} iterations.`,
         pendingToolCalls: null,

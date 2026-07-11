@@ -25,6 +25,9 @@ export function startRuntimeServer({
   exitOnShutdown = process.env.WIKI_MANAGER_RUNTIME_CHILD === '1',
 } = {}) {
   const clients = new Set();
+  // When this runtime process started — used by ensureRuntime to detect that
+  // the manager source has been edited since (dev staleness) and auto-restart.
+  const runtimeStartedAtMs = Date.now();
   const defaultContext = { workspace: null, session, running: false, currentAbortController: null, currentRunId: null };
   const resolvedGetContext = getContext ?? (() => defaultContext);
 
@@ -62,6 +65,7 @@ export function startRuntimeServer({
           status: context?.running ? 'running' : 'idle',
           workspace: context?.workspace ?? workspace ?? null,
           activeRuns,
+          startedAtMs: runtimeStartedAtMs,
           dbPath: store.dbPath,
           cacertPath: activeCacertPath(),
           nodeExtraCaCerts: process.env.NODE_EXTRA_CA_CERTS ?? null,

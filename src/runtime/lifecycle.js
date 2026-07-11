@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
+import { readdirSync, statSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { activeCacertPath } from '../core/cacert.js';
 import { checkRuntimeHealth, postRuntimeShutdown, runtimeUrlFromEnv } from './client.js';
@@ -9,6 +10,26 @@ import { resolveRuntimeAuthToken, runtimeTokenFromEnv } from './auth.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const managerRoot = resolve(__dirname, '../..');
 const binPath = resolve(managerRoot, 'bin/wiki-manager.js');
+
+// Newest mtime (ms) of the manager's own source tree. Used to detect that the
+// code was edited after a reused runtime started, so ensureRuntime can restart
+// it instead of serving stale code. Returns 0 if the source tree is unreadable
+// (e.g. running from a packed install) — in that case staleness is not checked.
+function newestManagerSourceMtimeMs() {
+  const srcDir = join(managerRoot, 'src');
+  let newest = 0;
+  try {
+    for (const entry of readdirSync(srcDir, { recursive: true })) {
+      const name = String(entry);
+      if (!(name.endsWith('.js') || name.endsWith('.ts') || name.endsWith('.tsx'))) continue;
+      try {
+        const mtime = statSync(join(srcDir, name)).mtimeMs;
+        if (mtime > newest) newest = mtime;
+      } catch { /* file vanished mid-scan */ }
+    }
+  } catch { return 0; }
+  return newest;
+}
 
 export function runtimeNodeExecutable() {
   return process.versions.bun
@@ -47,13 +68,22 @@ export async function ensureRuntime({
   if (existing) {
     const expectedCacertPath = activeCacertPath();
     const actualCacertPath = existing.cacertPath ? resolve(existing.cacertPath) : null;
+    // Dev staleness: if the manager source was edited after this runtime
+    // started, the reused process would keep serving old code (the recurring
+    // "my change is not taking effect" trap). Treat it as stale and restart.
+    // Packed installs report mtime 0 (unreadable src) → never flagged stale.
+    // Opt out with WIKI_MANAGER_RUNTIME_NO_STALE_CHECK=1.
+    const startedAtMs = Number(existing.startedAtMs) || 0;
+    const sourceMtimeMs = process.env.WIKI_MANAGER_RUNTIME_NO_STALE_CHECK === '1' ? 0 : newestManagerSourceMtimeMs();
+    const stale = startedAtMs > 0 && sourceMtimeMs > startedAtMs;
     // forceRestart: the caller knows the manager configuration just changed
     // (e.g. mcp.endpoints.json scaffolded on first run) — a runtime started
     // BEFORE that only knows the old endpoints and would keep answering
     // without the agents until manually restarted.
-    if (!forceRestart && actualCacertPath === expectedCacertPath) {
+    if (!forceRestart && !stale && actualCacertPath === expectedCacertPath) {
       return { url, started: false, health: existing, token: auth.token, tokenPath: auth.tokenPath };
     }
+    if (stale) console.error('runtime: source changed since start — restarting for fresh code.');
     await postRuntimeShutdown({ url, token: auth.token });
     await waitForRuntimeShutdown(url, auth.token, 2500);
   }

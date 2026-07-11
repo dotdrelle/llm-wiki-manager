@@ -20,11 +20,23 @@ test('reduceAgentEvents: run_started clears stale plan', () => {
       origin: 'tool',
       payload: { steps: ['Old action'] },
     }),
-    createAgentEvent('run_started', { origin: 'user' }),
+    createAgentEvent('run_started', { origin: 'runtime' }),
   ]);
   assert.equal(projection.plan, null);
   assert.equal(projection.activities.length, 0);
   assert.equal(projection.status, 'running');
+});
+
+test('reduceAgentEvents: interactive (user) run_started clears state but is not a running run', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('plan_set', { origin: 'tool', payload: { steps: ['Old action'] } }),
+    createAgentEvent('run_started', { origin: 'user' }),
+  ]);
+  // An interactive turn clears stale plan/activities but must NOT mark the
+  // projection 'running' — otherwise the graph classifies activeRun=true and
+  // hides Donna's MCP read tools.
+  assert.equal(projection.plan, null);
+  assert.notEqual(projection.status, 'running');
 });
 
 test('reduceAgentEvents: tracks manual plan and step updates', () => {

@@ -196,7 +196,13 @@ export function applyAgentProjectionToSession(session, projection) {
 function applyEvent(state, event) {
   switch (event.type) {
     case 'run_started':
-      state.status = 'running';
+      // Only a real runtime run (origin 'runtime') marks the projection
+      // 'running'. An interactive turn (origin 'user') is NOT a run: forcing
+      // 'running' here made the graph classify activeRun=true and hide Donna's
+      // MCP read tools (cme_status, wiki_workspace_status…), so questions about
+      // MCP state failed. Preserve the existing status (idle, or a genuinely
+      // active runtime run synced from the runtime) for interactive turns.
+      if (event.origin === 'runtime') state.status = 'running';
       state.plan = null;
       state.chain = [];
       state.activities = {};

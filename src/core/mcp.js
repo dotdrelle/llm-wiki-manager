@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
 
-const WIKI_MANAGER_VERSION = '0.14.0';
+const WIKI_MANAGER_VERSION = '0.14.1';
 
 function envValue(key) {
   const filePath = managerEnvFile();
@@ -43,11 +43,11 @@ function normalizeExternalUrlForRuntime(url) {
   return url;
 }
 
-// Config-driven chat tool policy: the endpoints file's "chatAccess" block
-// declares, per server, which tools Donna may call in chat ("*" or a list),
-// plus a maxToolIterations budget. This replaces hard-coded heuristics with an
-// operator-owned, agnostic allow-list. Returns null if not configured, so the
-// caller falls back to the built-in two-tier default.
+// Config-driven policy for the /chat read-only toolset — NOT /agent, which has
+// the full toolset and ignores this. The endpoints file's "chatAccess" block
+// declares, per server, which tools /chat may call ("*" or a list), plus a
+// maxToolIterations budget. Operator-owned, agnostic allow-list. Returns null
+// when not configured — then /chat stays a plain, tool-less conversation.
 export function readChatAccessConfig() {
   const filePath = managerMcpEndpointsFile();
   if (!existsSync(filePath)) return null;
@@ -126,8 +126,8 @@ const DEFAULT_MCP_RETRY_POLICY = {
 };
 
 export function buildMcpStatus(session) {
-  // Refresh the config-driven chat tool policy alongside MCP status so the
-  // graph always sees the current chatAccess allow-lists.
+  // Attach the /chat read-tool policy to the session alongside MCP status.
+  // Only /chat (repl.js) reads session.chatAccess; /agent ignores it.
   if (session) session.chatAccess = readChatAccessConfig();
   const workspaceEnv = session.workspaceEnv ?? {};
   const wikiMcpToken = session.wikircConfig?.mcp?.accessKey;

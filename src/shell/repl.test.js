@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   applyRuntimeStateToShellSession,
+  chatReadTools,
   createSession,
   conversationMessages,
   recordRuntimeUnavailableAgentInput,
@@ -372,4 +373,73 @@ test('submitRuntimeRun sends a control message instead of /run while a run is ac
   } finally {
     restore();
   }
+});
+
+test('chatReadTools exposes only declared, read-only MCP tools to /chat', () => {
+  const session = {
+    chatAccess: {
+      servers: {
+        cme: { allow: ['cme_status', 'cme_sources_list', 'cme_export_run'] },
+      },
+    },
+    mcp: {
+      cme: {
+        status: 'connected',
+        tools: [
+          { name: 'cme_status', inputSchema: { type: 'object', properties: {} } },
+          { name: 'cme_sources_list', inputSchema: { type: 'object', properties: {} } },
+          { name: 'cme_setup', inputSchema: { type: 'object', properties: {} } },
+          { name: 'cme_export_run', inputSchema: { type: 'object', properties: {} } },
+        ],
+      },
+      documents: {
+        status: 'connected',
+        tools: [{ name: 'documents_status', inputSchema: { type: 'object', properties: {} } }],
+      },
+    },
+  };
+  const names = chatReadTools(session).map((item) => item.function.name).sort();
+  // cme_setup: not declared. cme_export_run: declared but a write (excluded by
+  // the read-only guard). documents_status: server absent from chatAccess.
+  assert.deepEqual(names, ['cme__cme_sources_list', 'cme__cme_status']);
+});
+
+test('chatReadTools is empty when no chatAccess is configured', () => {
+  const session = { mcp: { cme: { status: 'connected', tools: [{ name: 'cme_status', inputSchema: {} }] } } };
+  assert.deepEqual(chatReadTools(session), []);
+});
+
+test('/chat uses the tool-capable path when read tools are declared', async () => {
+  const session = createSession();
+  session.chatMode = true;
+  session.chatAccess = { maxToolIterations: 4, servers: { cme: { allow: ['cme_status'] } } };
+  session.mcp = { cme: { status: 'connected', tools: [{ name: 'cme_status', inputSchema: { type: 'object', properties: {} } }] } };
+  let usedComplete = false;
+  session.llm = {
+    async *stream() { yield 'STREAM_FALLBACK'; },
+    async completeWithTools() {
+      usedComplete = true;
+      return { tool_calls: [], content: 'Réponse via outils.', message: { role: 'assistant', content: 'Réponse via outils.' } };
+    },
+  };
+  await runLine('le cme est-il configuré', { session, chatMode: true });
+  const last = conversationMessages(session).at(-1);
+  assert.ok(usedComplete, 'completeWithTools path was taken');
+  assert.match(last.content, /Réponse via outils/);
+  assert.doesNotMatch(last.content, /STREAM_FALLBACK/);
+});
+
+test('/chat falls back to the plain stream when no read tools are declared', async () => {
+  const session = createSession();
+  session.chatMode = true;
+  session.chatAccess = null;
+  session.mcp = {};
+  session.llm = {
+    async *stream() { yield 'PLAIN_STREAM'; },
+    async completeWithTools() { return { tool_calls: [], content: 'SHOULD_NOT_APPEAR' }; },
+  };
+  await runLine('bonjour', { session, chatMode: true });
+  const last = conversationMessages(session).at(-1);
+  assert.match(last.content, /PLAIN_STREAM/);
+  assert.doesNotMatch(last.content, /SHOULD_NOT_APPEAR/);
 });

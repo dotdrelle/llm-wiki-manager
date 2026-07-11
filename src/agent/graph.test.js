@@ -1310,33 +1310,6 @@ test('Donna refuses a direct mutating provider tool in interactive mode and is s
   }
 });
 
-test('chatAccess config drives which MCP tools Donna is offered in chat', async () => {
-  let names = null;
-  const session = sessionBase({
-    runtime: { url: 'http://runtime.test' },
-    chatAccess: { servers: { production: { allow: ['production_status'] } } },
-    mcp: {
-      production: {
-        status: 'connected',
-        tools: [
-          { name: 'production_status', description: 'read', inputSchema: { type: 'object', properties: {} } },
-          { name: 'production_start_job', description: 'write', inputSchema: { type: 'object', properties: {} } },
-        ],
-      },
-    },
-    llm: {
-      async completeWithTools({ tools }) {
-        if (names === null) names = tools.map((tool) => tool.function.name);
-        return { content: 'ok', message: { role: 'assistant', content: 'ok' }, tool_calls: null };
-      },
-    },
-  });
-  const agent = createAgentGraph();
-  await agent.invoke({ input: 'statut ?', session });
-  assert.ok(names.includes('production__production_status'), 'chatAccess-allowed tool is offered');
-  assert.ok(!names.includes('production__production_start_job'), 'a tool absent from the chatAccess allow-list is not offered');
-});
-
 test('buildAgentSystemPrompt uses the canonical wiki workspace status without filesystem fallback', () => {
   const workspacePath = mkdtempSync(join(tmpdir(), 'facts-'));
   try {

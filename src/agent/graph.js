@@ -845,7 +845,7 @@ export function buildAgentSystemPrompt(state) {
   // mutating provider tools (e.g. production__production_start_job) here teaches
   // a capable model to invoke them directly and bypass runtime__delegate.
   const mcpTools = formatMcpToolsForAgent(state.session.mcp, {
-    include: (qualifiedName) => chatToolOffered(state.session, qualifiedName),
+    include: (qualifiedName) => !isOrchestrationBypassTool(qualifiedName),
   });
   const skills = formatSkillsForAgent(state.session);
   const customPrompt = state.session.systemPrompt ?? null;
@@ -884,6 +884,7 @@ export function buildAgentSystemPrompt(state) {
     state.session.runtime?.url
       ? 'The runtime is connected and runtime__delegate is bound and available to you right now — it is a tool you call directly, not a slash command or a missing primitive. It is the ONLY way to execute an action (ingest, build, export, configure, send…). Never tell the user that delegation or the runtime is unavailable while it is connected; call runtime__delegate instead.'
       : 'No runtime is connected, so you cannot execute actions. State that plainly and name the runtime connection as the missing capability — do not invent a workaround.',
+    'If the connector or service needed for a requested read or action is absent from the Connected MCP tools above (its service is not running — e.g. CME, documents, or production), say plainly that this service is not connected and name it as the missing capability. Never redirect a simple read (e.g. "give me the CME config") to an "agent action", never invent its result, and never propose a workaround. Only requests you can actually serve with a listed tool are answered with data.',
     'For any requested action, call runtime__delegate with the user objective only. Never choose a capability, operation, agent, plan, or implementation yourself. The runtime resolves the registry and validates the provider plan before accepting. Never call <provider>__agent_plan, <provider>__agent_execute, legacy production__production_start_job, wiki__plan_set, or wiki__plan_done from interactive chat.',
     'Do not ask the user which sources, files, connectors, or templates to use for an ingest, build, or export: the specialized agent discovers them from the workspace. When the objective is clear (e.g. "lance une ingestion"), delegate it as stated, without a clarifying question.',
     'If runtime__delegate returns a blocker or no specialized provider is available, report only that concrete blocker concisely. Never replace the missing execution path with a suggested slash command, skill, MCP tool name, manual file move, administrator escalation, or alternative workflow unless the user explicitly asks for alternatives.',
@@ -947,14 +948,14 @@ function toolsForClassification(classification, writeTools, session = null) {
     const directTools = writeTools.filter((item) => {
       const name = item?.function?.name;
       if (!name || name === 'shell__run_command' || name === 'shell__profile_update') return false;
-      return chatToolOffered(session, name);
+      return !isOrchestrationBypassTool(name);
     });
     return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...directTools];
   }
   return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...writeTools];
 }
 
-function isDonnaReadTool(item) {
+export function isDonnaReadTool(item) {
   const name = String(item?.function?.name ?? '');
   if (!name || name.startsWith('shell__') || name === 'wiki__plan_set' || name === 'wiki__plan_done') return false;
   if (item?.readOnly === true) return true;
@@ -983,26 +984,6 @@ function isOrchestrationBypassTool(name) {
   return tool === 'agent_plan' || tool === 'agent_execute' || tool === 'production_start_job';
 }
 
-// Whether a connected MCP tool is offered to Donna in chat. If the operator
-// declared a chatAccess policy for the tool's server (mcp.endpoints.json), that
-// policy is authoritative ("*" or an explicit allow-list). Servers not covered
-// by chatAccess fall back to the built-in two-tier default (everything except
-// orchestration-bypass tools). Fully config-driven and agnostic — no tool name
-// hard-coded for configured servers.
-function chatToolOffered(session, name) {
-  const full = String(name ?? '');
-  if (!full) return false;
-  const sep = full.indexOf('__');
-  const server = sep === -1 ? '' : full.slice(0, sep);
-  const tool = sep === -1 ? full : full.slice(sep + 2);
-  const entry = session?.chatAccess?.servers?.[server];
-  if (entry) {
-    if (entry.allow === '*') return true;
-    return Array.isArray(entry.allow) && entry.allow.includes(tool);
-  }
-  return !isOrchestrationBypassTool(full);
-}
-
 function isReadOnlyMcpCall(session, server, tool) {
   const descriptor = (session?.mcp?.[server]?.tools ?? [])
     .find((item) => String(item?.name ?? '') === tool || String(item?.name ?? '').endsWith(`__${tool}`));
@@ -1021,12 +1002,7 @@ export function createAgentGraph(options = {}) {
     }
 
     const iterations = state.toolIterations ?? 0;
-    // Interactive chat turns honour the chatAccess maxToolIterations budget
-    // (keeps chat snappy); runtime run execution keeps the full cap.
-    const iterationCap = state.session._currentRunIdentity
-      ? MAX_TOOL_ITERATIONS
-      : (state.session?.chatAccess?.maxToolIterations ?? MAX_TOOL_ITERATIONS);
-    if (iterations >= iterationCap) {
+    if (iterations >= MAX_TOOL_ITERATIONS) {
       return {
         response: `[Donna] Tool-use cap reached after ${iterations} iterations.`,
         pendingToolCalls: null,

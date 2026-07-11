@@ -5,12 +5,13 @@ import { execFileSync } from 'node:child_process';
 import { stdin as input, stdout as output } from 'node:process';
 import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
-import { buildAgentSystemPrompt, formatLlmUnavailableMessage } from '../agent/graph.js';
+import { buildAgentSystemPrompt, formatLlmUnavailableMessage, isDonnaReadTool } from '../agent/graph.js';
 import { handleSlashCommand } from '../commands/slash.js';
 import { serviceDescription, serviceNames as composeServiceNames } from '../core/compose.js';
 import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { syncActivitiesToPlan } from '../core/plan.js';
-import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
+import { buildLlmTools, callMcpTool, formatMcpToolResult, parseToolCallName, resolveToolCallName } from '../core/mcp.js';
+import { runBoundedToolLoop } from '../core/toolLoop.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { listSkills } from '../core/skills.js';
 import { listWikircProfiles } from '../core/wikirc.js';
@@ -285,15 +286,37 @@ function isDonnaRole(role) {
   return role === 'donna' || role === LEGACY_DONNA_ROLE;
 }
 
+// Read-only MCP tools exposed to /chat. The operator declares which tools per
+// server in the `chatAccess` config (mcp.endpoints.json). /chat is extended to
+// those tools ONLY, filtered through the same read-only test Donna's /agent
+// mode uses (isDonnaReadTool), and only when their server is connected — so
+// /chat can answer live state questions ("le CME est-il configuré ?") but can
+// never mutate or delegate. Actions still belong to /agent, which has all tools.
+export function chatReadTools(session) {
+  const servers = session?.chatAccess?.servers;
+  if (!servers) return [];
+  const scopedMcp = Object.fromEntries(
+    Object.entries(session.mcp ?? {}).filter(([name]) => Object.hasOwn(servers, name)),
+  );
+  return buildLlmTools(scopedMcp).filter((item) => {
+    const { server, tool } = parseToolCallName(item.function.name);
+    const entry = servers[server];
+    const declared = entry.allow === '*' ? true : (Array.isArray(entry.allow) && entry.allow.includes(tool));
+    return declared && isDonnaReadTool(item);
+  });
+}
+
 function buildDirectChatSystemPrompt(session) {
   const workspace = session.workspace ?? 'no workspace selected';
   const wikirc = session.wikirc?.profile ?? 'no profile loaded';
   const language = session.language ?? 'en-US';
   return [
     'You are Donna, the llm-wiki-manager chat assistant.',
-    'Answer directly and concisely. Do not claim to have called tools or changed files.',
+    'You have a small READ-ONLY toolset — the tools provided to you for this turn, which may be none. Use them to answer questions about live state (e.g. "le CME est-il configuré", "quelles pages sont en attente"), and answer only from their results.',
+    'If no provided tool covers the request — or the request is an action or mutation (ingest, build, export, configure, send, delete…), or needs a service that is not connected — say plainly you cannot do it in chat mode and to switch to agent mode (/agent). Do not pretend to execute it and never guess.',
+    'Answer directly and concisely. Do not claim to have called tools or changed files beyond the tools actually provided.',
     'Never add a "Next steps", "Prochaines étapes", "À suivre", options, or suggestions section unless the user explicitly asks what to do next. End after answering the question.',
-    'If the user asks for an action that needs workspace commands, MCP tools, services, files, or mutations, say to ask as an agent action instead of pretending to execute it.',
+    'Never invent a tool name, command, job id, status, or result (e.g. do not fabricate names like "check_cme_configuration"). If you cannot know something with the tools you were given, say so.',
     `Reply language: ${language}.`,
     `Current workspace: ${workspace}.`,
     `Current wikirc profile: ${wikirc}.`,
@@ -1164,6 +1187,49 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep, displayIn
   return {};
 }
 
+// Bounded read-only tool loop for /chat. Only the tools declared in chatAccess
+// (and read-only) are offered; every call goes through callMcpTool, and any
+// tool the model names outside the offered set is refused — /chat can never
+// mutate or delegate. maxToolIterations caps the loop.
+async function runChatReadToolLoop({ input, session, history, donnaMessage, onUpdate, onStep, readTools }) {
+  const allowed = new Set(readTools.map((item) => item.function.name));
+  // /chat only supplies the policy; the loop mechanic lives in runBoundedToolLoop.
+  // executeCall enforces the allow-list and turns each call into a text result;
+  // it never mutates and refuses anything outside the offered read set.
+  const executeCall = async (call) => {
+    const rawName = call.function?.name ?? '';
+    const { server, tool } = resolveToolCallName(session.mcp, rawName);
+    const qualified = server ? `${server}__${tool}` : null;
+    if (!qualified || !allowed.has(qualified)) {
+      return `Refused: "${rawName}" is not an available read-only tool in chat mode. Actions and other tools live in agent mode (/agent).`;
+    }
+    let args = {};
+    try { args = call.function?.arguments ? JSON.parse(call.function.arguments) : {}; } catch { args = {}; }
+    try {
+      onStep?.(`Chat: read ${server} ${tool}…`);
+      const res = await callMcpTool(session.mcp, server, tool, args, session._abortSignal);
+      return formatMcpToolResult(res);
+    } catch (err) {
+      if (err.name === 'AbortError' && session._abortSignal?.aborted) throw err;
+      return `Error [${qualified}]: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  };
+  const { content, capped } = await runBoundedToolLoop({
+    llm: session.llm,
+    system: buildDirectChatSystemPrompt(session),
+    messages: [...history, { role: 'user', content: input }],
+    tools: readTools,
+    executeCall,
+    maxIterations: Math.min(8, Number(session?.chatAccess?.maxToolIterations) || 4),
+    signal: session._abortSignal,
+    onStep: (i, cap) => onStep?.(`Chat: consulting… [${i}/${cap}]`),
+  });
+  donnaMessage.content = capped
+    ? 'Je n’ai pas pu conclure dans la limite d’itérations du mode chat. Passe en /agent si besoin.'
+    : (stripDsmlArtifacts(content).trimEnd() || formatLlmUnavailableMessage('reponse vide'));
+  onUpdate?.();
+}
+
 async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
   if (!session.llm?.stream) {
     conversationMessages(session).push({ role: 'command', content: directChatUnavailableText(session) });
@@ -1176,23 +1242,29 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
   const donnaMessage = { role: 'donna', content: '' };
   messages.push(donnaMessage);
   onUpdate?.();
+  const readTools = chatReadTools(session);
+  const canUseReadTools = readTools.length > 0 && typeof session.llm.completeWithTools === 'function';
   try {
-    onStep?.('Chat: streaming direct answer…');
-    for await (const delta of session.llm.stream({
-      system: buildDirectChatSystemPrompt(session),
-      messages: [...history, { role: 'user', content: input }],
-      signal: session._abortSignal,
-    })) {
-      const cleanDelta = stripDsmlArtifacts(delta);
-      if (cleanDelta) {
-        donnaMessage.content += cleanDelta;
+    if (canUseReadTools) {
+      await runChatReadToolLoop({ input, session, history, donnaMessage, onUpdate, onStep, readTools });
+    } else {
+      onStep?.('Chat: streaming direct answer…');
+      for await (const delta of session.llm.stream({
+        system: buildDirectChatSystemPrompt(session),
+        messages: [...history, { role: 'user', content: input }],
+        signal: session._abortSignal,
+      })) {
+        const cleanDelta = stripDsmlArtifacts(delta);
+        if (cleanDelta) {
+          donnaMessage.content += cleanDelta;
+          onUpdate?.();
+        }
+      }
+      donnaMessage.content = stripDsmlArtifacts(donnaMessage.content).trimEnd();
+      if (!donnaMessage.content.trim()) {
+        donnaMessage.content = formatLlmUnavailableMessage('flux vide');
         onUpdate?.();
       }
-    }
-    donnaMessage.content = stripDsmlArtifacts(donnaMessage.content).trimEnd();
-    if (!donnaMessage.content.trim()) {
-      donnaMessage.content = formatLlmUnavailableMessage('flux vide');
-      onUpdate?.();
     }
   } catch (err) {
     if (err.name === 'AbortError') {

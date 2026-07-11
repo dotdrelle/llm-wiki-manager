@@ -847,6 +847,15 @@ async function runRuntime(argv, agent) {
           throw new Error(`Delegated plan integration failed: ${(integrated.errors ?? []).map((error) => error.message ?? error.code ?? String(error)).join('; ')}`);
         }
         emitRuntimeLog(session, `delegation: ${prepared.fragment.tasks.length} validated task(s) integrated from ${prepared.provider.serverName}.agent_plan (${prepared.capability}/${prepared.operation})`);
+        // Demandé = consenti: a directly-delegated run carries the user's
+        // explicit consent, so auto-approve its initial plan. Persisting a
+        // run-scope grant (via the approval manager) makes the scheduler's
+        // readyTasks approval check pass, so the tasks run without re-prompting.
+        // Replanned tasks are integrated later without a fresh grant.
+        if (context.approvalManager?.approve) {
+          context.approvalManager.approve({ scope: 'run', runId });
+          emitRuntimeLog(session, `approval: run ${runId} auto-approved (user-requested action)`);
+        }
         body._planReady?.resolve?.({ runId, planRevision: session.agentProjection?.planRevision ?? 0 });
       }
       // Deterministic capability run (/ingest): ask the capable agent for its

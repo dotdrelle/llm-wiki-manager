@@ -37,18 +37,25 @@ export async function recoverActiveRuns({
         errors.push({ runId: run.id, taskId: task.id, error: error instanceof Error ? error.message : String(error) });
       }
     }
-    // A run in which nothing was recovered or rescheduled can never progress:
-    // leaving it 'running' in the store would re-attach it as a zombie on
-    // every subsequent boot. Close it for good.
-    if (activeTasks.length > 0 && runOutcomes.length === activeTasks.length
-      && runOutcomes.every((outcome) => outcome?.status === 'interrupted')) {
-      const changed = store.interruptRuns?.({ workspace: run.workspace ?? null, runId: run.id, reason: 'Recovery found no recoverable task.' }) ?? 0;
+    // A run that recovery cannot move forward must be closed for good, or it
+    // re-attaches as a blocking "a runtime run is already active" zombie on
+    // every boot. This covers BOTH cases that can never resume on a fresh boot:
+    //  - runs whose active tasks were all interrupted, and
+    //  - runs with no active task to recover at all (e.g. left waiting for
+    //    approval, or with only un-started pending tasks). Nothing here will
+    //    ever progress, so finalize it now.
+    const progressed = runOutcomes.some((outcome) => outcome?.status === 'recovered' || outcome?.status === 'rescheduled');
+    if (!progressed) {
+      const reason = activeTasks.length > 0
+        ? 'Recovery found no recoverable task.'
+        : 'Recovery found no active task to resume.';
+      const changed = store.interruptRuns?.({ workspace: run.workspace ?? null, runId: run.id, reason }) ?? 0;
       if (changed > 0) {
         dispatch(session, store, 'runtime_log', {
           origin: 'recovery_manager',
           runId: run.id,
           workspace: run.workspace ?? workspaceFromSession(session),
-          payload: { message: `recovery: run ${run.id} interrupted (no recoverable task)` },
+          payload: { message: `recovery: run ${run.id} interrupted (${reason})` },
         });
       }
     }

@@ -55,7 +55,7 @@ export function createLlmClientFromWikiConfig(config) {
       }
       return content;
     },
-    async completeWithTools({ system, tools = [], messages = [], signal }) {
+    async completeWithTools({ system, tools = [], messages = [], toolChoice = 'auto', signal }) {
       const allMessages = [
         { role: 'system', content: system },
         ...messages,
@@ -67,7 +67,7 @@ export function createLlmClientFromWikiConfig(config) {
       };
       if (tools.length > 0) {
         body.tools = tools;
-        body.tool_choice = 'auto';
+        body.tool_choice = toolChoice;
       }
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
@@ -90,7 +90,7 @@ export function createLlmClientFromWikiConfig(config) {
         message: { role: 'assistant', content: msg?.content ?? null, tool_calls: msg?.tool_calls },
       };
     },
-    async streamWithTools({ system, tools = [], messages = [], onTextDelta, signal }) {
+    async streamWithTools({ system, tools = [], messages = [], toolChoice = 'auto', onTextDelta, signal }) {
       const allMessages = [
         { role: 'system', content: system },
         ...messages,
@@ -103,7 +103,7 @@ export function createLlmClientFromWikiConfig(config) {
       };
       if (tools.length > 0) {
         body.tools = tools;
-        body.tool_choice = 'auto';
+        body.tool_choice = toolChoice;
       }
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
@@ -119,7 +119,7 @@ export function createLlmClientFromWikiConfig(config) {
         throw new Error(`HTTP ${response.status} ${text.slice(0, 240)}`);
       }
       if (!response.body) {
-        const result = await this.completeWithTools({ system, tools, messages, signal });
+        const result = await this.completeWithTools({ system, tools, messages, toolChoice, signal });
         if (result.content) onTextDelta?.(result.content);
         return result;
       }

@@ -9,11 +9,39 @@ import {
   conversationMessages,
   recordRuntimeUnavailableAgentInput,
   runLine,
+  sanitizeRuntimeStateForDisplay,
   runtimeStatusLine,
   runtimeUnavailableAgentMessage,
   shouldHandleFreeTextLocally,
   submitRuntimeRun,
 } from './repl.js';
+
+test('runtime display preserves a failed plan and its diagnostic evidence', () => {
+  const state = {
+    status: 'error',
+    plan: [{ id: 'apply', status: 'failed' }],
+    activities: [{ id: 'job-1', status: 'failed', error: 'exitCode=1' }],
+    logs: ['run_error: ingest_apply exitCode=1'],
+    conversation: [{ role: 'assistant', content: 'Échec de l’ingestion.' }],
+  };
+
+  assert.equal(sanitizeRuntimeStateForDisplay(state), state);
+});
+
+test('runtime display still clears completed historical execution state', () => {
+  const display = sanitizeRuntimeStateForDisplay({
+    status: 'done',
+    plan: [{ id: 'old', status: 'done' }],
+    activities: [{ id: 'old-job', status: 'done' }],
+    logs: ['old log'],
+    conversation: [{ role: 'assistant', content: 'Old run.' }],
+  });
+
+  assert.deepEqual(display.plan, []);
+  assert.deepEqual(display.activities, []);
+  assert.deepEqual(display.logs, []);
+  assert.deepEqual(display.conversation, []);
+});
 
 function stubFetch(handler) {
   const original = globalThis.fetch;
@@ -72,6 +100,33 @@ test('applyRuntimeStateToShellSession projects runtime state into shell session'
   assert.equal(session.workflow.relations[0].type, 'contains');
   assert.deepEqual(session.workflow.waitingReasons, ['queue:q-1']);
   assert.deepEqual(conversationMessages(session), []);
+});
+
+test('applyRuntimeStateToShellSession clears terminal plan and activities when runtime is idle', () => {
+  const session = createSession();
+  session.headlessPlan = [{ step: 1, description: 'Old read', status: 'failed' }];
+  session.activities = { old: { key: 'old', status: 'failed', terminal: true } };
+
+  applyRuntimeStateToShellSession(session, {
+    status: 'idle',
+    conversation: [{ role: 'assistant', content: 'Old failed answer' }],
+    chain: [{ id: 'old-step' }],
+    plan: [{ step: 1, description: 'Old read', status: 'failed' }],
+    activities: [{ key: 'old', status: 'failed', terminal: true }],
+    workflow: { nodes: [{ id: 'task:old' }], relations: [] },
+    logs: ['Runtime evaluator rejected the old run'],
+    summary: 'Old run failed',
+    planPatches: [{ id: 'old-patch' }],
+  });
+
+  assert.equal(session.headlessPlan, null);
+  assert.deepEqual(session.activities, {});
+  assert.equal(session.workflow, null);
+  assert.deepEqual(session.agentProjection.logs, []);
+  assert.equal(session.agentProjection.summary, null);
+  assert.deepEqual(session.agentProjection.conversation, []);
+  assert.deepEqual(session.agentProjection.chain, []);
+  assert.deepEqual(session.agentProjection.planPatches, []);
 });
 
 test('direct chat system prompt forbids unsolicited next steps', async () => {

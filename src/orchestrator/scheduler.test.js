@@ -35,6 +35,31 @@ test('dependencyResolver orders ready tasks by priority before step', () => {
   assert.deepEqual(readyTasks(plan).map((item) => item.id), ['high', 'low', 'none']);
 });
 
+test('dependencyResolver releases a waiting task when a run grant covers it', () => {
+  const plan = {
+    runId: 'run-1',
+    workspace: 'test4',
+    planRevision: 1,
+    tasks: [task('ingest', {
+      status: 'waiting_approval',
+      requiresApproval: true,
+      approvalClass: 'mutation',
+    })],
+  };
+
+  assert.deepEqual(readyTasks(plan), []);
+  assert.deepEqual(readyTasks(plan, {
+    approvals: [{
+      status: 'approved',
+      scope: 'run',
+      runId: 'run-1',
+      workspaceId: 'test4',
+      planRevision: 1,
+      approvalClasses: ['mutation'],
+    }],
+  }).map((item) => item.id), ['ingest']);
+});
+
 test('dependencyResolver skips tasks whose locks are not free and keeps other ready work moving', () => {
   const lockManager = createLockManager();
   const held = lockManager.acquire(['deliverable:a.md']);

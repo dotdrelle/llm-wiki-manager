@@ -14,8 +14,8 @@ import { extractActivity, formatActivitySummary, parseJsonText, sessionActivitie
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
 import { updateWorkspaceProfilePreference } from '../core/profile.js';
-import { createCapabilityRegistry } from '../orchestrator/capabilityRegistry.js';
-import { fetchRuntimeState, postRuntimeCancel, postRuntimeControl, postRuntimeDelegate, postRuntimeKill } from '../runtime/client.js';
+import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
+import { fetchRuntimeState, postRuntimeApprove, postRuntimeCancel, postRuntimeControl, postRuntimeDelegate, postRuntimeKill } from '../runtime/client.js';
 
 const MAX_TOOL_ITERATIONS = 80;
 const MAX_SPINNER_ARG_LENGTH = 96;
@@ -262,13 +262,76 @@ const AgentState = Annotation.Root({
   }),
   toolIterations: Annotation({ default: () => 0 }),
   pendingToolCalls: Annotation(),
+  allowedToolNames: Annotation(),
   inputClassification: Annotation(),
   readyToStream: Annotation(),
   streamContext: Annotation(),
   streamedInline: Annotation(),
   retryWithoutTool: Annotation({ default: () => false }),
   invalidResponseRetries: Annotation({ default: () => 0 }),
+  invalidToolCallRetries: Annotation({ default: () => 0 }),
+  forceDelegation: Annotation({ default: () => false }),
 });
+
+function invalidToolCalls(toolCalls) {
+  if (!Array.isArray(toolCalls)) return [];
+  return toolCalls.filter((call) => {
+    if (!call?.id || !call?.function?.name) return true;
+    try {
+      const args = JSON.parse(call.function.arguments || '{}');
+      return !args || typeof args !== 'object' || Array.isArray(args);
+    } catch {
+      return true;
+    }
+  });
+}
+
+export function normalizeToolArgumentsFromSchema(args, parameters) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return args;
+  const schema = parameters && typeof parameters === 'object' ? parameters : {};
+  const properties = schema.properties && typeof schema.properties === 'object' ? schema.properties : {};
+  const required = Array.isArray(schema.required) ? schema.required.filter((key) => typeof key === 'string') : [];
+  const missing = required.filter((key) => args[key] === undefined);
+  const unknown = Object.keys(args).filter((key) => properties[key] === undefined);
+  if (missing.length !== 1 || unknown.length !== 1) return args;
+  const target = missing[0];
+  const source = unknown[0];
+  if (!schemaValueMatches(args[source], properties[target])) return args;
+  const normalized = { ...args, [target]: args[source] };
+  delete normalized[source];
+  return normalized;
+}
+
+function schemaValueMatches(value, propertySchema) {
+  const types = Array.isArray(propertySchema?.type) ? propertySchema.type : [propertySchema?.type];
+  if (types.includes(undefined) || types.includes(null)) return true;
+  return types.some((type) => {
+    if (type === 'array') return Array.isArray(value);
+    if (type === 'object') return value !== null && typeof value === 'object' && !Array.isArray(value);
+    if (type === 'integer') return Number.isInteger(value);
+    if (type === 'number') return typeof value === 'number' && Number.isFinite(value);
+    if (type === 'null') return value === null;
+    return typeof value === type;
+  });
+}
+
+function toolDefinitionForCall(session, callName) {
+  const internal = [
+    SHELL_RUN_COMMAND_TOOL,
+    SHELL_READ_COMMAND_TOOL,
+    SHELL_PROFILE_UPDATE_TOOL,
+    RUNTIME_STATUS_TOOL,
+    RUNTIME_CANCEL_TOOL,
+    RUNTIME_KILL_TOOL,
+    RUNTIME_APPROVE_TOOL,
+    RUNTIME_ENQUEUE_TOOL,
+    RUNTIME_DELEGATE_TOOL,
+    WIKI_PLAN_SET_TOOL,
+    WIKI_PLAN_DONE_TOOL,
+  ];
+  return [...internal, ...buildLlmTools(session?.mcp)]
+    .find((item) => item?.function?.name === callName) ?? null;
+}
 
 function commandList(session) {
   return session.commands
@@ -287,6 +350,36 @@ export function invalidSuggestedSlashCommands(content, session) {
     for (const match of line.matchAll(/`\/([a-z][\w-]*)\b/gi)) candidates.add(match[1].toLowerCase());
   }
   return [...candidates].filter((command) => !allowed.has(command)).sort();
+}
+
+export function invalidUserFacingToolNames(content, session) {
+  const text = String(content ?? '');
+  const connected = buildLlmTools(session?.mcp)
+    .map((item) => item?.function?.name)
+    .filter(Boolean)
+    .filter((name) => text.includes(name));
+  const syntactic = [...text.matchAll(/\b[a-z][a-z0-9_-]*__[a-z][a-z0-9_-]*\b/gi)].map((match) => match[0]);
+  return [...new Set([...connected, ...syntactic])].sort();
+}
+
+async function classifyRequestedAction(llm, input, signal) {
+  try {
+    const result = await llm.completeWithTools({
+      system: [
+        'Classify whether the user explicitly requests a real state-changing action now.',
+        'Actions include starting, stopping, importing, ingesting, building, exporting, configuring, writing, deleting, or sending.',
+        'Questions, explanations, status questions, greetings, and hypothetical discussions are not actions.',
+        'Return JSON only: {"action":true} or {"action":false}.',
+      ].join('\n'),
+      tools: [],
+      messages: [{ role: 'user', content: String(input ?? '') }],
+      signal,
+    });
+    const text = String(result?.content ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+    return JSON.parse(text)?.action === true;
+  } catch {
+    return false;
+  }
 }
 
 function summarizeToolArguments(rawArguments) {
@@ -551,12 +644,6 @@ export function knownCapabilityIds(session) {
   }))].sort();
 }
 
-function capabilityRegistryForSession(session) {
-  return session?.capabilityRegistry ?? createCapabilityRegistry({
-    agents: session?.agentRegistrySnapshot ?? session?.agents ?? [],
-  });
-}
-
 // Deterministic fragment→plan mapping, shared by the agent_plan tool bridge
 // and the /ingest-style direct capability runs: the parallel path must not
 // depend on an LLM copying fields correctly.
@@ -598,8 +685,26 @@ async function handleRuntimeControlTool(session, tool, args = {}) {
       return result.cancelled ? 'Runtime run cancellation requested.' : `No active run to cancel${result.reason ? ` (${result.reason})` : ''}.`;
     }
     if (tool === 'approve') {
-      const result = await postRuntimeControl('message', { url, workspace, input: 'approve', intent: 'approve' });
-      return String(result?.explanation ?? (result?.accepted ? 'Approval granted.' : 'No pending approval found.'));
+      const state = await fetchRuntimeState({ url, workspace });
+      const pending = (Array.isArray(state?.approvals) ? state.approvals : [])
+        .filter((approval) => approval.status === 'pending_approval');
+      const runId = state?.runId
+        ?? state?.runs?.find((run) => ['running', 'pending_approval'].includes(run.status))?.id
+        ?? null;
+      if (!runId || pending.length === 0) return 'No pending approval found.';
+      const approvalClasses = [...new Set(pending.flatMap((approval) => {
+        const value = approval.approvalClasses ?? approval.approvalClass ?? [];
+        return Array.isArray(value) ? value : [value];
+      }).map(String).filter(Boolean))];
+      const result = await postRuntimeApprove({
+        url,
+        workspace,
+        runId,
+        scope: 'run',
+        planRevision: state?.planRevision ?? null,
+        approvalClasses: approvalClasses.length > 0 ? approvalClasses : ['default'],
+      });
+      return result?.approved ? 'Current validated plan approved.' : 'No pending approval found.';
     }
     if (tool === 'delegate') {
       const objective = String(args.objective ?? '').trim();
@@ -736,7 +841,15 @@ export function buildAgentSystemPrompt(state) {
   const workspace = state.session.workspace ?? 'no workspace selected';
   const wikirc = state.session.wikirc?.profile ?? 'no profile loaded';
   const language = state.session.language ?? 'en-US';
-  const mcpTools = formatMcpToolsForAgent(state.session.mcp);
+  // Advertise only the read-only tools Donna may call directly. Listing
+  // mutating provider tools (e.g. production__production_start_job) here teaches
+  // a capable model to invoke them directly and bypass runtime__delegate.
+  const mcpTools = formatMcpToolsForAgent(state.session.mcp, {
+    include: (qualifiedName, tool) => isDonnaReadTool({
+      function: { name: qualifiedName },
+      readOnly: tool?.annotations?.readOnlyHint === true,
+    }),
+  });
   const skills = formatSkillsForAgent(state.session);
   const customPrompt = state.session.systemPrompt ?? null;
   const workspaceProfile = loadWorkspaceProfile(state.session.workspacePath);
@@ -751,7 +864,7 @@ export function buildAgentSystemPrompt(state) {
     `Current wikirc profile: ${wikirc}.`,
     `Available primitives: ${commandList(state.session)}.`,
     'Only announce or call slash commands that appear exactly in Available primitives. Do not invent command names, subcommands, or arguments.',
-    'Connected MCP tools (use the server__tool naming convention for tool calls):',
+    'Connected read-only MCP tools you may call directly to answer questions (server__tool naming convention). Every mutation or action — ingest, build, export, configure, send, write — goes through runtime__delegate, never a direct provider tool call:',
     mcpTools,
     'Current local MCP job queue:',
     formatQueue(state.session),
@@ -763,12 +876,20 @@ export function buildAgentSystemPrompt(state) {
     'After any completed action, give a short factual summary based only on the tool result: outcome and concrete outputs or references actually returned. Mention a viewing primitive only when it exists in Available primitives and is relevant. Do not interpret generated content, propose verification checklists, invent next steps, or suggest commands unless the user explicitly asks.',
     'Never add a "Next steps", "Prochaines étapes", "À suivre", options, or suggestions section unless the user explicitly asks what to do next. End after the requested result or the concrete error.',
     'When calling a tool, emit no preliminary narration. Call it directly; the PLAN and Activity panels show progress. After completion, keep the final response concise and proportional to the result.',
+    'Keep every response synthetic and information-dense. Use only the lines needed, and never exceed roughly 15 to 20 short lines even for a detailed answer. Never expose internal reasoning, repeated checks, tool-selection commentary, or a chronological diary. Prioritize the result, essential facts, concrete errors, and actual outputs.',
     'Configuration, connector, import, export, conversion, generation, and every other mutation are actions: delegate the objective to the runtime instead of calling an external tool directly.',
     'For any question about the current workspace inventory or what is waiting there, call wiki__wiki_workspace_status first and answer only from its result. This is the canonical read-only workspace state; do not reconstruct it from upload, connector, or production tools.',
+    'Tool identifiers are private implementation details. Never print MCP tool names such as server__tool in a user-facing answer. Describe the human result instead.',
+    'Never suggest a manual filesystem command or implementation workaround unless the user explicitly asks for manual instructions. For an action request, delegate the objective and let the specialized agent determine paths and operations from its live contract.',
     'Skills are documentation only in this stabilized version. Never execute a skill from conversation; delegate the user objective.',
     'For service actions, recommend only available service primitives from Available primitives, with the exact service name when the primitive supports one.',
     'Scope discipline: execute ONLY the action(s) the user explicitly requested. Never chain additional mutating operations (ingest, build, export, polish, delete, send…) that the user did not ask for — even when diagnostics or recommendations suggest them. Finish with the requested result and stop. Example: "applique les recommandations de config" means apply the config; it does NOT authorize launching the ingest those recommendations mention.',
+    state.session.runtime?.url
+      ? 'The runtime is connected and runtime__delegate is bound and available to you right now — it is a tool you call directly, not a slash command or a missing primitive. It is the ONLY way to execute an action (ingest, build, export, configure, send…). Never tell the user that delegation or the runtime is unavailable while it is connected; call runtime__delegate instead.'
+      : 'No runtime is connected, so you cannot execute actions. State that plainly and name the runtime connection as the missing capability — do not invent a workaround.',
     'For any requested action, call runtime__delegate with the user objective only. Never choose a capability, operation, agent, plan, or implementation yourself. The runtime resolves the registry and validates the provider plan before accepting. Never call <provider>__agent_plan, <provider>__agent_execute, legacy production__production_start_job, wiki__plan_set, or wiki__plan_done from interactive chat.',
+    'Do not ask the user which sources, files, connectors, or templates to use for an ingest, build, or export: the specialized agent discovers them from the workspace. When the objective is clear (e.g. "lance une ingestion"), delegate it as stated, without a clarifying question.',
+    'If runtime__delegate returns a blocker or no specialized provider is available, report only that concrete blocker concisely. Never replace the missing execution path with a suggested slash command, skill, MCP tool name, manual file move, administrator escalation, or alternative workflow unless the user explicitly asks for alternatives.',
     'For workspace inventory and page listings, use the connected wiki MCP read tools. Never invent or call a /wiki shell command through shell__run_command. Use /workspace init <name> [path] for low-level non-interactive workspace creation; in the interactive TUI, /new <name> opens the setup wizard.',
     'If an action requires tools or skills not available yet, explain the limitation and name the expected primitive.',
     workspaceProfile
@@ -809,7 +930,10 @@ function toolsForClassification(classification, writeTools, session = null) {
   const controlTools = session?.runtime?.url
     ? [RUNTIME_STATUS_TOOL, RUNTIME_CANCEL_TOOL, RUNTIME_KILL_TOOL, RUNTIME_APPROVE_TOOL, RUNTIME_ENQUEUE_TOOL]
     : [];
-  const capabilityRunTools = session?.runtime?.url && !classification.activeRun && knownCapabilityIds(session).length > 0
+  // Provider discovery and validation belong to the runtime. Hiding
+  // delegation while the shell snapshot is temporarily empty forced Donna
+  // to invent commands instead of submitting the objective.
+  const capabilityRunTools = session?.runtime?.url && !classification.activeRun
     ? [RUNTIME_DELEGATE_TOOL]
     : [];
   if (classification.activeRun) {
@@ -819,7 +943,7 @@ function toolsForClassification(classification, writeTools, session = null) {
     // what runtime__enqueue is for). No canned regex answers anywhere.
     return [SHELL_READ_COMMAND_TOOL, ...controlTools];
   }
-  if (session?.runtime?.url && classification.kind !== 'execute_run') {
+  if (session?.runtime?.url) {
     const readTools = writeTools.filter(isDonnaReadTool);
     return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...readTools];
   }
@@ -835,6 +959,15 @@ function isDonnaReadTool(item) {
     || tool === 'agent_describe'
     || tool === 'agent_status'
     || /(?:^|_)(?:status|list|search|read|get)$/.test(tool);
+}
+
+function isReadOnlyMcpCall(session, server, tool) {
+  const descriptor = (session?.mcp?.[server]?.tools ?? [])
+    .find((item) => String(item?.name ?? '') === tool || String(item?.name ?? '').endsWith(`__${tool}`));
+  return isDonnaReadTool({
+    function: { name: `${server}__${tool}` },
+    readOnly: descriptor?.readOnly === true,
+  });
 }
 
 export function createAgentGraph(options = {}) {
@@ -905,28 +1038,54 @@ export function createAgentGraph(options = {}) {
 
     try {
       const useStreamWithTools = typeof llm.streamWithTools === 'function';
-      const suppressExecutionNarration = runtimeExecution && (iterations === 0 || state.retryWithoutTool);
+      const toolChoice = state.forceDelegation
+        ? { type: 'function', function: { name: 'runtime__delegate' } }
+        : 'auto';
       const result = useStreamWithTools
         ? await llm.streamWithTools({
             system,
             tools,
             messages: conversationMessages,
-            onTextDelta: (delta) => {
-              if (suppressExecutionNarration) return;
-              emitAgentEvent(state.session, 'assistant_delta', 'llm', { delta });
-              state.session._onStream?.(delta);
-            },
+            toolChoice,
+            // Buffer until validation. Invalid commands and malformed tool
+            // calls must never flash hundreds of lines before disappearing.
+            onTextDelta: () => {},
             signal: state.session._abortSignal,
           })
         : await llm.completeWithTools({
             system,
             tools,
             messages: conversationMessages,
+            toolChoice,
             signal: state.session._abortSignal,
           });
 
       if (result.tool_calls?.length > 0) {
         state.session._onStreamReset?.();
+        const malformed = invalidToolCalls(result.tool_calls);
+        if (malformed.length > 0) {
+          const retries = Number(state.invalidToolCallRetries ?? 0);
+          if (retries < 2) {
+            state.session._onStep?.('Agent: malformed tool call rejected; retrying…');
+            return {
+              pendingToolCalls: null,
+              messages: [
+                ...(iterations === 0 ? [{ role: 'user', content: state.input }] : []),
+                {
+                  role: 'user',
+                  content: 'Your previous tool call was incomplete or contained invalid JSON arguments. Call the appropriate available tool again with one complete valid JSON object. Do not narrate or reproduce the broken call.',
+                },
+              ],
+              toolIterations: iterations + 1,
+              readyToStream: false,
+              inputClassification: classification,
+              invalidToolCallRetries: retries + 1,
+            };
+          }
+          const failure = 'Action non exécutée : l’appel d’outil généré par le modèle était incomplet.';
+          emitAgentEvent(state.session, 'assistant_message', 'agent_guard', { content: failure });
+          return { response: failure, pendingToolCalls: null, readyToStream: false };
+        }
         // Close the streaming conversation entry now: the text streamed so
         // far is this iteration's narration. Without this, the next
         // iteration's deltas append to the SAME entry with no separator and
@@ -941,6 +1100,7 @@ export function createAgentGraph(options = {}) {
           : [result.message];
         return {
           pendingToolCalls: result.tool_calls,
+          allowedToolNames: tools.map((item) => item?.function?.name).filter(Boolean),
           messages: newMessages,
           toolIterations: iterations + 1,
           readyToStream: false,
@@ -969,6 +1129,26 @@ export function createAgentGraph(options = {}) {
         };
       }
 
+      const canDelegate = tools.some((item) => item?.function?.name === 'runtime__delegate');
+      if (!runtimeExecution && iterations === 0 && canDelegate && !state.retryWithoutTool
+        && await classifyRequestedAction(llm, state.input, state.session._abortSignal)) {
+        state.session._onStreamReset?.();
+        state.session._onStep?.('Agent: action response rejected — delegation required; retrying…');
+        return {
+          pendingToolCalls: null,
+          messages: [
+            { role: 'user', content: state.input },
+            result.message ?? { role: 'assistant', content: result.content ?? '' },
+            { role: 'user', content: 'This is an action request. Call runtime__delegate now with the original objective only. Do not provide instructions or narration.' },
+          ],
+          toolIterations: 1,
+          readyToStream: false,
+          inputClassification: classification,
+          retryWithoutTool: true,
+          forceDelegation: true,
+        };
+      }
+
       if (runtimeExecution && state.retryWithoutTool) {
         state.session._onStreamReset?.();
         const failure = 'Action non exécutée : Donna n’a appelé aucun outil disponible. Aucun job ni résultat n’a été créé.';
@@ -982,11 +1162,13 @@ export function createAgentGraph(options = {}) {
       }
 
       const invalidCommands = invalidSuggestedSlashCommands(result.content, state.session);
-      if (invalidCommands.length > 0) {
+      const leakedTools = invalidUserFacingToolNames(result.content, state.session);
+      if (invalidCommands.length > 0 || leakedTools.length > 0) {
         state.session._onStreamReset?.();
         const retries = Number(state.invalidResponseRetries ?? 0);
         if (retries < 2) {
-          state.session._onStep?.(`Agent: invalid command rejected (/${invalidCommands.join(', /')}); retrying…`);
+          const canDelegate = tools.some((item) => item?.function?.name === 'runtime__delegate');
+          state.session._onStep?.('Agent: invalid user-facing implementation detail rejected; retrying…');
           return {
             pendingToolCalls: null,
             messages: [
@@ -994,21 +1176,28 @@ export function createAgentGraph(options = {}) {
               result.message ?? { role: 'assistant', content: result.content ?? '' },
               {
                 role: 'user',
-                content: `Your response proposed unavailable slash command(s): /${invalidCommands.join(', /')}. Rewrite the answer without them. Mention only commands listed in Available primitives; use connected tools for everything else.`,
+                content: [
+                  'Rewrite the answer for the end user without internal MCP tool identifiers or unsolicited shell commands.',
+                  invalidCommands.length > 0 ? `Unavailable slash commands: /${invalidCommands.join(', /')}.` : null,
+                  leakedTools.length > 0 ? 'Do not print tool names; use them internally if needed.' : null,
+                  'If the user requested an action and runtime delegation is available, call runtime__delegate instead of giving manual instructions.',
+                ].filter(Boolean).join(' '),
               },
             ],
             toolIterations: iterations + 1,
             readyToStream: false,
             inputClassification: classification,
             invalidResponseRetries: retries + 1,
+            forceDelegation: canDelegate,
           };
         }
-        const failure = `Réponse rejetée : commande inexistante proposée par Donna (/${invalidCommands.join(', /')}).`;
+        const failure = 'Réponse rejetée : Donna a exposé une instruction interne ou une procédure manuelle incorrecte.';
         emitAgentEvent(state.session, 'assistant_message', 'agent_guard', { content: failure });
         return { response: failure, pendingToolCalls: null, readyToStream: false };
       }
 
       if (useStreamWithTools) {
+        if (result.content) state.session._onStream?.(result.content);
         emitAgentEvent(state.session, 'assistant_message', 'llm', { content: result.content ?? '' });
         // Text was streamed inline via session._onStream — no second LLM call needed.
         const newMessages = iterations === 0
@@ -1058,6 +1247,26 @@ export function createAgentGraph(options = {}) {
       const isInternalWikiTool = server === 'wiki' && (tool === 'plan_set' || tool === 'plan_done');
       const serverLabel = server === 'shell' ? 'Shell' : isInternalWikiTool ? 'Plan' : 'MCP';
       const toolName = server ? `${server}.${tool}` : call.function.name;
+      // Hard guardrail: only execute tools that were actually offered this turn
+      // (read-only tools + runtime controls + delegate). A capable model that
+      // spots a mutating provider tool in the prompt and calls it directly must
+      // be refused and steered back to runtime__delegate — this is what keeps
+      // the orchestration capability-driven regardless of model strength.
+      // Only interactive turns are constrained. Inside a runtime run
+      // (_currentRunIdentity set) the graph legitimately executes the
+      // already-validated, already-approved delegated task via provider tools.
+      const runtimeExecutionTurn = Boolean(state.session._currentRunIdentity);
+      const allowedNames = !runtimeExecutionTurn && Array.isArray(state.allowedToolNames) ? state.allowedToolNames : null;
+      const isInternalCall = server === 'shell' || server === 'runtime' || isInternalWikiTool;
+      if (allowedNames && server && !isInternalCall && !allowedNames.includes(`${server}__${tool}`)) {
+        const refusal = `${server}__${tool} is not available in interactive mode. Do not call provider tools directly. For any action or mutation, call runtime__delegate with the user objective; only read-only tools and runtime controls may be called directly.`;
+        state.session._onStep?.(`tool call refused (not offered): ${server}__${tool}`);
+        emitAgentEvent(state.session, 'tool_call_result', 'tool', {
+          callId: call.id, name: toolName, ok: false, result: refusal, summary: 'refused',
+        });
+        toolResultMessages.push({ role: 'tool', tool_call_id: call.id, content: refusal });
+        continue;
+      }
       if (resolved.normalized) {
         // Keep normalizations visible: the defensive routing must not hide
         // prompt/skill regressions that reintroduce unqualified names.
@@ -1074,9 +1283,11 @@ export function createAgentGraph(options = {}) {
         args: call.function.arguments ?? '{}',
         summary: argsSummary || 'calling...',
       });
-      // Immediate visible plan for any MCP call that doesn't yet have an _activity plan.
+      // A plan represents work, never observation. Read-only inventory/status
+      // calls stay out of Plan even when Donna uses them to answer a question.
       let minimalPlanActive = false;
-      if (!isInternalWikiTool && server !== 'shell' && server !== 'runtime' && !state.session.headlessPlan) {
+      if (!isInternalWikiTool && server !== 'shell' && server !== 'runtime'
+        && !isReadOnlyMcpCall(state.session, server, tool) && !state.session.headlessPlan) {
         minimalPlanActive = true;
         emitAgentEvent(state.session, 'plan_set', 'tool', {
           steps: [{ step: 1, id: null, description: toolName, status: 'running', _activityKey: null }],
@@ -1098,6 +1309,8 @@ export function createAgentGraph(options = {}) {
           );
         }
         let args = JSON.parse(call.function.arguments ?? '{}');
+        const definition = toolDefinitionForCall(state.session, call.function.name);
+        args = normalizeToolArgumentsFromSchema(args, definition?.function?.parameters);
         if (server === 'production' && tool === 'production_start_job' && state.session.workspace && !args.callerLabel) {
           args = { ...args, callerLabel: `${state.session.workspace}/wiki-manager` };
         }
@@ -1214,12 +1427,16 @@ export function createAgentGraph(options = {}) {
     return {
       messages: toolResultMessages,
       pendingToolCalls: null,
+      forceDelegation: false,
+      invalidToolCallRetries: 0,
+      invalidResponseRetries: 0,
     };
   }
 
   function routeOrchestrator(state) {
     if (state.pendingToolCalls?.length > 0) return 'tool_executor';
     if (state.retryWithoutTool) return 'orchestrator';
+    if (state.invalidToolCallRetries > 0 && state.response == null && !state.streamedInline) return 'orchestrator';
     if (state.invalidResponseRetries > 0 && state.response == null && !state.streamedInline) return 'orchestrator';
     return END;
   }

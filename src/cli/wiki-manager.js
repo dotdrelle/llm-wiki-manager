@@ -16,6 +16,7 @@ import { syncActivitiesToPlan, formatPlanStatus } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
 import { resolveCapabilityConcurrency } from '../orchestrator/scheduler.js';
+import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
 // Runtime modules use node:sqlite (Node.js built-in unavailable in Bun).
 // They are imported dynamically so the shell / TUI path never loads them.
 
@@ -54,6 +55,11 @@ function createSession() {
     productionActivity: null,
     headlessPlan: null,
   };
+}
+
+export async function forwardRuntimeApproval(getWorkspaceContext, request = {}) {
+  const context = await getWorkspaceContext(request.workspace ?? null);
+  return context.approvalManager?.approve(request) ?? { approved: false };
 }
 
 function timestampForFile() {
@@ -198,6 +204,109 @@ async function runHeadlessAgenticLoop(agent, session, initialInput, log, { timeo
   return { exitCode: result.ok ? 0 : (result.waitResult?.exitCode ?? 1) };
 }
 
+// Observe a runtime-delegated run from headless: the run executes server-side,
+// so poll /state and mirror status transitions, new logs and the final plan
+// into the headless log until the run reaches a terminal state.
+async function waitForRuntimeRun(session, log, { timeoutMs, pollMs = 1500, autoApprove = false, priorRunIds = [] } = {}) {
+  const { fetchRuntimeState, postRuntimeApprove } = await import('../runtime/client.js');
+  const url = session.runtime?.url;
+  const workspace = session.workspace ?? null;
+  if (!url) return { exitCode: 0 };
+  // Scope strictly to the run this turn created: any run already present before
+  // the turn (including a stuck/zombie run) must be ignored, or the wait would
+  // observe/approve the wrong run and never finish.
+  const priorSet = new Set((priorRunIds ?? []).map(String));
+  const terminal = new Set(['succeeded', 'success', 'done', 'complete', 'completed', 'failed', 'error', 'cancelled', 'canceled']);
+  const deadline = Date.now() + timeoutMs;
+  const graceDeadline = Date.now() + 8000;
+  let lastStatus = null;
+  let lastLogCount = 0;
+  let sawRun = false;
+  const approvedRevisions = new Set();
+  while (Date.now() < deadline) {
+    let state;
+    try {
+      state = await fetchRuntimeState({ url, workspace });
+    } catch (err) {
+      const line = `runtime-wait: state fetch failed (${err instanceof Error ? err.message : String(err)})`;
+      log.push(line); console.error(line);
+      return { exitCode: 1 };
+    }
+    const logs = Array.isArray(state?.logs) ? state.logs : [];
+    for (const entry of logs.slice(lastLogCount)) {
+      const text = typeof entry === 'string' ? entry : String(entry?.message ?? JSON.stringify(entry));
+      log.push(`runtime: ${text}`); console.log(`[runtime] ${text}`);
+    }
+    lastLogCount = logs.length;
+    const runs = Array.isArray(state?.runs) ? state.runs : [];
+    const currentRun = runs.find((run) => run?.id && !priorSet.has(String(run.id)));
+    if (!currentRun) {
+      if (sawRun) return { exitCode: 0 };
+      if (Date.now() >= graceDeadline) {
+        const line = 'runtime-wait: no run was delegated this turn (Donna answered without starting a run).';
+        log.push(line); console.log(line);
+        return { exitCode: 0 };
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+      continue;
+    }
+    sawRun = true;
+    const status = String(currentRun.status ?? 'running').toLowerCase();
+    if (status !== lastStatus) {
+      log.push(`runtime-status: ${status} (run ${currentRun.id})`); console.log(`[runtime] status=${status}`);
+      lastStatus = status;
+    }
+    // Approval is granted per task, so the run status stays "running" while a
+    // task waits — detect the block via state.approvals, scoped to this run.
+    const pendingApprovals = (Array.isArray(state?.approvals) ? state.approvals : [])
+      .filter((approval) => approval.status === 'pending_approval'
+        && (approval.runId == null || String(approval.runId) === String(currentRun.id)));
+    if (pendingApprovals.length > 0) {
+      if (!autoApprove) {
+        const line = `runtime-wait: run ${currentRun.id} waiting for approval (${pendingApprovals.length} task(s)); re-run with --auto-approve to drive it through.`;
+        log.push(line); console.log(line);
+        return { exitCode: 0 };
+      }
+      const planRevision = state?.planRevision ?? currentRun.planRevision ?? 0;
+      if (!approvedRevisions.has(planRevision)) {
+        approvedRevisions.add(planRevision);
+        const approvalClasses = [...new Set(pendingApprovals.flatMap((approval) => {
+          const value = approval.approvalClasses ?? approval.approvalClass ?? [];
+          return Array.isArray(value) ? value : [value];
+        }).map(String).filter(Boolean))];
+        try {
+          const result = await postRuntimeApprove({
+            url,
+            workspace,
+            runId: currentRun.id,
+            scope: 'run',
+            planRevision,
+            approvalClasses: approvalClasses.length > 0 ? approvalClasses : ['default'],
+          });
+          const line = `runtime-wait: auto-approved run ${currentRun.id} (revision ${planRevision})${result?.approved ? '' : ' [no pending approval matched]'}`;
+          log.push(line); console.log(line);
+        } catch (err) {
+          const line = `runtime-wait: auto-approve failed (${err instanceof Error ? err.message : String(err)})`;
+          log.push(line); console.error(line);
+          return { exitCode: 1 };
+        }
+      }
+    }
+    if (terminal.has(status)) {
+      const plan = Array.isArray(currentRun.plan) ? currentRun.plan
+        : (Array.isArray(state?.plan) ? state.plan : []);
+      if (plan.length > 0) {
+        log.push(`runtime-plan:\n${plan.map((planStep) => `  - ${planStep.description ?? planStep.id ?? planStep.step ?? ''}: ${planStep.status ?? ''}`).join('\n')}`);
+      }
+      return { exitCode: status === 'failed' || status === 'error' ? 1 : 0 };
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  const line = 'runtime-wait: timeout waiting for the delegated run to finish.';
+  log.push(line); console.error(line);
+  return { exitCode: 1 };
+}
+
 async function runHeadless(argv, agent) {
   const workspaceName = valueAfter(argv, '--workspace');
   const skillName = valueAfter(argv, '--skill');
@@ -228,6 +337,37 @@ async function runHeadless(argv, agent) {
     if (useResult.output) log.push(useResult.output);
     if (!session.workspacePath) throw new Error(useResult.output || `Workspace not loaded: ${workspaceName}`);
     if (!session.llm) throw new Error(`Workspace ${workspaceName} has no usable LLM config.`);
+
+    // Agent-mode parity: the interactive TUI runs every turn against the
+    // runtime (delegation + run control) with MCP connected. Without a
+    // runtime, the graph exposes no runtime__delegate tool, so any action
+    // request degrades to a chat-like text answer instead of a real delegated
+    // run — which is exactly why headless "looked like chat mode". Connect the
+    // same way the TUI does. Use --no-runtime for the legacy direct-MCP path.
+    if (!argv.includes('--no-runtime')) {
+      try {
+        const { ensureRuntime } = await import('../runtime/lifecycle.js');
+        const runtime = await ensureRuntime();
+        session.runtime = runtime?.url ? { url: runtime.url, started: Boolean(runtime.started) } : null;
+        step(`runtime: ${session.runtime ? `connected ${session.runtime.url}` : 'unavailable'}`);
+      } catch (err) {
+        session.runtime = null;
+        step(`runtime: unavailable (${err instanceof Error ? err.message : String(err)})`);
+      }
+    }
+    await refreshMcpRuntimeStatus(session);
+    step(`mcp: ${Object.values(session.mcp ?? {}).filter((value) => value.status === 'connected').length} connected`);
+    // Surface which tools Donna is actually offered this turn: if a factual
+    // question is answered without the matching read tool appearing here, the
+    // problem is discovery/connection, not the model.
+    for (const [name, value] of Object.entries(session.mcp ?? {})) {
+      if (value?.status !== 'connected') continue;
+      const toolNames = (value.tools ?? []).map((tool) => tool.name).join(', ');
+      step(`mcp-tools ${name}: ${toolNames || '(none discovered)'}`);
+    }
+    // Wire the graph's step trace (classification, tool calls, retries) into
+    // the headless log so the agent-mode decision is observable.
+    session._onStep = step;
 
     let input = prompt;
     if (skillName) {
@@ -260,11 +400,26 @@ async function runHeadless(argv, agent) {
     if (useAgenticLoop) {
       ({ exitCode } = await runHeadlessAgenticLoop(agent, session, input, log, { timeoutMs, maxTurns }));
     } else {
+      // Snapshot existing runs so the wait scopes strictly to the run this turn
+      // creates and never observes a pre-existing / zombie run.
+      let priorRunIds = [];
+      if (session.runtime?.url && wait) {
+        try {
+          const { fetchRuntimeState } = await import('../runtime/client.js');
+          const before = await fetchRuntimeState({ url: session.runtime.url, workspace: session.workspace ?? null });
+          priorRunIds = (Array.isArray(before?.runs) ? before.runs : []).map((run) => run?.id).filter(Boolean);
+        } catch { priorRunIds = []; }
+      }
       const response = await runAgentTurn(agent, session, input);
       log.push('response:');
       log.push(response);
       console.log(response);
-      ({ exitCode } = await runHeadlessActivityLoop(session, log, { wait, timeoutMs }));
+      // When connected to the runtime, an action turn delegates a run that
+      // executes server-side — its progress lives in runtime state, not in the
+      // local session. Poll it so the headless log shows the real outcome.
+      ({ exitCode } = session.runtime?.url && wait
+        ? await waitForRuntimeRun(session, log, { timeoutMs, autoApprove: argv.includes('--auto-approve'), priorRunIds })
+        : await runHeadlessActivityLoop(session, log, { wait, timeoutMs }));
     }
     const saved = await writeHeadlessLog(session, log, logFile);
     console.log(`Headless log: ${saved}`);
@@ -620,7 +775,7 @@ async function runRuntime(argv, agent) {
       throw new Error(fragment?.summary?.initialSynthesis?.[0] ?? `No task was planned for ${selection.capability}/${selection.operation}.`);
     }
     const validation = validateFragment(fragment, {
-      registry: session.capabilityRegistry ?? null,
+      registry: capabilityRegistryForSession(session),
       run: { plannerAgentInstanceId: provider.agentInstanceId ?? provider.serverName },
     });
     if (!validation.ok) {
@@ -682,7 +837,7 @@ async function runRuntime(argv, agent) {
         const { integrate } = await import('../orchestrator/planIntegrator.js');
         const prepared = body.preparedDelegation;
         const integrated = integrate(runId, prepared.fragment, {
-          registry: session.capabilityRegistry ?? null,
+          registry: capabilityRegistryForSession(session),
           session,
           store,
           workspace: session.workspace ?? null,
@@ -701,7 +856,7 @@ async function runRuntime(argv, agent) {
       if (body.capabilityPlan?.capability) {
         const { validateFragment } = await import('../orchestrator/planValidator.js');
         const { integrate } = await import('../orchestrator/planIntegrator.js');
-        const registry = session.capabilityRegistry ?? null;
+        const registry = capabilityRegistryForSession(session);
         const agents = session.agentRegistry?.snapshot?.() ?? session.agentRegistrySnapshot ?? [];
         const provider = agents.find((item) => (item.description?.capabilities ?? [])
           .some((capability) => capability.id === body.capabilityPlan.capability));
@@ -816,10 +971,7 @@ async function runRuntime(argv, agent) {
     delegate: prepareDelegation,
     cancel: (context) => emitRuntimeLog(context.session, 'runtime: cancel requested'),
     resume: ({ workspace }) => recoverRuntime({ workspace, manual: true }),
-    approve: async ({ workspace, runId, itemId, approvalId }) => {
-      const context = await getWorkspaceContext(workspace);
-      return context.approvalManager?.approve({ runId, itemId, approvalId }) ?? { approved: false };
-    },
+    approve: (request) => forwardRuntimeApproval(getWorkspaceContext, request),
     configProfiles: async (context) => {
       const profiles = listWikircProfiles(context.session.workspacePath);
       return {

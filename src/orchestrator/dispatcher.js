@@ -8,7 +8,7 @@ const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled', 'canceled', 'c
 export function createDispatcher({
   session = null,
   callTool = callMcpTool,
-  pollIntervalMs = 250,
+  pollIntervalMs = 2500,
 } = {}) {
   return {
     execute(task, assignment, options = {}) {
@@ -30,7 +30,7 @@ export async function execute(task, assignment, {
   attempt = null,
   timeoutMs = null,
   pollBusy = new Set(),
-  pollIntervalMs = 250,
+  pollIntervalMs = 2500,
 } = {}) {
   if (!session) throw new Error('dispatcher.execute requires session.');
   if (!assignment?.serverName) throw new Error(`No MCP server found for agent ${assignment?.agentInstanceId ?? '(unknown)'}.`);

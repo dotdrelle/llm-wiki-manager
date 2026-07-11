@@ -17,6 +17,7 @@ import {
   conversationMessages,
   createSession,
   runtimeUnavailableAgentMessage,
+  sanitizeRuntimeStateForDisplay,
 } from './repl.js';
 import { useAgent } from './useAgent';
 
@@ -340,10 +341,20 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   function mergeRuntimeConversation(state: any) {
     const workspace = (session as any).workspace || '__global__';
     const runtimeConversation = Array.isArray(state?.conversation) ? state.conversation : [];
-    if (runtimeConversation.length === 0) return;
     const target = conversationMessages(session);
     const backed = runtimeConversationRefsByWorkspace.get(workspace) ?? [];
     runtimeConversationRefsByWorkspace.set(workspace, backed);
+    if (runtimeConversation.length === 0) {
+      // Idle runtime display state deliberately has no historical run
+      // conversation. Remove only entries previously merged from that
+      // runtime; preserve local slash-command output and the current input.
+      for (const entry of backed) {
+        const index = target.indexOf(entry);
+        if (index !== -1) target.splice(index, 1);
+      }
+      backed.length = 0;
+      return;
+    }
     // The merge is index-aligned with the runtime conversation array. If that
     // array got SHORTER (runtime restart, projection reset), keeping stale
     // refs would make every new runtime entry silently overwrite an old
@@ -388,8 +399,9 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   function syncRuntimeState() {
     void fetchRuntimeState({ url: props.runtime.url, workspace: (session as any).workspace ?? null })
       .then((state) => {
-        setRuntimeState(state);
-        mergeRuntimeConversation(state);
+        const displayState = sanitizeRuntimeStateForDisplay(state);
+        setRuntimeState(displayState);
+        mergeRuntimeConversation(displayState);
         setRuntimeStatus('connected');
         refresh();
       })

@@ -131,7 +131,7 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
   evaluate = true,
   maxReplans = resolveMaxReplans(),
   callTool = null,
-  dispatcherPollIntervalMs = 250,
+  dispatcherPollIntervalMs = 2500,
 } = {}) {
   let currentInput = initialInput ?? input;
   let replansLeft = Math.max(0, Math.floor(Number(maxReplans) || 0));
@@ -291,7 +291,7 @@ export async function runRuntimeParallelPlan(agent, session, input, {
   budgetManager = null,
   budgets = {},
   callTool = null,
-  dispatcherPollIntervalMs = 250,
+  dispatcherPollIntervalMs = 2500,
 } = {}) {
   if (fragment != null) assertValidatedFragment(fragment);
   const agents = session.agentRegistry?.snapshot?.() ?? session.agentRegistrySnapshot ?? [];
@@ -395,8 +395,9 @@ export async function runRuntimeParallelPlan(agent, session, input, {
           emitRuntimeLog(session, taskLogPayload('task.starting', task, { runId, detail: `starting task ${taskId}` }));
         },
         startTask: (task, attempt) => {
+          const executableTask = materializeTaskInputs(task, session.headlessPlan ?? []);
           const taskAbort = createTaskAbortSignal(signal);
-          const promise = runDispatchedTask(task, {
+          const promise = runDispatchedTask(executableTask, {
             session,
             assignmentManager: assigner,
             dispatcher: executor,
@@ -523,6 +524,41 @@ export async function runRuntimeParallelPlan(agent, session, input, {
     if (previousPlanUpdate) session._onPlanUpdate = previousPlanUpdate;
     else delete session._onPlanUpdate;
   }
+}
+
+export function materializeTaskInputs(task, plan = []) {
+  const dependencies = new Set(Array.isArray(task?.dependsOn) ? task.dependsOn.map(String) : []);
+  const replacements = new Map();
+  for (const dependency of plan ?? []) {
+    if (!dependencies.has(String(dependency?.id ?? dependency?.step))) continue;
+    const expected = Array.isArray(dependency?.expectedOutputRefs) ? dependency.expectedOutputRefs : [];
+    const actual = Array.isArray(dependency?.outputRefs) ? dependency.outputRefs : [];
+    for (let index = 0; index < Math.min(expected.length, actual.length); index += 1) {
+      const expectedRef = refValue(expected[index]);
+      const actualRef = refValue(actual[index]);
+      if (expectedRef && actualRef && expectedRef !== actualRef) replacements.set(expectedRef, actualRef);
+    }
+  }
+  if (replacements.size === 0) return task;
+  return {
+    ...task,
+    arguments: replaceRefValues(task?.arguments, replacements),
+    inputRefs: replaceRefValues(task?.inputRefs, replacements),
+  };
+}
+
+function replaceRefValues(value, replacements) {
+  if (typeof value === 'string') return replacements.get(value) ?? value;
+  if (Array.isArray(value)) return value.map((item) => replaceRefValues(item, replacements));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replaceRefValues(item, replacements)]));
+  }
+  return value;
+}
+
+function refValue(value) {
+  if (typeof value === 'string') return value;
+  return value && typeof value === 'object' ? String(value.ref ?? '') : '';
 }
 
 function sanitizeSessionPlanForExecution(session, runId = null) {
@@ -720,8 +756,16 @@ async function runDispatchedTask(task, {
   }
 }
 
-function shouldUseParallelScheduler(plan) {
-  return readyPlanTasks(plan).some((task) => task.requiredCapability && task.operation);
+export function shouldUseParallelScheduler(plan) {
+  // A validated provider plan enters the scheduler even while every task is
+  // waiting for approval. Looking only at readyPlanTasks() made an all-
+  // approval plan fall through to the conversational Donna loop; that loop
+  // then ignored the integrated TaskGraph and marked the run done.
+  return (plan ?? []).some((task) =>
+    task?.requiredCapability
+    && task?.operation
+    && pendingSchedulerStatus(task.status),
+  );
 }
 
 function taskLogPayload(event, task, {
@@ -996,10 +1040,30 @@ export async function replanRuntimeRun(session, input, trigger, {
   }
 }
 
+function isBusyFailure(failure) {
+  const fields = [
+    failure?.error,
+    failure?.status,
+    failure?.result?.error?.code,
+    failure?.result?.error?.message,
+    failure?.result?.status,
+  ].map((value) => String(value ?? '').toLowerCase());
+  return fields.some((value) => value.includes('busy') || value.includes('locked'));
+}
+
 function replanTriggerFromLoopResult(result) {
   // 'awaiting_approval' is not a dead end — it means to wait for a human
   // decision, not to replan around it.
   if (result.stalled && result.reason !== 'awaiting_approval') {
+    // A stall caused only by transient lock contention (target_busy /
+    // workspace_busy) must NOT be replanned: the plan is correct, the
+    // workspace was momentarily locked. Replanning around it re-runs the same
+    // tasks, hits the lock again and spins the run into a zombie. Fail cleanly
+    // so the run finalizes instead of lingering 'running'.
+    const blocking = [...(result.failures ?? []), ...terminalFailures(result.completed ?? [])];
+    if (blocking.length > 0 && blocking.every(isBusyFailure)) {
+      return null;
+    }
     return {
       kind: 'plan_stalled',
       reason: `Plan is stalled: ${result.reason ?? 'no ready task'} (pending steps exist but none have their dependencies satisfied).`,
@@ -1008,7 +1072,7 @@ function replanTriggerFromLoopResult(result) {
     };
   }
   const failures = terminalFailures(result.completed ?? []);
-  const technical = failures.filter((failure) => !isCancelledStatus(failure.status));
+  const technical = failures.filter((failure) => !isCancelledStatus(failure.status) && !isBusyFailure(failure));
   const cancelled = failures.filter((failure) => isCancelledStatus(failure.status));
   if (cancelled.length > 0 && technical.length === 0 && (result.failures ?? []).every(isCancelledTaskFailure)) {
     return null;
@@ -1025,7 +1089,7 @@ function replanTriggerFromLoopResult(result) {
   // The parallel scheduler can fail a task before it ever produces an
   // _activity (e.g. a thrown error on the first turn) — that failure lives
   // in result.failures, not in any activity, so it must be checked too.
-  const taskFailure = (result.failures ?? []).find((failure) => !isCancelledTaskFailure(failure));
+  const taskFailure = (result.failures ?? []).find((failure) => !isCancelledTaskFailure(failure) && !isBusyFailure(failure));
   if (!taskFailure) return null;
   return {
     kind: 'task_error',

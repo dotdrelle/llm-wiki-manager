@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createCapabilityRegistry } from './capabilityRegistry.js';
+import { capabilityRegistryForSession, createCapabilityRegistry } from './capabilityRegistry.js';
 
 function agent(agentInstanceId, capabilityId, { contractVersion = '1', health = 'available', version = '1' } = {}) {
   return {
@@ -22,6 +22,17 @@ function agent(agentInstanceId, capabilityId, { contractVersion = '1', health = 
     },
   };
 }
+
+test('capabilityRegistryForSession rebuilds the registry from live discovery when the cache is absent', () => {
+  const discoveredAgent = agent('production-main', 'knowledge.update');
+  const registry = capabilityRegistryForSession({
+    capabilityRegistry: createCapabilityRegistry(),
+    agentRegistry: { snapshot: () => [discoveredAgent] },
+    agentRegistrySnapshot: [],
+  });
+
+  assert.equal(registry.providersFor('knowledge.update').length, 1);
+});
 
 test('capabilityRegistry indexes two agents for the same capability', () => {
   const registry = createCapabilityRegistry({

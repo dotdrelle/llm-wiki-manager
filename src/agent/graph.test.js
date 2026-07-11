@@ -3,7 +3,57 @@ import test from 'node:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildAgentSystemPrompt, createAgentGraph, invalidSuggestedSlashCommands, knownCapabilityIds } from './graph.js';
+import { buildAgentSystemPrompt, createAgentGraph, invalidSuggestedSlashCommands, invalidUserFacingToolNames, knownCapabilityIds, normalizeToolArgumentsFromSchema } from './graph.js';
+
+test('user-facing response guard hides MCP identifiers generically', () => {
+  const session = sessionBase();
+  assert.deepEqual(
+    invalidUserFacingToolNames('Utilisez production__production_start_job.', session),
+    ['production__production_start_job'],
+  );
+});
+
+test('Donna cannot answer an explicit action with manual instructions instead of delegating', async () => {
+  const originalFetch = globalThis.fetch;
+  let delegated = false;
+  globalThis.fetch = async (url) => {
+    delegated = String(url).includes('/delegate');
+    return { ok: true, status: 202, json: async () => ({ accepted: true, runId: 'run-action', delegation: { tasks: 2, agent: 'production' } }) };
+  };
+  let mainCalls = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    llm: {
+      async completeWithTools({ tools }) {
+        if (tools.length === 0) return { content: '{"action":true}', message: { role: 'assistant', content: '{"action":true}' }, tool_calls: null };
+        mainCalls += 1;
+        if (mainCalls === 1) {
+          return {
+            content: 'Déplacez raw/untracked/demo.md vers raw/ puis utilisez wiki__wiki_workspace_status.',
+            message: { role: 'assistant', content: 'instructions manuelles' },
+            tool_calls: null,
+          };
+        }
+        if (mainCalls === 2) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{ id: 'delegate', type: 'function', function: { name: 'runtime__delegate', arguments: '{"objective":"Lance ingestion"}' } }],
+          };
+        }
+        return { content: 'Plan soumis.', message: { role: 'assistant', content: 'Plan soumis.' }, tool_calls: null };
+      },
+    },
+  });
+
+  try {
+    const result = await createAgentGraph().invoke({ input: 'lance ingestion', session });
+    assert.equal(delegated, true);
+    assert.equal(result.response, 'Plan soumis.');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 function sessionBase(overrides = {}) {
   return {
@@ -221,6 +271,24 @@ test('interactive Donna delegates provider execution to the runtime orchestrator
   assert.ok(!seenTools.includes('wiki__plan_done'));
 });
 
+test('interactive Donna can delegate while the shell capability snapshot is still empty', async () => {
+  const seenTools = [];
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    agentRegistrySnapshot: [],
+    llm: {
+      async completeWithTools({ tools }) {
+        seenTools.push(...tools.map((tool) => tool.function.name));
+        return { content: 'Prêt.', message: { role: 'assistant', content: 'Prêt.' }, tool_calls: null };
+      },
+    },
+  });
+
+  await createAgentGraph().invoke({ input: 'bonjour', session });
+
+  assert.ok(seenTools.includes('runtime__delegate'));
+});
+
 function ingestAgentSnapshot() {
   return [{
     agentInstanceId: 'production-ingest',
@@ -239,14 +307,14 @@ function ingestAgentSnapshot() {
   }];
 }
 
-test('runtime delegation tool accepts only the natural-language objective', async () => {
+test('runtime delegation tool declares only its canonical natural-language objective', async () => {
   let delegationTool = null;
   const session = sessionBase({
     runtime: { url: 'http://runtime.test' },
     agentRegistrySnapshot: ingestAgentSnapshot(),
     llm: {
       async completeWithTools({ tools }) {
-        delegationTool = tools.find((tool) => tool.function.name === 'runtime__delegate');
+        delegationTool ??= tools.find((tool) => tool.function.name === 'runtime__delegate');
         return { content: 'Prêt.', message: { role: 'assistant', content: 'Prêt.' }, tool_calls: null };
       },
     },
@@ -256,6 +324,27 @@ test('runtime delegation tool accepts only the natural-language objective', asyn
 
   assert.deepEqual(Object.keys(delegationTool.function.parameters.properties), ['objective']);
   assert.deepEqual(delegationTool.function.parameters.required, ['objective']);
+});
+
+test('tool argument normalization repairs only an unambiguous schema-compatible field name', () => {
+  const schema = {
+    type: 'object',
+    properties: { objective: { type: 'string' } },
+    required: ['objective'],
+    additionalProperties: false,
+  };
+  assert.deepEqual(
+    normalizeToolArgumentsFromSchema({ input: 'Ingérer les fichiers' }, schema),
+    { objective: 'Ingérer les fichiers' },
+  );
+  assert.deepEqual(
+    normalizeToolArgumentsFromSchema({ input: 'x', other: 'y' }, schema),
+    { input: 'x', other: 'y' },
+  );
+  assert.deepEqual(
+    normalizeToolArgumentsFromSchema({ input: 42 }, schema),
+    { input: 42 },
+  );
 });
 
 test('Donna delegates the objective without choosing technical identifiers', async () => {
@@ -279,7 +368,7 @@ test('Donna delegates the objective without choosing technical identifiers', asy
             tool_calls: [{
               id: 'delegate',
               type: 'function',
-              function: { name: 'runtime__delegate', arguments: '{"objective":"Ingérer tous les fichiers en attente"}' },
+              function: { name: 'runtime__delegate', arguments: '{"input":"Ingérer tous les fichiers en attente"}' },
             }],
           };
         }
@@ -328,6 +417,69 @@ test('runtime status does not manufacture a plan', async () => {
     const result = await createAgentGraph().invoke({ input: 'où en est le travail ?', session });
     assert.equal(result.response, 'Aucun run actif.');
     assert.equal(session.headlessPlan ?? null, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('one Donna approval grants the complete validated run revision', async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url: String(url), method: options.method ?? 'GET', body: options.body ? JSON.parse(options.body) : null });
+    if ((options.method ?? 'GET') === 'GET') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          running: true,
+          runId: 'run-approval',
+          planRevision: 3,
+          approvals: [
+            { status: 'pending_approval', approvalClasses: ['workspace'] },
+            { status: 'pending_approval', approvalClasses: ['workspace'] },
+          ],
+        }),
+      };
+    }
+    return { ok: true, status: 202, json: async () => ({ approved: true, runId: 'run-approval' }) };
+  };
+  let calls = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    agentProjection: { status: 'running', conversation: [], activities: [] },
+    llm: {
+      async completeWithTools() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: 'approve-run',
+              type: 'function',
+              function: { name: 'runtime__approve', arguments: '{}' },
+            }],
+          };
+        }
+        return { content: 'Plan approuvé.', message: { role: 'assistant', content: 'Plan approuvé.' }, tool_calls: null };
+      },
+    },
+  });
+
+  try {
+    const result = await createAgentGraph().invoke({ input: 'oui', session });
+    assert.equal(result.response, 'Plan approuvé.');
+    const approval = requests.find((request) => request.url.includes('/approve'));
+    assert.deepEqual(approval.body, {
+      workspace: 'docs',
+      runId: 'run-approval',
+      itemId: null,
+      approvalId: null,
+      scope: 'run',
+      planRevision: 3,
+      approvalClasses: ['workspace'],
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -571,6 +723,13 @@ test('system prompt forbids unsolicited next-step sections', () => {
   assert.doesNotMatch(prompt, /list the suggested follow-ups/);
 });
 
+test('system prompt requests synthetic responses capped at about twenty lines without internal narration', () => {
+  const prompt = buildAgentSystemPrompt({ session: sessionBase() });
+  assert.match(prompt, /never exceed roughly 15 to 20 short lines/);
+  assert.match(prompt, /Prioritize the result, essential facts, concrete errors, and actual outputs/);
+  assert.match(prompt, /Never expose internal reasoning, repeated checks, tool-selection commentary, or a chronological diary/);
+});
+
 test('slash-command output guard rejects commands outside the real agent command set', () => {
   const session = sessionBase({ commands: ['status', 'wiki', 'openui'] });
   assert.deepEqual(
@@ -601,6 +760,84 @@ test('Donna retries instead of displaying an invented slash command', async () =
   assert.equal(calls, 2);
   assert.equal(result.response, 'Ingestion terminée. Le résultat est disponible dans `/openui`.');
   assert.doesNotMatch(result.response, /wiki list_pages/);
+});
+
+test('Donna retries a malformed tool call without reinjecting its broken JSON', async () => {
+  let calls = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    llm: {
+      async completeWithTools({ messages }) {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: 'broken',
+              type: 'function',
+              function: { name: 'runtime__delegate', arguments: '{"objective":"Ingère' },
+            }],
+          };
+        }
+        assert.doesNotMatch(JSON.stringify(messages), /arguments.*Ingère/);
+        return { content: 'Appel reformulé.', message: { role: 'assistant', content: 'Appel reformulé.' }, tool_calls: null };
+      },
+    },
+  });
+
+  await createAgentGraph().invoke({ input: 'ingère les fichiers', session });
+  assert.equal(calls, 2);
+});
+
+test('forced delegation is cleared after one valid tool call and does not loop', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 202,
+    json: async () => ({ accepted: true, runId: 'run-once' }),
+  });
+  const choices = [];
+  let calls = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    commands: ['status'],
+    llm: {
+      async completeWithTools({ toolChoice, tools }) {
+        if (tools.length === 0) {
+          return { content: '{"action":true}', message: { role: 'assistant', content: '{"action":true}' }, tool_calls: null };
+        }
+        calls += 1;
+        choices.push(toolChoice);
+        if (calls === 1) {
+          const content = 'Utilise cette commande :\n/pipeline';
+          return { content, message: { role: 'assistant', content }, tool_calls: null };
+        }
+        if (calls === 2) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: 'delegate-once',
+              type: 'function',
+              function: { name: 'runtime__delegate', arguments: '{"objective":"Ingérer les fichiers"}' },
+            }],
+          };
+        }
+        return { content: 'Ingestion déléguée.', message: { role: 'assistant', content: 'Ingestion déléguée.' }, tool_calls: null };
+      },
+    },
+  });
+
+  try {
+    const result = await createAgentGraph().invoke({ input: 'lance ingestion', session });
+    assert.equal(calls, 3);
+    assert.deepEqual(choices[1], { type: 'function', function: { name: 'runtime__delegate' } });
+    assert.equal(choices[2], 'auto');
+    assert.equal(result.response, 'Ingestion déléguée.');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 // Guard: the system prompt must never show a connected tool's bare name
@@ -1032,6 +1269,47 @@ test('Donna interprets a cleanup request and calls runtime__kill herself', async
   }
 });
 
+test('Donna refuses a direct mutating provider tool in interactive mode and is steered to delegation', async () => {
+  const fetchedHosts = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    fetchedHosts.push(new URL(String(url)).host);
+    return { ok: true, status: 200, json: async () => ({}), text: async () => '{}', headers: { get: () => null } };
+  };
+  let calls = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    llm: {
+      async completeWithTools({ tools, messages }) {
+        calls += 1;
+        if (calls === 1) {
+          const names = tools.map((tool) => tool.function.name);
+          assert.ok(!names.includes('production__production_start_job'), 'a mutating provider tool must not be offered in interactive mode');
+          assert.ok(names.includes('runtime__delegate'), 'delegate must be offered in interactive mode');
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{ id: 'direct-call', type: 'function', function: { name: 'production__production_start_job', arguments: '{"type":"ingest"}' } }],
+          };
+        }
+        const lastTool = (messages ?? []).filter((message) => message.role === 'tool').at(-1);
+        assert.match(String(lastTool?.content ?? ''), /not available in interactive mode/);
+        return { content: 'Objectif transmis au runtime.', message: { role: 'assistant', content: 'Objectif transmis au runtime.' }, tool_calls: null };
+      },
+    },
+  });
+
+  try {
+    const agent = createAgentGraph();
+    const result = await agent.invoke({ input: 'lance une ingestion', session });
+    assert.equal(calls, 2, 'the model must get a second turn after the refusal');
+    assert.equal(result.response, 'Objectif transmis au runtime.');
+    assert.ok(!fetchedHosts.includes('127.0.0.1:3000'), 'the refused provider tool must never be executed');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('buildAgentSystemPrompt uses the canonical wiki workspace status without filesystem fallback', () => {
   const workspacePath = mkdtempSync(join(tmpdir(), 'facts-'));
   try {
@@ -1104,6 +1382,7 @@ test('Donna reads workspace inventory from the canonical wiki status tool', asyn
     const result = await createAgentGraph().invoke({ input: 'as ton des fichier en attente d ingestion', session });
     assert.equal(result.response, 'Deux fichiers sont en attente : a.md et b.md.');
     assert.deepEqual(requestedArguments, {});
+    assert.equal(session.headlessPlan, null, 'a read-only workspace inventory must not create a plan');
   } finally {
     globalThis.fetch = originalFetch;
   }

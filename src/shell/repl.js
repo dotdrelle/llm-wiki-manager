@@ -775,18 +775,21 @@ function rememberProductionActivity(session, payload) {
 
 export function applyRuntimeStateToShellSession(session, state) {
   if (!state || typeof state !== 'object') return false;
+  const displayState = sanitizeRuntimeStateForDisplay(state);
   session.agentProjection = {
-    conversation: Array.isArray(state.conversation) ? state.conversation.map((message) => ({ ...message })) : [],
-    chain: Array.isArray(state.chain) ? state.chain.map((step) => ({ ...step })) : [],
-    plan: Array.isArray(state.plan) ? state.plan.map((step) => ({ ...step })) : null,
-    activities: Array.isArray(state.activities) ? state.activities.map((activity) => ({ ...activity })) : [],
-    logs: Array.isArray(state.logs) ? [...state.logs] : [],
-    summary: state.summary ?? null,
-    status: state.status ?? 'idle',
-    planRevision: state.planRevision ?? 0,
-    planPatches: Array.isArray(state.planPatches) ? state.planPatches.map((patch) => ({ ...patch })) : [],
+    conversation: Array.isArray(displayState.conversation) ? displayState.conversation.map((message) => ({ ...message })) : [],
+    chain: Array.isArray(displayState.chain) ? displayState.chain.map((step) => ({ ...step })) : [],
+    plan: Array.isArray(displayState.plan) && displayState.plan.length > 0
+      ? displayState.plan.map((step) => ({ ...step }))
+      : null,
+    activities: Array.isArray(displayState.activities) ? displayState.activities.map((activity) => ({ ...activity })) : [],
+    logs: Array.isArray(displayState.logs) ? [...displayState.logs] : [],
+    summary: displayState.summary ?? null,
+    status: displayState.status ?? 'idle',
+    planRevision: displayState.planRevision ?? 0,
+    planPatches: Array.isArray(displayState.planPatches) ? displayState.planPatches.map((patch) => ({ ...patch })) : [],
   };
-  session.workflow = state.workflow && typeof state.workflow === 'object'
+  session.workflow = displayState.workflow && typeof displayState.workflow === 'object'
     ? {
         ...state.workflow,
         nodes: Array.isArray(state.workflow.nodes) ? state.workflow.nodes.map((node) => ({ ...node })) : [],
@@ -804,7 +807,7 @@ export function applyRuntimeStateToShellSession(session, state) {
   // Runtime queue items replace the local jobQueue wholesale on every sync.
   // Tag their origin so /queue cancel can refuse to fake-cancel them locally
   // (a local status flip would be silently reverted by the next SSE sync).
-  if (Array.isArray(state.queue)) session.jobQueue = state.queue.map((item) => ({ ...item, origin: 'runtime' }));
+  if (Array.isArray(displayState.queue)) session.jobQueue = displayState.queue.map((item) => ({ ...item, origin: 'runtime' }));
   const production = session.agentProjection.activities.filter((activity) => activity.source === 'production').at(-1);
   if (production) {
     session.productionActivity = {
@@ -816,6 +819,25 @@ export function applyRuntimeStateToShellSession(session, state) {
     };
   }
   return true;
+}
+
+export function sanitizeRuntimeStateForDisplay(state) {
+  if (!state || typeof state !== 'object') return state;
+  const status = String(state.status ?? 'idle').toLowerCase();
+  const visible = ['running', 'queued', 'pending', 'waiting', 'pending_approval', 'error', 'failed']
+    .includes(status);
+  if (visible) return state;
+  return {
+    ...state,
+    conversation: [],
+    chain: [],
+    plan: [],
+    activities: [],
+    workflow: null,
+    logs: [],
+    summary: null,
+    planPatches: [],
+  };
 }
 
 // In agent mode, Donna receives every free-text turn and decides whether to
@@ -1039,17 +1061,12 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep, displayIn
   };
   session._onStreamReset = () => {
     if (!donnaMessage) return;
-    if (donnaMessage.content.trim()) {
-      // Intermediate streamed text before tool calls: keep it, add separator.
-      donnaMessage.content += '\n\n';
-      onUpdate?.();
-    } else {
-      // Still empty ("Thinking…"): remove it cleanly.
-      const index = messages.indexOf(donnaMessage);
-      if (index !== -1) messages.splice(index, 1);
-      donnaMessage = null;
-      onUpdate?.();
-    }
+    // Text emitted before a tool call is provisional narration, not an answer.
+    // Remove it; the post-tool result gets a fresh Donna bubble.
+    const index = messages.indexOf(donnaMessage);
+    if (index !== -1) messages.splice(index, 1);
+    donnaMessage = null;
+    onUpdate?.();
   };
 
   let agentResult;

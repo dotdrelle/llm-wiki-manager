@@ -4,8 +4,16 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { handleSlashCommand } from './slash.js';
+import { handleSlashCommand, localizedOperationResult } from './slash.js';
 import { completionContext } from '../shell/repl.js';
+
+test('deterministic operation results ask Donna to localize compact facts without leaking commands', () => {
+  const result = localizedOperationResult({ operation: 'start', target: 'agents' });
+  assert.equal(result.rawOutput, true);
+  assert.deepEqual(JSON.parse(result.output), { operation: 'start', target: 'agents', status: 'succeeded' });
+  assert.match(result.agentTrigger, /une seule phrase humaine et naturelle/);
+  assert.doesNotMatch(result.agentTrigger, /\/start|Docker|compose/);
+});
 
 test('/workspace delete removes files and clears current session context after confirmation', async () => {
   const root = await mkdtemp(join(tmpdir(), 'wiki-manager-delete-workspace-'));

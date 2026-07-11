@@ -1,7 +1,48 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { evaluateRuntimeRun, finishRuntimeRun, replanRuntimeRun, runRuntimeAgenticWorkflow, runRuntimeParallelPlan } from './runner.js';
+import { evaluateRuntimeRun, finishRuntimeRun, materializeTaskInputs, replanRuntimeRun, runRuntimeAgenticWorkflow, runRuntimeParallelPlan, shouldUseParallelScheduler } from './runner.js';
+
+test('validated tasks waiting for approval stay in the scheduler instead of falling back to Donna', () => {
+  assert.equal(shouldUseParallelScheduler([
+    {
+      id: 'ingest-plan',
+      requiredCapability: 'knowledge.update',
+      operation: 'ingest_plan',
+      status: 'waiting_approval',
+    },
+    {
+      id: 'ingest-apply',
+      requiredCapability: 'knowledge.update',
+      operation: 'ingest_apply',
+      status: 'waiting_approval',
+    },
+  ]), true);
+  assert.equal(shouldUseParallelScheduler([
+    { id: 'finished', requiredCapability: 'knowledge.update', operation: 'ingest', status: 'done' },
+  ]), false);
+});
+
+test('downstream tasks consume actual dependency outputs instead of planned placeholder refs', () => {
+  const plannedRef = '.wiki/ingest-plans/planned.json';
+  const actualRef = '.wiki/ingest-plans/ingest-2026-07-10.json';
+  const plan = [{
+    id: 'ingest-plan',
+    expectedOutputRefs: [{ type: 'file', ref: plannedRef }],
+    outputRefs: [{ type: 'file', ref: actualRef }],
+  }];
+  const apply = {
+    id: 'ingest-apply',
+    dependsOn: ['ingest-plan'],
+    arguments: { inputs: [plannedRef] },
+    inputRefs: [{ type: 'file', ref: plannedRef }],
+  };
+
+  const executable = materializeTaskInputs(apply, plan);
+  assert.deepEqual(executable.arguments.inputs, [actualRef]);
+  assert.equal(executable.inputRefs[0].ref, actualRef);
+  assert.deepEqual(apply.arguments.inputs, [plannedRef], 'the validated plan declaration remains immutable');
+});
 
 test('evaluateRuntimeRun trusts a completed provider TaskGraph without asking an LLM to reinterpret it', async () => {
   const session = {

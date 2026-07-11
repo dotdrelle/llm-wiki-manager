@@ -676,6 +676,20 @@ function rawCommandResult(command, output) {
   };
 }
 
+export function localizedOperationResult({ operation, target, status = 'succeeded' }) {
+  const facts = JSON.stringify({ operation, target, status });
+  return {
+    output: facts,
+    rawOutput: true,
+    agentTrigger: [
+      'Formule le résultat structuré suivant dans la langue et le ton demandés par le profil du workspace.',
+      'Réponds par une seule phrase humaine et naturelle.',
+      'Ne mentionne aucune commande, syntaxe shell, étape suivante ou détail technique.',
+      `Résultat: ${facts}`,
+    ].join('\n'),
+  };
+}
+
 function formatRuntimeRunStatus(state) {
   const status = state?.status ?? 'unknown';
   const runId = state?.runId ? ` run=${state.runId}` : '';
@@ -711,13 +725,14 @@ export async function handleSlashCommand(line, context) {
   const args = line.slice(1).trim().split(/\s+/).filter(Boolean);
   const [command] = args;
   const step = context.onStep ?? (() => {});
-  const runAgentCommand = async (fn, verb, commandLabel) => {
+  const runAgentCommand = async (fn, verb) => {
     try {
       step(`Agents: ${verb}ing external agents…`);
-      const output = await fn();
-      return output
-        ? rawCommandResult(commandLabel, output)
-        : { output: `Agents ${verb}ed.` };
+      await fn();
+      return localizedOperationResult({
+        operation: verb,
+        target: 'agents',
+      });
     } catch (err) {
       step(formatActivityError('agents', verb, err));
       return { output: err instanceof Error ? err.message : String(err) };
@@ -876,13 +891,16 @@ export async function handleSlashCommand(line, context) {
       // do not remap it to undefined, that bypasses any custom "all" target list and always
       // falls back to the hardcoded COMPOSE_SERVICES constant instead.
       const service = args[1];
-      if (service === 'agents') return runAgentCommand(startAgents, 'start', '/start agents');
+      if (service === 'agents') return runAgentCommand(startAgents, 'start');
       try {
         step(`Services: starting ${service ?? 'workspace services'}…`);
-        const output = await startService(context.session, service);
+        await startService(context.session, service);
         step('Services: refreshing MCP runtime…');
         await refreshMcpRuntimeStatus(context.session);
-        return rawCommandResult(`/start${service ? ` ${service}` : ''}`, output);
+        return localizedOperationResult({
+          operation: 'start',
+          target: service || 'workspace-services',
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         step(formatActivityError('services', 'stop', err));
@@ -891,13 +909,16 @@ export async function handleSlashCommand(line, context) {
     }
     case 'stop': {
       const service = args[1];
-      if (service === 'agents') return runAgentCommand(stopAgents, 'stop', '/stop agents');
+      if (service === 'agents') return runAgentCommand(stopAgents, 'stop');
       try {
         step(`Services: stopping ${service ?? 'workspace services'}…`);
-        const output = await stopService(context.session, service);
+        await stopService(context.session, service);
         step('Services: refreshing MCP runtime…');
         await refreshMcpRuntimeStatus(context.session);
-        return rawCommandResult(`/stop${service ? ` ${service}` : ''}`, output);
+        return localizedOperationResult({
+          operation: 'stop',
+          target: service || 'workspace-services',
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         step(formatActivityError('services', 'logs', err));

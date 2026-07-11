@@ -171,6 +171,9 @@ export async function postRuntimeApprove({
   runId = null,
   itemId = null,
   approvalId = null,
+  scope = null,
+  planRevision = null,
+  approvalClasses = null,
 } = {}) {
   const endpoint = runtimeEndpoint(url, '/approve', workspace);
   const parsed = new URL(endpoint);
@@ -179,7 +182,16 @@ export async function postRuntimeApprove({
   if (approvalId) parsed.searchParams.set('approvalId', approvalId);
   const response = await fetch(parsed.toString(), {
     method: 'POST',
-    headers: runtimeHeaders(token),
+    headers: { ...runtimeHeaders(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      workspace,
+      runId,
+      itemId,
+      approvalId,
+      scope,
+      planRevision,
+      approvalClasses,
+    }),
   });
   if (!response.ok) throw new Error(`Runtime approve failed: HTTP ${response.status}`);
   return response.json();

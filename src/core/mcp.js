@@ -479,15 +479,22 @@ export function formatMcpToolSummary(mcpStatus) {
   return lines.length > 0 ? lines.join('\n') : 'No connected MCP tools discovered.';
 }
 
-export function formatMcpToolsForAgent(mcpStatus) {
+export function formatMcpToolsForAgent(mcpStatus, { include } = {}) {
   const sections = [];
   for (const [name, value] of Object.entries(mcpStatus ?? {})) {
     if (value.status !== 'connected') continue;
-    const tools = value.tools ?? [];
-    if (tools.length === 0) {
+    const allTools = value.tools ?? [];
+    if (allTools.length === 0) {
       sections.push(`${name}: connected, tools not discovered yet`);
       continue;
     }
+    // Optional filter: callers (e.g. the interactive prompt) advertise only
+    // the tools Donna is actually allowed to call, so a capable model is not
+    // tempted to invoke a mutating provider tool directly instead of delegating.
+    const tools = typeof include === 'function'
+      ? allTools.filter((tool) => include(`${name}__${tool.name}`, tool, name))
+      : allTools;
+    if (tools.length === 0) continue;
     // Always advertise the qualified call name (server__tool): showing bare
     // tool names here is what teaches the model to emit unqualified calls.
     sections.push(`${name}: ${tools.map((tool) => `${name}__${tool.name}`).join(', ')}`);

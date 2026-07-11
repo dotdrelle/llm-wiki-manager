@@ -45,6 +45,20 @@ export function createCapabilityRegistry({ agents = [], compatibleContractVersio
   };
 }
 
+// Discovery and registry construction are asynchronous and are not always
+// completed in the same order. Consumers must nevertheless validate against
+// the live discovered agents instead of treating a temporarily absent cached
+// registry as an empty registry.
+export function capabilityRegistryForSession(session) {
+  const agents = session?.agentRegistry?.snapshot?.()
+    ?? session?.agentRegistrySnapshot
+    ?? session?.agents
+    ?? [];
+  if (agents.length > 0) return createCapabilityRegistry({ agents });
+  if (session?.capabilityRegistry?.providersFor) return session.capabilityRegistry;
+  return createCapabilityRegistry();
+}
+
 function isProviderAgent(agent, compatible) {
   if (!agent || agent.legacy || agent.orchestrable === false) return false;
   if (!compatible.has(String(agent.description?.contractVersion ?? ''))) return false;

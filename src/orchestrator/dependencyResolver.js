@@ -15,7 +15,16 @@ export function readyTasks(dag, {
   const done = new Set(tasks.filter((task) => DONE_STATUSES.has(statusOf(task))).map(taskId));
   const active = new Set([...activeTaskIds].map(String));
   return tasks
-    .filter((task) => statusOf(task) === 'pending')
+    .filter((task) => {
+      const status = statusOf(task);
+      return status === 'pending'
+        || ((status === 'waiting_approval' || status === 'pending_approval')
+          && approvalCovered(task, approvals, {
+            runId: task?.runId ?? dag?.runId ?? null,
+            workspaceId: dag?.workspace ?? null,
+            planRevision: dag?.planRevision ?? null,
+          }));
+    })
     .filter((task) => !active.has(taskId(task)))
     .filter((task) => dependenciesDone(task, done))
     .filter((task) => groupBarrierSatisfied(task, tasks))

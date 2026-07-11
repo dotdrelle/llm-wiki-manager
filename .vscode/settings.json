@@ -1,0 +1,16 @@
+{
+  "files.watcherExclude": {
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/node_modules/**": true,
+    "**/workspaces/**": true,
+    "**/.agents-data/**": true,
+    "**/.wiki-manager/**": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/workspaces": true,
+    "**/.agents-data": true,
+    "**/.wiki-manager": true
+  }
+}

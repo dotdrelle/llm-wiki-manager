@@ -22,6 +22,8 @@ workspaces/*
 docker-compose*.local.yml
 
 *.json
+!.vscode/
+!.vscode/settings.json
 !mcp.endpoints.example.json
 WIKI_MANAGER_AGENT_SHELL.md
 !package.json

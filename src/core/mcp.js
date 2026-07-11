@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
 
-const WIKI_MANAGER_VERSION = '0.13.1';
+const WIKI_MANAGER_VERSION = '0.14.0';
 
 function envValue(key) {
   const filePath = managerEnvFile();
@@ -59,6 +59,14 @@ function readExternalMcpEndpoints() {
           url: normalizeExternalUrlForRuntime(interpolateEnv(String(endpoint.url))),
           configuredUrl: interpolateEnv(String(endpoint.url)),
           headers: normalizeHeaders(endpoint.headers),
+          // Tools the endpoint marks approval-gated: Donna may still call them
+          // directly (they are single-step tools), but toolRequiresApproval
+          // makes the call wait for the user's confirmation first (e.g. a
+          // destructive cme_export_run). Agent/operator owned — no hard-coded
+          // business name in the manager.
+          requireApproval: Array.isArray(endpoint.requireApproval)
+            ? endpoint.requireApproval.map(String).filter(Boolean)
+            : undefined,
           external: true,
         },
       ]),

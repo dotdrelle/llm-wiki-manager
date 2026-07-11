@@ -25,5 +25,12 @@
         "Authorization": "Bearer ${DOCUMENTS_MCP_AUTH_TOKEN}"
       }
     }
+  },
+  "chatAccess": {
+    "maxToolIterations": 6,
+    "servers": {
+      "production": { "allow": ["production_job_status", "production_jobs_list"] },
+      "cme":        { "allow": ["cme_status", "cme_sources_list", "cme_export_status"] }
+    }
   }
 }

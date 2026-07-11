@@ -711,7 +711,7 @@ async function handleRuntimeControlTool(session, tool, args = {}) {
       if (!objective) return 'Delegation rejected: missing objective.';
       const result = await postRuntimeDelegate(objective, { url, workspace });
       return result?.runId
-        ? `Délégation acceptée (${String(result.runId).slice(0, 8)}) après validation du plan réel : ${result.delegation?.tasks ?? 0} tâche(s), ${result.delegation?.agent ?? 'agent résolu'}. L'approbation porte sur ce plan.`
+        ? `Action lancée (${String(result.runId).slice(0, 8)}) après validation du plan réel : ${result.delegation?.tasks ?? 0} tâche(s), ${result.delegation?.agent ?? 'agent résolu'}. Exécution en cours.`
         : `Délégation refusée : ${result?.error ?? JSON.stringify(result)}`;
     }
     if (tool === 'enqueue') {
@@ -845,10 +845,7 @@ export function buildAgentSystemPrompt(state) {
   // mutating provider tools (e.g. production__production_start_job) here teaches
   // a capable model to invoke them directly and bypass runtime__delegate.
   const mcpTools = formatMcpToolsForAgent(state.session.mcp, {
-    include: (qualifiedName, tool) => isDonnaReadTool({
-      function: { name: qualifiedName },
-      readOnly: tool?.annotations?.readOnlyHint === true,
-    }),
+    include: (qualifiedName) => !isOrchestrationBypassTool(qualifiedName),
   });
   const skills = formatSkillsForAgent(state.session);
   const customPrompt = state.session.systemPrompt ?? null;
@@ -864,7 +861,7 @@ export function buildAgentSystemPrompt(state) {
     `Current wikirc profile: ${wikirc}.`,
     `Available primitives: ${commandList(state.session)}.`,
     'Only announce or call slash commands that appear exactly in Available primitives. Do not invent command names, subcommands, or arguments.',
-    'Connected read-only MCP tools you may call directly to answer questions (server__tool naming convention). Every mutation or action — ingest, build, export, configure, send, write — goes through runtime__delegate, never a direct provider tool call:',
+    'Connected MCP tools you may call directly (server__tool naming convention) — reads AND single-step actions like configuring or adding a connector source, converting a document, sending, or searching. Only the heavy multi-step operations (ingest, build, export, polish, pipeline) go through runtime__delegate to get their parallel plan. Everything listed below is directly callable:',
     mcpTools,
     'Current local MCP job queue:',
     formatQueue(state.session),
@@ -877,7 +874,7 @@ export function buildAgentSystemPrompt(state) {
     'Never add a "Next steps", "Prochaines étapes", "À suivre", options, or suggestions section unless the user explicitly asks what to do next. End after the requested result or the concrete error.',
     'When calling a tool, emit no preliminary narration. Call it directly; the PLAN and Activity panels show progress. After completion, keep the final response concise and proportional to the result.',
     'Keep every response synthetic and information-dense. Use only the lines needed, and never exceed roughly 15 to 20 short lines even for a detailed answer. Never expose internal reasoning, repeated checks, tool-selection commentary, or a chronological diary. Prioritize the result, essential facts, concrete errors, and actual outputs.',
-    'Configuration, connector, import, export, conversion, generation, and every other mutation are actions: delegate the objective to the runtime instead of calling an external tool directly.',
+    'Only the heavy multi-step operations — ingest, build, export, polish, pipeline — are delegated via runtime__delegate (for their DAG and parallelism). Single-step actions — configuring or adding a connector source, converting a document, sending, searching — are called directly on the connected tool. Never call an agent orchestration-contract or plan tool directly.',
     'For any question about the current workspace inventory or what is waiting there, call wiki__wiki_workspace_status first and answer only from its result. This is the canonical read-only workspace state; do not reconstruct it from upload, connector, or production tools.',
     'Tool identifiers are private implementation details. Never print MCP tool names such as server__tool in a user-facing answer. Describe the human result instead.',
     'Never suggest a manual filesystem command or implementation workaround unless the user explicitly asks for manual instructions. For an action request, delegate the objective and let the specialized agent determine paths and operations from its live contract.',
@@ -944,8 +941,15 @@ function toolsForClassification(classification, writeTools, session = null) {
     return [SHELL_READ_COMMAND_TOOL, ...controlTools];
   }
   if (session?.runtime?.url) {
-    const readTools = writeTools.filter(isDonnaReadTool);
-    return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...readTools];
+    // Offer every connected tool directly EXCEPT orchestration-bypass tools
+    // and raw shell write/profile mutation. Reads, configuration, connector
+    // setup — and any newly added MCP's tools — stay directly callable.
+    const directTools = writeTools.filter((item) => {
+      const name = item?.function?.name;
+      if (!name || name === 'shell__run_command' || name === 'shell__profile_update') return false;
+      return !isOrchestrationBypassTool(name);
+    });
+    return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...directTools];
   }
   return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...writeTools];
 }
@@ -959,6 +963,24 @@ function isDonnaReadTool(item) {
     || tool === 'agent_describe'
     || tool === 'agent_status'
     || /(?:^|_)(?:status|list|search|read|get)$/.test(tool);
+}
+
+// Two-tier tool policy. Donna may call any connected MCP tool directly
+// (reads AND plain writes: cme_setup, connector setup, document conversion,
+// send, search, and anything a newly added MCP exposes) EXCEPT the small set
+// that must go through the runtime's orchestration: the universal five-tool
+// contract executors (agent_plan/agent_execute), the legacy job starter, and
+// direct plan mutation. Heavy multi-step work (ingest/build/export via the
+// production agent) is delegated for its DAG/parallelism; plain single-step
+// tools are called directly. This is a blocklist, not a whitelist, so adding a
+// new MCP never silently disables its tools.
+function isOrchestrationBypassTool(name) {
+  const full = String(name ?? '');
+  if (!full) return true;
+  if (full === 'wiki__plan_set' || full === 'wiki__plan_done') return true;
+  const sep = full.indexOf('__');
+  const tool = sep === -1 ? full : full.slice(sep + 2);
+  return tool === 'agent_plan' || tool === 'agent_execute' || tool === 'production_start_job';
 }
 
 function isReadOnlyMcpCall(session, server, tool) {

@@ -8,6 +8,10 @@ endpoints, and provides the `donna` shell: an agent-first terminal UI that can
 inspect workspaces, run safe manager commands, call MCP tools, guide production
 jobs, and run one-shot headless tasks.
 
+Current coordinated release: **0.14.5**. Managed `llm-wiki` services expose
+the Wiki Graph v2 browser and APIs; rebuild the `llm-wiki` image when deploying
+this release through Docker.
+
 The manager does not implement the wiki engine or the external agents. It
 **orchestrates** them — generically. Since 0.12.0 the Donna core is
 business-agnostic: agents declare their capabilities through a standard

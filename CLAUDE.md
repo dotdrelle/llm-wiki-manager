@@ -1,5 +1,8 @@
 # Repository Guide
 
+Current coordinated release: **0.14.5**. Keep manager handshakes and the local
+`llm-wiki` engine version aligned across the coordinated repositories.
+
 ## Purpose
 
 `llm-wiki-manager` orchestrates multiple `llm-wiki` workspaces. It owns

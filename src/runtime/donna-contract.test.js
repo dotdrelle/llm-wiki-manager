@@ -227,6 +227,9 @@ test('CME export is dispatched only from an approved DAG task', async () => {
   let executeCalls = 0;
   const session = baseSession({
     workspace: 'demo-workspace',
+    // Production runs wait indefinitely for a human approval. This contract
+    // test is headless, so give the scheduler an explicit bounded deadline.
+    _approvalTimeoutMs: 10,
     mcp: {
       cme: {
         status: 'connected',

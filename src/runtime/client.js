@@ -130,8 +130,9 @@ export async function postRuntimeKill({
   token = runtimeToken(),
   workspace = null,
   runId = null,
+  purge = false,
 } = {}) {
-  const response = await fetch(runtimeEndpointWithParams(url, '/kill', { workspace, runId }), {
+  const response = await fetch(runtimeEndpointWithParams(url, '/kill', { workspace, runId, ...(purge ? { purge: 'true' } : {}) }), {
     method: 'POST',
     headers: runtimeHeaders(token),
   });

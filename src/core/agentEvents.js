@@ -105,6 +105,21 @@ export function dispatchAgentEvent(session, event) {
   return normalized;
 }
 
+// Full in-memory projection reset for a session. The runtime keeps the live
+// projection in memory (session.agentProjection) and serves it from /state, so
+// interrupting runs is not enough to clear the PLAN/ACTIVITY/LOGS panels — the
+// projection has to be emptied here too. Pair with store.clearWorkspaceState so
+// the reset also survives a reboot (otherwise hydrateSession replays it back).
+export function resetSessionProjection(session) {
+  if (!session || typeof session !== 'object') return;
+  session.agentEvents = [];
+  session._agentProjectionState = createProjectionState();
+  session.agentProjection = publicProjection(session._agentProjectionState);
+  applyAgentProjectionToSession(session, session.agentProjection);
+  session.jobQueue = [];
+  session._onPlanUpdate?.();
+}
+
 function withSessionRunIdentity(event, session) {
   const identity = session?._currentRunIdentity;
   if (!identity) return event;

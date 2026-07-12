@@ -716,10 +716,12 @@ test('workspace package manifest is not exposed as an executable skill', () => {
   }
 });
 
-test('system prompt forbids unsolicited next-step sections', () => {
+test('system prompt allows one follow-up line but forbids next-step sections', () => {
   const prompt = buildAgentSystemPrompt({ session: sessionBase() });
-  assert.match(prompt, /Never add a "Next steps", "Prochaines étapes", "À suivre"/);
-  assert.match(prompt, /unless the user explicitly asks what to do next/);
+  // A single natural follow-up offer is allowed (assistant feel), ...
+  assert.match(prompt, /ONE short, natural follow-up/);
+  // ... but multi-item next-step sections / checklists / option menus stay banned.
+  assert.match(prompt, /never produce a "Next steps"\/"Prochaines étapes"\/"À suivre" list/);
   assert.doesNotMatch(prompt, /list the suggested follow-ups/);
 });
 

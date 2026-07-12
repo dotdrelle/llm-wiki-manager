@@ -670,6 +670,45 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     return tasks.length;
   }
 
+  // Full wipe of a workspace's persisted runtime state: runs (and, via the
+  // ON DELETE CASCADE foreign keys, their task_groups/tasks/task_dependencies/
+  // plan_revisions/approval_grants), the event log, and the queue. The
+  // non-cascading task_* side tables are cleared explicitly. This is what makes
+  // /clear --all survive a reboot: without it, hydrateSession replays the events
+  // and the PLAN/ACTIVITY/LOGS come straight back. Destructive by design — only
+  // reached on an explicit purge.
+  function clearWorkspaceState({ workspace = null } = {}) {
+    const runIds = (workspace
+      ? db.prepare('SELECT id FROM runs WHERE workspace = ?').all(workspace)
+      : db.prepare('SELECT id FROM runs').all()
+    ).map((row) => row.id);
+    db.exec('BEGIN');
+    try {
+      const delResults = db.prepare('DELETE FROM task_results WHERE task_id IN (SELECT id FROM tasks WHERE run_id = ?)');
+      const delAssignments = db.prepare('DELETE FROM task_assignments WHERE task_id IN (SELECT id FROM tasks WHERE run_id = ?)');
+      const delAttempts = db.prepare('DELETE FROM task_attempts WHERE run_id = ?');
+      for (const runId of runIds) {
+        delResults.run(runId);
+        delAssignments.run(runId);
+        delAttempts.run(runId);
+      }
+      const events = (workspace
+        ? db.prepare('DELETE FROM events WHERE workspace = ?').run(workspace)
+        : db.prepare('DELETE FROM events').run()).changes ?? 0;
+      const queue = (workspace
+        ? db.prepare('DELETE FROM queue_items WHERE workspace = ?').run(workspace)
+        : db.prepare('DELETE FROM queue_items').run()).changes ?? 0;
+      const runs = (workspace
+        ? db.prepare('DELETE FROM runs WHERE workspace = ?').run(workspace)
+        : db.prepare('DELETE FROM runs').run()).changes ?? 0;
+      db.exec('COMMIT');
+      return { runs, events, queue };
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   function saveQueue(queue = [], { workspace = null } = {}) {
     const items = Array.isArray(queue) ? queue : [];
     const now = new Date().toISOString();
@@ -1166,6 +1205,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     listRecoverableWorkspaces,
     interruptRuns,
     cancelActiveTasksForInterruptedRuns,
+    clearWorkspaceState,
     saveQueue,
     listQueue,
     listTasks,

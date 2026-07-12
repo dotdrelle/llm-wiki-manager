@@ -214,7 +214,7 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
         },
       }));
       if (!evaluation.ok) {
-        if (isUndefinedObjectiveEvaluation(evaluation)) {
+        if (isAwaitingUserInputEvaluation(evaluation)) {
           dispatchAgentEvent(session, createAgentEvent('assistant_message', {
             origin: 'runtime',
             runId,
@@ -820,7 +820,7 @@ export async function finishRuntimeRun(session, input, {
       },
     }));
     if (!evaluation.ok) {
-      if (isUndefinedObjectiveEvaluation(evaluation)) {
+      if (isAwaitingUserInputEvaluation(evaluation)) {
         dispatchAgentEvent(session, createAgentEvent('assistant_message', {
           origin: 'runtime',
           runId,
@@ -874,8 +874,10 @@ export async function evaluateRuntimeRun(session, input, {
       system: [
         'You are a strict evaluator for an agentic runtime run.',
         'Inspect whether the original task was accomplished using the final plan and recent conversation.',
-        'Return only JSON with this exact shape: {"ok":boolean,"reason":"...","suggestedAction":string|null}.',
+        'Return only JSON with this exact shape: {"ok":boolean,"awaitingUserInput":boolean,"reason":"...","suggestedAction":string|null}.',
         'Use ok=false only when a concrete missing action, failed requirement, or wrong result is visible.',
+        'Set awaitingUserInput=true when the run correctly stopped to obtain information or a decision only the user can provide (e.g. credentials, choosing between options, an explicit confirmation) — this is expected behaviour, NOT a failure or a missing action. In that case still set ok=false, put the pending question in reason, and do not treat the unasked configuration as a failed requirement.',
+        'Otherwise set awaitingUserInput=false.',
       ].join('\n'),
       tools: [],
       messages: [{ role: 'user', content: buildEvaluationPrompt(input, session, { runId }) }],
@@ -956,6 +958,7 @@ function parseJsonFenced(content, label = 'JSON response') {
 function normalizeEvaluation(value) {
   return {
     ok: value?.ok === true,
+    awaitingUserInput: value?.awaitingUserInput === true,
     reason: String(value?.reason ?? '').trim() || (value?.ok === true ? 'Task completed.' : 'Evaluator rejected the run.'),
     suggestedAction: value?.suggestedAction == null ? null : String(value.suggestedAction),
   };
@@ -967,6 +970,22 @@ function isUndefinedObjectiveEvaluation(evaluation) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
   return /\b(vague|undefined|indefini|unclear|clarif|ambiguous|missing objective|no objective)\b/.test(text);
+}
+
+// A run that correctly hands back to the user for required input/decision is
+// NOT a failed run \u2014 it is the expected end of an interactive turn. Treat it
+// like the undefined-objective case: surface the pending question in chat and
+// close the run cleanly (ok, run_done), never replan or emit run_error. The
+// explicit evaluator field is authoritative; the keyword fallback covers models
+// that answer in prose without emitting the flag.
+function isAwaitingUserInputEvaluation(evaluation) {
+  if (evaluation?.awaitingUserInput === true) return true;
+  if (isUndefinedObjectiveEvaluation(evaluation)) return true;
+  const text = `${evaluation?.reason ?? ''} ${evaluation?.suggestedAction ?? ''}`
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  return /\b(awaiting user|await user|user input|user decision|user confirmation|needs? (?:the )?user|requires? (?:the )?user|what to modify|which .* (?:to|should)|ask(?:ed|ing)? the user|attend .* utilisateur|demande .* utilisateur)\b/.test(text);
 }
 
 function clarificationMessageForEvaluation(evaluation) {

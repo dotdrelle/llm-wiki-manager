@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
+import { createAgentEvent, dispatchAgentEvent, resetSessionProjection } from '../core/agentEvents.js';
 import { activeCacertPath } from '../core/cacert.js';
 import { normalizePlanPatch, rebasePlanPatch } from '../core/planPatch.js';
 import { validateContractInDev } from '../contracts/schemas.js';
@@ -322,8 +322,9 @@ export function startRuntimeServer({
         const body = await readJson(request);
         const workspace = workspaceFromBody(body) ?? workspaceFromUrl(url);
         const runId = url.searchParams.get('runId') ?? body.runId ?? null;
+        const purge = body.purge === true || url.searchParams.get('purge') === 'true';
         const context = await resolveContext({ workspace });
-        const result = await killRuntimeRuns(context, { workspace, runId });
+        const result = await killRuntimeRuns(context, { workspace, runId, purge });
         publishState(context.workspace ?? workspace ?? null, context);
         sendJson(response, 202, result);
         return;
@@ -409,7 +410,7 @@ export function startRuntimeServer({
     return { body, workspace, context };
   }
 
-  async function killRuntimeRuns(context, { workspace = null, runId = null } = {}) {
+  async function killRuntimeRuns(context, { workspace = null, runId = null, purge = false } = {}) {
     const targetWorkspace = context?.workspace ?? workspace ?? null;
     const targetRunId = runId ? String(runId) : null;
     if (!targetRunId || targetRunId === context?.currentRunId) {
@@ -423,7 +424,18 @@ export function startRuntimeServer({
       ? store.cancelActiveTasksForInterruptedRuns({ workspace: targetWorkspace, runId: targetRunId })
       : 0;
     const queued = cancelQueuedControlItems(context?.session, targetWorkspace);
-    return { killed: true, workspace: targetWorkspace, runId: targetRunId, runs, tasks, queued };
+    // Purge (/clear --all): interrupting recoverable runs does not clear a
+    // terminal 'error' run still projected in memory, nor the persisted event
+    // log. Empty both so PLAN/ACTIVITY/LOGS disappear and stay gone after a
+    // reboot. runId-scoped kills never purge (too coarse — it is workspace-wide).
+    let purged = null;
+    if (purge && !targetRunId) {
+      resetSessionProjection(context?.session);
+      purged = typeof store.clearWorkspaceState === 'function'
+        ? store.clearWorkspaceState({ workspace: targetWorkspace })
+        : { runs: 0, events: 0, queue: 0 };
+    }
+    return { killed: true, workspace: targetWorkspace, runId: targetRunId, runs, tasks, queued, ...(purged !== null ? { purged } : {}) };
   }
 
   function startRuntimeRun(context, body, { controlItemId = null, waitForPlan = false } = {}) {

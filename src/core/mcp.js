@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
 
-const WIKI_MANAGER_VERSION = '0.14.1';
+const WIKI_MANAGER_VERSION = '0.14.2';
 
 function envValue(key) {
   const filePath = managerEnvFile();
@@ -197,21 +197,14 @@ function compactDescription(value) {
   return text.length > 420 ? `${text.slice(0, 417)}...` : text;
 }
 
-function clarifyToolDescription(serverName, toolName, description) {
-  const base = compactDescription(description ?? '');
-  if (serverName === 'cme' && toolName.startsWith('cme_export')) {
-    return compactDescription([
-      base,
-      'Use only for Confluence/CME/source export into raw/untracked. Not for wiki deliverable export.',
-    ].filter(Boolean).join(' '));
-  }
-  if (serverName === 'production' && toolName === 'production_start_job') {
-    return compactDescription([
-      base,
-      'Production export means wiki deliverable/publication export only. Do not use type=export for Confluence/CME/source export; use cme__cme_export_run instead.',
-    ].filter(Boolean).join(' '));
-  }
-  return base;
+function clarifyToolDescription(_serverName, _toolName, description) {
+  // Agnostic by design: the orchestrator does NOT inject per-agent knowledge
+  // here. Tool meaning — including disambiguation like "this export publishes a
+  // wiki deliverable, not a Confluence source export" — must live in each
+  // agent's own MCP tool description, so any operator (our orchestrator or a
+  // third-party host such as Claude) gets the same self-sufficient contract.
+  // We only normalize whitespace; we never rewrite what the agent published.
+  return compactDescription(description ?? '');
 }
 
 async function listMcpTools(endpoint) {

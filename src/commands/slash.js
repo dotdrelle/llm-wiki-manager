@@ -634,7 +634,8 @@ ${helpPair('/cancel', 'Cancel active run', '', '')}
 ${helpPair('/run cancel', 'Cancel active run', '', '')}
 ${helpPair('/queue', 'MCP job queue', '/queue clear', 'Clear finished')}
 ${helpPair('/queue cancel <id>', 'Cancel queued/running', '', '')}
-${helpPair('/clear', 'Clear screen', '/exit', 'Exit')}
+${helpPair('/clear', 'Clear screen', '/clear --all', 'Reset run+plan+queue+logs')}
+${helpPair('/exit', 'Exit', '', '')}
 ${helpPair('Ctrl+Y', 'Copy last reply', '', '')}
 ${helpPair('PgUp/PgDn', 'Scroll thread', 'Ctrl+C Ctrl+C', 'Exit')}
 
@@ -1279,7 +1280,52 @@ export async function handleSlashCommand(line, context) {
     case 'clear': {
       const key = context.session.workspace || '__global__';
       context.session.conversations[key] = [];
-      return { output: null };
+      const wantsAll = args.slice(1).some((arg) => /^--?all$/i.test(String(arg)));
+      if (!wantsAll) return { output: null };
+
+      // /clear --all is a full reset, not just a screen wipe: it purges the
+      // persisted runtime runs (interrupted runs are terminal and never
+      // recovered at reboot, so this is what actually removes a zombie run),
+      // clears the local MCP job queue, and empties the local projection
+      // (plan, activities, logs, workflow) so the UI clears immediately
+      // instead of waiting for the next SSE sync.
+      const runtime = context.runtime ?? {};
+      const workspace = context.session.workspace ?? null;
+      const parts = [];
+      if (runtime.url) {
+        try {
+          const killed = await postRuntimeKill({ url: runtime.url, workspace, runId: null, purge: true });
+          const purged = killed.purged ?? { runs: 0, events: 0, queue: 0 };
+          parts.push(`runtime : ${killed.runs ?? 0} run(s) interrompu(s), ${killed.tasks ?? 0} tâche(s), ${killed.queued ?? 0} requête(s)`);
+          parts.push(`store purgé : ${purged.runs ?? 0} run(s), ${purged.events ?? 0} événement(s), ${purged.queue ?? 0} item(s) de file`);
+        } catch (err) {
+          parts.push(`runtime kill échoué : ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        parts.push('runtime non connecté (rien à purger côté serveur)');
+      }
+
+      const clearedQueue = clearFinishedQueueItems(context.session);
+      context.session.agentProjection = {
+        conversation: [],
+        chain: [],
+        plan: null,
+        activities: [],
+        logs: [],
+        summary: null,
+        status: 'idle',
+        planRevision: 0,
+        planPatches: [],
+      };
+      context.session.headlessPlan = null;
+      context.session.activities = {};
+      context.session.controlQueue = [];
+      context.session.workflow = null;
+      context.session.jobQueue = [];
+      context.session.productionActivity = null;
+      parts.push(`file locale : ${clearedQueue} item(s) terminés nettoyés`);
+
+      return { output: `Interface réinitialisée (--all) — ${parts.join(' · ')}.` };
     }
     case 'exit':
     case 'quit':

@@ -173,22 +173,22 @@ internal handlers.
 from args and available from the active `.wikirc` profile. It also surfaces MCP
 errors as `Error [<server>.<tool>]: <message>`.
 
-## Skills And Donna Guide
+## Skills And Donna Help
 
 Workspace skills come from the active workspace manifest and `.wiki/skills/`.
 `/skills run <name>` injects the skill body into the agent as workflow
 instructions.
 
-The scaffold-level `guide` skill is Donna's onboarding/discovery workflow. It
-should check LLM setup, MCP reachability, connected source/document/delivery
-capabilities, wiki content, and generation actions. It should use read-only
-status/list tools first, then ask only for the settings required by whatever
-connector is actually present. Do not move connector credential setup into a
-separate manual settings flow when the connected setup tool can perform it.
-
-`/status` remains a concise check. `/guide` is the interactive first-run path.
-In `wiki serve`, first visit may auto-start `/guide` only once per workspace;
-the empty chat and Activity panel also expose manual `Start setup guide` tiles.
+For onboarding/discovery questions ("what is this app", chat vs agent mode,
+getting started, troubleshooting), Donna answers from the `help_list`/
+`help_read` tools exposed by the `wiki` MCP server — bundled, workspace-
+independent product documentation (`llm-wiki/help-doc/`), not a skill. It is
+also browsable in `wiki serve`'s chat Help panel and at `/help`. There is no
+`guide` scaffold skill or auto-starting onboarding workflow (removed); do not
+reintroduce one for this purpose. For an actual connector/credential setup
+task, use read-only status/list tools first, then ask only for the settings
+required by whatever connector is actually present, and call the matching
+setup tool once confirmed. `/status` remains a concise state check.
 
 ## Safe LLM Actions
 

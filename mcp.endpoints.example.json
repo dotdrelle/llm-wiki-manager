@@ -29,6 +29,7 @@
   "chatAccess": {
     "maxToolIterations": 6,
     "servers": {
+      "wiki":       { "allow": ["help_list", "help_read"] },
       "production": { "allow": ["production_job_status", "production_jobs_list"] },
       "cme":        { "allow": ["cme_status", "cme_sources_list", "cme_export_status"] }
     }

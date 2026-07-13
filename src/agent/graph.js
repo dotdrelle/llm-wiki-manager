@@ -711,7 +711,12 @@ async function handleRuntimeControlTool(session, tool, args = {}) {
       if (!objective) return 'Delegation rejected: missing objective.';
       const result = await postRuntimeDelegate(objective, { url, workspace });
       return result?.runId
-        ? `Action lancée (${String(result.runId).slice(0, 8)}) après validation du plan réel : ${result.delegation?.tasks ?? 0} tâche(s), ${result.delegation?.agent ?? 'agent résolu'}. Exécution en cours.`
+        ? JSON.stringify({
+            delegated: true,
+            runId: result.runId,
+            summary: result.delegation ?? null,
+            message: `Action lancée (${String(result.runId).slice(0, 8)}) après validation du plan réel : ${result.delegation?.tasks ?? 0} tâche(s), ${result.delegation?.agent ?? 'agent résolu'}. Exécution en cours.`,
+          })
         : `Délégation refusée : ${result?.error ?? JSON.stringify(result)}`;
     }
     if (tool === 'enqueue') {

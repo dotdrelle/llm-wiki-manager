@@ -498,6 +498,10 @@ Copy `mcp.endpoints.example.json` to `mcp.endpoints.json` and set the matching
 token variables in `.env`.
 
 MCP `tools/call` requests retry transient HTTP/MCP failures before the run fails.
+They also share a per-endpoint outbound control budget (45 RPM by default,
+configurable with `WIKI_MANAGER_MCP_REQUESTS_PER_MINUTE`). This budget is
+independent from `.wikirc` `requestsPerMinute`, which remains reserved for LLM,
+embedding, and reranking provider calls.
 Set global defaults with `WIKI_MANAGER_MCP_RETRY_MAX_ATTEMPTS` and
 `WIKI_MANAGER_MCP_RETRY_BACKOFF_MS`, or override them per endpoint with `retry`
 and per tool with `toolRetries`.

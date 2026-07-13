@@ -15,6 +15,7 @@ export function startRuntimeServer({
   session = null,
   getContext,
   run,
+  turn,
   delegate,
   cancel,
   resume,
@@ -274,6 +275,73 @@ export function startRuntimeServer({
           context.currentAbortController = null;
           throw err;
         }
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/turn') {
+        const { body, context } = await resolveBodyContext(request, url);
+        const input = String(body.input ?? body.prompt ?? '').trim();
+        if (!input) {
+          sendJson(response, 400, { error: 'Missing input.' });
+          return;
+        }
+        if (context.running) {
+          const result = await handleControlMessage(context, store, input, {
+            intent: body.intent,
+            startNextControlRequest,
+            cancel,
+            approve,
+          });
+          sendJson(response, result.statusCode, result.body);
+          return;
+        }
+        if (typeof turn !== 'function') {
+          sendJson(response, 501, { error: 'Runtime interactive turns are unavailable.' });
+          return;
+        }
+        const turnId = `turn-${randomUUID()}`;
+        const controller = new AbortController();
+        const previous = context.interactiveTurn ?? Promise.resolve();
+        const current = previous.catch(() => {}).then(async () => {
+          // A preceding serialized turn may have delegated and started a run
+          // after this request was accepted. Reclassify against the fresh
+          // state instead of starting another interactive decision in parallel.
+          if (context.running) {
+            const result = await handleControlMessage(context, store, input, {
+              intent: body.intent,
+              startNextControlRequest,
+              cancel,
+              approve,
+            });
+            publish(createAgentEvent('assistant_message', {
+              origin: 'runtime_turn',
+              turnId,
+              workspace: context.workspace ?? null,
+              payload: { content: result.body?.explanation ?? 'Runtime control request processed.' },
+            }));
+            return result.body;
+          }
+          return turn(context, { ...body, input }, {
+            signal: controller.signal,
+            turnId,
+          });
+        });
+        context.interactiveTurn = current;
+        void current.catch((err) => {
+          publish(createAgentEvent('assistant_message', {
+            origin: 'runtime_turn',
+            turnId,
+            workspace: context.workspace ?? null,
+            payload: { content: `Runtime turn failed: ${err instanceof Error ? err.message : String(err)}` },
+          }));
+        }).finally(() => {
+          if (context.interactiveTurn === current) context.interactiveTurn = null;
+        });
+        sendJson(response, 202, {
+          accepted: true,
+          kind: 'turn',
+          turnId,
+          workspace: context.workspace ?? null,
+        });
         return;
       }
       if (request.method === 'POST' && url.pathname === '/delegate') {

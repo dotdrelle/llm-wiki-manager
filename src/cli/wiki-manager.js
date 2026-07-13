@@ -13,7 +13,7 @@ import { listWikircProfiles } from '../core/wikirc.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { extractActivity, parseJsonText, sessionActivities, terminalFailures } from '../core/activity.js';
 import { syncActivitiesToPlan, formatPlanStatus } from '../core/plan.js';
-import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
+import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../core/agentEvents.js';
 import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
 import { resolveCapabilityConcurrency } from '../orchestrator/scheduler.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
@@ -55,6 +55,40 @@ function createSession() {
     productionActivity: null,
     headlessPlan: null,
   };
+}
+
+export function createInteractiveSession(context, { runtimeUrl, turnId, signal = null } = {}) {
+  const source = context.session;
+  const session = createSession();
+  for (const key of [
+    'workspace', 'workspacePath', 'workspaceEnvFile', 'workspaceEnv',
+    'wikirc', 'wikircConfig', 'language', 'llm', 'mcp', 'commands',
+    'packageJson', 'queueStore', 'systemPrompt',
+  ]) {
+    if (source[key] !== undefined) session[key] = source[key];
+  }
+  session.runtime = runtimeUrl ? { url: runtimeUrl } : null;
+  session.headless = true;
+  session.chatMode = false;
+  session.chatAccess = null;
+  session.conversations = { [session.workspace || '__global__']: [] };
+  session.agentEvents = [];
+  session.activities = {};
+  session.productionActivity = null;
+  session.jobQueue = [];
+  session.headlessPlan = null;
+  session.turnId = turnId ?? null;
+  session._abortSignal = signal;
+  return session;
+}
+
+export function ensureInteractiveAssistantMessage(session, response, { turnId, workspace } = {}) {
+  const content = String(response ?? '').trim();
+  if (!content || session.agentEvents.some((event) => event.type === 'assistant_message')) return false;
+  dispatchAgentEvent(session, createAgentEvent('assistant_message', {
+    origin: 'runtime_turn', turnId, workspace, payload: { content: String(response) },
+  }));
+  return true;
 }
 
 export async function forwardRuntimeApproval(getWorkspaceContext, request = {}) {
@@ -455,7 +489,7 @@ async function runRuntime(argv, agent) {
   const { resolveRuntimeAuthToken } = await import('../runtime/auth.js');
   const { createSqliteQueueStore } = await import('../runtime/queueStore.js');
   const { createApprovalManager } = await import('../runtime/approvals.js');
-  const { runRuntimeAgenticWorkflow } = await import('../runtime/runner.js');
+  const { conversationSeed, runRuntimeAgenticWorkflow } = await import('../runtime/runner.js');
 
   const host = valueAfter(argv, '--host') ?? process.env.WIKI_MANAGER_RUNTIME_HOST ?? '127.0.0.1';
   const port = Number(valueAfter(argv, '--port') ?? process.env.WIKI_MANAGER_RUNTIME_PORT ?? 7788);
@@ -465,6 +499,8 @@ async function runRuntime(argv, agent) {
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     throw new Error(`Invalid runtime port: ${port}`);
   }
+  const selfRuntimeUrl = process.env.WIKI_MANAGER_RUNTIME_URL
+    ?? `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`;
 
   const store = openRuntimeStore({ stateDir });
   let serverHandle = null;
@@ -480,6 +516,7 @@ async function runRuntime(argv, agent) {
       session.headless = true;
       session.chatMode = false;
       session.packageJson = packageJson;
+      session.runtime = { url: selfRuntimeUrl };
 
       if (requestedWorkspace) {
         const result = await handleSlashCommand(`/use ${requestedWorkspace}`, { packageJson, session });
@@ -968,6 +1005,48 @@ async function runRuntime(argv, agent) {
     }
   }
 
+  async function executeInteractiveTurn(context, body, { signal, turnId } = {}) {
+    const input = String(body.input ?? body.prompt ?? '').trim();
+    if (!input) throw new Error('Missing input.');
+    const ephemeral = createInteractiveSession(context, { runtimeUrl: selfRuntimeUrl, turnId, signal });
+    // Seed from a freshly reduced COPY of persisted events. Interactive turn
+    // events deliberately do not mutate the canonical run projection, so the
+    // canonical session alone is not a reliable conversation-history source.
+    const persistedProjection = reduceAgentEvents(store.listEvents({
+      workspace: context.workspace ?? ephemeral.workspace ?? null,
+    }));
+    const messages = conversationSeed({ agentProjection: persistedProjection }, input);
+    ephemeral._onAgentEvent = (event) => {
+      const interactiveEvent = {
+        ...event,
+        origin: 'runtime_turn',
+        turnId,
+        runId: null,
+        workspace: context.workspace ?? ephemeral.workspace ?? null,
+      };
+      store.persistEvent(interactiveEvent);
+      serverHandle?.publish(interactiveEvent);
+    };
+    ephemeral._onStep = (message) => dispatchAgentEvent(ephemeral, createAgentEvent('runtime_log', {
+      origin: 'runtime_turn',
+      turnId,
+      workspace: context.workspace ?? null,
+      payload: { message },
+    }));
+    dispatchAgentEvent(ephemeral, createAgentEvent('user_message', {
+      origin: 'runtime_turn',
+      turnId,
+      workspace: context.workspace ?? null,
+      payload: { content: input },
+    }));
+    const response = await runAgentTurn(agent, ephemeral, input, { messages, signal });
+    ensureInteractiveAssistantMessage(ephemeral, response, {
+      turnId,
+      workspace: context.workspace ?? null,
+    });
+    return response;
+  }
+
   serverHandle = await startRuntimeServer({
     host,
     port,
@@ -977,6 +1056,7 @@ async function runRuntime(argv, agent) {
       .filter((context) => context?.running)
       .map((context) => ({ workspace: context.workspace ?? null, runId: context.currentRunId ?? null })),
     run: executeRun,
+    turn: executeInteractiveTurn,
     delegate: prepareDelegation,
     cancel: (context) => emitRuntimeLog(context.session, 'runtime: cancel requested'),
     resume: ({ workspace }) => recoverRuntime({ workspace, manual: true }),

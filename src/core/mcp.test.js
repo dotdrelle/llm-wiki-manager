@@ -8,6 +8,7 @@ import {
   callMcpTool,
   discoverMcpTools,
   formatMcpToolsForAgent,
+  resetMcpThrottleForTests,
   resolveRetryPolicy,
   resolveToolCallName,
   truncateToolResult,
@@ -361,6 +362,44 @@ test('callMcpTool sends configured endpoint headers', async () => {
   }
 });
 
+test('callMcpTool throttles MCP traffic independently per endpoint', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = process.env.WIKI_MANAGER_MCP_RATE_LIMIT_WINDOW_MS;
+  const starts = [];
+  globalThis.fetch = async () => {
+    starts.push(Date.now());
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({ result: { content: [{ type: 'text', text: '{"ok":true}' }] } }),
+    };
+  };
+  process.env.WIKI_MANAGER_MCP_RATE_LIMIT_WINDOW_MS = '30';
+  resetMcpThrottleForTests();
+
+  try {
+    const status = {
+      production: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3000/mcp/',
+        requestsPerMinute: 1,
+      },
+    };
+    await Promise.all([
+      callMcpTool(status, 'production', 'agent_status', { jobId: 'a' }),
+      callMcpTool(status, 'production', 'agent_status', { jobId: 'b' }),
+    ]);
+    assert.equal(starts.length, 2);
+    assert.ok(starts[1] - starts[0] >= 20, `expected throttling delay, got ${starts[1] - starts[0]}ms`);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalWindow == null) delete process.env.WIKI_MANAGER_MCP_RATE_LIMIT_WINDOW_MS;
+    else process.env.WIKI_MANAGER_MCP_RATE_LIMIT_WINDOW_MS = originalWindow;
+    resetMcpThrottleForTests();
+  }
+});
+
 test('callMcpTool retries transient MCP failures', async () => {
   const originalFetch = globalThis.fetch;
   let attempts = 0;
@@ -528,4 +567,3 @@ test('truncateToolResult keeps short results intact and bounds long ones head+ta
   assert.match(bounded, /-END$/);
   assert.match(bounded, /caractères tronqués/);
 });
-

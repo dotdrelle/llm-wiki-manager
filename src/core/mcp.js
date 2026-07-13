@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
 
-const WIKI_MANAGER_VERSION = '0.14.6';
+const WIKI_MANAGER_VERSION = '0.14.7';
 
 function envValue(key) {
   const filePath = managerEnvFile();
@@ -124,6 +124,14 @@ const DEFAULT_MCP_RETRY_POLICY = {
   maxAttempts: 2,
   backoffMs: 500,
 };
+
+// MCP control traffic has its own budget. It must never consume or reduce the
+// provider RPM configured in .wikirc, which is reserved for LLM/vector calls.
+// Keep a little headroom below the commonly deployed 50 RPM MCP limit for
+// initialize/list-tools and other non-tool-call requests.
+const DEFAULT_MCP_REQUESTS_PER_MINUTE = 45;
+const mcpThrottleQueues = new Map();
+const mcpThrottleStarts = new Map();
 
 export function buildMcpStatus(session) {
   // Attach the /chat read-tool policy to the session alongside MCP status.
@@ -304,6 +312,7 @@ export async function callMcpTool(mcpStatus, serverName, toolName, args = {}, si
   const timeoutMs = serverName === 'documents' && toolName === 'documents_convert_to_markdown' ? 600_000 : 8000;
   const retry = resolveRetryPolicy(endpoint, toolName, options.retry);
   return withRetry(async () => {
+    await throttleMcpRequestStart(endpoint, signal);
     const payload = await mcpRequest(endpoint, 'tools/call', {
       name: toolName,
       arguments: toolArgs,
@@ -313,6 +322,47 @@ export async function callMcpTool(mcpStatus, serverName, toolName, args = {}, si
     }
     return payload?.result ?? null;
   }, retry, { signal, onRetry: options.onRetry });
+}
+
+async function throttleMcpRequestStart(endpoint, signal) {
+  const configured = Number(
+    endpoint.requestsPerMinute
+      ?? endpoint.rateLimit?.requestsPerMinute
+      ?? envValue('WIKI_MANAGER_MCP_REQUESTS_PER_MINUTE'),
+  );
+  const requestsPerMinute = Number.isFinite(configured) && configured > 0
+    ? Math.floor(configured)
+    : DEFAULT_MCP_REQUESTS_PER_MINUTE;
+  const configuredWindowMs = Number(envValue('WIKI_MANAGER_MCP_RATE_LIMIT_WINDOW_MS'));
+  const windowMs = Number.isFinite(configuredWindowMs) && configuredWindowMs > 0
+    ? configuredWindowMs
+    : 60_000;
+  const key = String(endpoint.url ?? endpoint.name ?? 'mcp');
+  const previous = mcpThrottleQueues.get(key) ?? Promise.resolve();
+  const next = previous.catch(() => {}).then(async () => {
+    while (true) {
+      if (signal?.aborted) throw signal.reason ?? new Error('MCP request aborted.');
+      const now = Date.now();
+      const starts = (mcpThrottleStarts.get(key) ?? []).filter((at) => now - at < windowMs);
+      if (starts.length < requestsPerMinute) {
+        starts.push(now);
+        mcpThrottleStarts.set(key, starts);
+        return;
+      }
+      await retryDelay(Math.max(1, windowMs - (now - starts[0])), signal);
+    }
+  });
+  mcpThrottleQueues.set(key, next);
+  try {
+    await next;
+  } finally {
+    if (mcpThrottleQueues.get(key) === next) mcpThrottleQueues.delete(key);
+  }
+}
+
+export function resetMcpThrottleForTests() {
+  mcpThrottleQueues.clear();
+  mcpThrottleStarts.clear();
 }
 
 export function formatMcpToolResult(result) {

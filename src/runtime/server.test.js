@@ -1,7 +1,44 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
+import { createInteractiveSession, ensureInteractiveAssistantMessage } from '../cli/wiki-manager.js';
 import { startRuntimeServer } from './server.js';
+
+test('interactive runtime sessions isolate canonical run state', () => {
+  const mcp = { wiki: { status: 'connected' } };
+  const session = createInteractiveSession({ session: {
+    workspace: 'demo', workspacePath: '/workspace/demo', mcp,
+    llm: { invoke() {} }, commands: ['status'], packageJson: {}, queueStore: {},
+    _currentRunIdentity: { runId: 'run-1' }, headlessPlan: [{ id: 'task-1' }],
+    agentProjection: { status: 'running' }, _agentProjectionState: {},
+    controlQueue: [{}], planPatches: [{}], _requestApproval() {}, agents: [{}], agentRegistry: {},
+  } }, { runtimeUrl: 'http://127.0.0.1:7788', turnId: 'turn-1' });
+
+  assert.equal(session.mcp, mcp);
+  assert.deepEqual(session.runtime, { url: 'http://127.0.0.1:7788' });
+  assert.equal(session.headlessPlan, null);
+  assert.deepEqual(session.activities, {});
+  assert.deepEqual(session.jobQueue, []);
+  for (const key of [
+    '_currentRunIdentity', 'agentProjection', '_agentProjectionState', 'controlQueue',
+    'planPatches', '_requestApproval', 'agents', 'agentRegistry',
+  ]) assert.equal(Object.hasOwn(session, key), false, `${key} must not leak`);
+});
+
+test('interactive turns publish a fallback assistant message exactly once', () => {
+  const published = [];
+  const session = { agentEvents: [], _onAgentEvent: (event) => published.push(event) };
+  assert.equal(ensureInteractiveAssistantMessage(session, 'Réponse concise.', {
+    turnId: 'turn-1', workspace: 'demo',
+  }), true);
+  assert.equal(ensureInteractiveAssistantMessage(session, 'Réponse dupliquée.', {
+    turnId: 'turn-1', workspace: 'demo',
+  }), false);
+  assert.equal(published.length, 1);
+  assert.equal(published[0].type, 'assistant_message');
+  assert.equal(published[0].origin, 'runtime_turn');
+  assert.equal(published[0].payload.content, 'Réponse concise.');
+});
 
 test('runtime server checks bearer and x-runtime-token credentials', async (t) => {
   let handle;
@@ -1393,6 +1430,50 @@ test('runtime server answers control messages posted to /run during an active ru
     assert.equal(cancelBody.accepted, true);
   } finally {
     releaseRun?.();
+    await handle.close();
+  }
+});
+
+test('runtime server accepts an interactive turn without starting a run', async (t) => {
+  const context = { workspace: 'demo', session: {}, running: false };
+  let received = null;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      token: 'runtime-secret',
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'idle' }),
+        listEvents: () => [],
+      },
+      getContext: async () => context,
+      run: async () => assert.fail('/turn must not start a runtime run'),
+      turn: async (_context, body, meta) => { received = { body, meta }; },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/turn`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer runtime-secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ input: 'Quels documents sont en attente ?', workspace: 'demo' }),
+    });
+    assert.equal(response.status, 202);
+    const body = await response.json();
+    assert.equal(body.kind, 'turn');
+    assert.match(body.turnId, /^turn-/);
+    await context.interactiveTurn;
+    assert.equal(received.body.input, 'Quels documents sont en attente ?');
+    assert.equal(received.meta.turnId, body.turnId);
+    assert.equal(context.running, false);
+  } finally {
     await handle.close();
   }
 });

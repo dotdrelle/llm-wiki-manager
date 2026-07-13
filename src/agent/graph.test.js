@@ -372,17 +372,24 @@ test('Donna delegates the objective without choosing technical identifiers', asy
             }],
           };
         }
+        const delegateResult = (messages ?? []).filter((message) => message.role === 'tool').at(-1);
+        const parsedDelegateResult = JSON.parse(String(delegateResult?.content ?? '{}'));
+        assert.equal(parsedDelegateResult.delegated, true);
+        assert.equal(parsedDelegateResult.runId, 'run-1');
+        assert.equal(parsedDelegateResult.summary.tasks, 5);
         return { content: 'Plan validé.', message: { role: 'assistant', content: 'Plan validé.' }, tool_calls: null };
       },
     },
   });
 
   try {
-    await createAgentGraph().invoke({ input: 'ingère tout', session });
+    const result = await createAgentGraph().invoke({ input: 'ingère tout', session });
     assert.match(request.url, /\/delegate/);
     assert.deepEqual(request.body, { objective: 'Ingérer tous les fichiers en attente', workspace: 'docs' });
     assert.equal('capability' in request.body, false);
     assert.equal('operation' in request.body, false);
+    assert.equal(result.response, 'Plan validé.');
+    assert.doesNotMatch(result.response, /delegated|run-1|production/);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -403,6 +403,23 @@ function summarizeToolArguments(rawArguments) {
   }
 }
 
+function googleOAuthUrlFromMessages(messages) {
+  for (const message of [...(messages ?? [])].reverse()) {
+    if (message?.role !== 'tool') continue;
+    const match = String(message.content ?? '').match(/https:\/\/accounts\.google\.com\/[^\s<>"')\]]+/i);
+    if (match) return match[0];
+  }
+  return null;
+}
+
+function preserveRequiredOAuthUrl(content, messages) {
+  const text = String(content ?? '');
+  const url = googleOAuthUrlFromMessages(messages);
+  if (!url || text.includes(url)) return text;
+  const prefix = text.trimEnd();
+  return `${prefix}${prefix ? '\n\n' : ''}Lien d’autorisation Google : ${url}`;
+}
+
 function buildQueuedResult(session, item, activeJobId = null) {
   const message = activeJobId != null
     ? `Production job queued as ${item.id}; waiting for ${activeJobId}.`
@@ -709,6 +726,13 @@ async function handleRuntimeControlTool(session, tool, args = {}) {
     if (tool === 'delegate') {
       const objective = String(args.objective ?? '').trim();
       if (!objective) return 'Delegation rejected: missing objective.';
+      const connectorConfig = connectorConfigurationTarget(session, objective);
+      if (connectorConfig?.setupTool) {
+        return `Delegation rejected: configuring or authenticating ${connectorConfig.serverName} is not an orchestrated export. Call the offered ${connectorConfig.serverName}__${connectorConfig.setupTool} tool directly and present its authorization instructions or URL to the user.`;
+      }
+      if (connectorConfig) {
+        return `Delegation rejected: ${connectorConfig.serverName} advertises no setup or authentication tool. Do not call an unrelated data tool and do not delegate to export. Explain conversationally that authentication must be completed outside MCP, using only configuration instructions already available in the current context.`;
+      }
       const result = await postRuntimeDelegate(objective, { url, workspace });
       return result?.runId
         ? JSON.stringify({
@@ -744,6 +768,24 @@ async function handleRuntimeControlTool(session, tool, args = {}) {
   } catch (err) {
     return `Runtime control error (${tool}): ${err instanceof Error ? err.message : String(err)}`;
   }
+}
+
+function connectorConfigurationTarget(session, objective) {
+  const text = String(objective ?? '').toLowerCase();
+  if (!/(?:configur|connect|authent|oauth|setup|sign[ -]?in)/i.test(text)) return null;
+  for (const [serverName, server] of Object.entries(session?.mcp ?? {})) {
+    if (server?.status !== 'connected' || !Array.isArray(server.tools) || server.tools.length === 0) continue;
+    const aliases = String(serverName).toLowerCase().split(/[^a-z0-9]+/).filter((part) => part.length >= 3);
+    if (!aliases.some((alias) => text.includes(alias))) continue;
+    const setupTool = server.tools.find((tool) => {
+      const name = String(tool?.name ?? '').toLowerCase();
+      const description = String(tool?.description ?? '').toLowerCase();
+      return /(?:^|_)(?:setup|config|configure|auth|authenticate|oauth|connect)(?:_|$)/.test(name)
+        || /(?:initiat|start|configure|authenticate).{0,30}(?:oauth|authentication)/.test(description);
+    })?.name ?? null;
+    return { serverName, setupTool };
+  }
+  return null;
 }
 
 function handleWikiTool(session, tool, args) {
@@ -888,10 +930,10 @@ export function buildAgentSystemPrompt(state) {
     'For service actions, recommend only available service primitives from Available primitives, with the exact service name when the primitive supports one.',
     'Scope discipline: execute ONLY the action(s) the user explicitly requested. Never chain additional mutating operations (ingest, build, export, polish, delete, send…) that the user did not ask for — even when diagnostics or recommendations suggest them. Finish with the requested result and stop. Example: "applique les recommandations de config" means apply the config; it does NOT authorize launching the ingest those recommendations mention.',
     state.session.runtime?.url
-      ? 'The runtime is connected and runtime__delegate is bound and available to you right now — it is a tool you call directly, not a slash command or a missing primitive. It is the ONLY way to execute an action (ingest, build, export, configure, send…). Never tell the user that delegation or the runtime is unavailable while it is connected; call runtime__delegate instead.'
+      ? 'The runtime is connected and runtime__delegate is bound and available for heavy orchestrated operations (ingest, build, export, polish, pipeline). Single-step connector actions such as configure, authenticate, add a source, convert, search, or send use the connected MCP tool directly. Never delegate connector configuration to an export capability.'
       : 'No runtime is connected, so you cannot execute actions. State that plainly and name the runtime connection as the missing capability — do not invent a workaround.',
     'If the connector or service needed for a requested read or action is absent from the Connected MCP tools above (its service is not running — e.g. CME, documents, or production), say plainly that this service is not connected and name it as the missing capability. Never redirect a simple read (e.g. "give me the CME config") to an "agent action", never invent its result, and never propose a workaround. Only requests you can actually serve with a listed tool are answered with data.',
-    'For any requested action, call runtime__delegate with the user objective only. Never choose a capability, operation, agent, plan, or implementation yourself. The runtime resolves the registry and validates the provider plan before accepting. Never call <provider>__agent_plan, <provider>__agent_execute, legacy production__production_start_job, wiki__plan_set, or wiki__plan_done from interactive chat.',
+    'For heavy orchestrated operations only (ingest, build, export, polish, pipeline), call runtime__delegate with the user objective only. For a single-step connector action, call the offered connector tool directly. Never choose a capability, operation, agent, plan, or implementation yourself. Never call <provider>__agent_plan, <provider>__agent_execute, legacy production__production_start_job, wiki__plan_set, or wiki__plan_done from interactive chat.',
     'Do not ask the user which sources, files, connectors, or templates to use for an ingest, build, or export: the specialized agent discovers them from the workspace. When the objective is clear (e.g. "lance une ingestion"), delegate it as stated, without a clarifying question.',
     'Promise only what the resolved capability actually exposes in its declared contract (the input schema the specialized agent publishes for that capability). When the user requests an execution parameter — a batch or chunk size, a count "N at a time", concurrency, ordering, priority, or any tuning knob — apply it only if that parameter exists in the target capability\'s published input schema. Otherwise do not confirm or promise it: delegate the objective, and if the user explicitly asked for that parameter, say plainly in one line that you started the work but do not control that aspect (the runtime and the specialized agent decide it). Never state or imply a parameter was applied when the agent contract cannot enforce it.',
     'If runtime__delegate returns a blocker or no specialized provider is available, report only that concrete blocker concisely. Never replace the missing execution path with a suggested slash command, skill, MCP tool name, manual file move, administrator escalation, or alternative workflow unless the user explicitly asks for alternatives.',
@@ -963,15 +1005,18 @@ function toolsForClassification(classification, writeTools, session = null) {
   return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...writeTools];
 }
 
+const DONNA_READ_VERBS = new Set(['status', 'list', 'search', 'read', 'get', 'fetch']);
+
 export function isDonnaReadTool(item) {
   const name = String(item?.function?.name ?? '');
   if (!name || name.startsWith('shell__') || name === 'wiki__plan_set' || name === 'wiki__plan_done') return false;
   if (item?.readOnly === true) return true;
   const tool = name.includes('__') ? name.slice(name.indexOf('__') + 2) : name;
-  return tool === 'wiki_workspace_status'
-    || tool === 'agent_describe'
-    || tool === 'agent_status'
-    || /(?:^|_)(?:status|list|search|read|get)$/.test(tool);
+  if (tool === 'wiki_workspace_status' || tool === 'agent_describe' || tool === 'agent_status') return true;
+  // Match a read verb anywhere in the underscore-tokenized name, not just as
+  // a trailing suffix — third-party MCPs don't all name tools verb-last
+  // (e.g. exa's "web_search_exa"/"web_fetch_exa" put the verb in the middle).
+  return tool.split('_').some((segment) => DONNA_READ_VERBS.has(segment));
 }
 
 // Two-tier tool policy. Donna may call any connected MCP tool directly
@@ -1192,6 +1237,15 @@ export function createAgentGraph(options = {}) {
         };
       }
 
+      // Authentication URLs are execution outputs, not optional prose. Small
+      // models sometimes summarize an OAuth tool result as "open the supplied
+      // link" while dropping the link itself, leaving ShellUI unusable even
+      // though the MCP call succeeded. Preserve that exact URL deterministically.
+      const finalContent = preserveRequiredOAuthUrl(result.content, conversationMessages);
+      if (finalContent !== String(result.content ?? '')) {
+        result.content = finalContent;
+        result.message = { ...(result.message ?? { role: 'assistant' }), content: finalContent };
+      }
       const invalidCommands = invalidSuggestedSlashCommands(result.content, state.session);
       const leakedTools = invalidUserFacingToolNames(result.content, state.session);
       if (invalidCommands.length > 0 || leakedTools.length > 0) {
@@ -1246,7 +1300,7 @@ export function createAgentGraph(options = {}) {
 
       // Fallback path (streamWithTools unavailable): hand off to runLine for streaming.
       state.session._onStep?.('Agent: streaming final answer…');
-      if (typeof llm.stream === 'function') {
+      if (typeof llm.stream === 'function' && !googleOAuthUrlFromMessages(conversationMessages)) {
         return {
           response: null,
           pendingToolCalls: null,

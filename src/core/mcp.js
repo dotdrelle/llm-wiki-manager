@@ -29,6 +29,27 @@ function normalizeHeaders(headers) {
   );
 }
 
+// An endpoint's url/headers may reference `${VAR}` placeholders with no
+// `:-default`. If that env var is unset, the placeholder interpolates to ''
+// (see interpolateEnv) and the endpoint would otherwise look "configured"
+// with a blank credential — then discoverMcpTools happily probes the live
+// endpoint and can report it "connected" even though it has no real auth.
+function hasMissingRequiredEnv(value) {
+  if (typeof value !== 'string') return false;
+  let missing = false;
+  value.replace(/\$\{([^}]+)\}/g, (_, expr) => {
+    const sep = expr.indexOf(':-');
+    if (sep === -1 && !envValue(expr)) missing = true;
+    return '';
+  });
+  return missing;
+}
+
+function endpointHasMissingCredentials(endpoint) {
+  const headerValues = Object.values(endpoint?.headers ?? {}).filter((value) => typeof value === 'string');
+  return [String(endpoint?.url ?? ''), ...headerValues].some(hasMissingRequiredEnv);
+}
+
 function normalizeExternalUrlForRuntime(url) {
   if (process.env.WIKI_MANAGER_KEEP_DOCKER_HOST === '1') return url;
   try {
@@ -57,8 +78,14 @@ export function readChatAccessConfig() {
   if (!chatAccess || typeof chatAccess !== 'object' || Array.isArray(chatAccess)) return null;
   const servers = {};
   for (const [name, entry] of Object.entries(chatAccess.servers ?? {})) {
-    if (entry?.allow === '*') servers[name] = { allow: '*' };
-    else if (Array.isArray(entry?.allow)) servers[name] = { allow: entry.allow.map(String).filter(Boolean) };
+    // "*" is also commonly written as a one-element array (["*"]) since every
+    // other "allow" example in this config is an array of tool names — treat
+    // both forms as the same wildcard rather than silently allowing nothing.
+    if (entry?.allow === '*' || (Array.isArray(entry?.allow) && entry.allow.length === 1 && entry.allow[0] === '*')) {
+      servers[name] = { allow: '*' };
+    } else if (Array.isArray(entry?.allow)) {
+      servers[name] = { allow: entry.allow.map(String).filter(Boolean) };
+    }
   }
   const maxToolIterations = Number.isFinite(Number(chatAccess.maxToolIterations)) && Number(chatAccess.maxToolIterations) > 0
     ? Math.floor(Number(chatAccess.maxToolIterations))
@@ -75,24 +102,27 @@ function readExternalMcpEndpoints() {
   return Object.fromEntries(
     Object.entries(servers)
       .filter(([, endpoint]) => endpoint?.url)
-      .map(([name, endpoint]) => [
-        name,
-        {
-          ...endpointStatus(true),
-          url: normalizeExternalUrlForRuntime(interpolateEnv(String(endpoint.url))),
-          configuredUrl: interpolateEnv(String(endpoint.url)),
-          headers: normalizeHeaders(endpoint.headers),
-          // Tools the endpoint marks approval-gated: Donna may still call them
-          // directly (they are single-step tools), but toolRequiresApproval
-          // makes the call wait for the user's confirmation first (e.g. a
-          // destructive cme_export_run). Agent/operator owned — no hard-coded
-          // business name in the manager.
-          requireApproval: Array.isArray(endpoint.requireApproval)
-            ? endpoint.requireApproval.map(String).filter(Boolean)
-            : undefined,
-          external: true,
-        },
-      ]),
+      .map(([name, endpoint]) => {
+        const missingCredentials = endpointHasMissingCredentials(endpoint);
+        return [
+          name,
+          {
+            ...endpointStatus(!missingCredentials, missingCredentials ? 'credential not set' : ''),
+            url: normalizeExternalUrlForRuntime(interpolateEnv(String(endpoint.url))),
+            configuredUrl: interpolateEnv(String(endpoint.url)),
+            headers: normalizeHeaders(endpoint.headers),
+            // Tools the endpoint marks approval-gated: Donna may still call them
+            // directly (they are single-step tools), but toolRequiresApproval
+            // makes the call wait for the user's confirmation first (e.g. a
+            // destructive cme_export_run). Agent/operator owned — no hard-coded
+            // business name in the manager.
+            requireApproval: Array.isArray(endpoint.requireApproval)
+              ? endpoint.requireApproval.map(String).filter(Boolean)
+              : undefined,
+            external: true,
+          },
+        ];
+      }),
   );
 }
 

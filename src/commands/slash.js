@@ -232,8 +232,8 @@ function statLine(label, stat) {
   return `${label}: ${stat.count} (${formatBytes(stat.totalBytes)})`;
 }
 
-function workspaceStatsText(stats) {
-  if (!stats) return 'No workspace loaded.';
+function workspaceStatsColumns(stats) {
+  if (!stats) return { left: 'No workspace loaded.', right: '' };
   const hints = [];
   if (stats.untracked.count > 0) {
     hints.push(`${stats.untracked.count} raw/untracked document(s) are waiting for ingest.`);
@@ -280,11 +280,10 @@ function workspaceStatsText(stats) {
   ]);
   const hintsColumn = sectionBlock('Hints', hints.length > 0 ? hints : ['No immediate content action detected.']);
 
-  return [
-    twoColumns(wikiColumn, rawColumn),
-    '',
-    twoColumns(deliveryColumn, `${internalColumn}\n\n${hintsColumn}`),
-  ].join('\n');
+  return {
+    left: [wikiColumn, deliveryColumn].join('\n\n'),
+    right: [rawColumn, internalColumn, hintsColumn].join('\n\n'),
+  };
 }
 
 function workspaceLoadedText(workspace, summary, session) {
@@ -530,16 +529,18 @@ async function statusText(session) {
   const runtimeColumn = sectionBlock('Runtime', (states ? serviceStatesText(states) : 'Docker runtime not available or no workspace loaded.').split('\n'));
   const mcpColumn = sectionBlock('MCP', formatMcpStatus(session.mcp).split('\n'));
   const mcpToolsColumn = sectionBlock('MCP tool summary', formatMcpToolSummary(session.mcp).split('\n'));
+  const stats = workspaceStatsColumns(workspaceStats);
 
-  return [
-    twoColumns(workspaceColumn, configColumn),
-    '',
-    workspaceStatsText(workspaceStats),
-    '',
-    runtimeColumn,
-    '',
-    twoColumns(mcpColumn, mcpToolsColumn),
-  ].join('\n');
+  const leftColumn = [workspaceColumn, stats.left, runtimeColumn, mcpColumn].filter(Boolean).join('\n\n');
+  const rightColumn = [configColumn, stats.right, mcpToolsColumn].filter(Boolean).join('\n\n');
+
+  // Leading/trailing padding row on *both* columns so the boxed pair doesn't
+  // butt directly against the pane border when the view is scrolled to show
+  // the tail. A single space on each side (not '') keeps the row tab-joined,
+  // so both the left and right box render — an empty string on either side
+  // of the tab makes twoColumns drop the pairing and only the left box shows.
+  const pad = ' \t ';
+  return [pad, twoColumns(leftColumn, rightColumn), pad].join('\n');
 }
 
 function loadWorkspaceSystemPrompt(workspacePath) {

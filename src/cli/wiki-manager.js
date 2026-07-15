@@ -6,11 +6,11 @@ import { ensureManagerScaffold, loadManagerEnv } from '../core/env.js';
 loadManagerEnv();
 import { createAgentGraph } from '../agent/graph.js';
 import { handleSlashCommand, printHelp, printVersion, refreshMcpRuntimeStatus } from '../commands/slash.js';
-import { runShell } from '../shell/repl.js';
+import { runShell, runHeadlessChatTurn } from '../shell/repl.js';
 import { runChecks } from '../core/startupCheck.js';
 import { applySessionWikircProfile } from '../core/sessionConfig.js';
 import { listWikircProfiles } from '../core/wikirc.js';
-import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
+import { callMcpTool, formatMcpToolResult, readChatAccessConfig } from '../core/mcp.js';
 import { extractActivity, parseJsonText, sessionActivities, terminalFailures } from '../core/activity.js';
 import { syncActivitiesToPlan, formatPlanStatus } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../core/agentEvents.js';
@@ -1039,7 +1039,25 @@ async function runRuntime(argv, agent) {
       workspace: context.workspace ?? null,
       payload: { content: input },
     }));
-    const response = await runAgentTurn(agent, ephemeral, input, { messages, signal });
+    // Read-only chat turn: same chatAccess policy as the Shell UI's /chat, now
+    // reachable over HTTP so `wiki serve` chat mode gets read tools without
+    // duplicating the loop. Anything other than mode === 'chat' stays the full
+    // unrestricted agent turn.
+    const chatMode = String(body.mode ?? '').toLowerCase() === 'chat';
+    let response;
+    if (chatMode) {
+      ephemeral.chatMode = true;
+      ephemeral.chatAccess = readChatAccessConfig();
+      const history = messages.length && messages[messages.length - 1]?.role === 'user'
+        ? messages.slice(0, -1)
+        : messages;
+      response = await runHeadlessChatTurn(ephemeral, input, {
+        history,
+        onStep: ephemeral._onStep,
+      });
+    } else {
+      response = await runAgentTurn(agent, ephemeral, input, { messages, signal });
+    }
     ensureInteractiveAssistantMessage(ephemeral, response, {
       turnId,
       workspace: context.workspace ?? null,

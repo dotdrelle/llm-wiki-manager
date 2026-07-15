@@ -7,6 +7,7 @@ import {
   applyRuntimeStateToShellSession,
   chatReadTools,
   createSession,
+  runHeadlessChatTurn,
   conversationMessages,
   recordRuntimeUnavailableAgentInput,
   runLine,
@@ -442,4 +443,37 @@ test('/chat falls back to the plain stream when no read tools are declared', asy
   const last = conversationMessages(session).at(-1);
   assert.match(last.content, /PLAIN_STREAM/);
   assert.doesNotMatch(last.content, /SHOULD_NOT_APPEAR/);
+});
+
+test('runHeadlessChatTurn (HTTP /chat) uses the read-tool path and returns text', async () => {
+  const session = createSession();
+  session.chatMode = true;
+  session.chatAccess = { maxToolIterations: 4, servers: { cme: { allow: ['cme_status'] } } };
+  session.mcp = { cme: { status: 'connected', tools: [{ name: 'cme_status', inputSchema: { type: 'object', properties: {} } }] } };
+  let usedComplete = false;
+  session.llm = {
+    async *stream() { yield 'STREAM_FALLBACK'; },
+    async completeWithTools() {
+      usedComplete = true;
+      return { tool_calls: [], content: 'CME est configuré.', message: { role: 'assistant', content: 'CME est configuré.' } };
+    },
+  };
+  const reply = await runHeadlessChatTurn(session, 'le cme est-il configuré', { history: [] });
+  assert.ok(usedComplete, 'completeWithTools path was taken');
+  assert.match(reply, /CME est configuré/);
+  assert.doesNotMatch(reply, /STREAM_FALLBACK/);
+});
+
+test('runHeadlessChatTurn falls back to the plain stream without read tools', async () => {
+  const session = createSession();
+  session.chatMode = true;
+  session.chatAccess = null;
+  session.mcp = {};
+  session.llm = {
+    async *stream() { yield 'PLAIN_STREAM'; },
+    async completeWithTools() { return { tool_calls: [], content: 'SHOULD_NOT_APPEAR' }; },
+  };
+  const reply = await runHeadlessChatTurn(session, 'bonjour', { history: [] });
+  assert.match(reply, /PLAIN_STREAM/);
+  assert.doesNotMatch(reply, /SHOULD_NOT_APPEAR/);
 });

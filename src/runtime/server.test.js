@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { createInteractiveSession, ensureInteractiveAssistantMessage } from '../cli/wiki-manager.js';
-import { startRuntimeServer } from './server.js';
+import { runtimeState, startRuntimeServer } from './server.js';
 
 test('interactive runtime sessions isolate canonical run state', () => {
   const mcp = { wiki: { status: 'connected' } };
@@ -38,6 +38,35 @@ test('interactive turns publish a fallback assistant message exactly once', () =
   assert.equal(published[0].type, 'assistant_message');
   assert.equal(published[0].origin, 'runtime_turn');
   assert.equal(published[0].payload.content, 'Réponse concise.');
+});
+
+test('runtime state rebuilds interactive conversation from persisted events', () => {
+  const user = {
+    ...createAgentEvent('user_message', { origin: 'runtime_turn', turnId: 'turn-1', workspace: 'demo', payload: { content: 'Bonjour' } }),
+    origin: 'runtime_turn', turnId: 'turn-1', workspace: 'demo',
+  };
+  const assistant = {
+    ...createAgentEvent('assistant_message', { origin: 'runtime_turn', turnId: 'turn-1', workspace: 'demo', payload: { content: 'Salut !' } }),
+    origin: 'runtime_turn', turnId: 'turn-1', workspace: 'demo',
+  };
+  const session = { agentProjection: { conversation: [] } };
+  const store = {
+    getState: (receivedSession) => {
+      assert.equal(receivedSession, session);
+      return { status: 'idle', conversation: [] };
+    },
+    listEvents: ({ workspace }) => {
+      assert.equal(workspace, 'demo');
+      return [user, assistant];
+    },
+  };
+
+  const state = runtimeState({ workspace: 'demo', session, running: false }, store, { workspace: 'demo' });
+
+  assert.deepEqual(state.conversation.map(({ role, content }) => ({ role, content })), [
+    { role: 'user', content: 'Bonjour' },
+    { role: 'assistant', content: 'Salut !' },
+  ]);
 });
 
 test('runtime server checks bearer and x-runtime-token credentials', async (t) => {
@@ -1473,6 +1502,50 @@ test('runtime server accepts an interactive turn without starting a run', async 
     assert.equal(received.body.input, 'Quels documents sont en attente ?');
     assert.equal(received.meta.turnId, body.turnId);
     assert.equal(context.running, false);
+  } finally {
+    await handle.close();
+  }
+});
+
+test('runtime server keeps read-only chat turns available during an active run', async (t) => {
+  const context = { workspace: 'demo', session: {}, running: true };
+  let received = null;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      token: 'runtime-secret',
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'running' }),
+        listEvents: () => [],
+      },
+      getContext: async () => context,
+      run: async () => assert.fail('/turn must not start another runtime run'),
+      turn: async (_context, body, meta) => { received = { body, meta }; },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/turn`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer runtime-secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ input: 'Quel est le statut CME ?', mode: 'chat', workspace: 'demo' }),
+    });
+    assert.equal(response.status, 202);
+    const body = await response.json();
+    assert.equal(body.kind, 'turn');
+    await context.interactiveTurn;
+    assert.equal(received.body.mode, 'chat');
+    assert.equal(received.body.input, 'Quel est le statut CME ?');
+    assert.equal(received.meta.turnId, body.turnId);
+    assert.equal(context.running, true);
   } finally {
     await handle.close();
   }

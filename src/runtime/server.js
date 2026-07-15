@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import { createAgentEvent, dispatchAgentEvent, resetSessionProjection } from '../core/agentEvents.js';
+import { createAgentEvent, dispatchAgentEvent, resetSessionProjection, reduceAgentEvents } from '../core/agentEvents.js';
 import { activeCacertPath } from '../core/cacert.js';
 import { normalizePlanPatch, rebasePlanPatch } from '../core/planPatch.js';
 import { validateContractInDev } from '../contracts/schemas.js';
@@ -284,7 +284,11 @@ export function startRuntimeServer({
           sendJson(response, 400, { error: 'Missing input.' });
           return;
         }
-        if (context.running) {
+        // Read-only chat turns intentionally remain available while an agent
+        // run is active. Other interactive turns still become control
+        // messages so they cannot start a competing agent decision.
+        const readOnlyChat = String(body.mode ?? '').toLowerCase() === 'chat';
+        if (context.running && !readOnlyChat) {
           const result = await handleControlMessage(context, store, input, {
             intent: body.intent,
             startNextControlRequest,
@@ -305,7 +309,7 @@ export function startRuntimeServer({
           // A preceding serialized turn may have delegated and started a run
           // after this request was accepted. Reclassify against the fresh
           // state instead of starting another interactive decision in parallel.
-          if (context.running) {
+          if (context.running && !readOnlyChat) {
             const result = await handleControlMessage(context, store, input, {
               intent: body.intent,
               startNextControlRequest,
@@ -595,10 +599,18 @@ function controlStatus(context, store) {
   };
 }
 
-function runtimeState(context, store, { workspace = null, session = null } = {}) {
+export function runtimeState(context, store, { workspace = null, session = null } = {}) {
   const state = store.getState(context?.session ?? session ?? null, { workspace });
   return {
     ...state,
+    // Interactive (runtime_turn) replies are persisted as events but never
+    // merged into the canonical in-memory projection, so a state built from
+    // that projection omits them — chat mode and conversational agent turns
+    // then show no reply at all. Rebuild the conversation from the full
+    // persisted event log (the same source interactive turns use to seed their
+    // own history) so those replies surface. The log is a superset of the
+    // canonical run conversation, so run rendering is unaffected.
+    conversation: reduceAgentEvents(store.listEvents({ workspace })).conversation,
     status: context?.running ? 'running' : state.status ?? 'idle',
     running: Boolean(context?.running),
     runId: context?.currentRunId ?? state.runId ?? null,

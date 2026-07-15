@@ -312,7 +312,7 @@ function renderMarkdownLines(lines: Array<{ text: string; isCode: boolean }>, ro
 function isStatusOutput(message: { role: string; content: string }) {
   const content = String(message.content ?? '');
   return message.role === 'command'
-    && content.startsWith('Workspace')
+    && content.trimStart().startsWith('Workspace')
     && content.includes('Config')
     && content.includes('MCP');
 }

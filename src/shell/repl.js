@@ -1279,6 +1279,35 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
   return { exit: false };
 }
 
+// Headless equivalent of runDirectChatTurn for HTTP callers (the runtime /turn
+// in chat mode). Reuses the exact same read-only policy — chatReadTools +
+// runChatReadToolLoop + buildDirectChatSystemPrompt — so there is no second
+// implementation of chat access; it just returns the final text instead of
+// driving a live repl bubble. The caller must have seeded session.chatAccess
+// (and session.mcp) so chatReadTools can resolve the allow-listed read tools.
+export async function runHeadlessChatTurn(session, input, { history = [], onStep } = {}) {
+  const donnaMessage = { role: 'donna', content: '' };
+  const readTools = chatReadTools(session);
+  const canUseReadTools = readTools.length > 0 && typeof session.llm?.completeWithTools === 'function';
+  if (canUseReadTools) {
+    await runChatReadToolLoop({ input, session, history, donnaMessage, onStep, readTools });
+    return donnaMessage.content;
+  }
+  if (typeof session.llm?.stream === 'function') {
+    let content = '';
+    for await (const delta of session.llm.stream({
+      system: buildDirectChatSystemPrompt(session),
+      messages: [...history, { role: 'user', content: input }],
+      signal: session._abortSignal,
+    })) {
+      const clean = stripDsmlArtifacts(delta);
+      if (clean) content += clean;
+    }
+    return stripDsmlArtifacts(content).trimEnd() || formatLlmUnavailableMessage('flux vide');
+  }
+  return directChatUnavailableText(session);
+}
+
 function directChatUnavailableText(session) {
   if (!session.workspacePath) {
     return 'Direct chat unavailable: no workspace loaded. Use /use <workspace>.';

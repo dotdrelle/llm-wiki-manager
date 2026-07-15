@@ -395,6 +395,110 @@ test('Donna delegates the objective without choosing technical identifiers', asy
   }
 });
 
+test('Donna refuses to delegate connector authentication to an export capability', async () => {
+  const originalFetch = globalThis.fetch;
+  const fetchedUrls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    fetchedUrls.push(String(url));
+    const body = JSON.parse(String(options.body ?? '{}'));
+    assert.equal(body.params?.name, 'start_google_auth');
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({ result: { content: [{ type: 'text', text: 'ACTION REQUIRED: authorize at https://accounts.google.com/o/oauth2/auth?client_id=test&state=abc' }] } }),
+    };
+  };
+  let turn = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    mcp: {
+      'google-workspace': {
+        status: 'connected',
+        url: 'http://google.test/mcp',
+        tools: [
+          {
+            name: 'start_google_auth',
+            description: 'Manually initiate Google OAuth authentication flow.',
+            inputSchema: { type: 'object', additionalProperties: true },
+          },
+          { name: 'search_gmail_messages', inputSchema: { type: 'object', additionalProperties: true } },
+        ],
+      },
+    },
+    llm: {
+      async completeWithTools() {
+        turn += 1;
+        if (turn === 1) return {
+          content: null,
+          message: { role: 'assistant', content: null },
+          tool_calls: [{ id: 'wrong-delegate', type: 'function', function: { name: 'runtime__delegate', arguments: '{"objective":"je veux configurer google"}' } }],
+        };
+        if (turn === 2) return {
+          content: null,
+          message: { role: 'assistant', content: null },
+          tool_calls: [{ id: 'google-auth', type: 'function', function: { name: 'google-workspace__start_google_auth', arguments: '{}' } }],
+        };
+        return {
+          content: 'J’ai lancé l’authentification. Ouvre le lien fourni.',
+          message: { role: 'assistant', content: 'J’ai lancé l’authentification. Ouvre le lien fourni.' },
+          tool_calls: null,
+        };
+      },
+    },
+  });
+
+  try {
+    const result = await createAgentGraph().invoke({ input: 'je veux configurer google', session });
+    assert.match(result.response, /J’ai lancé l’authentification/);
+    assert.match(result.response, /https:\/\/accounts\.google\.com\/o\/oauth2\/auth\?client_id=test&state=abc/);
+    assert.equal(fetchedUrls.some((url) => url.includes('runtime.test')), false);
+    assert.equal(fetchedUrls.some((url) => url.includes('google.test')), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Donna does not invent a setup tool when a connector advertises data tools only', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => assert.fail('neither runtime delegation nor an unrelated data tool should be called');
+  let turn = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    mcp: {
+      acme: {
+        status: 'connected',
+        url: 'http://acme.test/mcp',
+        tools: [{ name: 'list_records', description: 'List records.', inputSchema: { type: 'object' } }],
+      },
+    },
+    llm: {
+      async completeWithTools({ messages }) {
+        turn += 1;
+        if (turn === 1) return {
+          content: null,
+          message: { role: 'assistant', content: null },
+          tool_calls: [{ id: 'wrong-delegate', type: 'function', function: { name: 'runtime__delegate', arguments: '{"objective":"configure acme"}' } }],
+        };
+        const refusal = (messages ?? []).filter((message) => message.role === 'tool').at(-1)?.content;
+        assert.match(String(refusal), /advertises no setup or authentication tool/);
+        return {
+          content: 'ACME doit être authentifié hors de cette interface.',
+          message: { role: 'assistant', content: 'ACME doit être authentifié hors de cette interface.' },
+          tool_calls: null,
+        };
+      },
+    },
+  });
+
+  try {
+    const result = await createAgentGraph().invoke({ input: 'configure acme', session });
+    assert.equal(result.response, 'ACME doit être authentifié hors de cette interface.');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('runtime status does not manufacture a plan', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => ({

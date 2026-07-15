@@ -478,7 +478,7 @@ async function runRuntime(argv, agent) {
       'Defaults:',
       '  --host 127.0.0.1',
       '  --port 7788',
-      '  --state-dir .wiki-manager',
+      '  --state-dir .wiki/runtime',
     ].join('\n'));
     return;
   }

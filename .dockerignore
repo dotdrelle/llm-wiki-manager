@@ -1,4 +1,5 @@
 .git
+.wiki/runtime
 .wiki-manager
 workspaces
 .agents-data

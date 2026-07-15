@@ -8,7 +8,7 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { openRuntimeStore } from './store.js';
 
 function runtimeStateDir() {
-  return join(mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-')), '.wiki-manager');
+  return join(mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-')), '.wiki', 'runtime');
 }
 
 function plannedTask(id) {
@@ -223,10 +223,10 @@ test('runtime store persists task assignments attempts and results from events',
 
 test('runtime store writes schema versions to sqlite and meta file', () => {
   const root = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
-  const stateDir = join(root, '.wiki-manager');
+  const stateDir = join(root, '.wiki', 'runtime');
   const store = openRuntimeStore({ stateDir });
   const version = store.db.prepare('PRAGMA user_version').get().user_version;
-  const meta = JSON.parse(readFileSync(join(root, '.wiki-manager', 'meta.json'), 'utf8'));
+  const meta = JSON.parse(readFileSync(join(root, '.wiki', 'runtime', 'meta.json'), 'utf8'));
 
   assert.equal(version, 1);
   assert.equal(meta.schemaVersion, 1);
@@ -249,7 +249,7 @@ test('runtime store refuses unknown sqlite schema versions', () => {
 
 test('runtime store refuses unknown runtime metadata versions', () => {
   const root = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
-  const stateDir = join(root, '.wiki-manager');
+  const stateDir = join(root, '.wiki', 'runtime');
   mkdirSync(stateDir, { recursive: true });
   writeFileSync(join(stateDir, 'meta.json'), '{"schemaVersion":99}\n', 'utf8');
 
@@ -259,9 +259,9 @@ test('runtime store refuses unknown runtime metadata versions', () => {
   );
 });
 
-test('runtime store migrates legacy .wiki metadata to .wiki-manager', () => {
+test('runtime store migrates legacy .wiki metadata to .wiki/runtime', () => {
   const root = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
-  const stateDir = join(root, '.wiki-manager');
+  const stateDir = join(root, '.wiki', 'runtime');
   mkdirSync(join(root, '.wiki'), { recursive: true });
   writeFileSync(join(root, '.wiki', 'meta.json'), '{"schemaVersion":1,"legacy":true}\n', 'utf8');
 

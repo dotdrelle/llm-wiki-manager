@@ -1,6 +1,6 @@
 {
   "name": "@dotdrelle/wiki-manager",
-  "version": "0.14.7",
+  "version": "0.14.9",
   "description": "Agentic shell and orchestration cockpit for llm-wiki workspaces.",
   "license": "PolyForm-Noncommercial-1.0.0",
   "author": "dotrelle",
@@ -46,9 +46,6 @@
     "cli"
   ],
   "packageManager": "pnpm@10.29.2",
-  "pnpm": {
-    "onlyBuiltDependencies": ["bun"]
-  },
   "dependencies": {
     "@langchain/langgraph": "^1.3.2",
     "@opentui/core": "^0.3.2",

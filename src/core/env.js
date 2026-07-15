@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -13,7 +13,14 @@ export function managerStateDir() {
 }
 
 export function managerRuntimeDir() {
-  return join(managerStateDir(), '.wiki-manager');
+  const root = managerStateDir();
+  const runtimeDir = join(root, '.wiki', 'runtime');
+  const legacyDir = join(root, '.wiki-manager');
+  if (!existsSync(runtimeDir) && existsSync(legacyDir)) {
+    mkdirSync(join(root, '.wiki'), { recursive: true });
+    renameSync(legacyDir, runtimeDir);
+  }
+  return runtimeDir;
 }
 
 export function defaultRuntimeStateDir() {

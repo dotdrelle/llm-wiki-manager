@@ -5,12 +5,14 @@
     "**/node_modules/**": true,
     "**/workspaces/**": true,
     "**/.agents-data/**": true,
+    "**/.wiki/runtime/**": true,
     "**/.wiki-manager/**": true
   },
   "search.exclude": {
     "**/node_modules": true,
     "**/workspaces": true,
     "**/.agents-data": true,
+    "**/.wiki/runtime": true,
     "**/.wiki-manager": true
   }
 }

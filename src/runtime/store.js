@@ -1261,7 +1261,10 @@ function ensureRuntimeMeta(metaPath) {
 
 function migrateLegacyRuntimeMeta(metaPath) {
   if (existsSync(metaPath)) return;
-  const legacyPath = join(dirname(metaPath), '..', '.wiki', 'meta.json');
+  const stateDir = dirname(metaPath);
+  const legacyPath = stateDir.endsWith(join('.wiki', 'runtime'))
+    ? join(stateDir, '..', 'meta.json')
+    : join(stateDir, '..', '.wiki', 'meta.json');
   if (!existsSync(legacyPath)) return;
   mkdirSync(dirname(metaPath), { recursive: true });
   renameSync(legacyPath, metaPath);

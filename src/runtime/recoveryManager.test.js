@@ -81,7 +81,7 @@ test('recoveryManager requeues an active job by idempotencyKey when status is st
 
 function storeWithActiveTask() {
   const root = mkdtempSync(join(tmpdir(), 'wiki-manager-recovery-'));
-  const stateDir = join(root, '.wiki-manager');
+  const stateDir = join(root, '.wiki', 'runtime');
   const store = openRuntimeStore({ stateDir });
   const runId = 'run-recovery';
   const taskId = 'run-recovery:build-a';

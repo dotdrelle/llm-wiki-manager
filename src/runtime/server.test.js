@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { createInteractiveSession, ensureInteractiveAssistantMessage } from '../cli/wiki-manager.js';
-import { runtimeState, startRuntimeServer } from './server.js';
+import { runtimeState, startRuntimeServer as startRuntimeServerImpl } from './server.js';
+
+// Most server tests exercise endpoint behavior rather than authentication. Keep
+// them independent from a developer's WIKI_MANAGER_RUNTIME_TOKEN environment;
+// auth-specific tests can still override this default explicitly.
+function startRuntimeServer(options) {
+  return startRuntimeServerImpl({ token: '', ...options });
+}
 
 test('interactive runtime sessions isolate canonical run state', () => {
   const mcp = { wiki: { status: 'connected' } };

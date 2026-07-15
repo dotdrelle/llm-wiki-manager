@@ -801,16 +801,10 @@ test('buildAgentSystemPrompt forbids inventing slash commands or arguments', () 
   assert.doesNotMatch(prompt, /executor:"/);
 });
 
-test('workspace package manifest is not exposed as an executable skill', () => {
+test('workspace skills are discovered from the fixed .wiki/skills directory', () => {
   const root = mkdtempSync(join(tmpdir(), 'wiki-manager-skills-'));
   try {
     mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
-    writeFileSync(join(root, 'skill.yaml'), [
-      'name: basic',
-      'description: Demo workspace package',
-      'entrypoints:',
-      '  uiSkillDir: .wiki/skills',
-    ].join('\n'));
     writeFileSync(join(root, '.wiki', 'skills', 'ingest.md'), [
       '---',
       'name: ingest',
@@ -820,7 +814,6 @@ test('workspace package manifest is not exposed as an executable skill', () => {
     ].join('\n'));
 
     const prompt = buildAgentSystemPrompt({ session: sessionBase({ workspacePath: root }) });
-    assert.doesNotMatch(prompt, /\/basic:/);
     assert.match(prompt, /\/ingest: Ingest pending sources/);
   } finally {
     rmSync(root, { recursive: true, force: true });

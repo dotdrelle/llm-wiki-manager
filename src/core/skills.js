@@ -1,6 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { parse as parseYaml } from 'yaml';
 
 const SKILL_NAME_RE = /^[a-zA-Z0-9_-]{1,80}$/;
 const DEFAULT_UI_SKILL_DIR = '.wiki/skills';
@@ -51,33 +50,6 @@ export function readOptionalText(filePath) {
   return readFileSync(filePath, 'utf8').trim();
 }
 
-function safeRelativeEntry(value, fallback) {
-  const text = String(value || fallback).trim();
-  if (!text || text.startsWith('/') || text.includes('..')) return fallback;
-  return text;
-}
-
-function readWorkspaceManifest(workspacePath) {
-  const manifestPath = join(workspacePath, 'skill.yaml');
-  if (!existsSync(manifestPath)) return null;
-  try {
-    const manifest = parseYaml(readFileSync(manifestPath, 'utf8'));
-    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return null;
-    return { manifest, manifestPath };
-  } catch {
-    return null;
-  }
-}
-
-function workspaceUiSkillDir(loadedManifest = null) {
-  if (!loadedManifest) return DEFAULT_UI_SKILL_DIR;
-  const { manifest } = loadedManifest;
-  const entrypoints = manifest?.entrypoints && typeof manifest.entrypoints === 'object'
-    ? manifest.entrypoints
-    : {};
-  return safeRelativeEntry(entrypoints.uiSkillDir, DEFAULT_UI_SKILL_DIR);
-}
-
 function collectDirectorySkills(dir, scope) {
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { withFileTypes: true })
@@ -92,8 +64,7 @@ function collectDirectorySkills(dir, scope) {
 export function listSkills(session = {}) {
   const skills = [];
   if (session.workspacePath) {
-    const loadedManifest = readWorkspaceManifest(session.workspacePath);
-    skills.push(...collectDirectorySkills(join(session.workspacePath, workspaceUiSkillDir(loadedManifest)), 'workspace'));
+    skills.push(...collectDirectorySkills(join(session.workspacePath, DEFAULT_UI_SKILL_DIR), 'workspace'));
   }
 
   const byName = new Map();

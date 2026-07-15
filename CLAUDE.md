@@ -111,7 +111,7 @@ docs/                       Architecture and usage docs
 ```
 
 Manager state (`.env`, `mcp.endpoints.json`, `workspaces/`, `.agents-data/`,
-generated `.wiki-manager/` compose overrides) belongs in the user-selected
+generated `.wiki/runtime/` compose overrides) belongs in the user-selected
 manager directory, not in the installed npm package directory. On first
 interactive/runtime launch, missing `.env` and `mcp.endpoints.json` are
 scaffolded from the packaged examples (real paths substituted); `agents up`
@@ -288,7 +288,7 @@ Key modules in `src/runtime/`:
   parent and child env. When the shell runs under Bun, uses
   `WIKI_MANAGER_NODE_BIN ?? 'node'` instead of `process.execPath`.
 - **`auth.js`**: Bearer token required when `--host 0.0.0.0`. Read from env
-  `WIKI_MANAGER_RUNTIME_TOKEN`, then `.wiki-manager/runtime.token`, then
+  `WIKI_MANAGER_RUNTIME_TOKEN`, then `.wiki/runtime/runtime.token`, then
   auto-generated (32-byte hex) on first exposed-host start.
 - **`client.js`**: HTTP client for `/run`, `/cancel`, `/resume`, `/approve`,
   `/state`, `/events/stream`.
@@ -467,7 +467,7 @@ remain the source of truth. Queue state is workspace-scoped.
 - `workspaces/`, `.agents-data/`, generated `.env`, exports, raw content, and
   symlink targets must stay uncommitted.
 - The manager must not contain a root `SKILL.md` or root `skills/` directory.
-- Workspace skill packages follow `depot-skills`: `skill.yaml`, `CLAUDE.md`,
+- Workspace skill packages follow the fixed workspace layout: `CLAUDE.md`,
   `templates/`, `build-context/`, `.wiki/system-prompt.md`, `.wiki/skills/`.
 - Workspace names must be path-safe: alphanumeric at both ends, only
   letters/digits/underscore/dot/dash inside, no `..`.
@@ -483,7 +483,7 @@ remain the source of truth. Queue state is workspace-scoped.
   When the shell runs under Bun, lifecycle code starts the runtime with
   `WIKI_MANAGER_NODE_BIN` or `node`, never Bun.
 - The host runtime listens on `127.0.0.1:7788` by default and uses state under
-  `.wiki-manager/`. `0.0.0.0:7788` requires an explicit `--host 0.0.0.0` or
+  `.wiki/runtime/`. `0.0.0.0:7788` requires an explicit `--host 0.0.0.0` or
   `WIKI_MANAGER_RUNTIME_HOST=0.0.0.0` deployment choice.
 - `serve` receives `WIKI_MANAGER_RUNTIME_URL=http://host.docker.internal:7788`
   and `WIKI_MANAGER_RUNTIME_TOKEN` to connect to the runtime.
@@ -499,8 +499,8 @@ remain the source of truth. Queue state is workspace-scoped.
   the host and be readable by Docker; the certificate is mounted directly from
   that path, not copied into manager state.
 - When `--cacert` is present, generated overrides live under the manager state
-  directory: `.wiki-manager/cacert.compose.yml` for workspace services and
-  `.wiki-manager/agents.cacert.compose.yml` for global agents. They are
+  directory: `.wiki/runtime/cacert.compose.yml` for workspace services and
+  `.wiki/runtime/agents.cacert.compose.yml` for global agents. They are
   generated once on first use and never overwritten — edit freely; delete to
   regenerate from the current `--cacert` path and compose services.
 - CA overrides inject `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
@@ -545,7 +545,7 @@ node ./bin/wiki-manager.js --headless --workspace __missing__ --prompt test
 wiki-manager --headless --workspace <workspace> --skill pipeline --timeout 3600 --max-turns 20
 wiki-workspace runtime up
 wiki-workspace runtime status
-wiki-manager runtime [--host 127.0.0.1] [--port 7788] [--state-dir .wiki-manager]
+wiki-manager runtime [--host 127.0.0.1] [--port 7788] [--state-dir .wiki/runtime]
 # approve a pending run or tool approval from the shell:
 /approve run <runId>
 /approve item <itemId>

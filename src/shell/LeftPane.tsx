@@ -1,6 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { For, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import { colorForRenderedLine, helpCommandParts, keyValueParts, renderPlainMarkdown } from './renderer';
+import { httpLinkParts, wrapHttpLinks } from './externalLinks.js';
 
 const LEGACY_DONNA_ROLE = 'do' + 't';
 
@@ -47,7 +48,7 @@ function wrapLine(line: string, width: number) {
   return out;
 }
 
-type Segment = { text: string; color: string; width?: number; bg?: string };
+type Segment = { text: string; color: string; width?: number; bg?: string; url?: string };
 type RenderedLine = {
   segments: Segment[];
   status?: boolean;
@@ -300,6 +301,16 @@ function renderMarkdownLines(lines: Array<{ text: string; isCode: boolean }>, ro
     const rendered = renderPlainMarkdown(text);
     const isCmdDesc = splitCmdDesc(rendered) !== null;
     const fallback = isCmdDesc ? '#FFFFFF' : colorForRenderedLine(rendered, role);
+    if (httpLinkParts(rendered).some((part: { url?: string }) => part.url)) {
+      output.push(...wrapHttpLinks(rendered, columns).map((parts: Array<{ text: string; url?: string }>) => ({
+        segments: parts.map((part) => ({
+          text: part.text || ' ',
+          color: part.url ? '#5DADE2' : fallback,
+          url: part.url,
+        })),
+      })));
+      continue;
+    }
     output.push(...wrapLine(rendered, columns).map((piece, idx) => ({
       segments: idx === 0
         ? segmentsForLine(piece, role, columns)
@@ -489,7 +500,11 @@ export function ConversationView(props: {
           ) : (
             <box height={1} flexDirection="row" overflow="hidden">
               <For each={line.segments}>
-                {(seg: Segment) => <text width={seg.width} fg={seg.color} bg={seg.bg}>{seg.text}</text>}
+                {(seg: Segment) => (
+                  <text width={seg.width} fg={seg.color} bg={seg.bg}>
+                    {seg.url ? <a href={seg.url}>{seg.text}</a> : seg.text}
+                  </text>
+                )}
               </For>
             </box>
           )

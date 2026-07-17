@@ -23,7 +23,7 @@ type Step =
   | { kind: 'menu'; title: string; items: Array<{ label: string; value: string; muted?: boolean }> }
   | { kind: 'confirm'; title: string; message: string; yesLabel: string; noLabel: string }
   | { kind: 'select'; title: string; label: string; options: string[]; note?: string }
-  | { kind: 'text'; title: string; label: string; placeholder?: string; prefill?: string; secret?: boolean }
+  | { kind: 'text'; title: string; label: string; note?: string; placeholder?: string; prefill?: string; secret?: boolean }
   | { kind: 'done' };
 type LogEntry = { icon: string; label: string; detail?: string };
 
@@ -219,21 +219,32 @@ export function SetupWizard(props: {
       };
     }
     if (currentRoute === 'llm-baseurl') {
-      const baseUrl = llm().baseUrl || defaultBaseUrl(llm().provider);
-      return { kind: 'text', title: 'LLM configuration', label: 'Base URL', prefill: baseUrl, placeholder: baseUrl };
+      const example = defaultBaseUrl(llm().provider);
+      return {
+        kind: 'text',
+        title: 'LLM configuration',
+        label: `Base URL${example ? ` (example: ${example})` : ''}`,
+        prefill: llm().baseUrl || '',
+      };
     }
     if (currentRoute === 'llm-apikey') {
       return { kind: 'text', title: 'LLM configuration', label: 'API key (required)', secret: true };
     }
     if (currentRoute === 'llm-model') {
-      const defaultModel = llm().model || fallbackModels(llm().provider)[0] || '';
-      return { kind: 'text', title: 'LLM configuration', label: 'Model', prefill: defaultModel };
+      const example = fallbackModels(llm().provider)[0] || 'provider-agentic-model';
+      return {
+        kind: 'text',
+        title: 'LLM configuration',
+        label: `Model (example: ${example})`,
+        note: 'Required: an agentic model with tool/function calling support.',
+        prefill: llm().model || '',
+      };
     }
     if (currentRoute === 'vector-confirm') {
       return { kind: 'confirm', title: 'Vector search', message: 'Configure vector search?', yesLabel: 'Enable', noLabel: 'Skip' };
     }
     if (currentRoute === 'vector-baseurl') {
-      const baseUrl = vector().baseUrl || llm().baseUrl || defaultBaseUrl(llm().provider);
+      const baseUrl = vector().baseUrl || llm().baseUrl;
       return { kind: 'text', title: 'Vector search', label: 'Embeddings/rerank base URL', prefill: baseUrl, placeholder: baseUrl };
     }
     if (currentRoute === 'vector-apikey') {
@@ -462,7 +473,10 @@ export function SetupWizard(props: {
     if (currentRoute === 'llm-provider') {
       const provider = normalizeProvider(value);
       setLlm((old: any) => {
-        const baseUrl = (old.provider === provider && old.baseUrl) ? old.baseUrl : defaultBaseUrl(provider);
+        const asksForBaseUrl = provider === 'ollama' || provider === 'openai-compatible';
+        const baseUrl = (old.provider === provider && old.baseUrl)
+          ? old.baseUrl
+          : asksForBaseUrl ? '' : defaultBaseUrl(provider);
         return { ...old, provider, baseUrl, ...(provider === 'ollama' && !old.apiKey ? { apiKey: 'ollama' } : {}) };
       });
       if (provider === 'ollama' || provider === 'openai-compatible') return navigate('llm-baseurl');
@@ -560,7 +574,8 @@ export function SetupWizard(props: {
       return;
     }
     if (currentRoute === 'llm-baseurl') {
-      setLlm((old: any) => ({ ...old, baseUrl: value || old.baseUrl || defaultBaseUrl(old.provider) }));
+      if (!value) return setError('Base URL is required.');
+      setLlm((old: any) => ({ ...old, baseUrl: value }));
       if (llm().provider === 'ollama') return navigate('llm-model');
       return navigate('llm-apikey');
     }
@@ -570,7 +585,8 @@ export function SetupWizard(props: {
       return navigate('llm-model');
     }
     if (currentRoute === 'vector-baseurl') {
-      const baseUrl = value || vector().baseUrl || llm().baseUrl || defaultBaseUrl(llm().provider);
+      const baseUrl = value || vector().baseUrl || llm().baseUrl;
+      if (!baseUrl) return setError('Embeddings/rerank base URL is required.');
       setVector((old: any) => ({ ...old, provider: llm().provider, baseUrl }));
       return navigate('vector-apikey');
     }
@@ -749,6 +765,9 @@ export function SetupWizard(props: {
       <text height={1}>{''}</text>
       <Show when={(step() as any).message || (step() as any).label}>
         <text height={1} fg="#D6DEE8">{(step() as any).message ?? (step() as any).label}</text>
+      </Show>
+      <Show when={(step() as any).note}>
+        <text height={1} fg="#9CA3AF">{(step() as any).note}</text>
       </Show>
       <Show when={step().kind === 'text'}>
         <box

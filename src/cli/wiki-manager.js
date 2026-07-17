@@ -31,6 +31,22 @@ function valueAfter(argv, flag) {
   return argv[index + 1];
 }
 
+function errorDiagnostic(err) {
+  const parts = [];
+  let current = err;
+  const seen = new Set();
+  while (current && !seen.has(current) && parts.length < 4) {
+    seen.add(current);
+    const name = current?.name && current.name !== 'Error' ? String(current.name) : '';
+    const code = current?.code ? String(current.code) : '';
+    const message = current instanceof Error ? current.message : String(current);
+    const detail = [name, code, message].filter(Boolean).join(' ');
+    if (detail && !parts.includes(detail)) parts.push(detail);
+    current = current?.cause;
+  }
+  return parts.join(' <- ') || 'unknown error';
+}
+
 function unavailableRuntime(err) {
   const reason = err instanceof Error ? err.message : String(err);
   return { url: null, error: reason };
@@ -787,27 +803,42 @@ async function runRuntime(argv, agent) {
     const { resolveObjective } = await import('../orchestrator/objectiveResolver.js');
     const { validateFragment } = await import('../orchestrator/planValidator.js');
     const session = context.session;
-    const selection = await resolveObjective(objective, session);
+    let selection;
+    try {
+      selection = await resolveObjective(objective, session);
+    } catch (err) {
+      throw new Error(`Delegation failed during objective_resolution: ${errorDiagnostic(err)}`, { cause: err });
+    }
     const provider = selection.provider;
-    const fragment = parseJsonText(formatMcpToolResult(await callMcpTool(
-      session.mcp,
-      provider.serverName,
-      'agent_plan',
-      {
-        capability: selection.capability,
-        operation: selection.operation,
-        objective,
-        workspace: { revision: String(Date.now()) },
-        constraints: {
-          maxConcurrency: resolveCapabilityConcurrency(
-            provider,
-            undefined,
-            process.env.WIKI_MANAGER_CAPABILITY_CONCURRENCY,
-          ),
-          requireApprovalForMutations: true,
+    let planResult;
+    try {
+      planResult = await callMcpTool(
+        session.mcp,
+        provider.serverName,
+        'agent_plan',
+        {
+          capability: selection.capability,
+          operation: selection.operation,
+          objective,
+          workspace: { revision: String(Date.now()) },
+          constraints: {
+            maxConcurrency: resolveCapabilityConcurrency(
+              provider,
+              undefined,
+              process.env.WIKI_MANAGER_CAPABILITY_CONCURRENCY,
+            ),
+            requireApprovalForMutations: true,
+          },
         },
-      },
-    )));
+      );
+    } catch (err) {
+      const endpoint = session.mcp?.[provider.serverName]?.url ?? 'unknown endpoint';
+      throw new Error(
+        `Delegation failed during agent_plan: provider=${provider.serverName} endpoint=${endpoint} ${errorDiagnostic(err)}`,
+        { cause: err },
+      );
+    }
+    const fragment = parseJsonText(formatMcpToolResult(planResult));
     if (!Array.isArray(fragment?.tasks) || fragment.tasks.length === 0) {
       throw new Error(fragment?.summary?.initialSynthesis?.[0] ?? `No task was planned for ${selection.capability}/${selection.operation}.`);
     }

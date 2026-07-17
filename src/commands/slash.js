@@ -627,7 +627,7 @@ ${helpPair('/mcp tools [mcp]', 'MCP tools', '/mcp call ...', 'Call MCP tool')}
 ${helpPair('/upload <path>', 'Upload document', '/uploads', 'Uploaded docs')}
 ${helpPair('/upload convert pending', 'Convert pending', '/uploads clean', 'Clean uploads')}
 ${helpPair('/wiki', 'Run wiki index', '/wiki run <args>', 'Raw wiki CLI')}
-${helpPair('/chat', 'Chat mode', '/agent', 'Agent mode')}
+${helpPair('/chat', 'Chat mode', '/agent [question]', 'Agent mode / one-shot')}
 ${helpPair('/openui', 'Open web UI in browser', '', '')}
 ${helpPair('/run status', 'Runtime status', '/run kill', 'Kill runtime run(s)')}
 ${helpPair('/run capability <id>', 'Deterministic capability run', '/approve', 'Grant pending approval')}
@@ -678,8 +678,31 @@ function rawCommandResult(command, output) {
   };
 }
 
-export function localizedOperationResult({ operation, target, status = 'succeeded' }) {
-  const facts = JSON.stringify({ operation, target, status });
+// Shared by every deterministic command that can trigger an on-demand
+// `docker pull` (agents up, service start): reports the images as they're
+// found missing and hands back the final list for localizedOperationResult.
+async function collectMissingImages(step, fn) {
+  let missingImages = [];
+  await fn({
+    onImagesMissing: (images) => {
+      missingImages = images;
+      step(`Donna: downloading and installing missing components: ${images.join(', ')}…`);
+    },
+  });
+  return missingImages;
+}
+
+function componentInstallAction(missingImages) {
+  return missingImages.length > 0 ? 'downloaded-and-installed-missing-components' : null;
+}
+
+export function localizedOperationResult({ operation, target, status = 'succeeded', componentAction = null, images = [] }) {
+  const facts = JSON.stringify({
+    operation,
+    target,
+    status,
+    ...(componentAction ? { componentAction, images } : {}),
+  });
   return {
     output: facts,
     rawOutput: true,
@@ -730,10 +753,12 @@ export async function handleSlashCommand(line, context) {
   const runAgentCommand = async (fn, verb) => {
     try {
       step(`Agents: ${verb}ing external agents…`);
-      await fn();
+      const missingImages = await collectMissingImages(step, fn);
       return localizedOperationResult({
         operation: verb,
         target: 'agents',
+        componentAction: componentInstallAction(missingImages),
+        images: missingImages,
       });
     } catch (err) {
       step(formatActivityError('agents', verb, err));
@@ -893,15 +918,17 @@ export async function handleSlashCommand(line, context) {
       // do not remap it to undefined, that bypasses any custom "all" target list and always
       // falls back to the hardcoded COMPOSE_SERVICES constant instead.
       const service = args[1];
-      if (service === 'agents') return runAgentCommand(startAgents, 'start');
+      if (service === 'agents' || service === 'agent') return runAgentCommand(startAgents, 'start');
       try {
         step(`Services: starting ${service ?? 'workspace services'}…`);
-        await startService(context.session, service);
+        const missingImages = await collectMissingImages(step, (opts) => startService(context.session, service, opts));
         step('Services: refreshing MCP runtime…');
         await refreshMcpRuntimeStatus(context.session);
         return localizedOperationResult({
           operation: 'start',
           target: service || 'workspace-services',
+          componentAction: componentInstallAction(missingImages),
+          images: missingImages,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

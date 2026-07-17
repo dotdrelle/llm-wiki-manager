@@ -20,6 +20,7 @@ type LogLineParts = { time: string | null; message: string };
 // wrapped status/error), so fewer, readable entries beat more, truncated ones.
 const ACTIVITY_SLOTS = Array.from({ length: 4 }, (_, index) => index);
 const LOG_SLOTS = Array.from({ length: 24 }, (_, index) => index);
+const PLAN_VIEWPORT_ROWS = 12;
 
 function wrapLine(value: string, width: number) {
   const max = Math.max(8, width);
@@ -131,29 +132,45 @@ function queueSummary(item: QueueItem) {
 }
 
 export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: string }) {
-  const lineWidth = () => Math.max(8, props.width - 2);
+  // Keep one column for the native vertical scrollbar when the plan is long.
+  const lineWidth = () => Math.max(8, props.width - 3);
   const firstPending = () => props.plan.find((s) => s.status === 'pending')?.step ?? null;
   const icon = (status: string) =>
     status === 'done' ? '[✓]' : status === 'failed' ? '[✗]' : status === 'running' ? '[…]' : '[ ]';
-  const title = () => props.jobName ? `Plan : ${props.jobName}` : 'Plan';
+  const visualRows = createMemo(() => props.plan.reduce((total, step) =>
+    total + wrapLine(`${icon(step.status)} ${step.step}. ${step.description}`, lineWidth()).slice(0, 2).length, 0));
+  const title = () => {
+    const label = props.jobName ? `Plan : ${props.jobName}` : 'Plan';
+    return visualRows() > PLAN_VIEWPORT_ROWS ? `${label} (${props.plan.length}) · scroll` : label;
+  };
+  const viewportRows = () => Math.min(PLAN_VIEWPORT_ROWS, Math.max(1, visualRows()));
   return (
     <box flexShrink={0} flexDirection="column" padding={1}>
       <text width={lineWidth()} fg="#D6DEE8" content={fit(title(), lineWidth())} />
-      <Index each={props.plan}>
-        {(step) => {
-          // Wrap step descriptions over up to 2 lines instead of truncating —
-          // "Ingest des 39 documents raw/untrac…" hid the actual target.
-          const lines = () => wrapLine(`${icon(step().status)} ${step().step}. ${step().description}`, lineWidth()).slice(0, 2);
-          return (
-            <box flexDirection="column">
-              <text width={lineWidth()} fg={planStepColor(step(), firstPending())} content={lines()[0]} />
-              <Show when={lines()[1]}>
-                <text width={lineWidth()} fg={planStepColor(step(), firstPending())} content={`    ${fit(lines()[1], Math.max(8, lineWidth() - 4))}`} />
-              </Show>
-            </box>
-          );
-        }}
-      </Index>
+      <scrollbox
+        height={viewportRows()}
+        scrollY={true}
+        scrollX={false}
+        stickyStart="top"
+        viewportCulling={true}
+        verticalScrollbarOptions={{ visible: visualRows() > PLAN_VIEWPORT_ROWS }}
+      >
+        <Index each={props.plan}>
+          {(step) => {
+            // Wrap step descriptions over up to 2 lines instead of truncating —
+            // "Ingest des 39 documents raw/untrac…" hid the actual target.
+            const lines = () => wrapLine(`${icon(step().status)} ${step().step}. ${step().description}`, lineWidth()).slice(0, 2);
+            return (
+              <box flexShrink={0} flexDirection="column">
+                <text width={lineWidth()} fg={planStepColor(step(), firstPending())} content={lines()[0]} />
+                <Show when={lines()[1]}>
+                  <text width={lineWidth()} fg={planStepColor(step(), firstPending())} content={`    ${fit(lines()[1], Math.max(8, lineWidth() - 4))}`} />
+                </Show>
+              </box>
+            );
+          }}
+        </Index>
+      </scrollbox>
     </box>
   );
 }

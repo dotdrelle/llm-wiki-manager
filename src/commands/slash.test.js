@@ -15,6 +15,23 @@ test('deterministic operation results ask Donna to localize compact facts withou
   assert.doesNotMatch(result.agentTrigger, /\/start|Docker|compose/);
 });
 
+test('start result tells Donna when missing container components were installed', () => {
+  const result = localizedOperationResult({
+    operation: 'start',
+    target: 'all',
+    componentAction: 'downloaded-and-installed-missing-components',
+    images: ['dotdrelle/llm-wiki:latest'],
+  });
+  assert.deepEqual(JSON.parse(result.output), {
+    operation: 'start',
+    target: 'all',
+    status: 'succeeded',
+    componentAction: 'downloaded-and-installed-missing-components',
+    images: ['dotdrelle/llm-wiki:latest'],
+  });
+  assert.match(result.agentTrigger, /downloaded-and-installed-missing-components/);
+});
+
 test('/workspace delete removes files and clears current session context after confirmation', async () => {
   const root = await mkdtemp(join(tmpdir(), 'wiki-manager-delete-workspace-'));
   const registryRoot = join(root, 'registry');

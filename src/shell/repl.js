@@ -82,7 +82,7 @@ const COMMAND_COMPLETION_DESCRIPTIONS = {
   '/uploads': 'List or clean uploaded documents.',
   '/clear': 'Clear the conversation screen.',
   '/chat': 'Switch free text to direct LLM chat without tools.',
-  '/agent': 'Switch free text to the LangGraph agent with tools.',
+  '/agent': 'Switch to agent mode, or run one agent request with /agent <question>.',
   '/openui': 'Open the workspace web UI in the browser.',
   '/run': 'Inspect, cancel, kill runtime runs, or start a capability run.',
   '/approve': 'Approve a pending runtime run or tool.',
@@ -797,8 +797,73 @@ function rememberProductionActivity(session, payload) {
   return true;
 }
 
+const TERMINAL_PLAN_STATUSES = new Set(['done', 'completed', 'succeeded', 'success', 'failed', 'error', 'cancelled', 'canceled']);
+
+function planTaskKey(task, index) {
+  return String(task?.id ?? task?.step ?? `task-${index + 1}`);
+}
+
+function errorDescription(value) {
+  if (!value) return null;
+  if (typeof value === 'string') return value.trim() || null;
+  if (value instanceof Error) return value.message;
+  if (typeof value === 'object') {
+    return errorDescription(value.message ?? value.reason ?? value.detail ?? value.description ?? value.error)
+      ?? (() => { try { return JSON.stringify(value); } catch { return String(value); } })();
+  }
+  return String(value);
+}
+
+function planTaskError(task, state) {
+  const activityKey = task?.activityKey ?? task?._activityKey ?? task?.ownerActivityKey;
+  const activity = (state?.activities ?? []).find((item) =>
+    (activityKey && String(item?.key) === String(activityKey))
+    || (task?.id != null && String(item?.taskId ?? '') === String(task.id)));
+  return errorDescription(
+    task?.error
+      ?? task?.result?.error
+      ?? task?.result?.reason
+      ?? activity?.error
+      ?? activity?.detail
+      ?? (['failed', 'error'].includes(String(state?.status ?? '').toLowerCase()) ? state?.evaluation?.reason : null),
+  );
+}
+
+export function appendRuntimePlanCompletionMessages(session, state) {
+  const plan = Array.isArray(state?.plan) ? state.plan : [];
+  const runId = String(state?.runId ?? 'runtime');
+  const current = new Map(plan.map((task, index) => [planTaskKey(task, index), String(task?.status ?? 'pending').toLowerCase()]));
+  if (session._runtimePlanRunId !== runId || !(session._runtimePlanStatuses instanceof Map)) {
+    session._runtimePlanRunId = runId;
+    session._runtimePlanStatuses = current;
+    return 0;
+  }
+
+  let appended = 0;
+  plan.forEach((task, index) => {
+    const key = planTaskKey(task, index);
+    const status = current.get(key);
+    const previous = session._runtimePlanStatuses.get(key);
+    if (!TERMINAL_PLAN_STATUSES.has(status) || TERMINAL_PLAN_STATUSES.has(previous)) return;
+    const label = String(task?.label ?? task?.description ?? task?.name ?? `Job ${key}`);
+    const failed = status === 'failed' || status === 'error';
+    const cancelled = status === 'cancelled' || status === 'canceled';
+    const error = failed ? planTaskError(task, state) : null;
+    const content = failed
+      ? `✗ Job terminé en erreur : ${label}\nStatus: ${status}${error ? `\nErreur: ${error}` : ''}`
+      : cancelled
+        ? `○ Job terminé : ${label}\nStatus: ${status}`
+        : `✓ Job terminé : ${label}\nStatus: ${status}`;
+    conversationMessages(session).push({ role: 'command', content });
+    appended += 1;
+  });
+  session._runtimePlanStatuses = current;
+  return appended;
+}
+
 export function applyRuntimeStateToShellSession(session, state) {
   if (!state || typeof state !== 'object') return false;
+  appendRuntimePlanCompletionMessages(session, state);
   const displayState = sanitizeRuntimeStateForDisplay(state);
   session.agentProjection = {
     conversation: Array.isArray(displayState.conversation) ? displayState.conversation.map((message) => ({ ...message })) : [],
@@ -870,6 +935,33 @@ export function shouldHandleFreeTextLocally(_line, session, { llmAvailable = Boo
   const classification = { kind: 'agent_turn', confidence: 1, reason: 'agent_mode_llm_decision' };
   if (!llmAvailable) return { local: false, classification, fallbackReason: 'local LLM unavailable' };
   return { local: true, classification };
+}
+
+// Shared by both the one-shot `/agent <question>` path in runLine and the
+// interactive free-text-to-runtime path below: maps a submitRuntimeRun()
+// outcome to the conversation message(s) it produces and a short log line,
+// so the classification → message mapping isn't duplicated per call site.
+function applyRuntimeOutcome(session, outcome, onLog, {
+  ambiguousFallback = 'Runtime could not classify that message.',
+} = {}) {
+  if (outcome.kind === 'accepted') {
+    onLog('runtime: run accepted');
+  } else if (outcome.kind === 'queued') {
+    conversationMessages(session).push({ role: 'command', content: String(outcome.result?.explanation ?? 'Request added to the queue.') });
+    onLog('runtime: control queued');
+  } else if (outcome.kind === 'observe' || outcome.kind === 'converse' || outcome.kind === 'mutate') {
+    conversationMessages(session).push({ role: 'command', content: String(outcome.result?.explanation ?? 'Runtime control message accepted.') });
+    onLog(`runtime: ${outcome.kind}`);
+  } else if (outcome.kind === 'ambiguous') {
+    conversationMessages(session).push({ role: 'command', content: String(outcome.result?.explanation ?? ambiguousFallback) });
+    onLog('runtime: ambiguous control');
+  } else if (outcome.result?.explanation) {
+    conversationMessages(session).push({ role: 'command', content: String(outcome.result.explanation) });
+    onLog(`runtime: ${outcome.kind}`);
+  } else {
+    conversationMessages(session).push({ role: 'command', content: `Runtime error: ${outcome.message}` });
+    onLog(`runtime error: ${outcome.message}`);
+  }
 }
 
 export async function submitRuntimeRun(line, { runtime, session }) {
@@ -1339,6 +1431,22 @@ export async function runLine(line, { agent, packageJson, session, onUpdate, onS
     return { exit: false };
   }
 
+  const oneShotAgentInput = /^\/agent\s+(.+)$/s.exec(trimmed)?.[1]?.trim();
+  if (oneShotAgentInput) {
+    if (!runtime?.url) {
+      const message = recordRuntimeUnavailableAgentInput(session, oneShotAgentInput, runtime);
+      onStep?.(message ?? 'runtime: disconnected');
+      onUpdate?.();
+      return { exit: false, oneShotAgent: true };
+    }
+    conversationMessages(session).push({ role: 'user', content: oneShotAgentInput });
+    onUpdate?.();
+    const outcome = await submitRuntimeRun(oneShotAgentInput, { runtime, session });
+    applyRuntimeOutcome(session, outcome, (msg) => onStep?.(msg));
+    onUpdate?.();
+    return { exit: false, oneShotAgent: true, runtimeOutcome: outcome };
+  }
+
   if (trimmed.startsWith('/')) {
     onStep?.(`Shell: ${trimmed}`);
     const result = await handleSlashCommand(trimmed, { packageJson, session, onStep, runtime });
@@ -1755,28 +1863,12 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
             }
             conversationMessages(session).push({ role: 'user', content: line });
             const outcome = await submitRuntimeRun(line, { runtime, session });
-            if (outcome.kind === 'accepted') {
-              activityLines = [...activityLines, 'runtime: run accepted'].slice(-LOWER_DETAIL_ROWS);
-            } else if (outcome.kind === 'queued') {
-              // Server-localized acknowledgement (src/runtime/controlMessages.js).
-              conversationMessages(session).push({ role: 'command', content: String(outcome.result?.explanation ?? 'Request added to the queue.') });
-              activityLines = [...activityLines, 'runtime: control queued'].slice(-LOWER_DETAIL_ROWS);
-            } else if (outcome.kind === 'observe' || outcome.kind === 'converse' || outcome.kind === 'mutate') {
-              const explanation = outcome.result?.explanation ?? 'Runtime control message accepted.';
-              conversationMessages(session).push({ role: 'command', content: explanation });
-              activityLines = [...activityLines, `runtime: ${outcome.kind}`].slice(-LOWER_DETAIL_ROWS);
-            } else if (outcome.kind === 'ambiguous') {
-              conversationMessages(session).push({ role: 'command', content: String(outcome.result?.explanation ?? 'Runtime could not classify that message. Use /queue for a future run, or ask/status more explicitly.') });
-              activityLines = [...activityLines, 'runtime: ambiguous control'].slice(-LOWER_DETAIL_ROWS);
-            } else if (outcome.result?.explanation) {
-              // cancel / approve / modify_run and any future control kinds:
-              // always surface the server's localized explanation.
-              conversationMessages(session).push({ role: 'command', content: String(outcome.result.explanation) });
-              activityLines = [...activityLines, `runtime: ${outcome.kind}`].slice(-LOWER_DETAIL_ROWS);
-            } else {
-              conversationMessages(session).push({ role: 'command', content: `Runtime error: ${outcome.message}` });
-              activityLines = [...activityLines, `runtime error: ${outcome.message}`].slice(-LOWER_DETAIL_ROWS);
-            }
+            applyRuntimeOutcome(
+              session,
+              outcome,
+              (msg) => { activityLines = [...activityLines, msg].slice(-LOWER_DETAIL_ROWS); },
+              { ambiguousFallback: 'Runtime could not classify that message. Use /queue for a future run, or ask/status more explicitly.' },
+            );
             syncRuntimeState();
           } else if (!session.chatMode && !line.trim().startsWith('/')) {
             const message = recordRuntimeUnavailableAgentInput(session, line, runtime);

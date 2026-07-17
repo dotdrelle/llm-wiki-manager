@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import YAML from 'yaml';
 import { cacertEnv, ensureCacertComposeOverride } from './cacert.js';
+import { checkMissingDockerImages } from './dockerImages.js';
 import { managerEnvFile, readEnvFile, resolveAgentsDataDir } from './env.js';
 import { managerRoot } from './workspaces.js';
 
@@ -281,11 +282,28 @@ export async function serviceStates(session) {
   return states;
 }
 
-export async function startService(session, service) {
+export async function missingServiceImages(service) {
   const aliases = serviceAliases();
   const targets = service ? (aliases[service] ?? [service]) : COMPOSE_SERVICES;
-  const output = await runCompose(session, ['up', '-d', ...targets], { timeout: 180_000 });
-  return [`Started: ${targets.join(', ')}`, output].filter(Boolean).join('\n');
+  const config = readComposeConfig();
+  const images = targets.map((target) => config.services?.[target]?.image).filter(Boolean);
+  return checkMissingDockerImages(images);
+}
+
+export async function startService(session, service, options = {}) {
+  const aliases = serviceAliases();
+  const targets = service ? (aliases[service] ?? [service]) : COMPOSE_SERVICES;
+  const absentImages = await missingServiceImages(service);
+  if (absentImages.length > 0) options.onImagesMissing?.(absentImages);
+  const output = await runCompose(session, ['up', '-d', ...targets], {
+    timeout: 180_000,
+    onOutput: options.onOutput,
+  });
+  return {
+    output: [`Started: ${targets.join(', ')}`, output].filter(Boolean).join('\n'),
+    targets,
+    missingImages: absentImages,
+  };
 }
 
 export async function stopService(session, service) {

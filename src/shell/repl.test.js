@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   applyRuntimeStateToShellSession,
+  appendRuntimePlanCompletionMessages,
   chatReadTools,
   createSession,
   runHeadlessChatTurn,
@@ -17,6 +18,32 @@ import {
   shouldHandleFreeTextLocally,
   submitRuntimeRun,
 } from './repl.js';
+import { httpLinkParts, wrapHttpLinks } from './externalLinks.js';
+
+test('ShellUI turns HTTP URLs into valid links without trailing punctuation', () => {
+  assert.deepEqual(httpLinkParts('Voir https://example.test/docs?q=ok.'), [
+    { text: 'Voir ' },
+    { text: 'https://example.test/docs?q=ok', url: 'https://example.test/docs?q=ok' },
+    { text: '.' },
+  ]);
+});
+
+test('long ShellUI URLs use one short label with the complete link target', () => {
+  const url = 'https://example.test/a/very/long/document';
+  const links = wrapHttpLinks(url, 12).flat().filter((part) => part.url);
+  assert.deepEqual(links, [{ text: '[link: example.test]', url }]);
+});
+
+test('ShellUI never splits a link label at the end of a line', () => {
+  const url = 'https://example.test/a/very/long/document';
+  const rows = wrapHttpLinks(`Voir maintenant ${url}`, 20);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[1], [{ text: '[link: example.test]', url }]);
+});
+
+test('ShellUI leaves malformed URLs as plain text', () => {
+  assert.deepEqual(httpLinkParts('Erreur: https://'), [{ text: 'Erreur: https://' }]);
+});
 
 test('runtime display preserves a failed plan and its diagnostic evidence', () => {
   const state = {
@@ -131,6 +158,47 @@ test('applyRuntimeStateToShellSession clears terminal plan and activities when r
   assert.deepEqual(session.agentProjection.planPatches, []);
 });
 
+test('runtime plan completion is appended once to the ShellUI conversation', () => {
+  const session = createSession();
+  applyRuntimeStateToShellSession(session, {
+    runId: 'run-1',
+    status: 'running',
+    plan: [{ id: 'build', label: 'Build documentation', status: 'running' }],
+  });
+  applyRuntimeStateToShellSession(session, {
+    runId: 'run-1',
+    status: 'running',
+    plan: [{ id: 'build', label: 'Build documentation', status: 'done' }],
+  });
+  applyRuntimeStateToShellSession(session, {
+    runId: 'run-1',
+    status: 'done',
+    plan: [{ id: 'build', label: 'Build documentation', status: 'done' }],
+  });
+
+  assert.deepEqual(conversationMessages(session), [{
+    role: 'command',
+    content: '✓ Job terminé : Build documentation\nStatus: done',
+  }]);
+});
+
+test('runtime plan failure includes its available error description', () => {
+  const session = createSession();
+  appendRuntimePlanCompletionMessages(session, {
+    runId: 'run-2',
+    plan: [{ id: 'ingest', description: 'Ingest pages', status: 'running' }],
+  });
+  appendRuntimePlanCompletionMessages(session, {
+    runId: 'run-2',
+    plan: [{ id: 'ingest', description: 'Ingest pages', status: 'failed', result: { error: { message: 'Index unavailable' } } }],
+  });
+
+  assert.deepEqual(conversationMessages(session), [{
+    role: 'command',
+    content: '✗ Job terminé en erreur : Ingest pages\nStatus: failed\nErreur: Index unavailable',
+  }]);
+});
+
 test('direct chat system prompt forbids unsolicited next steps', async () => {
   const session = createSession();
   let systemPrompt = '';
@@ -221,6 +289,48 @@ test('submitRuntimeRun reports a non-409 error without throwing or calling /cont
   } finally {
     restore();
   }
+});
+
+test('/agent <question> submits one runtime request and remains in chat mode', async () => {
+  const restore = stubFetch(async (url, init) => {
+    assert.equal(pathOf(url), '/run');
+    assert.equal(JSON.parse(String(init.body)).input, 'lance ingestion');
+    return jsonResponse(202, { accepted: true, runId: 'run-one-shot' });
+  });
+  try {
+    const session = createSession();
+    session.chatMode = true;
+    const result = await runLine('/agent lance ingestion', {
+      agent: null,
+      packageJson: { version: 'test' },
+      session,
+      runtime: { url: 'http://runtime.test' },
+    });
+
+    assert.equal(session.chatMode, true);
+    assert.equal(result.oneShotAgent, true);
+    assert.equal(result.runtimeOutcome.kind, 'accepted');
+    assert.deepEqual(conversationMessages(session), [{ role: 'user', content: 'lance ingestion' }]);
+  } finally {
+    restore();
+  }
+});
+
+test('/agent <question> reports an unavailable runtime without leaving chat mode', async () => {
+  const session = createSession();
+  session.chatMode = true;
+
+  const result = await runLine('/agent lance ingestion', {
+    agent: null,
+    packageJson: { version: 'test' },
+    session,
+    runtime: { error: 'runtime stopped' },
+  });
+
+  assert.equal(session.chatMode, true);
+  assert.equal(result.oneShotAgent, true);
+  assert.deepEqual(conversationMessages(session).map((message) => message.role), ['user', 'command']);
+  assert.match(conversationMessages(session).at(-1).content, /runtime stopped/);
 });
 
 test('runLine does not update workspace profile before Donna handles the request', async () => {

@@ -63,9 +63,45 @@ workspace `.wikirc.yaml`.
 | `DOCUMENT_LLM_TIMEOUT_SECONDS` | no | OCR request timeout |
 | `EXA_MCP_API_KEY` | only if Exa enabled | used by `mcp.endpoints.json` when the Exa endpoint is declared |
 | `CME_MCP_PORT` / `DOCUMENTS_MCP_PORT` / `MAILER_MCP_PORT` | no | port overrides (defaults `3336` / `3337` / `3335`) |
+| `NODE_USE_ENV_PROXY` | behind an HTTP proxy | set to `1` so the Node runtime's `fetch` calls use `HTTP_PROXY` / `HTTPS_PROXY` |
+| `HTTP_PROXY` / `HTTPS_PROXY` | behind an HTTP proxy | proxy URL, including its scheme and port |
+| `NO_PROXY` | recommended with a proxy | hosts that must remain direct, notably the local runtime and MCP endpoints |
 
 Leaving an agent's `*_MCP_AUTH_TOKEN` empty disables authentication on that
 agent — not recommended outside local development.
+
+### VPN or corporate HTTP proxy
+
+The interactive shell may successfully reach the LLM while a delegated run
+still fails during `objective_resolution`: the delegation is prepared by the
+separate Node runtime, whose `fetch` implementation only reads the standard
+proxy variables when environment-proxy support is enabled.
+
+Add the following to the root `.env` when the proxy is a permanent part of the
+manager environment:
+
+```dotenv
+NODE_USE_ENV_PROXY=1
+HTTPS_PROXY=http://proxy.example:11011
+HTTP_PROXY=http://proxy.example:11011
+NO_PROXY=localhost,127.0.0.1,host.docker.internal
+```
+
+For a proxy that exists only while a VPN is active, keep
+`NODE_USE_ENV_PROXY=1` in `.env` and export the session-specific proxy values
+before starting `wiki-manager`:
+
+```bash
+export HTTPS_PROXY=http://proxy.example:11011
+export HTTP_PROXY=http://proxy.example:11011
+export NO_PROXY=localhost,127.0.0.1,host.docker.internal
+```
+
+The URL scheme (`http://`) is required for consistent behavior across HTTP
+clients. `NO_PROXY` prevents local runtime calls, local MCP calls, and
+container-to-host coordination from being sent to the corporate proxy. Without
+`HTTP_PROXY` or `HTTPS_PROXY`, `NODE_USE_ENV_PROXY=1` does not force a proxy and
+normal direct networking remains unchanged.
 
 ---
 

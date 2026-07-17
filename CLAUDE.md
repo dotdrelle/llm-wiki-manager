@@ -501,8 +501,9 @@ remain the source of truth. Queue state is workspace-scoped.
 - When `--cacert` is present, generated overrides live under the manager state
   directory: `.wiki/runtime/cacert.compose.yml` for workspace services and
   `.wiki/runtime/agents.cacert.compose.yml` for global agents. They are
-  generated once on first use and never overwritten — edit freely; delete to
-  regenerate from the current `--cacert` path and compose services.
+  generated state and are refreshed whenever the active `--cacert` path or
+  Compose services change. Do not edit them manually: the next Compose command
+  overwrites stale content from the current certificate path and services.
 - CA overrides inject `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
   `REQUESTS_CA_BUNDLE`, and `CURL_CA_BUNDLE` in containers; do not hard-code
   equivalent machine-specific certificate settings in the base compose files.

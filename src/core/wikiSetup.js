@@ -1,12 +1,31 @@
 import { execFile } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import YAML from 'yaml';
+import { checkMissingDockerImages } from './dockerImages.js';
 import { patchWikircProfile } from './wikirc.js';
 import { managerEnvFile, managerMcpEndpointsFile } from './env.js';
 import { createWorkspace, findWorkspace, isValidWorkspaceName, listWorkspaces, managerRoot, workspacesDir } from './workspaces.js';
 
 const execFileAsync = promisify(execFile);
+
+async function missingAgentImages() {
+  const composeFiles = [
+    join(managerRoot(), 'agents.docker-compose.yml'),
+    join(dirname(managerEnvFile()), 'agents.docker-compose.override.yml'),
+  ].filter(existsSync);
+  const images = [...new Set(composeFiles.flatMap((filePath) => {
+    try {
+      const config = YAML.parse(readFileSync(filePath, 'utf8')) ?? {};
+      return Object.values(config.services ?? {}).map((service) => service?.image).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }))];
+  return checkMissingDockerImages(images);
+}
 
 function wrapDockerError(err) {
   if (err?.code === 'ENOENT') {
@@ -35,6 +54,8 @@ function wrapDockerError(err) {
 
 export async function startAgents(options = {}) {
   try {
+    const absentImages = await missingAgentImages();
+    if (absentImages.length > 0) options.onImagesMissing?.(absentImages);
     const { stdout, stderr } = await execFileAsync(join(managerRoot(), 'wiki-workspace'), ['agents', 'up'], {
       cwd: managerRoot(),
       env: {
@@ -51,7 +72,10 @@ export async function startAgents(options = {}) {
       timeout: options.timeout ?? 180_000,
       maxBuffer: options.maxBuffer ?? 1024 * 1024 * 8,
     });
-    return [stdout, stderr].filter(Boolean).join('\n').trim();
+    return {
+      output: [stdout, stderr].filter(Boolean).join('\n').trim(),
+      missingImages: absentImages,
+    };
   } catch (err) {
     throw wrapDockerError(err);
   }

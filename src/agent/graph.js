@@ -1005,7 +1005,7 @@ function toolsForClassification(classification, writeTools, session = null) {
   return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...writeTools];
 }
 
-const DONNA_READ_VERBS = new Set(['status', 'list', 'search', 'read', 'get', 'fetch']);
+const DONNA_READ_VERBS = new Set(['status', 'list', 'search', 'read', 'get', 'fetch', 'collect']);
 
 export function isDonnaReadTool(item) {
   const name = String(item?.function?.name ?? '');

@@ -515,6 +515,30 @@ test('chatReadTools exposes only declared, read-only MCP tools to /chat', () => 
   assert.deepEqual(names, ['cme__cme_sources_list', 'cme__cme_status']);
 });
 
+test('chatReadTools accepts wiki_collect_context ("collect" is a read verb)', () => {
+  const session = {
+    chatAccess: {
+      servers: {
+        wiki: { allow: ['wiki_collect_context', 'wiki_search_context', 'wiki_write_page'] },
+      },
+    },
+    mcp: {
+      wiki: {
+        status: 'connected',
+        tools: [
+          { name: 'wiki_collect_context', inputSchema: { type: 'object', properties: {} } },
+          { name: 'wiki_search_context', inputSchema: { type: 'object', properties: {} } },
+          { name: 'wiki_write_page', inputSchema: { type: 'object', properties: {} } },
+        ],
+      },
+    },
+  };
+  const names = chatReadTools(session).map((item) => item.function.name).sort();
+  // wiki_write_page: declared but a write — excluded by the read-only guard
+  // even if an operator allow-lists it by mistake.
+  assert.deepEqual(names, ['wiki__wiki_collect_context', 'wiki__wiki_search_context']);
+});
+
 test('chatReadTools is empty when no chatAccess is configured', () => {
   const session = { mcp: { cme: { status: 'connected', tools: [{ name: 'cme_status', inputSchema: {} }] } } };
   assert.deepEqual(chatReadTools(session), []);

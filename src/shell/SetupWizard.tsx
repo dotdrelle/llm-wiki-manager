@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { useKeyboard, usePaste } from '@opentui/solid';
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js';
 import { fallbackModels, normalizeProvider } from '../core/modelFetch.js';
+import { checkInternetConnectivity } from '../core/startupCheck.js';
 import {
   createNewWorkspace,
   deleteWorkspaceAndFiles,
@@ -17,7 +18,7 @@ import {
 import { listWorkspaces, workspacesDir } from '../core/workspaces.js';
 import { loadWikircProfile } from '../core/wikirc.js';
 
-type Gap = { kind: 'agents' | 'workspace' | 'llm' | 'vector'; context?: Record<string, any> };
+type Gap = { kind: 'agents' | 'network' | 'workspace' | 'llm' | 'vector'; context?: Record<string, any> };
 type Mode = 'startup' | 'setup';
 type Step =
   | { kind: 'menu'; title: string; items: Array<{ label: string; value: string; muted?: boolean }> }
@@ -195,6 +196,20 @@ export function SetupWizard(props: {
         noLabel: 'Skip',
       };
     }
+    if (currentRoute === 'network') {
+      const context = currentGap()?.context ?? {};
+      const transport = context.proxyUrl
+        ? `Proxy: ${context.proxyEnabled ? context.proxyUrl : `${context.proxyUrl} (NODE_USE_ENV_PROXY is not enabled)`}`
+        : 'Proxy: direct connection';
+      const certificate = context.cacertPath ? `CA: ${context.cacertPath}` : 'CA: system trust store';
+      return {
+        kind: 'confirm',
+        title: 'Internet connectivity',
+        message: `Could not reach ${context.url ?? 'the connectivity endpoint'}.\n${transport}\n${certificate}\n${context.error ?? ''}`.trim(),
+        yesLabel: 'Retry',
+        noLabel: 'Skip',
+      };
+    }
     if (currentRoute === 'workspace-confirm') {
       return { kind: 'confirm', title: 'Workspace', message: 'No workspace configured.', yesLabel: 'Create', noLabel: 'Skip' };
     }
@@ -337,6 +352,7 @@ export function SetupWizard(props: {
   function startupRoute(gap?: Gap) {
     if (!gap) return 'done';
     if (gap.kind === 'agents') return 'agents';
+    if (gap.kind === 'network') return 'network';
     if (gap.kind === 'workspace') return 'workspace-confirm';
     if (gap.kind === 'llm') return 'llm-provider';
     if (gap.kind === 'vector') return 'vector-confirm';
@@ -524,6 +540,14 @@ export function SetupWizard(props: {
       await runAction(async () => {
         await startAgents();
         nextStartup('Agents running');
+      });
+      return;
+    }
+    if (currentRoute === 'network') {
+      await runAction(async () => {
+        const result = await checkInternetConnectivity();
+        if (!result.ok) throw new Error(result.context?.error ?? 'Internet connectivity check failed.');
+        nextStartup('Internet connectivity verified');
       });
       return;
     }

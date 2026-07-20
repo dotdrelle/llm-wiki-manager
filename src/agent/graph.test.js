@@ -1349,11 +1349,14 @@ test('Donna interprets a cleanup request and calls runtime__kill herself', async
     runtime: { url: 'http://runtime.test' },
     agentProjection: { status: 'running', activities: [], conversation: [] },
     llm: {
-      async completeWithTools({ tools }) {
+      async completeWithTools({ tools, system }) {
         calls += 1;
         if (calls === 1) {
           const names = tools.map((tool) => tool.function.name);
           assert.ok(names.includes('runtime__kill'), 'control tools must be bound during an active run');
+          const killTool = tools.find((tool) => tool.function.name === 'runtime__kill');
+          assert.equal(killTool.function.parameters.properties.purge.type, 'boolean');
+          assert.match(system, /delete, reset, abandon or replace the current plan/);
           return {
             content: null,
             message: { role: 'assistant', content: null },

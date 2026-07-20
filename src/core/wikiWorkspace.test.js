@@ -22,3 +22,12 @@ test('wiki-workspace checks runtime pid command before killing', async () => {
   assert.match(script, /if ! runtime_pid_matches; then\n        printf 'refusing to stop pid/);
   assert.match(script, /kill "\$\(cat "\$pid_file"\)"/);
 });
+
+test('wiki-workspace regenerates CA compose overrides instead of retaining removed services', async () => {
+  const script = await readFile(new URL('../../wiki-workspace', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(script, /if \[\[ ! -f "\$override_path" \]\]; then/);
+  assert.match(script, /local tmp_override="\$override_path\.tmp\.\$\$"/);
+  assert.match(script, /mv "\$tmp_override" "\$override_path"/);
+  assert.match(script, /Changes are overwritten on the next compose command/);
+});

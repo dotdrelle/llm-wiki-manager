@@ -13,6 +13,7 @@ import { buildMcpStatus } from '../core/mcp.js';
 import { loadWikircProfile, summarizeWikircConfig } from '../core/wikirc.js';
 import { listWorkspaces } from '../core/workspaces.js';
 import { postRuntimeShutdown } from '../runtime/client.js';
+import { runPreflightChecks, withRuntimePreflight } from '../core/startupCheck.js';
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -103,6 +104,7 @@ function App(props: {
   agent: unknown;
   packageJson: Record<string, unknown>;
   runtime?: any;
+  preflight?: any;
 }) {
   const renderer = useRenderer();
   const dimensions = useTerminalDimensions();
@@ -115,6 +117,8 @@ function App(props: {
   // that invariant structural instead of relying on two booleans staying in
   // sync at every call site.
   const [screen, setScreen] = createSignal<'startup' | 'setup' | 'main'>('startup');
+  const [preflight, setPreflight] = createSignal(props.preflight ?? { status: 'degraded', checks: [] });
+  const [preflightBusy, setPreflightBusy] = createSignal(false);
   let ctrlCTimer: ReturnType<typeof setTimeout> | null = null;
   let exiting = false;
   // Single exit path: the owned-runtime shutdown MUST happen here, on the
@@ -185,6 +189,13 @@ function App(props: {
   // closeSetup() already does.
   const loadDefaultWorkspace = async () => loadWorkspace(startupInfo(props.packageJson).workspaceName);
 
+  // The canonical status is the first useful view after entering ShellUI.
+  // Run it only after /use has established the workspace so config, services,
+  // MCP connectivity and runtime state are all reported in the same snapshot.
+  const showDefaultStatus = async (workspaceLoaded: boolean) => {
+    if (workspaceLoaded) await state.submitInput('/status');
+  };
+
   // "Open a workspace" is really one composite action (load it, then bring
   // its services up) — named here so it has one definition instead of being
   // inlined as three sequential submitInput calls in openAction.
@@ -197,18 +208,60 @@ function App(props: {
     return loaded;
   };
 
+  const refreshPreflight = async () => {
+    setPreflightBusy(true);
+    try {
+      const next = await runPreflightChecks();
+      setPreflight(withRuntimePreflight(next, props.runtime));
+    } finally {
+      setPreflightBusy(false);
+    }
+  };
+
   const openAction = (action: StartupAction, workspaceName?: string) => {
     if (action === 'init-workspace') {
       setScreen('setup');
+      return;
+    }
+    if (action === 'retry-preflight') {
+      void refreshPreflight();
+      return;
+    }
+    if (action === 'start-services') {
+      void (async () => {
+        setPreflightBusy(true);
+        try {
+          await openWorkspaceAndStartServices(workspaceName ?? startupInfo(props.packageJson).workspaceName);
+          const next = await runPreflightChecks();
+          setPreflight(withRuntimePreflight(next, props.runtime));
+        } finally {
+          setPreflightBusy(false);
+        }
+      })();
+      return;
+    }
+    if (action === 'open-logs') {
+      setScreen('main');
+      void (async () => {
+        const loaded = await loadDefaultWorkspace();
+        if (!loaded) return;
+        const containerCheck = preflight().checks?.find((check: any) => check.kind === 'containers');
+        const service = containerCheck?.context?.unavailable?.[0];
+        if (service) await state.submitInput(`/logs ${service} 120`);
+        else await state.submitInput('/services');
+        await state.submitInput('/mcp status');
+      })();
       return;
     }
     setScreen('main');
     void (async () => {
       try {
         if (action === 'open-workspace') {
-          await openWorkspaceAndStartServices(workspaceName ?? startupInfo(props.packageJson).workspaceName);
+          const loaded = await openWorkspaceAndStartServices(workspaceName ?? startupInfo(props.packageJson).workspaceName);
+          await showDefaultStatus(loaded);
         } else if (action === 'new-conversation' || action === 'run-workflow') {
           const loaded = await loadDefaultWorkspace();
+          await showDefaultStatus(loaded);
           if (action === 'run-workflow' && loaded) {
             await state.submitInput('/agent');
           }
@@ -230,7 +283,7 @@ function App(props: {
     setScreen('main');
     // Reuse loadWorkspace (not a bare /use dispatch) so the "already on this
     // workspace" short-circuit applies here too.
-    void loadWorkspace(info.workspaceName);
+    void loadWorkspace(info.workspaceName).then(showDefaultStatus);
   };
 
   const showCopyHint = (message: string) => {
@@ -397,6 +450,8 @@ function App(props: {
         profileName={startup().profileName}
         workspaces={startup().workspaces}
         hasWorkspace={startup().hasWorkspace}
+        preflight={preflight()}
+        preflightBusy={preflightBusy()}
         width={dimensions().width}
         height={dimensions().height}
         keyboardEvent={startupKeyboardEvent()}
@@ -411,13 +466,15 @@ export async function runOpenTuiShell({
   agent,
   packageJson,
   runtime = null,
+  preflight = null,
 }: {
   agent: unknown;
   packageJson: Record<string, unknown>;
   runtime?: any;
+  preflight?: any;
 }) {
   await new Promise<void>((resolve, reject) => {
-    render(() => <App agent={agent} packageJson={packageJson} runtime={runtime} />, {
+    render(() => <App agent={agent} packageJson={packageJson} runtime={runtime} preflight={preflight} />, {
       exitOnCtrlC: false,
       useMouse: true,
       targetFps: 30,

@@ -83,7 +83,7 @@ export async function ensureRuntime({
     if (!forceRestart && !stale && actualCacertPath === expectedCacertPath) {
       return { url, started: false, health: existing, token: auth.token, tokenPath: auth.tokenPath };
     }
-    if (stale) console.error('runtime: source changed since start — restarting for fresh code.');
+    if (stale) console.log('\x1b[32mruntime: source changed since start — restarting for fresh code.\x1b[0m');
     await postRuntimeShutdown({ url, token: auth.token });
     await waitForRuntimeShutdown(url, auth.token, 2500);
   }

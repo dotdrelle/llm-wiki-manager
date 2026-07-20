@@ -22,6 +22,9 @@ test('agent compose services run as the host uid and gid', async () => {
   const agentsCompose = YAML.parse(agentsRaw);
   assert.equal(agentsCompose.services.cme.user, '${UID:-1000}:${GID:-1000}');
   assert.equal(agentsCompose.services.documents.user, '${UID:-1000}:${GID:-1000}');
+  assert.equal(agentsCompose.services.documents.environment.includes('DOCUMENT_LLM_BASE_URL=${DOCUMENT_LLM_BASE_URL:-https://albert.api.etalab.gouv.fr/v1}'), true);
+  assert.equal(agentsCompose.services.documents.environment.includes('DOCUMENT_LLM_MODEL=${DOCUMENT_LLM_MODEL:-lightonai/LightOnOCR-2-1B}'), true);
+  assert.equal(agentsCompose.services.documents.environment.includes('DOCUMENT_LLM_API_KEY=${DOCUMENT_LLM_API_KEY:-}'), true);
   // MailerSend was an external-connector experiment — removed from the
   // default stack (the agent repo still exists for ad-hoc use).
   assert.equal(agentsCompose.services.mailer, undefined);

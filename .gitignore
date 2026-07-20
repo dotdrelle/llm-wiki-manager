@@ -18,6 +18,8 @@ workspaces/*
 !.github/workflows/*.yml
 
 !docker-compose.yml
+# Default external-agent stack shipped with global npm installs.
+!agents.docker-compose.yml
 # Shipped example for the optional user-side agents override.
 !agents.docker-compose.mailer.example.yml
 docker-compose*.local.yml

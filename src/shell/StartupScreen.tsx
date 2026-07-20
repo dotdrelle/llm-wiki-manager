@@ -6,7 +6,10 @@ export type StartupAction =
   | 'new-conversation'
   | 'open-workspace'
   | 'run-workflow'
-  | 'init-workspace';
+  | 'init-workspace'
+  | 'retry-preflight'
+  | 'start-services'
+  | 'open-logs';
 
 type StartupItem = {
   action: StartupAction;
@@ -92,6 +95,8 @@ export function StartupScreen(props: {
   profileName?: string | null;
   workspaces: string[];
   hasWorkspace: boolean;
+  preflight?: { status?: string; checks?: Array<{ kind: string; ok?: boolean; skipped?: boolean; pending?: boolean; detail?: string }> };
+  preflightBusy?: boolean;
   width: number;
   height: number;
   keyboardEvent?: { id: number; key: any } | null;
@@ -102,7 +107,7 @@ export function StartupScreen(props: {
   const [selected, setSelected] = createSignal(0);
   let lastKeyboardEventId = 0;
   const panelWidth = createMemo(() => Math.max(70, Math.min(96, props.width - 4)));
-  const panelHeight = createMemo(() => Math.max(27, Math.min(35, props.height - 2)));
+  const panelHeight = createMemo(() => Math.max(27, Math.min(39, props.height - 2)));
   const left = createMemo(() => Math.max(1, Math.floor((props.width - panelWidth()) / 2)));
   const top = createMemo(() => Math.max(1, Math.floor((props.height - panelHeight()) / 2)));
 
@@ -110,7 +115,7 @@ export function StartupScreen(props: {
     if (!props.hasWorkspace) {
       return [initWorkspaceItem('Create and configure the default workspace')];
     }
-    return [
+    const base = [
       {
         action: 'new-conversation',
         label: 'Start a new conversation',
@@ -128,6 +133,12 @@ export function StartupScreen(props: {
         detail: 'Switch to Agent mode after loading the workspace',
       },
     ];
+    if (props.preflight?.status === 'degraded') {
+      base.push({ action: 'retry-preflight', label: 'Retry pending checks', detail: 'Recheck Docker, Internet, containers and MCP' });
+      base.push({ action: 'start-services', label: 'Start services', detail: 'Start agents and workspace containers, then recheck' });
+      base.push({ action: 'open-logs', label: 'Open diagnostics', detail: 'Show service logs and detailed MCP status' });
+    }
+    return base;
   });
   const workspaceItems = createMemo(() => props.workspaces.map((name) => ({
     label: name,
@@ -218,9 +229,23 @@ export function StartupScreen(props: {
   });
 
   const status = createMemo(() => {
-    if (!props.hasWorkspace) return 'Setup needed';
+    if (props.preflightBusy) return 'Checking';
+    if (props.preflight?.status === 'setup_required' || !props.hasWorkspace) return 'Setup required';
+    if (props.preflight?.status === 'degraded') return 'Degraded';
     return props.wikiReady ? 'Ready' : 'Default .wikirc missing';
   });
+
+  const statusColor = createMemo(() => {
+    if (props.preflight?.status === 'setup_required') return '#FBBF24';
+    if (props.preflightBusy || props.preflight?.status === 'degraded') return '#FBBF24';
+    return '#8BD5CA';
+  });
+
+  const preflightChecks = createMemo(() => props.preflight?.checks ?? []);
+  const checkLabel = (kind: string) => ({
+    docker: 'Docker', internet: 'Internet', agents: 'Agents', workspace: 'Workspaces',
+    containers: 'Containers', mcp: 'MCP', runtime: 'Runtime',
+  } as Record<string, string>)[kind] ?? kind;
 
   const subtitle = createMemo(() => {
     const workspace = props.workspaceName ?? 'no workspace';
@@ -256,7 +281,7 @@ export function StartupScreen(props: {
       >
         <box height={1} flexDirection="row">
           <text fg="#8BD5CA" content={fit(`DONNA v${props.version}`, Math.floor(innerWidth() * 0.5))} />
-          <text fg={props.wikiReady ? '#8BD5CA' : '#FBBF24'} content={fit(` ${statusDot(props.wikiReady)} ${status()}`, Math.floor(innerWidth() * 0.45))} />
+          <text fg={statusColor()} content={fit(` ${props.preflightBusy ? '◐' : statusDot(props.preflight?.status === 'ready')} ${status()}`, Math.floor(innerWidth() * 0.45))} />
         </box>
         <text height={1} fg="#7F8C8D" content={fit(subtitle(), innerWidth())} />
         <text height={1}>{''}</text>
@@ -294,10 +319,18 @@ export function StartupScreen(props: {
           </For>
         </box>
         <text height={1}>{''}</text>
-        <box height={3} flexDirection="column" border={['left']} borderStyle="heavy" borderColor="#5DADE2" paddingX={1}>
-          <text height={1} fg="#D6DEE8" content={fit(`LLM  ${statusDot(Boolean(props.model))} ${props.model || 'not configured'}`, innerWidth() - 2)} />
-          <text height={1} fg="#D6DEE8" content={fit(`MCP  ${statusDot(props.connectedMcpServers > 0)} ${props.connectedMcpServers} server(s) configured`, innerWidth() - 2)} />
-          <text height={1} fg="#D6DEE8" content={fit(`Wiki ${statusDot(props.wikiReady)} ${props.wikiReady ? 'default profile ready' : 'init required'}`, innerWidth() - 2)} />
+        <box height={Math.max(3, preflightChecks().length)} flexDirection="column" border={['left']} borderStyle="heavy" borderColor="#5DADE2" paddingX={1} overflow="hidden">
+          <For each={preflightChecks().length ? preflightChecks() : [
+            { kind: 'workspace', ok: props.wikiReady, detail: props.wikiReady ? 'default profile ready' : 'init required' },
+            { kind: 'mcp', ok: props.connectedMcpServers > 0, detail: `${props.connectedMcpServers} server(s) configured` },
+            { kind: 'llm', ok: Boolean(props.model), detail: props.model || 'not configured' },
+          ]}>
+            {(check) => {
+              const color = check.ok ? '#8BD5CA' : '#FBBF24';
+              const icon = check.ok ? '✓' : check.pending || check.skipped ? '◐' : '!';
+              return <text height={1} fg={color} content={fit(`${icon} ${checkLabel(check.kind)} — ${check.detail ?? (check.ok ? 'ok' : 'unavailable')}`, innerWidth() - 2)} />;
+            }}
+          </For>
         </box>
         <text height={1}>{''}</text>
         <text height={1} fg="#7F8C8D" content={shortcutHint()} />

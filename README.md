@@ -8,7 +8,7 @@ endpoints, and provides the `donna` shell: an agent-first terminal UI that can
 inspect workspaces, run safe manager commands, call MCP tools, guide production
 jobs, and run one-shot headless tasks.
 
-Current coordinated release: **0.14.5**. Managed `llm-wiki` services expose
+Current coordinated release: **0.14.11**. Managed `llm-wiki` services expose
 the Wiki Graph v2 browser and APIs; rebuild the `llm-wiki` image when deploying
 this release through Docker.
 
@@ -85,6 +85,27 @@ npm install --global --allow-scripts=bun @dotdrelle/wiki-manager
 
 In both modes, launch the commands from the directory that should hold the
 manager state (`workspaces/`, `.env`, and `mcp.endpoints.json`).
+
+At interactive ShellUI startup, the manager checks Docker availability first,
+then outbound HTTPS connectivity, followed by agent and workspace
+configuration, workspace containers, MCP handshakes (`tools/list`), and the
+Donna runtime. The connectivity probe uses the configured HTTP(S) proxy and
+custom CA settings. MCP diagnostics distinguish configuration, authentication,
+reachability, and protocol failures. Remote MCPs are skipped when Internet is
+offline, while local endpoints are still checked; MCPs are also checked when
+Docker is unavailable because they may run elsewhere.
+
+The startup screen reports **Ready**, **Degraded**, or **Setup required** and
+keeps the shell usable in degraded mode. It offers **Retry pending checks**,
+**Start services**, and **Open diagnostics** (service logs plus detailed MCP
+status). Set
+`WIKI_MANAGER_CONNECTIVITY_URL` only when the default npm-registry ping endpoint
+must be replaced by an organization-approved HTTPS endpoint.
+
+After a workspace is loaded, ShellUI displays `/status` automatically as the
+first operational view. When **Open workspace** also starts services, the status
+snapshot is produced afterwards so it reflects their current container and MCP
+state.
 
 ## Functional overview
 
@@ -664,7 +685,18 @@ Original files are stored under
 the documents agent to `<workspace>/raw/untracked/`. If the documents agent is
 down, the upload remains stored and can be converted later.
 Image files, scanned PDFs, and images detected inside PDF or Office documents
-are sent through LLM OCR automatically.
+are sent through LLM OCR automatically. The bundled agent stack defaults to
+the Albert-compatible endpoint and
+[`lightonai/LightOnOCR-2-1B`](https://huggingface.co/lightonai/LightOnOCR-2-1B);
+configure it with `DOCUMENT_LLM_BASE_URL`, `DOCUMENT_LLM_MODEL`, and the
+dedicated `DOCUMENT_LLM_API_KEY` (an ambient `OPENAI_API_KEY` is not used).
+
+In the served web Chat, a successful conversion also adds the new
+`raw/untracked/*.md` path as a document-context badge. Up to five wiki or
+pending Markdown documents can be selected. Only their paths are sent to
+Donna; she reads the relevant documents through the configured read-only MCP
+tools when the question refers to them. This does not ingest the document:
+`wiki ingest` remains the explicit transition into the durable wiki.
 
 ## The `donna` Shell
 
@@ -700,6 +732,14 @@ The TUI uses a two-pane layout:
 - **Right** — Plan/Queue tabs, active MCP jobs, plus a live log/trace panel.
   `Ctrl+Q` toggles the tabs; clicking `Plan` or `Queue (N)` selects that tab
   directly. MCP connection details remain available through `/mcp status`.
+
+In the served browser Activity panel, `Clear` is a per-tab display cleanup and
+`Clear all` applies it to Plan, Local activity, Runtime activity, and Logs. It
+does not delete a plan. **Reset plan** is the confirmed destructive operation:
+it stops active work and purges the workspace runtime plan, activities, logs,
+queue, and persisted runtime state. Donna can perform the same operation when
+the user explicitly asks to delete, reset, abandon, or replace the current
+plan. A request that only says to stop or cancel remains non-purging.
 
 Useful primitives:
 

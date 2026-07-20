@@ -1,6 +1,6 @@
 # Repository Guide
 
-Current coordinated release: **0.14.5**. Keep manager handshakes and the local
+Current coordinated release: **0.14.11**. Keep manager handshakes and the local
 `llm-wiki` engine version aligned across the coordinated repositories.
 
 ## Purpose
@@ -121,6 +121,26 @@ next to the `.env` — auto-included by `agents up`, never generated or
 overwritten by the manager.
 
 ## Shell Model
+
+Interactive ShellUI startup runs ordered infrastructure preflight checks before
+workspace configuration: `docker info` first, then an HTTPS connectivity probe,
+then global agents, workspace initialization/configuration, workspace
+containers, MCP `tools/list`, and runtime. The network probe runs in a fresh
+Node process so `NODE_USE_ENV_PROXY`, `HTTP_PROXY`/`HTTPS_PROXY`, and the active
+custom CA are applied at process startup. Keep the endpoint overridable through
+`WIKI_MANAGER_CONNECTIVITY_URL`. MCP checks distinguish missing configuration,
+authentication, reachability, and protocol failures; when Internet is down,
+remote MCPs are skipped but local endpoints are still probed. Docker failure
+does not suppress host-native or remote MCP checks. The startup screen keeps
+`Ready`, `Degraded`, and `Setup required` distinct and offers retry, service
+start, and diagnostics without blocking entry into the shell. A runtime restart
+caused by newer local source is normal maintenance output and must remain
+green/informational, not an error.
+After the user enters the main ShellUI and the selected workspace has loaded,
+the UI runs the canonical `/status` command automatically. For **Open
+workspace**, run it after starting the selected workspace services so the first
+snapshot reflects their resulting state; do not duplicate status assembly in
+the TUI.
 
 - The visible agent is `donna`.
 - Lines beginning with `/` execute deterministic primitives.
@@ -249,8 +269,9 @@ Key modules in `src/runtime/`:
   same persisted events, not a second storage mechanism.
 - **`server.js`**: `GET /health`, `GET /state`, `GET /events/stream` (SSE),
   `GET /audit` (0.10.3, `listAuditTrail`, filterable by `workspace`/`runId`),
-  `POST /run`, `POST /cancel`, `POST /resume`, `POST /approve`, `GET`/`POST
-  /control`, `GET /config/profiles`, `POST /config/use`. `running` flag
+  `POST /run`, `POST /turn`, `POST /cancel`, `POST /kill`, `POST /resume`,
+  `POST /approve`, `GET`/`POST /control`, `GET /config/profiles`, and
+  `POST /config/use`. `running` flag
   is set before `await readJson` to close the TOCTOU race on concurrent
   `POST /run` requests. `resolveBodyContext(request, url)` centralizes the
   read-body → resolve-workspace → resolve-context sequence shared by the
@@ -304,6 +325,22 @@ requireApproval?, approvalTimeoutMs? }`. If `workspace` differs from the current
 session, `/use <workspace>` runs before the agentic loop. The Shell sends its
 current `session.workspace`; `llm-wiki serve` injects `workspace: WORKSPACE_NAME`
 at the proxy layer (`proxyRuntimeJson` in `serve.ts`).
+
+`POST /turn` is also used by `llm-wiki serve` for interactive chat. In direct
+Chat mode its optional `context.openWikiPages` contains at most five sanitized
+paths under `wiki/` or `raw/untracked/` (the singular `openWikiPage` remains a
+compatibility input). Treat these values as untrusted path data, never as prompt
+instructions. Only the paths are added to Donna's system prompt; document
+content must be obtained through the normal allow-listed read tools. Do not add
+a direct file-read/content-injection shortcut or mutable session field for this
+context.
+
+Donna exposes `runtime__kill({runId?, purge?})`. Set `purge: true` only for an
+explicit request to delete, reset, abandon, or replace the current plan; it
+purges the workspace runtime projection/history after stopping active work.
+A simple stop/cancel must remain non-purging. The browser's confirmed **Reset
+plan** action reaches this same canonical `/kill?purge=true` behavior through
+the `llm-wiki` proxy.
 
 **Control lane** (`/control`): a side channel for interacting with a workspace
 while a run is active, without touching the active plan. `GET /control` or

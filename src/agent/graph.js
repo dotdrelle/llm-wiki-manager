@@ -120,7 +120,10 @@ const RUNTIME_KILL_TOOL = {
   function: {
     name: 'runtime__kill',
     description: 'Hard-stop the workspace runtime: abort the active run, cancel its agent jobs, mark persisted runs interrupted and purge the control queue. Use when the user asks to remove/kill/clean the current run, its jobs or the queue.',
-    parameters: { type: 'object', additionalProperties: false, properties: { runId: { type: 'string', description: 'Optional specific run id; omit to kill everything active in the workspace.' } } },
+    parameters: { type: 'object', additionalProperties: false, properties: {
+      runId: { type: 'string', description: 'Optional specific run id; omit to kill everything active in the workspace.' },
+      purge: { type: 'boolean', description: 'Set true only when the user explicitly asks to delete/reset/replace the current plan and runtime history.' },
+    } },
   },
 };
 
@@ -694,8 +697,8 @@ async function handleRuntimeControlTool(session, tool, args = {}) {
   const workspace = session.workspace ?? null;
   try {
     if (tool === 'kill') {
-      const result = await postRuntimeKill({ url, workspace, runId: args.runId ?? null });
-      return `Runtime killed: ${result.runs ?? 0} run(s) interrupted, ${result.tasks ?? 0} task(s) cancelled, ${result.queued ?? 0} queued control request(s) purged.`;
+      const result = await postRuntimeKill({ url, workspace, runId: args.runId ?? null, purge: args.purge === true });
+      return `Runtime killed: ${result.runs ?? 0} run(s) interrupted, ${result.tasks ?? 0} task(s) cancelled, ${result.queued ?? 0} queued control request(s) purged${result.purged ? `; runtime state reset (${result.purged.events ?? 0} event(s))` : ''}.`;
     }
     if (tool === 'cancel') {
       const result = await postRuntimeCancel({ url, workspace });
@@ -942,7 +945,7 @@ export function buildAgentSystemPrompt(state) {
     workspaceProfile
       ? `Workspace profile (.wiki/profile.md) — durable user preferences, apply these to every reply (tone, tutoiement/vouvoiement, formatting, etc.):\n${workspaceProfile}`
       : null,
-    'Runtime control: you have runtime__status, runtime__cancel, runtime__kill, runtime__approve and runtime__enqueue. When the user asks to stop, remove, clean or kill the current run, its jobs or the queue ("supprime le job et la queue", "arr\u00eate tout"), call runtime__kill (or runtime__cancel for a soft stop of just the run) and confirm what was stopped. For questions about what is running or queued, call runtime__status and answer from its data. When the user consents to a pending approval in any phrasing ("vas-y", "ok pour l\'export"), call runtime__approve. When the user asks for a NEW action while a run is active, do not execute it: propose runtime__enqueue (run it after) or, if they insist it replaces the current work, runtime__kill then the new action.',
+    'Runtime control: you have runtime__status, runtime__cancel, runtime__kill, runtime__approve and runtime__enqueue. When the user asks to stop, remove, clean or kill the current run, its jobs or the queue ("supprime le job et la queue", "arr\u00eate tout"), call runtime__kill (or runtime__cancel for a soft stop of just the run) and confirm what was stopped. When the user explicitly asks to delete, reset, abandon or replace the current plan, call runtime__kill with purge=true; never set purge=true for a simple stop. For questions about what is running or queued, call runtime__status and answer from its data. When the user consents to a pending approval in any phrasing ("vas-y", "ok pour l\'export"), call runtime__approve. When the user asks for a NEW action while a run is active, do not execute it: propose runtime__enqueue (run it after) or, if they insist it replaces the current work, runtime__kill then the new action.',
     'Report every runtime control outcome exactly as the tool returned it \u2014 never embellish. If runtime__kill reports 0 run(s)/0 task(s)/0 purged, say there was nothing active to stop or purge; do NOT claim a run, plan, pending approval or queue item was removed. If runtime__status returns an error or could not be read, say the runtime state could not be retrieved and do not describe a state you never obtained. Never assert that something was cleaned, cancelled, approved or purged unless that specific tool result confirms it.',
     'Durable profile updates are actions in this stabilized version: delegate them instead of writing directly.',
   ].filter(Boolean).join('\n');

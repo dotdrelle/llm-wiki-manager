@@ -1,0 +1,78 @@
+# agents.docker-compose.yml — external agent stack
+#
+# Starts cme and documents as workspace-agnostic global services.
+# All workspace paths are resolved at tool-call time via the `workspace` param.
+#
+# Required:
+#   WORKSPACES_ROOT   — path to the directory containing all workspace folders
+#
+# Optional (defaults shown):
+#   AGENTS_DATA_DIR        — persistent state for stateful agents (default: ./.agents-data)
+#   CME_MCP_PORT           — 3336
+#   DOCUMENTS_MCP_PORT     — 3337
+#   CME_MCP_AUTH_TOKEN     — bearer token for cme agent (empty = no auth)
+#   DOCUMENTS_MCP_AUTH_TOKEN — bearer token for documents agent (empty = no auth)
+#   DOCUMENT_LLM_BASE_URL  — https://albert.api.etalab.gouv.fr/v1
+#   DOCUMENT_LLM_MODEL     — lightonai/LightOnOCR-2-1B
+#   DOCUMENT_LLM_API_KEY   — OpenAI/OpenAI-compatible API key for document OCR
+#   DOCUMENT_LLM_TIMEOUT_SECONDS — 120
+#
+# Set these variables in a .env file at the directory where you run wiki-workspace,
+# or export them in your shell before running wiki-workspace agents up.
+#
+# TLS (optional, cme + documents share the same cert):
+#   Set MCP_SSL_CERTFILE=/certs/server.crt and MCP_SSL_KEYFILE=/certs/server.key,
+#   place the cert files in AGENTS_DATA_DIR/certs/, and uncomment the TLS lines below.
+#
+# Usage (via wiki-workspace):
+#   wiki-workspace agents up
+#   wiki-workspace agents down
+#   wiki-workspace agents logs
+#   wiki-workspace agents pull
+#
+# Or directly:
+#   WORKSPACES_ROOT=/path/to/workspaces docker compose -f agents.docker-compose.yml up -d
+
+services:
+
+  cme:
+    image: dotdrelle/agent-cme:latest
+    user: "${UID:-1000}:${GID:-1000}"
+    ports:
+      - "${CME_MCP_PORT:-3336}:8080"
+    environment:
+      - MCP_AUTH_TOKEN=${CME_MCP_AUTH_TOKEN:-}
+      - WORKSPACES_ROOT=/workspaces
+      # HTTPS — uncomment and place cert files in AGENTS_DATA_DIR/certs/
+      #- MCP_SSL_CERTFILE=/certs/server.crt
+      #- MCP_SSL_KEYFILE=/certs/server.key
+    volumes:
+      - ${AGENTS_DATA_DIR:-./.agents-data}/cme:/data
+      - ${WORKSPACES_ROOT:?Set WORKSPACES_ROOT to the directory containing all workspace folders}:/workspaces
+      #- ${AGENTS_DATA_DIR:-./.agents-data}/certs:/certs:ro
+    restart: unless-stopped
+
+  documents:
+    image: dotdrelle/agent-wiki-documents:latest
+    user: "${UID:-1000}:${GID:-1000}"
+    ports:
+      - "${DOCUMENTS_MCP_PORT:-3337}:8080"
+    environment:
+      - MCP_AUTH_TOKEN=${DOCUMENTS_MCP_AUTH_TOKEN:-}
+      - DOCUMENT_INPUT_DIR=/documents/input
+      - DOCUMENT_OUTPUT_DIR=/documents/output
+      - WORKSPACES_ROOT=/workspaces
+      - DOCUMENT_MAX_UPLOAD_BYTES=${DOCUMENT_MAX_UPLOAD_BYTES:-52428800}
+      - DOCUMENT_LLM_BASE_URL=${DOCUMENT_LLM_BASE_URL:-https://albert.api.etalab.gouv.fr/v1}
+      - DOCUMENT_LLM_MODEL=${DOCUMENT_LLM_MODEL:-lightonai/LightOnOCR-2-1B}
+      - DOCUMENT_LLM_API_KEY=${DOCUMENT_LLM_API_KEY:-}
+      - DOCUMENT_LLM_TIMEOUT_SECONDS=${DOCUMENT_LLM_TIMEOUT_SECONDS:-120}
+      # HTTPS — uncomment and place cert files in AGENTS_DATA_DIR/certs/
+      #- MCP_SSL_CERTFILE=/certs/server.crt
+      #- MCP_SSL_KEYFILE=/certs/server.key
+    volumes:
+      - ${AGENTS_DATA_DIR:-./.agents-data}/documents/input:/documents/input
+      - ${AGENTS_DATA_DIR:-./.agents-data}/documents/output:/documents/output
+      - ${WORKSPACES_ROOT:?Set WORKSPACES_ROOT to the directory containing all workspace folders}:/workspaces
+      #- ${AGENTS_DATA_DIR:-./.agents-data}/certs:/certs:ro
+    restart: unless-stopped

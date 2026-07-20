@@ -7,7 +7,7 @@ loadManagerEnv();
 import { createAgentGraph } from '../agent/graph.js';
 import { handleSlashCommand, printHelp, printVersion, refreshMcpRuntimeStatus } from '../commands/slash.js';
 import { runShell, runHeadlessChatTurn } from '../shell/repl.js';
-import { runChecks } from '../core/startupCheck.js';
+import { runPreflightChecks, withRuntimePreflight } from '../core/startupCheck.js';
 import { applySessionWikircProfile } from '../core/sessionConfig.js';
 import { listWikircProfiles } from '../core/wikirc.js';
 import { callMcpTool, formatMcpToolResult, readChatAccessConfig } from '../core/mcp.js';
@@ -1085,6 +1085,9 @@ async function runRuntime(argv, agent) {
       response = await runHeadlessChatTurn(ephemeral, input, {
         history,
         onStep: ephemeral._onStep,
+        // UI context from `wiki serve`: up to five selected wiki or raw
+        // documents. Only paths are prompted; Donna reads through tools.
+        openWikiPages: body.context?.openWikiPages ?? body.context?.openWikiPage,
       });
     } else {
       response = await runAgentTurn(agent, ephemeral, input, { messages, signal });
@@ -1222,8 +1225,23 @@ export async function runCli(argv) {
     // in a random cwd must not litter files.
     const scaffolded = ensureManagerScaffold({ log: (message) => console.log(`[wiki-manager] ${message}`) });
     if (scaffolded.length > 0) loadManagerEnv();
-    const gaps = await runChecks();
-    if (gaps.length > 0) await runStartupWizard(gaps);
+    const reportCheck = ({ kind, ok, detail, context, skipped, pending }) => {
+      const labels = { docker: 'Docker', internet: 'Internet', agents: 'Agent containers', workspace: 'Workspaces', containers: 'Workspace containers', mcp: 'MCP' };
+      const label = labels[kind] ?? kind;
+      const instruction = !ok && context?.command ? ` — command: ${context.command}` : '';
+      const suffix = detail ? ` — ${detail}` : ` — ${context?.error ?? context?.dockerError ?? 'waiting'}`;
+      const color = ok ? '\x1b[32m' : '\x1b[33m';
+      const state = ok ? 'ready' : pending || skipped ? 'waiting' : 'needs attention';
+      const icon = ok ? '✓' : pending || skipped ? '◐' : '✗';
+      console.log(`${color}${icon} configuration: ${label} ${state}${suffix}${instruction}\x1b[0m`);
+    };
+    let preflight = await runPreflightChecks({ onCheck: reportCheck });
+    if (preflight.gaps.length > 0) {
+      await runStartupWizard(preflight.gaps);
+      // The wizard may have created a workspace, started agents or repaired
+      // configuration. Re-read everything before drawing the home screen.
+      preflight = await runPreflightChecks();
+    }
     let runtime = null;
     try {
       const { ensureRuntime } = await import('../runtime/lifecycle.js');
@@ -1234,11 +1252,12 @@ export async function runCli(argv) {
       runtime = unavailableRuntime(err);
       console.error(`Runtime unavailable: ${runtime.error}`);
     }
+    preflight = withRuntimePreflight(preflight, runtime);
     // The owned-runtime shutdown happens inside the TUI's own exit paths
     // (see tui.tsx onShellExit): render() resolves at MOUNT, so anything
     // after this await would run while the shell is still on screen —
     // 0.12.9 shipped exactly that bug and killed the runtime under the user.
-    await runOpenTuiShell({ agent, packageJson, runtime });
+    await runOpenTuiShell({ agent, packageJson, runtime, preflight });
     return;
   }
 

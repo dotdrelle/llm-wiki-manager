@@ -66,6 +66,7 @@ workspace `.wikirc.yaml`.
 | `NODE_USE_ENV_PROXY` | behind an HTTP proxy | set to `1` so the Node runtime's `fetch` calls use `HTTP_PROXY` / `HTTPS_PROXY` |
 | `HTTP_PROXY` / `HTTPS_PROXY` | behind an HTTP proxy | proxy URL, including its scheme and port |
 | `NO_PROXY` | recommended with a proxy | hosts that must remain direct, notably the local runtime and MCP endpoints |
+| `WIKI_MANAGER_CONNECTIVITY_URL` | no | HTTPS endpoint used by the ordered ShellUI startup connectivity probe |
 
 Leaving an agent's `*_MCP_AUTH_TOKEN` empty disables authentication on that
 agent — not recommended outside local development.

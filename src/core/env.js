@@ -51,9 +51,33 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
   const created = [];
   const endpointsFile = managerMcpEndpointsFile();
   const endpointsExample = join(packageRoot, 'mcp.endpoints.example.json');
-  if (!existsSync(endpointsFile) && existsSync(endpointsExample)) {
-    copyFileSync(endpointsExample, endpointsFile);
-    created.push('mcp.endpoints.json');
+  if (existsSync(endpointsExample)) {
+    if (!existsSync(endpointsFile)) {
+      copyFileSync(endpointsExample, endpointsFile);
+      created.push('mcp.endpoints.json');
+    } else {
+      // Additive migration: the scaffold only copies the example on first run,
+      // so installs that predate a new top-level key (e.g. chatAccess) never
+      // receive it and the feature stays silently disabled. Merge ONLY the
+      // top-level keys missing from the operator's file; existing keys —
+      // including a hand-edited chatAccess — are never touched. To disable a
+      // feature key permanently, set it to null instead of deleting it: null is
+      // "present", so the merge preserves it and readers treat it as absent.
+      try {
+        const current = JSON.parse(readFileSync(endpointsFile, 'utf8'));
+        const example = JSON.parse(readFileSync(endpointsExample, 'utf8'));
+        if (current && typeof current === 'object' && !Array.isArray(current)) {
+          const missing = Object.keys(example).filter((key) => !(key in current));
+          if (missing.length > 0) {
+            for (const key of missing) current[key] = example[key];
+            writeFileSync(endpointsFile, `${JSON.stringify(current, null, 2)}\n`);
+            created.push(`mcp.endpoints.json keys: ${missing.join(', ')}`);
+          }
+        }
+      } catch {
+        // Unreadable or invalid JSON: leave the operator's file strictly alone.
+      }
+    }
   }
   const envFile = managerEnvFile();
   const envExample = join(packageRoot, '.env.example');

@@ -122,13 +122,22 @@ export function resetSessionProjection(session) {
 
 function withSessionRunIdentity(event, session) {
   const identity = session?._currentRunIdentity;
-  if (!identity) return event;
+  // The workspace must be attached even OUTSIDE a run identity: the SSE
+  // publisher drops events whose workspace does not match the (always
+  // workspace-scoped) serve UI client. Events dispatched between chained
+  // executions — e.g. the plan_set of the next action, run evaluation,
+  // assistant messages — used to leave with workspace=null and never reached
+  // the UI, which then displayed a stale plan from the previous action.
+  const workspace = event.workspace ?? identity?.workspace ?? session?.workspace ?? null;
+  if (!identity) {
+    return workspace === (event.workspace ?? null) ? event : { ...event, workspace };
+  }
   return {
     ...event,
     runId: event.runId ?? identity.runId ?? null,
     turnId: event.turnId ?? identity.turnId ?? null,
     taskId: event.taskId ?? identity.taskId ?? null,
-    workspace: event.workspace ?? identity.workspace ?? null,
+    workspace,
   };
 }
 

@@ -109,6 +109,37 @@ test('extractActivity: documents conversion activity carries plan and percent', 
   assert.deepEqual(activity.plan.steps.map((step) => step.id), ['resolve', 'convert', 'write']);
 });
 
+test('extractActivity: agent_status carries structured processing progress', () => {
+  const activity = extractActivity({
+    jobId: 'job-build',
+    taskId: 'build-report',
+    operation: 'build',
+    status: 'running',
+    progress: {
+      percent: 47,
+      phase: 'build',
+      detail: 'Batch 2/4 · LLM throttled',
+      stepIndex: 1,
+      stepTotal: 2,
+      steps: [
+        { id: 'build', name: 'build', status: 'running' },
+        { id: 'export', name: 'export', status: 'pending' },
+      ],
+      batch: { index: 2, total: 4, status: 'running' },
+      throttling: { active: true, waitMs: 1200, retryAt: '2026-07-21T10:00:01Z' },
+      processing: { instructionCount: 8 },
+    },
+  }, { server: 'production', tool: 'agent_status' });
+
+  assert.deepEqual(activity.plan.steps.map((step) => [step.id, step.status]), [
+    ['build', 'running'],
+    ['export', 'pending'],
+  ]);
+  assert.equal(activity.progress.batch.index, 2);
+  assert.equal(activity.progress.throttling.active, true);
+  assert.equal(activity.progress.processing.instructionCount, 8);
+});
+
 test('rememberActivity: returns normalized activity on success', () => {
   const session = {};
   const result = rememberActivity(session, { id: '1', status: 'running', source: 'x', kind: 'job' });

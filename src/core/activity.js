@@ -31,6 +31,9 @@ function normalizePlanSteps(steps) {
     executor: s?.executor ?? null,
     executorQuery: s?.executorQuery ?? null,
     outputRefs: Array.isArray(s?.outputRefs) ? s.outputRefs.map(String) : [],
+    ...(s?.status != null ? { status: String(s.status) } : {}),
+    ...(s?.startedAt != null ? { startedAt: s.startedAt } : {}),
+    ...(s?.finishedAt != null ? { finishedAt: s.finishedAt } : {}),
   }));
 }
 
@@ -149,6 +152,7 @@ function productionActivityFromPayload(payload, context = {}) {
       step,
       ...(payload?.taskId ? { stepId: String(payload.taskId) } : {}),
     },
+    plan: Array.isArray(progress?.steps) ? { steps: progress.steps } : null,
     poll: jobId ? {
       server: 'production',
       tool: context.tool === 'agent_status' ? 'agent_status' : 'production_job_status',

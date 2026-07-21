@@ -210,8 +210,11 @@ agents_compose() {
   [[ -f "$agents_compose_file" ]] || die "agents compose file not found: $agents_compose_file"
 
   local agents_data_dir workspaces_root
-  agents_data_dir="$(absolute_path "${AGENTS_DATA_DIR:-.agents-data}" "$DEFAULT_MANAGER_DIR")"
   workspaces_root="$(absolute_path "$WORKSPACES_DIR" "$DEFAULT_MANAGER_DIR")"
+  # Canonical .agents-data lives next to the workspaces (same rule as the
+  # manager's resolveAgentsDataDir): the serve stack and the agents stack MUST
+  # mount the same host directory or document conversions break.
+  agents_data_dir="$(absolute_path "${AGENTS_DATA_DIR:-$workspaces_root/.agents-data}" "$DEFAULT_MANAGER_DIR")"
 
   local compose_env_args=()
   [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
@@ -709,7 +712,8 @@ compose_for_workspace() {
   mcp_port="$(workspace_value "$workspace" WIKI_MCP_PORT 3101)"
   prod_port="$(workspace_value "$workspace" PRODUCTION_MCP_PORT 3102)"
   project="$(compose_project "$workspace")"
-  agents_data_dir="$(absolute_path "${AGENTS_DATA_DIR:-.agents-data}" "$DEFAULT_MANAGER_DIR")"
+  # Same canonical rule as agents_compose: .agents-data next to the workspaces.
+  agents_data_dir="$(absolute_path "${AGENTS_DATA_DIR:-$(dirname "$ws_path")/.agents-data}" "$DEFAULT_MANAGER_DIR")"
 
   local compose_env_args=()
   [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
@@ -920,7 +924,8 @@ config_workspace() {
   [[ -f "$env_file" ]] && die "workspace already configured: $env_file"
 
   local port_base serve_port mcp_port prod_port wiki_token prod_token agents_data_dir
-  agents_data_dir="$(absolute_path "${AGENTS_DATA_DIR:-.agents-data}" "$DEFAULT_MANAGER_DIR")"
+  # Same canonical rule as agents_compose: .agents-data next to the workspaces.
+  agents_data_dir="$(absolute_path "${AGENTS_DATA_DIR:-$(dirname "$target_path")/.agents-data}" "$DEFAULT_MANAGER_DIR")"
   port_base="$(find_free_workspace_port_base 3100)"
   serve_port="$port_base"
   mcp_port=$((port_base + 1))

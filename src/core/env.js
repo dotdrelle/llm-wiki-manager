@@ -98,14 +98,26 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
   return created;
 }
 
+// Mirrors workspacesDir() in core/workspaces.js (which imports this module,
+// so it cannot be imported here without a cycle).
+function workspacesRootDir() {
+  return process.env.WIKI_WORKSPACES_DIR
+    ? resolve(process.env.WIKI_WORKSPACES_DIR)
+    : join(userManagerDir(), 'workspaces');
+}
+
 // Single source of truth for where `.agents-data` lives, shared by the
-// manager's own document intake and by the host path it mounts into agent
-// containers — keeping them in sync avoids the two silently drifting apart.
+// manager's own document intake, the per-workspace serve stack, and the
+// GLOBAL agents stack (documents/cme containers). All three must resolve the
+// same host directory: serve writes an upload into its mount and the
+// documents container must find it under the identical path — a divergence
+// here is exactly the clean-install "Input file does not exist" bug.
+// Canonical location: `<workspaces root>/.agents-data`, session or not.
 export function resolveAgentsDataDir(session = null) {
   const configured = process.env.AGENTS_DATA_DIR;
-  if (configured) return isAbsolute(configured) ? configured : resolve(defaultRuntimeStateDir(), configured);
+  if (configured) return isAbsolute(configured) ? configured : resolve(managerStateDir(), configured);
   if (session?.workspacePath) return resolve(dirname(session.workspacePath), '.agents-data');
-  return resolve(defaultRuntimeStateDir(), 'agents-data');
+  return resolve(workspacesRootDir(), '.agents-data');
 }
 
 function parseEnvValue(value) {

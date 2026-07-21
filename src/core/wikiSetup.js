@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import YAML from 'yaml';
 import { checkMissingDockerImages } from './dockerImages.js';
 import { patchWikircProfile } from './wikirc.js';
-import { managerEnvFile, managerMcpEndpointsFile } from './env.js';
+import { managerEnvFile, managerMcpEndpointsFile, resolveAgentsDataDir } from './env.js';
 import { createWorkspace, findWorkspace, isValidWorkspaceName, listWorkspaces, managerRoot, workspacesDir } from './workspaces.js';
 
 const execFileAsync = promisify(execFile);
@@ -68,6 +68,12 @@ export async function startAgents(options = {}) {
         // user's .env stayed empty on a fresh install.
         WIKI_MANAGER_ENV_FILE: managerEnvFile(),
         WIKI_MANAGER_ENDPOINTS_FILE: managerMcpEndpointsFile(),
+        // Same pinning for .agents-data: without it the script defaults to
+        // $PWD/.agents-data (the PACKAGE directory), while the serve stack
+        // mounts the workspace-root .agents-data — the documents container
+        // then reads an empty input dir and every conversion fails with
+        // "Input file does not exist" on a clean install.
+        AGENTS_DATA_DIR: resolveAgentsDataDir(),
       },
       timeout: options.timeout ?? 180_000,
       maxBuffer: options.maxBuffer ?? 1024 * 1024 * 8,
@@ -88,6 +94,7 @@ export async function stopAgents(options = {}) {
       env: {
         ...process.env,
         WIKI_WORKSPACES_DIR: workspacesDir(),
+        AGENTS_DATA_DIR: resolveAgentsDataDir(),
       },
       timeout: options.timeout ?? 120_000,
       maxBuffer: options.maxBuffer ?? 1024 * 1024 * 8,

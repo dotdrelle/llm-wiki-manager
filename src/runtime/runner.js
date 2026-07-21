@@ -607,8 +607,25 @@ function failedTaskActivities(session) {
   return failedKeys.size > 0 ? all.filter((activity) => failedKeys.has(activity.key)) : all;
 }
 
-function ensurePlanProjection(session, runId) {
-  if (!session.headlessPlan || session.agentProjection?.plan) return;
+// Identity of a plan as displayed: the ordered list of task ids. Two plans
+// with the same tasks in the same order are the same plan for projection
+// purposes (statuses update through plan_step_updated, not a re-projection).
+function planIdentitySignature(plan) {
+  return Array.isArray(plan) ? plan.map(planTaskId).join('|') : '';
+}
+
+export function ensurePlanProjection(session, runId) {
+  if (!session.headlessPlan) return;
+  // Re-emit plan_set not only when the projection has no plan yet, but also
+  // when the session plan has CHANGED shape since the last projection. A
+  // chained run (e.g. /skill pipeline) sets a fresh headlessPlan for step 2
+  // while the projection still holds step 1's plan; the old guard
+  // (`agentProjection?.plan` truthy → skip) then left the UI stuck on the
+  // step 1 plan. Compare task identities and re-project when they differ.
+  const projected = session.agentProjection?.plan ?? null;
+  if (projected && planIdentitySignature(projected) === planIdentitySignature(session.headlessPlan)) {
+    return;
+  }
   dispatchAgentEvent(session, createAgentEvent('plan_set', {
     origin: 'runtime',
     runId,

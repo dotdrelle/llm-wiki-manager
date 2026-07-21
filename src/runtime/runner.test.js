@@ -1,7 +1,38 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { evaluateRuntimeRun, finishRuntimeRun, materializeTaskInputs, replanRuntimeRun, runRuntimeAgenticWorkflow, runRuntimeParallelPlan, shouldUseParallelScheduler } from './runner.js';
+import { ensurePlanProjection, evaluateRuntimeRun, finishRuntimeRun, materializeTaskInputs, replanRuntimeRun, runRuntimeAgenticWorkflow, runRuntimeParallelPlan, shouldUseParallelScheduler } from './runner.js';
+
+test('ensurePlanProjection re-projects when the chained plan changes shape (step 2)', () => {
+  const session = { agentEvents: [], agentProjection: null };
+  // Step 1: a fresh plan is projected.
+  session.headlessPlan = [{ id: 'a', description: 'ingest', status: 'pending' }];
+  ensurePlanProjection(session, 'run-1');
+  assert.deepEqual(
+    (session.agentProjection?.plan ?? []).map((step) => step.id),
+    ['a'],
+  );
+
+  // Step 1 completes in place — same plan shape, no re-projection needed.
+  session.headlessPlan = [{ id: 'a', description: 'ingest', status: 'done' }];
+  const eventsAfterStep1 = session.agentEvents.length;
+  ensurePlanProjection(session, 'run-1');
+  assert.equal(session.agentEvents.length, eventsAfterStep1, 'unchanged shape must not re-emit plan_set');
+
+  // Step 2 adds a task — the projection must now reflect the new plan.
+  session.headlessPlan = [
+    { id: 'a', description: 'ingest', status: 'done' },
+    { id: 'b', description: 'build', status: 'pending' },
+  ];
+  ensurePlanProjection(session, 'run-1');
+  assert.deepEqual(
+    (session.agentProjection?.plan ?? []).map((step) => step.id),
+    ['a', 'b'],
+    'step 2 plan must be projected instead of staying on step 1',
+  );
+  // Completed step 1 status is preserved through the re-projection.
+  assert.equal(session.agentProjection.plan.find((step) => step.id === 'a').status, 'done');
+});
 
 test('validated tasks waiting for approval stay in the scheduler instead of falling back to Donna', () => {
   assert.equal(shouldUseParallelScheduler([

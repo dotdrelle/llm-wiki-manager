@@ -38,9 +38,11 @@ export async function checkRuntimeHealth({
   url = runtimeUrlFromEnv(),
   token = runtimeToken(),
   workspace = null,
+  signal = null,
 } = {}) {
   const response = await fetch(runtimeEndpoint(url, '/health', workspace), {
     headers: runtimeHeaders(token),
+    signal,
   });
   if (!response.ok) return null;
   return response.json();
@@ -143,10 +145,12 @@ export async function postRuntimeKill({
 export async function postRuntimeShutdown({
   url = runtimeUrlFromEnv(),
   token = runtimeToken(),
+  signal = null,
 } = {}) {
   const response = await fetch(runtimeEndpoint(url, '/shutdown'), {
     method: 'POST',
     headers: runtimeHeaders(token),
+    signal,
   });
   if (!response.ok) throw new Error(`Runtime shutdown failed: HTTP ${response.status}`);
   return response.json();

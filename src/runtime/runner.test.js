@@ -812,6 +812,36 @@ test('runRuntimeParallelPlan fails cleanly when scheduler budget is exceeded', a
   assert.equal(session.headlessPlan[0].status, 'cancelled');
 });
 
+test('runRuntimeParallelPlan does not wait for approval behind a failed dependency', async () => {
+  const session = {
+    workspace: 'demo-workspace',
+    mcp: { tools: {} },
+    agentEvents: [],
+    headlessPlan: [
+      { ...plannedDoctorTask('a', []), status: 'failed' },
+      {
+        ...plannedDoctorTask('b', ['a']),
+        status: 'waiting_approval',
+        requiresApproval: true,
+        approvalClass: 'mutation',
+      },
+    ],
+  };
+
+  const result = await runRuntimeParallelPlan(
+    { invoke: async () => assert.fail('blocked work must not invoke an agent') },
+    session,
+    'Apply after failed plan',
+    { runId: 'run-failed-dependency', timeoutMs: 1000, maxTurns: 1 },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stalled, true);
+  assert.equal(result.reason, 'no_ready_plan_task');
+  assert.equal(session.agentEvents.some((event) => event.type === 'assistant_message'
+    && /Approbation requise/.test(event.payload?.content ?? '')), false);
+});
+
 test('runRuntimeParallelPlan retries a retryable task on a fallback agent', async () => {
   const executeServers = [];
   const session = {

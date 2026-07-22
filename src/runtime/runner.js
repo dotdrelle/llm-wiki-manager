@@ -7,6 +7,8 @@ import { createAssignmentManager } from '../orchestrator/assignmentManager.js';
 import { createAttemptManager } from '../orchestrator/attemptManager.js';
 import { createBudgetManager, BudgetExceededError } from '../orchestrator/budgetManager.js';
 import { createDispatcher } from '../orchestrator/dispatcher.js';
+import { approvalRequestForTask } from '../orchestrator/approvalPolicy.js';
+import { PENDING_STATUSES, tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
 import { assertValidatedFragment } from '../orchestrator/planValidator.js';
 import { createResultAggregator } from '../orchestrator/resultAggregator.js';
 import { drainActive, resolvePlanConcurrency, startReadyTasks } from '../orchestrator/scheduler.js';
@@ -328,7 +330,6 @@ export async function runRuntimeParallelPlan(agent, session, input, {
   sanitizeSessionPlanForExecution(session, runId);
   ensurePlanProjection(session, runId);
   emitRuntimeLog(session, `scheduler: parallel plan enabled (concurrency ${limit})`);
-  let approvalNoticeSent = false;
   // Interactive approvals do NOT expire: the user has /approve, "valide
   // tout", /cancel and /run kill — an arbitrary timer only created mystery
   // failures. A deadline exists only when explicitly configured (headless
@@ -431,26 +432,60 @@ export async function runRuntimeParallelPlan(agent, session, input, {
           emitRuntimeLog(session, `scheduler: budget exceeded (${exceeded.reason})`);
           return { ok: false, budgetExceeded: true, reason: exceeded.reason, budget: exceeded, completed: sessionActivities(session), failures };
         }
-        const needingApproval = pending.filter((step) => step.requiresApproval === true);
+        // Only wait for a human when approval is the sole remaining blocker.
+        // A task whose dependency failed cannot become runnable by approving
+        // it; treating it as an approval wait leaves the run alive forever.
+        const approvalContext = {
+          runId,
+          workspace: session.workspace ?? null,
+          planRevision: session.planRevision ?? session.agentProjection?.planRevision ?? null,
+          tasks: session.headlessPlan ?? [],
+        };
+        // One snapshot of the approvals list, reused for both the
+        // awaiting-approval computation and the per-task dedup below so the two
+        // can never diverge mid-iteration.
+        const approvals = session.agentProjection?.approvals ?? session.approvals ?? [];
+        const needingApproval = tasksAwaitingApproval(approvalContext, { approvals });
         if (needingApproval.length > 0) {
           // The plan is only blocked on a HUMAN decision — wait for it
           // (bounded) instead of declaring the run stalled. Announce once in
           // the chat: users cannot approve what they never saw asked.
-          if (!approvalNoticeSent) {
-            approvalNoticeSent = true;
+          const newlyRequested = [];
+          for (const task of needingApproval) {
+            const taskId = String(task.id ?? task.taskId ?? task.step ?? '');
+            const alreadyRequested = approvals.some((approval) =>
+              approval.status === 'pending_approval'
+              && String(approval.taskId ?? approval.itemId ?? '') === taskId
+              && Number(approval.planRevision ?? approvalContext.planRevision) === Number(approvalContext.planRevision));
+            if (alreadyRequested) continue;
+            newlyRequested.push(task);
+            const request = approvalRequestForTask(task, {
+              runId,
+              workspaceId: session.workspace ?? null,
+              planRevision: approvalContext.planRevision,
+            });
+            dispatchAgentEvent(session, createAgentEvent('approval.requested', {
+              origin: 'runtime',
+              runId,
+              taskId: request.taskId,
+              workspace: session.workspace ?? null,
+              payload: request,
+            }));
+          }
+          if (newlyRequested.length > 0) {
             dispatchAgentEvent(session, createAgentEvent('assistant_message', {
               origin: 'runtime',
               runId,
               payload: {
                 content: [
-                  `⏸ Approbation requise avant exécution : ${needingApproval.length} tâche(s) mutante(s) en attente.`,
-                  ...needingApproval.slice(0, 5).map((step) => `  - ${step.description ?? step.id}`),
-                  needingApproval.length > 5 ? `  … et ${needingApproval.length - 5} autre(s).` : null,
+                  `⏸ Approbation requise avant exécution : ${newlyRequested.length} tâche(s) mutante(s) en attente.`,
+                  ...newlyRequested.slice(0, 5).map((step) => `  - ${step.description ?? step.id}`),
+                  newlyRequested.length > 5 ? `  … et ${newlyRequested.length - 5} autre(s).` : null,
                   'Réponds « valide tout » (ou tape /approve) pour lancer, « annule » pour abandonner.',
                 ].filter(Boolean).join('\n'),
               },
             }));
-            emitRuntimeLog(session, `scheduler: waiting for approval (${needingApproval.length} task(s))`);
+            emitRuntimeLog(session, `scheduler: waiting for approval (${newlyRequested.length} new task(s))`);
           }
           if (Date.now() < approvalDeadline) {
             await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
@@ -469,7 +504,9 @@ export async function runRuntimeParallelPlan(agent, session, input, {
           }));
           return { ok: false, stalled: true, reason: 'awaiting_approval', completed: sessionActivities(session), failures };
         }
-        const reason = pending.every((step) => approvalWaitingStatus(step.status)) ? 'awaiting_approval' : 'no_ready_plan_task';
+        // Any genuine approval-only block returned above. Remaining tasks are
+        // unschedulable for another reason (most commonly a failed dependency).
+        const reason = 'no_ready_plan_task';
         emitRuntimeLog(session, `scheduler: stalled (${reason})`);
         return { ok: false, stalled: true, reason, completed: sessionActivities(session), failures };
       }
@@ -585,11 +622,7 @@ function abortCancelledActiveTasks(session, active) {
 }
 
 function pendingSchedulerStatus(status) {
-  return ['pending', 'pending_approval', 'waiting_approval'].includes(String(status ?? ''));
-}
-
-function approvalWaitingStatus(status) {
-  return ['pending_approval', 'waiting_approval'].includes(String(status ?? ''));
+  return PENDING_STATUSES.has(String(status ?? ''));
 }
 
 // Scope the evaluator/replanner's view of "completed" activities to the

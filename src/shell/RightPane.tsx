@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { createMemo, Index, Show } from 'solid-js';
+import { createMemo, createSignal, Index, Show } from 'solid-js';
 import { filterRuntimeLogs } from '../core/runtimeLog.js';
 import { fit } from './textFit';
 
@@ -103,10 +103,17 @@ function updatedLine(activity: any) {
   return [source, id, `${age}s ago`].filter(Boolean).join(' · ');
 }
 
+// Single source of truth for terminal-status aliases so a plan step's icon and
+// its color can never disagree (e.g. a 'succeeded' step showing done-green but a
+// pending icon). Shared by planStepColor and PlanPanel's icon().
+const DONE_STATUSES = ['done', 'complete', 'completed', 'success', 'succeeded'];
+const FAILED_STATUSES = ['failed', 'error'];
+
 function planStepColor(step: PlanStep, firstPendingStep: number | null) {
-  if (step.status === 'done') return '#8BD5CA';
-  if (step.status === 'failed') return '#F38BA8';
-  if (step.status === 'running') return '#89B4FA';
+  const status = String(step.status ?? '').toLowerCase();
+  if (DONE_STATUSES.includes(status)) return '#8BD5CA';
+  if (FAILED_STATUSES.includes(status)) return '#F38BA8';
+  if (status === 'running') return '#89B4FA';
   if (step.step === firstPendingStep) return '#89B4FA';
   return '#7F8C8D';
 }
@@ -135,8 +142,12 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
   // Keep one column for the native vertical scrollbar when the plan is long.
   const lineWidth = () => Math.max(8, props.width - 3);
   const firstPending = () => props.plan.find((s) => s.status === 'pending')?.step ?? null;
-  const icon = (status: string) =>
-    status === 'done' ? '[✓]' : status === 'failed' ? '[✗]' : status === 'running' ? '[…]' : '[ ]';
+  const icon = (rawStatus: string) => {
+    const status = String(rawStatus ?? '').toLowerCase();
+    if (DONE_STATUSES.includes(status)) return '[✓]';
+    if (FAILED_STATUSES.includes(status)) return '[✗]';
+    return status === 'running' ? '[…]' : '[ ]';
+  };
   const visualRows = createMemo(() => props.plan.reduce((total, step) =>
     total + wrapLine(`${icon(step.status)} ${step.step}. ${step.description}`, lineWidth()).slice(0, 2).length, 0));
   const title = () => {
@@ -149,6 +160,7 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
       <text width={lineWidth()} fg="#D6DEE8" content={fit(title(), lineWidth())} />
       <scrollbox
         height={viewportRows()}
+        focusable={false}
         scrollY={true}
         scrollX={false}
         stickyStart="top"
@@ -291,13 +303,30 @@ function logEntryLines(raw: string, width: number): LogSegment[][] {
 }
 
 export function LogPanel(props: { logs: string[]; width: number; filter?: string }) {
+  const [activeLogTab, setActiveLogTab] = createSignal<'flow' | 'agent-status'>('flow');
   const lineWidth = () => Math.max(8, props.width - 2);
-  const filteredLogs = () => filterRuntimeLogs(props.logs, props.filter ?? '');
+  const isAgentStatus = (line: string) => /agent[_ -]?status/i.test(line);
+  const filteredLogs = () => filterRuntimeLogs(props.logs, props.filter ?? '')
+    .filter((line) => activeLogTab() === 'agent-status' ? isAgentStatus(line) : !isAgentStatus(line));
   const visibleLines = createMemo(() => logRenderLines(filteredLogs(), lineWidth()).slice(0, 24));
   const segmentsAt = (index: number): LogSegment[] => visibleLines()[index] ?? [];
   return (
-    <box flexGrow={1} flexDirection="column" padding={1}>
-      <text width={lineWidth()} fg="#D6DEE8" content="Logs / Trace" />
+    <box flexGrow={1} flexDirection="column" padding={1} focusable={false}>
+      <box height={1} flexDirection="row">
+        <text
+          fg={activeLogTab() === 'flow' ? '#0B1020' : '#D6DEE8'}
+          bg={activeLogTab() === 'flow' ? '#89B4FA' : undefined}
+          content=" Flow / Trace "
+          onMouseUp={() => setActiveLogTab('flow')}
+        />
+        <text fg="#4B5563" content=" " />
+        <text
+          fg={activeLogTab() === 'agent-status' ? '#0B1020' : '#D6DEE8'}
+          bg={activeLogTab() === 'agent-status' ? '#FBBF24' : undefined}
+          content=" Agent status "
+          onMouseUp={() => setActiveLogTab('agent-status')}
+        />
+      </box>
       <box flexGrow={1} flexDirection="column" overflow="hidden">
         <Index each={LOG_SLOTS}>
           {(slot) => {
@@ -397,14 +426,22 @@ export function RightPane(props: {
   queueInfo: QueueInfo;
   activeTab: 'plan' | 'queue';
   logFilter?: string;
+  pendingApprovals: any[];
+  onApprove: () => void;
   onTabClick: (tab: 'plan' | 'queue') => void;
 }) {
   const planJobName = () => activityJobName(
     [...props.activities].reverse().find((activity) => !activity.terminal) ?? props.activities.at(-1),
   );
   return (
-    <box width={props.width} height="100%" flexDirection="column" gap={1} padding={1} overflow="hidden">
+    <box width={props.width} height="100%" flexDirection="column" gap={1} padding={1} overflow="hidden" focusable={false}>
       <TabHeader active={props.activeTab} queueCount={props.queueInfo.active} width={props.width} onTabClick={props.onTabClick} />
+      <Show when={props.pendingApprovals.length > 0}>
+        <box height={2} flexDirection="column" border={['left']} borderStyle="heavy" borderColor="#FBBF24" paddingX={1}>
+          <text fg="#FBBF24" content={`${props.pendingApprovals.length} approbation(s) requise(s)`} />
+          <text fg="#0B1020" bg="#FBBF24" content=" Approuver le run " onMouseUp={props.onApprove} />
+        </box>
+      </Show>
       <Show when={props.activeTab === 'queue'} fallback={(
         <>
           <Show when={props.plan && props.plan.length > 0}>

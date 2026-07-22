@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { For, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
+import { StyledText, bg as styledBg, fg as styledFg, link as styledLink } from '@opentui/core';
 import { colorForRenderedLine, helpCommandParts, keyValueParts, renderPlainMarkdown } from './renderer';
 import { httpLinkParts, wrapHttpLinks } from './externalLinks.js';
 
@@ -49,8 +50,19 @@ function wrapLine(line: string, width: number) {
 }
 
 type Segment = { text: string; color: string; width?: number; bg?: string; url?: string };
+
+function styledSegments(segments: Segment[]) {
+  return new StyledText(segments.map((segment) => {
+    const text = segment.width ? segment.text.padEnd(segment.width) : segment.text;
+    let chunk = styledFg(segment.color)(text);
+    if (segment.bg) chunk = styledBg(segment.bg)(chunk);
+    if (segment.url) chunk = styledLink(segment.url)(chunk);
+    return chunk;
+  }));
+}
 type RenderedLine = {
   segments: Segment[];
+  role?: string;
   status?: boolean;
   statusLeft?: string;
   statusRight?: string;
@@ -379,9 +391,10 @@ function statusColumns(line: string): { left: string; right: string } {
 function conversationLines(messages: Array<{ role: string; content: string }>, columns: number): RenderedLine[] {
   return messages.flatMap((message) => {
     const raw = String(message.content || '');
+    const contentColumns = message.role === 'user' ? Math.max(12, Math.floor(columns * 0.5) - 2) : columns;
     if (isStatusOutput(message)) {
-      return [
-        { segments: messageHeaderSegments(message.role, columns), copyContent: raw },
+      const statusLines: RenderedLine[] = [
+        { segments: messageHeaderSegments(message.role, contentColumns), copyContent: raw },
         { segments: [{ text: ' ', color: '#D6DEE8' }] },
         ...raw.split('\n').map((line) => {
           const { left, right } = statusColumns(line || ' ');
@@ -389,6 +402,7 @@ function conversationLines(messages: Array<{ role: string; content: string }>, c
         }),
         { segments: [{ text: ' ', color: '#D6DEE8' }] },
       ];
+      return statusLines.map((line) => ({ ...line, role: message.role }));
     }
     let inFence = false;
     const lines: Array<{ text: string; isCode: boolean }> = [];
@@ -399,12 +413,13 @@ function conversationLines(messages: Array<{ role: string; content: string }>, c
       if (/^\s*(`{3,}|~{3,})/.test(line)) { inFence = !inFence; continue; }
       lines.push({ text: line, isCode: inFence });
     }
-    return [
-      { segments: messageHeaderSegments(message.role, columns), copyContent: raw },
+    const bodyLines: RenderedLine[] = [
+      { segments: messageHeaderSegments(message.role, contentColumns), copyContent: raw },
       { segments: [{ text: ' ', color: '#D6DEE8' }] },
-      ...renderMarkdownLines(lines, message.role, columns),
+      ...renderMarkdownLines(lines, message.role, contentColumns),
       { segments: [{ text: ' ', color: '#D6DEE8' }] },
     ];
+    return bodyLines.map((line) => ({ ...line, role: message.role }));
   });
 }
 
@@ -455,7 +470,25 @@ export function ConversationView(props: {
       <text height={1} fg="#7F8C8D">{scrollHint()}</text>
       <For each={visibleLines()}>
         {(line) => (
-          line.copyContent !== undefined ? (
+          line.role === 'user' ? (
+            <box height={1} flexDirection="row" overflow="hidden">
+              <box flexGrow={1} />
+              <box
+                width={Math.max(12, Math.floor(props.columns * 0.5))}
+                height={1}
+                flexDirection="row"
+                justifyContent="flex-end"
+                backgroundColor="#12263A"
+                paddingX={1}
+                overflow="hidden"
+              >
+                <text bg="#12263A" content={styledSegments(line.segments)} />
+                {line.copyContent !== undefined
+                  ? <text fg="#7F8C8D" bg="#12263A" content={COPY_BTN} onMouseUp={() => props.onCopy?.(line.copyContent!)} />
+                  : null}
+              </box>
+            </box>
+          ) : line.copyContent !== undefined ? (
             <box height={1} flexDirection="row" overflow="hidden">
               <For each={line.segments}>
                 {(seg: Segment) => <text width={seg.width} fg={seg.color} bg={seg.bg}>{seg.text}</text>}
@@ -499,13 +532,7 @@ export function ConversationView(props: {
             </box>
           ) : (
             <box height={1} flexDirection="row" overflow="hidden">
-              <For each={line.segments}>
-                {(seg: Segment) => (
-                  <text width={seg.width} fg={seg.color} bg={seg.bg}>
-                    {seg.url ? <a href={seg.url}>{seg.text}</a> : seg.text}
-                  </text>
-                )}
-              </For>
+              <text content={styledSegments(line.segments)} />
             </box>
           )
         )}

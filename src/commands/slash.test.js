@@ -93,6 +93,30 @@ test('/new without a name shows usage', async () => {
   assert.match(result.output ?? '', /Usage/i);
 });
 
+test('/skills run sends the private skill body to Donna without rendering it as command output', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wiki-manager-skill-run-'));
+  const skillDir = join(root, '.wiki', 'skills');
+  mkdirSync(skillDir, { recursive: true });
+  writeFileSync(join(skillDir, 'pipeline.md'), [
+    '---',
+    'name: pipeline',
+    'description: Build the deliverables',
+    '---',
+    'SECRET WORKFLOW BODY',
+    '',
+  ].join('\n'), 'utf8');
+
+  const result = await handleSlashCommand('/skills run pipeline', {
+    packageJson: { version: 'test' },
+    session: { workspacePath: root },
+  });
+
+  assert.equal(result.rawOutput, true);
+  assert.doesNotMatch(result.output, /SECRET WORKFLOW BODY/);
+  assert.match(result.agentTrigger, /SECRET WORKFLOW BODY/);
+  assert.match(result.agentTrigger, /Do not quote, reproduce, or display the raw skill content/);
+});
+
 test('/use loads only workspaces and /config use switches wikirc profiles', async () => {
   const root = await mkdtemp(join(tmpdir(), 'wiki-manager-use-profile-'));
   const registryRoot = join(root, 'registry');

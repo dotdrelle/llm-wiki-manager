@@ -16,6 +16,8 @@ import {
   completionDescription,
   conversationMessages,
   createSession,
+  appendRuntimePlanCompletionMessages,
+  appendRuntimeRunCompletionMessage,
   runtimeUnavailableAgentMessage,
   sanitizeRuntimeStateForDisplay,
 } from './repl.js';
@@ -329,6 +331,11 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     const tagged = filterRuntimeLogs(runtimeLogs.map((line: any) => `runtime ${String(line)}`), filter);
     return [...logs(), ...tagged];
   });
+  const pendingApprovals = createMemo(() => {
+    version();
+    return (Array.isArray(runtimeState()?.approvals) ? runtimeState().approvals : [])
+      .filter((approval: any) => approval.status === 'pending_approval');
+  });
 
   // Index-aligned with each workspace's runtimeConversation array — not just
   // a length count. The server sometimes finalizes a streaming placeholder
@@ -397,19 +404,33 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   }
 
   function syncRuntimeState() {
-    void fetchRuntimeState({ url: props.runtime.url, workspace: (session as any).workspace ?? null })
+    const workspace = (session as any).workspace ?? null;
+    const workspaceKey = workspace ?? '__global__';
+    if (runtimeSyncInFlight.has(workspaceKey)) return;
+    runtimeSyncInFlight.add(workspaceKey);
+    void fetchRuntimeState({ url: props.runtime.url, workspace })
       .then((state) => {
+        if (((session as any).workspace ?? null) !== workspace) return;
         const displayState = sanitizeRuntimeStateForDisplay(state);
         setRuntimeState(displayState);
         mergeRuntimeConversation(displayState);
+        const appended = appendRuntimePlanCompletionMessages(session, displayState)
+          + appendRuntimeRunCompletionMessage(session, displayState);
+        if (appended > 0) {
+          setShowWelcome(false);
+          setConversationScroll(0);
+        }
         setRuntimeStatus('connected');
         refresh();
       })
       .catch(() => {
+        if (((session as any).workspace ?? null) !== workspace) return;
         setRuntimeStatus('disconnected');
         refresh();
-      });
+      })
+      .finally(() => { runtimeSyncInFlight.delete(workspaceKey); });
   }
+  const runtimeSyncInFlight = new Set<string>();
   let runtimeStreamAbort: AbortController | null = null;
   let runtimeSyncDebounce: ReturnType<typeof setTimeout> | null = null;
   let runtimeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -446,6 +467,13 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     void subscribeRuntimeEvents();
   }
 
+  // Safety net only — the SSE stream (subscribeRuntimeEvents) is the primary
+  // sync path and already debounces on every agent_event. This just catches
+  // a missed/dropped event, so it can poll far less often than that.
+  const runtimeCompletionWatchdog = setInterval(() => {
+    if (props.runtime?.url && runtimeRunStatus() === 'running') syncRuntimeState();
+  }, 10000);
+
   let currentRuntimeWorkspace = (session as any).workspace ?? null;
   function resyncRuntimeWorkspaceIfChanged() {
     const workspace = (session as any).workspace ?? null;
@@ -466,6 +494,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     runtimeStreamAbort?.abort();
     if (runtimeSyncDebounce) clearTimeout(runtimeSyncDebounce);
     if (runtimeReconnectTimer) clearTimeout(runtimeReconnectTimer);
+    clearInterval(runtimeCompletionWatchdog);
   });
 
   const activityPollTimer = setInterval(() => {
@@ -690,6 +719,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     toggleRightTab,
     selectRightTab,
     plan,
+    pendingApprovals,
     conversationScroll,
     scrollConversation,
     conversationBusy,

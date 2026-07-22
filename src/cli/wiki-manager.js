@@ -8,6 +8,7 @@ import { createAgentGraph } from '../agent/graph.js';
 import { handleSlashCommand, printHelp, printVersion, refreshMcpRuntimeStatus } from '../commands/slash.js';
 import { runShell, runHeadlessChatTurn } from '../shell/repl.js';
 import { runPreflightChecks, withRuntimePreflight } from '../core/startupCheck.js';
+import { refreshRunningContainers } from '../core/wikiSetup.js';
 import { applySessionWikircProfile } from '../core/sessionConfig.js';
 import { listWikircProfiles } from '../core/wikirc.js';
 import { callMcpTool, formatMcpToolResult, readChatAccessConfig } from '../core/mcp.js';
@@ -17,6 +18,7 @@ import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../core
 import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
 import { resolveCapabilityConcurrency } from '../orchestrator/scheduler.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
+import { listWorkspaces } from '../core/workspaces.js';
 // Runtime modules use node:sqlite (Node.js built-in unavailable in Bun).
 // They are imported dynamically so the shell / TUI path never loads them.
 
@@ -422,7 +424,7 @@ async function runHeadless(argv, agent) {
     let input = prompt;
     if (skillName) {
       const skillResult = await handleSlashCommand(`/skills run ${skillName}`, { packageJson, session, onStep: step });
-      if (skillResult.output) log.push(skillResult.output);
+      if (skillResult.output && !skillResult.rawOutput) log.push(skillResult.output);
       if (String(skillResult.output ?? '').startsWith('Skill not found')) throw new Error(`Skill not found: ${skillName}`);
       input = skillResult.agentTrigger
         ? [
@@ -1162,10 +1164,22 @@ async function runRuntime(argv, agent) {
   await new Promise(() => {});
 }
 
+// One place for the skipped-image-update warnings so the runtime and TUI
+// startup paths report refresh failures identically.
+function logImageRefreshErrors(imageRefresh) {
+  for (const error of imageRefresh?.errors ?? []) {
+    console.warn(`[wiki-manager] image update skipped: ${error}`);
+  }
+}
+
 export async function runCli(argv) {
   if (argv[0] === 'runtime') {
     const scaffolded = ensureManagerScaffold({ log: (message) => console.log(`[wiki-manager] ${message}`) });
     if (scaffolded.length > 0) loadManagerEnv();
+    const imageRefresh = await refreshRunningContainers({
+      onStep: (message) => console.log(`[wiki-manager] ${message}`),
+    });
+    logImageRefreshErrors(imageRefresh);
     const agent = createAgentGraph();
     await runRuntime(argv.slice(1), agent);
     return;
@@ -1218,6 +1232,10 @@ export async function runCli(argv) {
     if (!process.versions.bun) {
       throw new Error('Interactive TUI requires Bun. Run: bun ./bin/wiki-manager.js');
     }
+    const initialWorkspaceName = valueAfter(argv, '--workspace');
+    if (initialWorkspaceName && !listWorkspaces().some((workspace) => workspace.name === initialWorkspaceName)) {
+      throw new Error(`Workspace not found: ${initialWorkspaceName}`);
+    }
     const { runOpenTuiShell, runStartupWizard } = await import('../shell/tui.tsx');
     // Fresh directory → copy mcp.endpoints.json/.env from the packaged
     // examples so external agents (cme, mailer, documents) connect out of
@@ -1242,6 +1260,17 @@ export async function runCli(argv) {
       // configuration. Re-read everything before drawing the home screen.
       preflight = await runPreflightChecks();
     }
+    const dockerReady = preflight.checks.some((check) => check.kind === 'docker' && check.ok);
+    const internetReady = preflight.checks.some((check) => check.kind === 'internet' && check.ok);
+    if (dockerReady && internetReady) {
+      void refreshRunningContainers({
+        onStep: (message) => console.log(`[wiki-manager] ${message}`),
+      }).then((imageRefresh) => {
+        logImageRefreshErrors(imageRefresh);
+      }).catch((error) => {
+        console.warn(`[wiki-manager] image update skipped: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
     let runtime = null;
     try {
       const { ensureRuntime } = await import('../runtime/lifecycle.js');
@@ -1257,7 +1286,13 @@ export async function runCli(argv) {
     // (see tui.tsx onShellExit): render() resolves at MOUNT, so anything
     // after this await would run while the shell is still on screen —
     // 0.12.9 shipped exactly that bug and killed the runtime under the user.
-    await runOpenTuiShell({ agent, packageJson, runtime, preflight });
+    await runOpenTuiShell({
+      agent,
+      packageJson,
+      runtime,
+      preflight,
+      initialWorkspaceName,
+    });
     return;
   }
 

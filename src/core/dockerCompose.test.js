@@ -11,6 +11,10 @@ test('workspace compose does not start a per-workspace agent runtime', async () 
   assert.equal(compose.services['agent-runtime'], undefined);
   assert.deepEqual(aliases.all.targets, ['serve', 'mcp-http', 'production-mcp']);
   assert.equal(aliases.runtime, undefined);
+  assert.equal(
+    compose.services.serve.environment.includes('WIKI_MANAGER_RUNTIME_URL=http://host.docker.internal:${WIKI_MANAGER_RUNTIME_PORT:-7788}'),
+    true,
+  );
 });
 
 test('agent compose services run as the host uid and gid', async () => {

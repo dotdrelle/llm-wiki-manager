@@ -29,6 +29,9 @@ test('scaffold copies the packaged examples into a fresh directory', () => {
     const endpoints = JSON.parse(readFileSync(join(dir, 'mcp.endpoints.json'), 'utf8'));
     assert.ok(endpoints.mcpServers);
     assert.ok(endpoints.chatAccess);
+    const env = readFileSync(join(dir, '.env'), 'utf8');
+    assert.match(env, /^# WIKI_MANAGER_RUNTIME_HOST=0\.0\.0\.0$/m);
+    assert.match(env, /^# WIKI_MANAGER_RUNTIME_PORT=7788$/m);
   });
 });
 

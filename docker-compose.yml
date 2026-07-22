@@ -59,7 +59,7 @@ services:
       - DOCUMENT_MAX_UPLOAD_BYTES=${DOCUMENT_MAX_UPLOAD_BYTES:-52428800}
       - WIKI_MCP_PROXY_URL=http://host.docker.internal:${WIKI_MCP_PORT:-3101}/mcp
       - PRODUCTION_MCP_PROXY_URL=http://host.docker.internal:${PRODUCTION_MCP_PORT:-3102}/mcp/
-      - WIKI_MANAGER_RUNTIME_URL=http://host.docker.internal:7788
+      - WIKI_MANAGER_RUNTIME_URL=http://host.docker.internal:${WIKI_MANAGER_RUNTIME_PORT:-7788}
       - WIKI_MANAGER_RUNTIME_TOKEN=${WIKI_MANAGER_RUNTIME_TOKEN:-}
       # HTTPS — set paths inside the container (e.g. /certs/server.crt) and uncomment the volume above
       #- WIKI_SERVE_TLS_CERT_PATH=/certs/server.crt

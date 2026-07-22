@@ -30,11 +30,13 @@ function emptyStartupInfo(version: string, workspace: { name: string } | null, w
   };
 }
 
-function startupInfo(packageJson: Record<string, unknown>) {
+function startupInfo(packageJson: Record<string, unknown>, preferredWorkspaceName?: string | null) {
   // listWorkspaces() order is filesystem-dependent (readdirSync), not stable —
   // sort so "the default workspace" is deterministic across runs/platforms.
   const workspaces = [...listWorkspaces()].sort((a, b) => a.name.localeCompare(b.name));
-  const workspace = workspaces[0] ?? null;
+  const workspace = preferredWorkspaceName
+    ? workspaces.find((item) => item.name === preferredWorkspaceName) ?? null
+    : workspaces[0] ?? null;
   const version = String(packageJson.version ?? '');
   if (!workspace) return emptyStartupInfo(version, null, []);
 
@@ -75,7 +77,11 @@ function startupInfo(packageJson: Record<string, unknown>) {
 
 function copyToClipboard(text: string, renderer: unknown) {
   try {
-    if ((renderer as any).copyToClipboardOSC52?.(text)) return true;
+    const osc52 = (renderer as any).copyToClipboardOSC52;
+    if (typeof osc52 === 'function') {
+      osc52.call(renderer, text);
+      return true;
+    }
   } catch {
     // Fall through to platform clipboard tools.
   }
@@ -105,11 +111,16 @@ function App(props: {
   packageJson: Record<string, unknown>;
   runtime?: any;
   preflight?: any;
+  initialWorkspaceName?: string | null;
+  // Shared handle the shell awaits after onDestroy resolves. One ref instead of
+  // two same-named `exitTask` bindings wired through a setter callback.
+  exitRef?: { current: Promise<void> };
 }) {
   const renderer = useRenderer();
   const dimensions = useTerminalDimensions();
   const [spinnerIndex, setSpinnerIndex] = createSignal(0);
   const [exitHint, setExitHint] = createSignal(false);
+  const [exitStatus, setExitStatus] = createSignal<string | null>(null);
   const [copyHint, setCopyHint] = createSignal<string | null>(null);
   const [chatInputHeight, setChatInputHeight] = createSignal(3);
   const [startupKeyboardEvent, setStartupKeyboardEvent] = createSignal<{ id: number; key: any } | null>(null);
@@ -128,7 +139,12 @@ function App(props: {
   const exitShell = () => {
     if (exiting) return;
     exiting = true;
-    void (async () => {
+    setExitStatus('Fermeture enclenchée…');
+    // Register the complete shutdown before destroying the renderer: onDestroy
+    // resolves runOpenTuiShell, which must still await this cleanup task.
+    const task = Promise.resolve().then(async () => {
+      renderer.destroy();
+      console.log('[wiki-manager] fermeture enclenchée — nettoyage en cours…');
       const messages: string[] = [];
       try {
         if (props.runtime?.url) {
@@ -138,10 +154,10 @@ function App(props: {
       } catch {
         // Best effort: never block the exit on runtime cleanup.
       }
-      renderer.destroy();
-      // Print AFTER destroy so the note survives on the restored terminal.
       for (const message of messages) console.log(`[wiki-manager] ${message}`);
-    })();
+      console.log('[wiki-manager] fermeture terminée — shell clos proprement.');
+    });
+    if (props.exitRef) props.exitRef.current = task;
   };
   let copyHintTimer: ReturnType<typeof setTimeout> | null = null;
   let selectionCopyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -149,7 +165,7 @@ function App(props: {
   let lastCopiedSelection = '';
   let runtimeShutdownRequested = false;
   const state = useSession(props);
-  const startup = createMemo(() => startupInfo(props.packageJson));
+  const startup = createMemo(() => startupInfo(props.packageJson, props.initialWorkspaceName));
   const conversationRows = createMemo(() => Math.max(4, dimensions().height - 5 - chatInputHeight()));
   const rightColumns = createMemo(() => {
     const width = dimensions().width;
@@ -187,7 +203,7 @@ function App(props: {
   // decide *which* workspace to load must re-read current state directly
   // (startupInfo(...)) rather than trust the frozen memo, the same way
   // closeSetup() already does.
-  const loadDefaultWorkspace = async () => loadWorkspace(startupInfo(props.packageJson).workspaceName);
+  const loadDefaultWorkspace = async () => loadWorkspace(startupInfo(props.packageJson, props.initialWorkspaceName).workspaceName);
 
   // The canonical status is the first useful view after entering ShellUI.
   // Run it only after /use has established the workspace so config, services,
@@ -231,7 +247,7 @@ function App(props: {
       void (async () => {
         setPreflightBusy(true);
         try {
-          await openWorkspaceAndStartServices(workspaceName ?? startupInfo(props.packageJson).workspaceName);
+          await openWorkspaceAndStartServices(workspaceName ?? startupInfo(props.packageJson, props.initialWorkspaceName).workspaceName);
           const next = await runPreflightChecks();
           setPreflight(withRuntimePreflight(next, props.runtime));
         } finally {
@@ -257,7 +273,7 @@ function App(props: {
     void (async () => {
       try {
         if (action === 'open-workspace') {
-          const loaded = await openWorkspaceAndStartServices(workspaceName ?? startupInfo(props.packageJson).workspaceName);
+          const loaded = await openWorkspaceAndStartServices(workspaceName ?? startupInfo(props.packageJson, props.initialWorkspaceName).workspaceName);
           await showDefaultStatus(loaded);
         } else if (action === 'new-conversation' || action === 'run-workflow') {
           const loaded = await loadDefaultWorkspace();
@@ -275,7 +291,7 @@ function App(props: {
   };
 
   const closeSetup = () => {
-    const info = startupInfo(props.packageJson);
+    const info = startupInfo(props.packageJson, props.initialWorkspaceName);
     if (!info.hasWorkspace) {
       setScreen('startup');
       return;
@@ -358,17 +374,24 @@ function App(props: {
     if (keyName === 'tab') state.completeSelected();
     if (keyName === 'pageup') state.scrollConversation(conversationRows());
     else if (keyName === 'pagedown') state.scrollConversation(-conversationRows());
-    if (keyName === 'up' && state.slash()) state.moveCompletion(-1);
-    else if (keyName === 'down' && state.slash()) state.moveCompletion(1);
-    else if (keyName === 'up' && !state.input().includes('\n')) state.historyUp();
-    else if (keyName === 'down' && !state.input().includes('\n')) state.historyDown();
-    else if (keyName === 'escape') {
+    if ((keyName === 'up' || keyName === 'down') && (state.slash() || !state.input().includes('\n'))) {
+      // The Plan scrollbox also listens to global arrow keys. Consume arrows
+      // handled by the chat input so one key press cannot move both widgets.
+      key.preventDefault?.();
+      key.stopPropagation?.();
+      if (state.slash()) state.moveCompletion(keyName === 'up' ? -1 : 1);
+      else if (keyName === 'up') state.historyUp();
+      else state.historyDown();
+      return;
+    }
+    if (keyName === 'escape') {
       if (state.slash()) state.dismissSlash();
       else state.setInput('');
     }
   });
 
   const hintLine = () => {
+    if (exitStatus()) return exitStatus();
     if (copyHint()) return copyHint();
     if (exitHint()) return 'Press Ctrl+C again to exit.';
     if (state.runtimeHint()) return state.runtimeHint();
@@ -416,6 +439,8 @@ function App(props: {
             queueInfo={state.queueInfo()}
             activeTab={state.rightTab()}
             logFilter={state.runtimeLogFilter()}
+            pendingApprovals={state.pendingApprovals()}
+            onApprove={() => { void state.submitInput('/approve'); }}
             onTabClick={state.selectRightTab}
           />
           <SlashDialog context={state.activeEditor() ? null : state.slash()} />
@@ -467,20 +492,33 @@ export async function runOpenTuiShell({
   packageJson,
   runtime = null,
   preflight = null,
+  initialWorkspaceName = null,
 }: {
   agent: unknown;
   packageJson: Record<string, unknown>;
   runtime?: any;
   preflight?: any;
+  initialWorkspaceName?: string | null;
 }) {
+  const exitRef = { current: Promise.resolve() as Promise<void> };
   await new Promise<void>((resolve, reject) => {
-    render(() => <App agent={agent} packageJson={packageJson} runtime={runtime} preflight={preflight} />, {
+    render(() => (
+      <App
+        agent={agent}
+        packageJson={packageJson}
+        runtime={runtime}
+        preflight={preflight}
+        initialWorkspaceName={initialWorkspaceName}
+        exitRef={exitRef}
+      />
+    ), {
       exitOnCtrlC: false,
       useMouse: true,
       targetFps: 30,
       onDestroy: resolve,
     }).catch(reject);
   });
+  await exitRef.current;
   return {};
 }
 

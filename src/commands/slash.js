@@ -391,7 +391,10 @@ function skillDetailText(skill) {
 
 function buildSkillRunPrompt(skill) {
   return [
-    `Execute the "${skill.name}" skill for the current workspace.`,
+    `The user asked to run the "${skill.name}" skill for the current workspace.`,
+    'First explain concisely, in the user language, what will be launched and its intended outcome.',
+    'Do not quote, reproduce, or display the raw skill content.',
+    'Then execute the workflow, using the available tools when required.',
     'Follow the workflow steps below. Call MCP tools and shell commands as needed for each step.',
     'Report progress as you go. Ask for confirmation before irreversible or costly actions not already defined in the skill.',
     '',
@@ -413,7 +416,11 @@ function skillActionCommand(session, action, name) {
     return { output: `Skill not found: ${name}.${hint}` };
   }
   if (action === 'run') {
-    return { output: `Skill: ${skill.name} — launching…`, agentTrigger: buildSkillRunPrompt(skill) };
+    return {
+      output: JSON.stringify({ operation: 'run-skill', skill: skill.name }),
+      rawOutput: true,
+      agentTrigger: buildSkillRunPrompt(skill),
+    };
   }
   return { output: skillDetailText(skill) };
 }
@@ -603,7 +610,7 @@ Options:
   --cacert <path>      Trust a local CA; Docker must be able to read this host path
   --once <prompt>      Run one agent turn and exit
   --headless           Run a workspace task non-interactively
-  --workspace <name>   Workspace for --headless
+  --workspace <name>   Initial workspace (interactive or --headless)
   --skill <name>       Skill to run in --headless (implies --wait)
   --prompt <text>      Task or extra instruction for --headless
   --log-file <path>    Optional headless log path

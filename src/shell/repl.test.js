@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   applyRuntimeStateToShellSession,
   appendRuntimePlanCompletionMessages,
+  appendRuntimeRunCompletionMessage,
   chatReadTools,
   createSession,
   runHeadlessChatTurn,
@@ -47,6 +48,16 @@ test('ShellUI leaves malformed URLs as plain text', () => {
   assert.deepEqual(httpLinkParts('Erreur: https://'), [{ text: 'Erreur: https://' }]);
 });
 
+test('ShellUI preserves every URL when several links share one line', () => {
+  const links = wrapHttpLinks('Docs https://one.example/a puis https://two.example/b', 80)
+    .flat()
+    .filter((part) => part.url);
+  assert.deepEqual(links, [
+    { text: '[link: one.example]', url: 'https://one.example/a' },
+    { text: '[link: two.example]', url: 'https://two.example/b' },
+  ]);
+});
+
 test('runtime display preserves a failed plan and its diagnostic evidence', () => {
   const state = {
     status: 'error',
@@ -59,7 +70,7 @@ test('runtime display preserves a failed plan and its diagnostic evidence', () =
   assert.equal(sanitizeRuntimeStateForDisplay(state), state);
 });
 
-test('runtime display still clears completed historical execution state', () => {
+test('runtime display preserves completed plan and logs for post-run inspection', () => {
   const display = sanitizeRuntimeStateForDisplay({
     status: 'done',
     plan: [{ id: 'old', status: 'done' }],
@@ -68,10 +79,10 @@ test('runtime display still clears completed historical execution state', () => 
     conversation: [{ role: 'assistant', content: 'Old run.' }],
   });
 
-  assert.deepEqual(display.plan, []);
-  assert.deepEqual(display.activities, []);
-  assert.deepEqual(display.logs, []);
-  assert.deepEqual(display.conversation, []);
+  assert.deepEqual(display.plan, [{ id: 'old', status: 'done' }]);
+  assert.deepEqual(display.activities, [{ id: 'old-job', status: 'done' }]);
+  assert.deepEqual(display.logs, ['old log']);
+  assert.deepEqual(display.conversation, [{ role: 'assistant', content: 'Old run.' }]);
 });
 
 function stubFetch(handler) {
@@ -133,7 +144,7 @@ test('applyRuntimeStateToShellSession projects runtime state into shell session'
   assert.deepEqual(conversationMessages(session), []);
 });
 
-test('applyRuntimeStateToShellSession clears terminal plan and activities when runtime is idle', () => {
+test('applyRuntimeStateToShellSession preserves terminal diagnostics when runtime is idle', () => {
   const session = createSession();
   session.headlessPlan = [{ step: 1, description: 'Old read', status: 'failed' }];
   session.activities = { old: { key: 'old', status: 'failed', terminal: true } };
@@ -150,14 +161,14 @@ test('applyRuntimeStateToShellSession clears terminal plan and activities when r
     planPatches: [{ id: 'old-patch' }],
   });
 
-  assert.equal(session.headlessPlan, null);
-  assert.deepEqual(session.activities, {});
-  assert.equal(session.workflow, null);
-  assert.deepEqual(session.agentProjection.logs, []);
-  assert.equal(session.agentProjection.summary, null);
-  assert.deepEqual(session.agentProjection.conversation, []);
-  assert.deepEqual(session.agentProjection.chain, []);
-  assert.deepEqual(session.agentProjection.planPatches, []);
+  assert.deepEqual(session.headlessPlan, [{ step: 1, description: 'Old read', status: 'failed' }]);
+  assert.deepEqual(session.activities, { old: { key: 'old', status: 'failed', terminal: true } });
+  assert.deepEqual(session.workflow.nodes, [{ id: 'task:old' }]);
+  assert.deepEqual(session.agentProjection.logs, ['Runtime evaluator rejected the old run']);
+  assert.equal(session.agentProjection.summary, 'Old run failed');
+  assert.deepEqual(session.agentProjection.conversation, [{ role: 'assistant', content: 'Old failed answer' }]);
+  assert.deepEqual(session.agentProjection.chain, [{ id: 'old-step' }]);
+  assert.deepEqual(session.agentProjection.planPatches, [{ id: 'old-patch' }]);
 });
 
 test('runtime plan completion is appended once to the ShellUI conversation', () => {
@@ -181,7 +192,37 @@ test('runtime plan completion is appended once to the ShellUI conversation', () 
   assert.deepEqual(conversationMessages(session), [{
     role: 'command',
     content: '✓ Job terminé : Build documentation\nStatus: done',
+  }, {
+    role: 'command',
+    content: '✓ Plan terminé avec succès — 1/1 jobs terminés.',
   }]);
+});
+
+test('runtime run completion is announced once even when the first observed state is terminal', () => {
+  const session = createSession();
+  const state = {
+    runId: 'run-terminal',
+    status: 'done',
+    plan: [{ id: 'build', status: 'done' }, { id: 'export', status: 'done' }],
+  };
+
+  assert.equal(appendRuntimeRunCompletionMessage(session, state), 1);
+  assert.equal(appendRuntimeRunCompletionMessage(session, state), 0);
+  assert.deepEqual(conversationMessages(session), [{
+    role: 'command',
+    content: '✓ Plan terminé avec succès — 2/2 jobs terminés.',
+  }]);
+});
+
+test('runtime run completion recognizes canonical succeeded status', () => {
+  const session = createSession();
+  const state = {
+    runId: 'run-succeeded', status: 'succeeded',
+    plan: [{ id: 'build', status: 'succeeded' }],
+  };
+
+  assert.equal(appendRuntimeRunCompletionMessage(session, state), 1);
+  assert.match(conversationMessages(session)[0].content, /1\/1 jobs terminés/);
 });
 
 test('runtime plan failure includes its available error description', () => {

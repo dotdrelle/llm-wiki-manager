@@ -95,6 +95,7 @@ Commands:
   agents down                       Stop all external agents
   agents logs [args...]             Follow external agent logs
   agents pull                       Pull latest external agent images
+  agents refresh                    Update only external agents currently running
   agents status                     Check reachability of configured MCP endpoints
 
   runtime up                        Start the single host agent-runtime on Node.js 22
@@ -275,6 +276,10 @@ agents_compose() {
     pull)
       [[ $# -eq 0 ]] || die "agents pull does not take arguments"
       _agents_dc pull
+      ;;
+    refresh)
+      [[ $# -eq 0 ]] || die "agents refresh does not take arguments"
+      refresh_running_services 'No running external agent containers to refresh' 'Refreshed running agents: %s' _agents_dc
       ;;
     status)
       [[ $# -eq 0 ]] || die "agents status does not take arguments"
@@ -755,6 +760,25 @@ read_lines_into_array() {
   done < <("$@")
 }
 
+# Shared by the "agents refresh" and per-workspace "refresh" subcommands:
+# pull and recreate only the compose services already running, skipping the
+# rest. "$@" is the compose invocation (e.g. `_agents_dc` or
+# `compose_for_workspace "$workspace"`) to run ps/pull/up through.
+refresh_running_services() {
+  local no_running_msg="$1"
+  local refreshed_msg_fmt="$2"
+  shift 2
+  local running_services=()
+  read_lines_into_array running_services "$@" ps --status running --services
+  if [[ ${#running_services[@]} -eq 0 ]]; then
+    printf '%s\n' "$no_running_msg"
+    return
+  fi
+  "$@" pull "${running_services[@]}"
+  "$@" up -d "${running_services[@]}"
+  printf "$refreshed_msg_fmt\n" "${running_services[*]}"
+}
+
 cacert_compose_args() {
   local compose_file="$1"
   local override_name="$2"
@@ -1073,6 +1097,9 @@ main() {
       ;;
     down)
       compose_for_workspace "$workspace" down
+      ;;
+    refresh)
+      refresh_running_services "No running workspace containers to refresh: $workspace" "Refreshed running workspace containers: $workspace (%s)" compose_for_workspace "$workspace"
       ;;
     logs)
       local log_args=()

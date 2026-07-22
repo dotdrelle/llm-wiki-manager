@@ -6,6 +6,8 @@ import { normalizePlanPatch, rebasePlanPatch } from '../core/planPatch.js';
 import { validateContractInDev } from '../contracts/schemas.js';
 import { runtimeTokenFromEnv } from './auth.js';
 import { controlMessage } from './controlMessages.js';
+import { tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
+import { approvalClassForTask } from '../orchestrator/approvalPolicy.js';
 
 export function startRuntimeServer({
   host = '127.0.0.1',
@@ -679,10 +681,19 @@ function readOnlyControlResponse(kind, classification, status, explanation, { ac
   };
 }
 
-function approvalRequestFromStatus(status) {
+export function approvalRequestFromStatus(status) {
   const runId = status.runId ?? status.runs?.find((run) => run.status === 'running' || run.status === 'pending_approval')?.id ?? null;
   const pending = (status.approvals ?? []).filter((approval) => approval.status === 'pending_approval');
-  const classes = [...new Set(pending.flatMap((approval) => readOptionalList(approval.approvalClasses ?? approval.approvalClass)))];
+  const waitingTasks = tasksAwaitingApproval({
+    runId,
+    workspace: status.workspace ?? null,
+    planRevision: status.planRevision ?? null,
+    tasks: status.plan ?? [],
+  }, { approvals: status.approvals ?? [] });
+  const classes = [...new Set([
+    ...pending.flatMap((approval) => readOptionalList(approval.approvalClasses ?? approval.approvalClass)),
+    ...waitingTasks.map((task) => approvalClassForTask(task)),
+  ].filter(Boolean))];
   return {
     workspace: status.workspace ?? null,
     workspaceId: status.workspace ?? null,

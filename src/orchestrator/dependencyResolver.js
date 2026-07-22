@@ -3,6 +3,9 @@ import { approvalCovered } from './approvalPolicy.js';
 
 const DONE_STATUSES = new Set(['done', 'completed', 'complete', 'success', 'succeeded']);
 const TERMINAL_STATUSES = new Set([...DONE_STATUSES, 'failed', 'cancelled', 'canceled', 'skipped']);
+// A task in one of these statuses hasn't run yet but could become ready —
+// shared with runner.js's scheduler-stall check so the two can't drift apart.
+export const PENDING_STATUSES = new Set(['pending', 'pending_approval', 'waiting_approval']);
 
 export function readyTasks(dag, {
   registry = null,
@@ -18,7 +21,7 @@ export function readyTasks(dag, {
     .filter((task) => {
       const status = statusOf(task);
       return status === 'pending'
-        || ((status === 'waiting_approval' || status === 'pending_approval')
+        || (PENDING_STATUSES.has(status)
           && approvalCovered(task, approvals, {
             runId: task?.runId ?? dag?.runId ?? null,
             workspaceId: dag?.workspace ?? null,
@@ -33,6 +36,21 @@ export function readyTasks(dag, {
     .filter((task) => locksFree(task, lockManager))
     .filter((task) => budgetOk(task, budgetManager))
     .sort(compareTaskPriority);
+}
+
+export function tasksAwaitingApproval(dag, { approvals = [] } = {}) {
+  const tasks = normalizeTasks(dag);
+  const done = new Set(tasks.filter((task) => DONE_STATUSES.has(statusOf(task))).map(taskId));
+  return tasks
+    .filter((task) => PENDING_STATUSES.has(statusOf(task)))
+    .filter((task) => task?.requiresApproval === true)
+    .filter((task) => !approvalCovered(task, approvals, {
+      runId: task?.runId ?? dag?.runId ?? null,
+      workspaceId: dag?.workspace ?? null,
+      planRevision: dag?.planRevision ?? null,
+    }))
+    .filter((task) => dependenciesDone(task, done))
+    .filter((task) => groupBarrierSatisfied(task, tasks));
 }
 
 function normalizeTasks(dag) {

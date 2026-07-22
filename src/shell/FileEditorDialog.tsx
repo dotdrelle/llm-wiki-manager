@@ -83,9 +83,9 @@ export function FileEditorDialog(props: {
             {(message) => <text height={1} fg="#F87171">{message()}</text>}
           </Show>
           <box height={1} flexDirection="row">
-            <text fg="#111318" bg="#8BD5CA"> Save Ctrl+S </text>
+            <text fg="#111318" bg="#8BD5CA" onMouseUp={save}> Save Ctrl+S </text>
             <text fg="#7F8C8D">  </text>
-            <text fg="#D6DEE8" bg="#4B5563"> Cancel Esc </text>
+            <text fg="#D6DEE8" bg="#4B5563" onMouseUp={props.onCancel}> Cancel Esc </text>
           </box>
         </box>
       )}

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { createBudgetManager } from './budgetManager.js';
-import { readyTasks } from './dependencyResolver.js';
+import { readyTasks, tasksAwaitingApproval } from './dependencyResolver.js';
 import { createLockManager } from './lockManager.js';
 import {
   effectiveConcurrency,
@@ -58,6 +58,27 @@ test('dependencyResolver releases a waiting task when a run grant covers it', ()
       approvalClasses: ['mutation'],
     }],
   }).map((item) => item.id), ['ingest']);
+});
+
+test('dependencyResolver does not request approval for a task blocked by a failed dependency', () => {
+  const plan = {
+    runId: 'run-1',
+    workspace: 'test4',
+    planRevision: 1,
+    tasks: [
+      task('plan', { status: 'failed' }),
+      task('apply', {
+        status: 'waiting_approval',
+        dependsOn: ['plan'],
+        requiresApproval: true,
+        approvalClass: 'mutation',
+      }),
+    ],
+  };
+
+  assert.deepEqual(tasksAwaitingApproval(plan), []);
+  plan.tasks[0].status = 'done';
+  assert.deepEqual(tasksAwaitingApproval(plan).map((item) => item.id), ['apply']);
 });
 
 test('dependencyResolver skips tasks whose locks are not free and keeps other ready work moving', () => {

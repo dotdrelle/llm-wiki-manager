@@ -822,7 +822,13 @@ function rememberProductionActivity(session, payload) {
   return true;
 }
 
-const TERMINAL_PLAN_STATUSES = new Set(['done', 'completed', 'succeeded', 'success', 'failed', 'error', 'cancelled', 'canceled']);
+// Single source of truth for the three ways a plan/run/job status can be
+// terminal — shared by every completion-message function below so a new
+// status synonym only needs adding in one place.
+const DONE_PLAN_STATUSES = new Set(['done', 'completed', 'succeeded', 'success']);
+const FAILED_PLAN_STATUSES = new Set(['failed', 'error']);
+const CANCELLED_PLAN_STATUSES = new Set(['cancelled', 'canceled']);
+const TERMINAL_PLAN_STATUSES = new Set([...DONE_PLAN_STATUSES, ...FAILED_PLAN_STATUSES, ...CANCELLED_PLAN_STATUSES]);
 
 function planTaskKey(task, index) {
   return String(task?.id ?? task?.step ?? `task-${index + 1}`);
@@ -850,7 +856,7 @@ function planTaskError(task, state) {
       ?? task?.result?.reason
       ?? activity?.error
       ?? activity?.detail
-      ?? (['failed', 'error'].includes(String(state?.status ?? '').toLowerCase()) ? state?.evaluation?.reason : null),
+      ?? (FAILED_PLAN_STATUSES.has(String(state?.status ?? '').toLowerCase()) ? state?.evaluation?.reason : null),
   );
 }
 
@@ -871,8 +877,8 @@ export function appendRuntimePlanCompletionMessages(session, state) {
     const previous = session._runtimePlanStatuses.get(key);
     if (!TERMINAL_PLAN_STATUSES.has(status) || TERMINAL_PLAN_STATUSES.has(previous)) return;
     const label = String(task?.label ?? task?.description ?? task?.name ?? `Job ${key}`);
-    const failed = status === 'failed' || status === 'error';
-    const cancelled = status === 'cancelled' || status === 'canceled';
+    const failed = FAILED_PLAN_STATUSES.has(status);
+    const cancelled = CANCELLED_PLAN_STATUSES.has(status);
     const error = failed ? planTaskError(task, state) : null;
     const content = failed
       ? `✗ Job terminé en erreur : ${label}\nStatus: ${status}${error ? `\nErreur: ${error}` : ''}`
@@ -886,9 +892,44 @@ export function appendRuntimePlanCompletionMessages(session, state) {
   return appended;
 }
 
+export function appendRuntimeRunCompletionMessage(session, state) {
+  const status = String(state?.status ?? '').toLowerCase();
+  if (!TERMINAL_PLAN_STATUSES.has(status)) return 0;
+  const runId = String(state?.runId ?? 'runtime');
+  const completionKey = `${runId}:${status}`;
+  session._runtimeCompletionKeys ??= new Set();
+  if (session._runtimeCompletionKeys.has(completionKey)) return 0;
+  session._runtimeCompletionKeys.add(completionKey);
+
+  const plan = Array.isArray(state?.plan) ? state.plan : [];
+  let failed = 0;
+  let cancelled = 0;
+  let completed = 0;
+  let firstFailedTask = null;
+  for (const task of plan) {
+    const taskStatus = String(task?.status ?? '').toLowerCase();
+    if (FAILED_PLAN_STATUSES.has(taskStatus)) {
+      failed += 1;
+      firstFailedTask ??= task;
+    } else if (CANCELLED_PLAN_STATUSES.has(taskStatus)) cancelled += 1;
+    else if (DONE_PLAN_STATUSES.has(taskStatus)) completed += 1;
+  }
+  const firstError = firstFailedTask ? planTaskError(firstFailedTask, state) : null;
+  const total = plan.length;
+  const detail = total > 0 ? ` — ${completed}/${total} jobs terminés${failed ? `, ${failed} en erreur` : ''}${cancelled ? `, ${cancelled} annulé(s)` : ''}.` : '.';
+  const content = FAILED_PLAN_STATUSES.has(status)
+    ? `✗ Plan terminé en erreur${detail}${firstError ? `\nErreur: ${firstError}` : ''}`
+    : CANCELLED_PLAN_STATUSES.has(status)
+      ? `○ Plan annulé${detail}`
+      : `✓ Plan terminé avec succès${detail}`;
+  conversationMessages(session).push({ role: 'command', content });
+  return 1;
+}
+
 export function applyRuntimeStateToShellSession(session, state) {
   if (!state || typeof state !== 'object') return false;
   appendRuntimePlanCompletionMessages(session, state);
+  appendRuntimeRunCompletionMessage(session, state);
   const displayState = sanitizeRuntimeStateForDisplay(state);
   session.agentProjection = {
     conversation: Array.isArray(displayState.conversation) ? displayState.conversation.map((message) => ({ ...message })) : [],
@@ -937,21 +978,9 @@ export function applyRuntimeStateToShellSession(session, state) {
 
 export function sanitizeRuntimeStateForDisplay(state) {
   if (!state || typeof state !== 'object') return state;
-  const status = String(state.status ?? 'idle').toLowerCase();
-  const visible = ['running', 'queued', 'pending', 'waiting', 'pending_approval', 'error', 'failed']
-    .includes(status);
-  if (visible) return state;
-  return {
-    ...state,
-    conversation: [],
-    chain: [],
-    plan: [],
-    activities: [],
-    workflow: null,
-    logs: [],
-    summary: null,
-    planPatches: [],
-  };
+  // Keep the last terminal run visible for post-run inspection. A new
+  // run_started event replaces these fields when the next run begins.
+  return state;
 }
 
 // In agent mode, Donna receives every free-text turn and decides whether to

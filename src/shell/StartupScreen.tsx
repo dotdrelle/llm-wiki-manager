@@ -115,7 +115,7 @@ export function StartupScreen(props: {
     if (!props.hasWorkspace) {
       return [initWorkspaceItem('Create and configure the default workspace')];
     }
-    const base = [
+    const base: StartupItem[] = [
       {
         action: 'new-conversation',
         label: 'Start a new conversation',

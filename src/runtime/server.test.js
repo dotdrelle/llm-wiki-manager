@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { createInteractiveSession, ensureInteractiveAssistantMessage } from '../cli/wiki-manager.js';
-import { runtimeState, startRuntimeServer as startRuntimeServerImpl } from './server.js';
+import { approvalRequestFromStatus, runtimeState, startRuntimeServer as startRuntimeServerImpl } from './server.js';
 
 // Most server tests exercise endpoint behavior rather than authentication. Keep
 // them independent from a developer's WIKI_MANAGER_RUNTIME_TOKEN environment;
@@ -10,6 +10,35 @@ import { runtimeState, startRuntimeServer as startRuntimeServerImpl } from './se
 function startRuntimeServer(options) {
   return startRuntimeServerImpl({ token: '', ...options });
 }
+
+test('approval fallback derives classes from waiting tasks when the approval queue is missing', () => {
+  const request = approvalRequestFromStatus({
+    workspace: 'acme',
+    runId: 'run-1',
+    planRevision: 4,
+    approvals: [],
+    plan: [
+      { id: 'apply', status: 'waiting_approval', requiresApproval: true, approvalClass: 'mutation' },
+      { id: 'export', status: 'waiting_approval', requiresApproval: true, approvalClass: 'external-write' },
+    ],
+  });
+
+  assert.deepEqual(request.approvalClasses, ['mutation', 'external-write']);
+  assert.equal(request.scope, 'run');
+  assert.equal(request.planRevision, 4);
+});
+
+test('approval fallback excludes tasks blocked by failed dependencies', () => {
+  const request = approvalRequestFromStatus({
+    workspace: 'acme', runId: 'run-1', planRevision: 4, approvals: [],
+    plan: [
+      { id: 'failed-source', status: 'failed' },
+      { id: 'blocked-write', status: 'waiting_approval', requiresApproval: true, approvalClass: 'external-write', dependsOn: ['failed-source'] },
+    ],
+  });
+
+  assert.deepEqual(request.approvalClasses, ['default']);
+});
 
 test('interactive runtime sessions isolate canonical run state', () => {
   const mcp = { wiki: { status: 'connected' } };

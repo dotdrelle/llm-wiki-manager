@@ -3,7 +3,7 @@ import { existsSync, readdirSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { managerEnvFile, readEnvFile, userManagerDir } from './env.js';
+import { managerEnvFile, managerMcpEndpointsFile, readEnvFile, userManagerDir } from './env.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(__dirname, '../..');
@@ -70,15 +70,23 @@ export async function createWorkspace(name, targetPath = null, options = {}) {
   }
   const args = ['config', name];
   if (targetPath) args.push(targetPath);
+  const stateDir = dirname(managerEnvFile());
   const { stdout, stderr } = await execFileAsync(
     join(managerRoot(), 'wiki-workspace'),
     args,
     {
-      cwd: managerRoot(),
+      // Relative Compose mounts and default scaffold paths must resolve from
+      // the user's manager state, never from the globally installed package.
+      cwd: stateDir,
       env: {
         ...process.env,
         WIKI_WORKSPACES_DIR: workspacesDir(),
         WIKI_MANAGER_ENV_FILE: managerEnvFile(),
+        // The script runs from the installed package directory so it can find
+        // its Compose templates. Pin mutable manager state to the user's
+        // launch directory; a global npm package is commonly owned by root
+        // and must never become the destination for this scaffold.
+        WIKI_MANAGER_ENDPOINTS_FILE: managerMcpEndpointsFile(),
       },
       maxBuffer: options.maxBuffer ?? 1024 * 1024 * 8,
       timeout: options.timeout ?? 600_000,

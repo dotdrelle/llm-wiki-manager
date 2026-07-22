@@ -31,3 +31,22 @@ test('wiki-workspace regenerates CA compose overrides instead of retaining remov
   assert.match(script, /mv "\$tmp_override" "\$override_path"/);
   assert.match(script, /Changes are overwritten on the next compose command/);
 });
+
+test('workspace creation keeps mutable manager files outside the installed package', async () => {
+  const source = await readFile(new URL('./workspaces.js', import.meta.url), 'utf8');
+
+  assert.match(source, /const stateDir = dirname\(managerEnvFile\(\)\)/);
+  assert.match(source, /cwd: stateDir/);
+  assert.match(source, /WIKI_MANAGER_ENV_FILE: managerEnvFile\(\)/);
+  assert.match(source, /WIKI_MANAGER_ENDPOINTS_FILE: managerMcpEndpointsFile\(\)/);
+});
+
+test('container refresh pulls and renews only services that are already running', async () => {
+  const script = await readFile(new URL('../../wiki-workspace', import.meta.url), 'utf8');
+
+  assert.match(script, /refresh_running_services\(\) \{/);
+  assert.match(script, /ps --status running --services/);
+  assert.match(script, /"\$@" pull "\$\{running_services\[@\]\}"/);
+  assert.match(script, /refresh_running_services 'No running external agent containers to refresh' 'Refreshed running agents: %s' _agents_dc/);
+  assert.match(script, /refresh_running_services "No running workspace containers to refresh: \$workspace" "Refreshed running workspace containers: \$workspace \(%s\)" compose_for_workspace "\$workspace"/);
+});

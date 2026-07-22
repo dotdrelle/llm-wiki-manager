@@ -127,10 +127,11 @@ async function waitForRuntimeShutdown(url, token, timeoutMs) {
   }
 }
 
-export async function runtimeHealthOrNull(url = runtimeUrlFromEnv(), token = runtimeTokenFromEnv()) {
+export async function runtimeHealthOrNull(url = runtimeUrlFromEnv(), token = runtimeTokenFromEnv(), signal = null) {
   try {
-    return await checkRuntimeHealth({ url, token });
-  } catch {
+    return await checkRuntimeHealth({ url, token, signal });
+  } catch (err) {
+    if (signal?.aborted) throw err;
     return null;
   }
 }
@@ -139,10 +140,12 @@ export async function runtimeHealthOrNull(url = runtimeUrlFromEnv(), token = run
 // alive after exit produced zombie runtimes running yesterday's code and
 // yesterday's endpoints. Nuance preserved: if a run is active anywhere, the
 // runtime is left alive so the run survives the shell (that promise stays).
-export async function shutdownOwnedRuntime(runtime, { log = (_message) => {} } = {}) {
+export async function shutdownOwnedRuntime(runtime, { log = (_message) => {}, timeoutMs = 3000 } = {}) {
   if (!runtime?.url || !runtime?.started) return { action: 'kept', reason: 'not_owned' };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(1, Number(timeoutMs) || 3000));
   try {
-    const health = await runtimeHealthOrNull(runtime.url, runtime.token);
+    const health = await runtimeHealthOrNull(runtime.url, runtime.token, controller.signal);
     if (!health) return { action: 'kept', reason: 'unreachable' };
     const activeRuns = Array.isArray(health.activeRuns) ? health.activeRuns : [];
     if (activeRuns.length > 0) {
@@ -152,10 +155,16 @@ export async function shutdownOwnedRuntime(runtime, { log = (_message) => {} } =
       log(`runtime laissé actif : run en cours (${labels}) — il survivra à ce shell ; relance wiki-manager pour le retrouver.`);
       return { action: 'kept', reason: 'run_active', activeRuns };
     }
-    await postRuntimeShutdown({ url: runtime.url, token: runtime.token });
+    await postRuntimeShutdown({ url: runtime.url, token: runtime.token, signal: controller.signal });
     log('runtime arrêté (démarré par ce shell, aucun run en cours).');
     return { action: 'shutdown' };
   } catch (err) {
+    if (controller.signal.aborted) {
+      log('délai de fermeture du runtime dépassé — le shell termine sans attendre davantage.');
+      return { action: 'timeout', reason: 'shutdown_timeout' };
+    }
     return { action: 'error', reason: err instanceof Error ? err.message : String(err) };
+  } finally {
+    clearTimeout(timeout);
   }
 }

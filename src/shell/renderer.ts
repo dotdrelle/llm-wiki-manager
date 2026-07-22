@@ -25,6 +25,7 @@ export function renderPlainMarkdown(value: string) {
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/__([^_]+)__/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
+    .replace(/<((?:https?):\/\/[^>\s]+)>/g, '$1')
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)')
     // collapse consecutive blank lines left by removed elements
     .replace(/\n{3,}/g, '\n\n')

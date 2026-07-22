@@ -259,6 +259,8 @@ test('CME export is dispatched only from an approved DAG task', async () => {
   assert.equal(result.reason, 'awaiting_approval');
   assert.equal(executeCalls, 0);
   assert.equal(session.headlessPlan[0].status, 'waiting_approval');
+  assert.ok(session.agentEvents.some((event) => event.type === 'approval.requested'
+    && event.taskId === session.headlessPlan[0].id));
 });
 
 function buildSingleTaskAgent({ taskId, description, finalResponse }) {

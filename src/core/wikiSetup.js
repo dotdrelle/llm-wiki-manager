@@ -105,6 +105,41 @@ export async function stopAgents(options = {}) {
   }
 }
 
+export async function refreshRunningContainers(options = {}) {
+  if (process.env.WIKI_MANAGER_AUTO_UPDATE === '0') {
+    return { skipped: true, refreshed: [] };
+  }
+  const script = join(managerRoot(), 'wiki-workspace');
+  const common = {
+    cwd: dirname(managerEnvFile()),
+    env: {
+      ...process.env,
+      WIKI_WORKSPACES_DIR: workspacesDir(),
+      WIKI_MANAGER_ENV_FILE: managerEnvFile(),
+      WIKI_MANAGER_ENDPOINTS_FILE: managerMcpEndpointsFile(),
+      AGENTS_DATA_DIR: resolveAgentsDataDir(),
+    },
+    timeout: options.timeout ?? 600_000,
+    maxBuffer: options.maxBuffer ?? 1024 * 1024 * 8,
+  };
+  const targets = [['agents', 'refresh'], ...listWorkspaces().map((workspace) => ['wiki', workspace.name, 'refresh'])];
+  // Each target is an independent Compose project (its own agents/workspace
+  // stack) — refresh them concurrently instead of summing every target's
+  // pull/restart time into one sequential wait.
+  const results = await Promise.all(targets.map(async (args) => {
+    options.onStep?.(`Images: checking ${args[0] === 'agents' ? 'running agents' : `workspace ${args[1]}`}…`);
+    try {
+      const { stdout, stderr } = await execFileAsync(script, args, common);
+      return { ok: true, output: [stdout, stderr].filter(Boolean).join('\n').trim() };
+    } catch (err) {
+      return { ok: false, error: wrapDockerError(err).message };
+    }
+  }));
+  const refreshed = results.filter((result) => result.ok).map((result) => result.output).filter(Boolean);
+  const errors = results.filter((result) => !result.ok).map((result) => result.error);
+  return { skipped: false, refreshed, errors };
+}
+
 export async function createNewWorkspace(name, targetPath) {
   try {
     const output = await createWorkspace(name, targetPath, { timeout: 600_000 });

@@ -21,7 +21,14 @@ import {
   shouldHandleFreeTextLocally,
   submitRuntimeRun,
 } from './repl.js';
+import { readFile } from 'node:fs/promises';
 import { httpLinkParts, wrapHttpLinks } from './externalLinks.js';
+
+test('ShellUI inserts StyledText as a child instead of stringifying it through content', async () => {
+  const source = await readFile(new URL('./LeftPane.tsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /content=\{styledSegments\(/);
+  assert.match(source, /<text[^>]*>\{styledSegments\(line\.segments\)\}<\/text>/);
+});
 
 test('ShellUI turns HTTP URLs into valid links without trailing punctuation', () => {
   assert.deepEqual(httpLinkParts('Voir https://example.test/docs?q=ok.'), [

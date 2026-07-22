@@ -482,7 +482,7 @@ export function ConversationView(props: {
                 paddingX={1}
                 overflow="hidden"
               >
-                <text bg="#12263A" content={styledSegments(line.segments)} />
+                <text bg="#12263A">{styledSegments(line.segments)}</text>
                 {line.copyContent !== undefined
                   ? <text fg="#7F8C8D" bg="#12263A" content={COPY_BTN} onMouseUp={() => props.onCopy?.(line.copyContent!)} />
                   : null}
@@ -532,7 +532,7 @@ export function ConversationView(props: {
             </box>
           ) : (
             <box height={1} flexDirection="row" overflow="hidden">
-              <text content={styledSegments(line.segments)} />
+              <text>{styledSegments(line.segments)}</text>
             </box>
           )
         )}

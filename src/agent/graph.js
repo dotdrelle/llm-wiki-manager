@@ -365,21 +365,62 @@ export function invalidUserFacingToolNames(content, session) {
   return [...new Set([...connected, ...syntactic])].sort();
 }
 
+function parseActionJson(text) {
+  const cleaned = String(text ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  if (!cleaned) return null;
+  return JSON.parse(cleaned)?.action === true;
+}
+
 async function classifyRequestedAction(llm, input, signal) {
+  const system = [
+    'Classify whether the user explicitly requests a real state-changing action now.',
+    'Actions include starting, stopping, importing, ingesting, building, exporting, configuring, writing, deleting, or sending.',
+    'Questions, explanations, status questions, greetings, and hypothetical discussions are not actions.',
+    'Return JSON only: {"action":true} or {"action":false}.',
+  ].join('\n');
+  const messages = [{ role: 'user', content: String(input ?? '') }];
+
+  // Preferred path: a forced structured tool call, reliable on providers that
+  // honour tool_choice. But an OpenAI-compatible gateway (e.g. Albert / gpt-oss)
+  // may reject a forced tool_choice or return neither tool_calls nor parsable
+  // content. Without a fallback that made EVERY request classify as a non-action
+  // (catch → false), so Donna silently stopped delegating in agent mode. Fall
+  // back to a plain JSON-text completion, and only give up if both paths fail.
   try {
+    const classifier = {
+      type: 'function',
+      function: {
+        name: 'classify_action_request',
+        description: 'Classify whether the user explicitly requests a real state-changing action now.',
+        parameters: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { action: { type: 'boolean' } },
+          required: ['action'],
+        },
+      },
+    };
     const result = await llm.completeWithTools({
-      system: [
-        'Classify whether the user explicitly requests a real state-changing action now.',
-        'Actions include starting, stopping, importing, ingesting, building, exporting, configuring, writing, deleting, or sending.',
-        'Questions, explanations, status questions, greetings, and hypothetical discussions are not actions.',
-        'Return JSON only: {"action":true} or {"action":false}.',
-      ].join('\n'),
-      tools: [],
-      messages: [{ role: 'user', content: String(input ?? '') }],
+      system,
+      tools: [classifier],
+      toolChoice: { type: 'function', function: { name: 'classify_action_request' } },
+      messages,
       signal,
     });
-    const text = String(result?.content ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-    return JSON.parse(text)?.action === true;
+    const call = (result?.tool_calls ?? []).find((item) => item?.function?.name === 'classify_action_request');
+    if (call) {
+      const parsed = JSON.parse(call.function.arguments ?? '{}')?.action;
+      if (typeof parsed === 'boolean') return parsed;
+    }
+    const fromText = parseActionJson(result?.content);
+    if (fromText !== null) return fromText;
+  } catch {
+    // Fall through to the toolless path below.
+  }
+
+  try {
+    const result = await llm.completeWithTools({ system, tools: [], messages, signal });
+    return parseActionJson(result?.content) === true;
   } catch {
     return false;
   }

@@ -63,6 +63,7 @@ function styledSegments(segments: Segment[]) {
 type RenderedLine = {
   segments: Segment[];
   role?: string;
+  userBubbleWidth?: number;
   status?: boolean;
   statusLeft?: string;
   statusRight?: string;
@@ -388,14 +389,28 @@ function statusColumns(line: string): { left: string; right: string } {
   return { left: left || ' ', right };
 }
 
+// Consecutive messages that render under the same header ([shell]/[user]/
+// [donna]) are grouped: only the first one shows the label + separator, so a
+// run of same-type messages doesn't repeat the header on every entry.
+function headerGroupKey(role: string) {
+  return isDonnaRole(role) ? 'donna' : roleLabel(role);
+}
+
 function conversationLines(messages: Array<{ role: string; content: string }>, columns: number): RenderedLine[] {
-  return messages.flatMap((message) => {
+  return messages.flatMap((message, index) => {
     const raw = String(message.content || '');
-    const contentColumns = message.role === 'user' ? Math.max(12, Math.floor(columns * 0.5) - 2) : columns;
+    const previous = index > 0 ? messages[index - 1] : null;
+    const showHeader = !previous || headerGroupKey(previous.role) !== headerGroupKey(message.role);
+    const headerLines: RenderedLine[] = showHeader
+      ? [
+          { segments: messageHeaderSegments(message.role, columns), copyContent: raw },
+          { segments: [{ text: ' ', color: '#D6DEE8' }] },
+        ]
+      : [];
+    const contentColumns = message.role === 'user' ? Math.max(12, Math.floor(columns * 0.6) - 2) : columns;
     if (isStatusOutput(message)) {
       const statusLines: RenderedLine[] = [
-        { segments: messageHeaderSegments(message.role, contentColumns), copyContent: raw },
-        { segments: [{ text: ' ', color: '#D6DEE8' }] },
+        ...headerLines,
         ...raw.split('\n').map((line) => {
           const { left, right } = statusColumns(line || ' ');
           return { status: true, statusLeft: left, statusRight: right, segments: [] };
@@ -413,10 +428,16 @@ function conversationLines(messages: Array<{ role: string; content: string }>, c
       if (/^\s*(`{3,}|~{3,})/.test(line)) { inFence = !inFence; continue; }
       lines.push({ text: line, isCode: inFence });
     }
+    const renderedBody = renderMarkdownLines(lines, message.role, contentColumns);
+    const userBubbleWidth = message.role === 'user'
+      ? Math.min(
+          Math.max(1, ...renderedBody.map((line) => line.segments.reduce((sum, segment) => sum + segment.text.length, 0))) + 2,
+          Math.max(12, Math.floor(columns * 0.6)),
+        )
+      : undefined;
     const bodyLines: RenderedLine[] = [
-      { segments: messageHeaderSegments(message.role, contentColumns), copyContent: raw },
-      { segments: [{ text: ' ', color: '#D6DEE8' }] },
-      ...renderMarkdownLines(lines, message.role, contentColumns),
+      ...headerLines,
+      ...renderedBody.map((line) => ({ ...line, userBubbleWidth })),
       { segments: [{ text: ' ', color: '#D6DEE8' }] },
     ];
     return bodyLines.map((line) => ({ ...line, role: message.role }));
@@ -470,30 +491,27 @@ export function ConversationView(props: {
       <text height={1} fg="#7F8C8D">{scrollHint()}</text>
       <For each={visibleLines()}>
         {(line) => (
-          line.role === 'user' ? (
-            <box height={1} flexDirection="row" overflow="hidden">
-              <box flexGrow={1} />
-              <box
-                width={Math.max(12, Math.floor(props.columns * 0.5))}
-                height={1}
-                flexDirection="row"
-                justifyContent="flex-end"
-                backgroundColor="#12263A"
-                paddingX={1}
-                overflow="hidden"
-              >
-                <text bg="#12263A">{styledSegments(line.segments)}</text>
-                {line.copyContent !== undefined
-                  ? <text fg="#7F8C8D" bg="#12263A" content={COPY_BTN} onMouseUp={() => props.onCopy?.(line.copyContent!)} />
-                  : null}
-              </box>
-            </box>
-          ) : line.copyContent !== undefined ? (
+          line.copyContent !== undefined ? (
             <box height={1} flexDirection="row" overflow="hidden">
               <For each={line.segments}>
                 {(seg: Segment) => <text width={seg.width} fg={seg.color} bg={seg.bg}>{seg.text}</text>}
               </For>
               <text fg="#4B5563" content={COPY_BTN} onMouseUp={() => props.onCopy?.(line.copyContent!)} />
+            </box>
+          ) : line.role === 'user' && line.userBubbleWidth ? (
+            <box height={1} flexDirection="row" overflow="hidden">
+              <box flexGrow={1} />
+              <box
+                width={line.userBubbleWidth}
+                height={1}
+                flexDirection="row"
+                flexShrink={1}
+                justifyContent="flex-start"
+                paddingX={1}
+                overflow="hidden"
+              >
+                <text>{styledSegments(line.segments)}</text>
+              </box>
             </box>
           ) : line.status ? (
             <box height={1} flexDirection="row" gap={2} overflow="hidden">

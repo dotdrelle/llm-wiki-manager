@@ -5,8 +5,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   applyRuntimeStateToShellSession,
-  appendRuntimePlanCompletionMessages,
-  appendRuntimeRunCompletionMessage,
   chatReadTools,
   createSession,
   runHeadlessChatTurn,
@@ -28,6 +26,21 @@ test('ShellUI inserts StyledText as a child instead of stringifying it through c
   const source = await readFile(new URL('./LeftPane.tsx', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /content=\{styledSegments\(/);
   assert.match(source, /<text[^>]*>\{styledSegments\(line\.segments\)\}<\/text>/);
+});
+
+test('ShellUI renders the user header full-width before constraining only its body', async () => {
+  const source = await readFile(new URL('./LeftPane.tsx', import.meta.url), 'utf8');
+  const headerBranch = source.indexOf("line.copyContent !== undefined ? (");
+  const userBodyBranch = source.indexOf("line.role === 'user' && line.userBubbleWidth ? (", headerBranch);
+  assert.ok(headerBranch >= 0 && userBodyBranch > headerBranch);
+  assert.match(source, /const userBubbleWidth = message\.role === 'user'/);
+  assert.match(source, /Math\.floor\(columns \* 0\.6\)/);
+  assert.doesNotMatch(source, /Math\.floor\(columns \* 0\.5\)/);
+  assert.match(source.slice(userBodyBranch), /width=\{line\.userBubbleWidth\}/);
+  assert.match(source.slice(userBodyBranch), /justifyContent="flex-start"/);
+  assert.doesNotMatch(source.slice(userBodyBranch, source.indexOf(') : line.status ?', userBodyBranch)), /#12263A/);
+  assert.doesNotMatch(source, /messageHeaderSegments\(message\.role, contentColumns\)/);
+  assert.match(source, /messageHeaderSegments\(message\.role, columns\)/);
 });
 
 test('ShellUI turns HTTP URLs into valid links without trailing punctuation', () => {
@@ -178,7 +191,7 @@ test('applyRuntimeStateToShellSession preserves terminal diagnostics when runtim
   assert.deepEqual(session.agentProjection.planPatches, [{ id: 'old-patch' }]);
 });
 
-test('runtime plan completion is appended once to the ShellUI conversation', () => {
+test('legacy runtime sync does not synthesize per-job or canned completion messages', () => {
   const session = createSession();
   applyRuntimeStateToShellSession(session, {
     runId: 'run-1',
@@ -196,57 +209,7 @@ test('runtime plan completion is appended once to the ShellUI conversation', () 
     plan: [{ id: 'build', label: 'Build documentation', status: 'done' }],
   });
 
-  assert.deepEqual(conversationMessages(session), [{
-    role: 'command',
-    content: '✓ Job terminé : Build documentation\nStatus: done',
-  }, {
-    role: 'command',
-    content: '✓ Plan terminé avec succès — 1/1 jobs terminés.',
-  }]);
-});
-
-test('runtime run completion is announced once even when the first observed state is terminal', () => {
-  const session = createSession();
-  const state = {
-    runId: 'run-terminal',
-    status: 'done',
-    plan: [{ id: 'build', status: 'done' }, { id: 'export', status: 'done' }],
-  };
-
-  assert.equal(appendRuntimeRunCompletionMessage(session, state), 1);
-  assert.equal(appendRuntimeRunCompletionMessage(session, state), 0);
-  assert.deepEqual(conversationMessages(session), [{
-    role: 'command',
-    content: '✓ Plan terminé avec succès — 2/2 jobs terminés.',
-  }]);
-});
-
-test('runtime run completion recognizes canonical succeeded status', () => {
-  const session = createSession();
-  const state = {
-    runId: 'run-succeeded', status: 'succeeded',
-    plan: [{ id: 'build', status: 'succeeded' }],
-  };
-
-  assert.equal(appendRuntimeRunCompletionMessage(session, state), 1);
-  assert.match(conversationMessages(session)[0].content, /1\/1 jobs terminés/);
-});
-
-test('runtime plan failure includes its available error description', () => {
-  const session = createSession();
-  appendRuntimePlanCompletionMessages(session, {
-    runId: 'run-2',
-    plan: [{ id: 'ingest', description: 'Ingest pages', status: 'running' }],
-  });
-  appendRuntimePlanCompletionMessages(session, {
-    runId: 'run-2',
-    plan: [{ id: 'ingest', description: 'Ingest pages', status: 'failed', result: { error: { message: 'Index unavailable' } } }],
-  });
-
-  assert.deepEqual(conversationMessages(session), [{
-    role: 'command',
-    content: '✗ Job terminé en erreur : Ingest pages\nStatus: failed\nErreur: Index unavailable',
-  }]);
+  assert.deepEqual(conversationMessages(session), []);
 });
 
 test('direct chat system prompt forbids unsolicited next steps', async () => {
@@ -360,7 +323,7 @@ test('/agent <question> submits one runtime request and remains in chat mode', a
     assert.equal(session.chatMode, true);
     assert.equal(result.oneShotAgent, true);
     assert.equal(result.runtimeOutcome.kind, 'accepted');
-    assert.deepEqual(conversationMessages(session), [{ role: 'user', content: 'lance ingestion' }]);
+    assert.deepEqual(conversationMessages(session), [{ role: 'user', content: 'lance ingestion', _pending: true }]);
   } finally {
     restore();
   }

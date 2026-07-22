@@ -179,6 +179,23 @@ The normal path uses `streamWithTools`; fallback paths use
 `completeWithTools`, `stream`, or plain content. `MAX_TOOL_ITERATIONS` caps the
 loop.
 
+Provider compatibility must follow a capability-first degradation policy.
+Prefer the provider feature that best expresses the intended contract (for
+example structured tool calls with a forced `tool_choice`), but never assume an
+OpenAI-compatible endpoint implements every optional OpenAI behavior correctly.
+Validate the actual response and, when the preferred feature is rejected,
+ignored, or returns an unusable shape, retry through the closest semantically
+equivalent lower-capability path (for example tool call → JSON text completion
+→ validated plain content). Only report failure after the compatible fallbacks
+are exhausted. A provider-compatibility error must never be silently converted
+into a business result such as "not an action", "no task", or "unsupported
+operation". Keep this ordering generic and provider-driven; do not add model,
+agent, capability, or business-verb branches to compensate for one endpoint.
+
+Tests for a preferred provider feature must also cover its degraded path. In
+particular, any use of forced `tool_choice` needs coverage for an endpoint that
+throws and for one that ignores the choice and returns no `tool_calls`.
+
 Internal tools:
 
 - `shell__run_command`: safe manager slash commands only.

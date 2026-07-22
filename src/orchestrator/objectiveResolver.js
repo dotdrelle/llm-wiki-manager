@@ -1,6 +1,8 @@
 export async function resolveObjective(objective, session) {
   const candidates = capabilityCandidates(session);
   if (candidates.length === 0) throw new Error('No orchestrable capability is currently available.');
+  const deterministic = resolveMentionedRegistryOperation(objective, candidates);
+  if (deterministic) return selectionWithProvider(session, deterministic, candidates);
   const llm = session?.llm;
   if (!llm?.completeWithTools) throw new Error('Objective resolution requires the configured workspace LLM.');
 
@@ -25,6 +27,28 @@ export async function resolveObjective(objective, session) {
   if (!candidate.operations.includes(operation)) {
     throw new Error(`Objective resolver selected unsupported operation "${operation}" for ${capability}.`);
   }
+  return selectionWithProvider(session, { capability, operation }, candidates);
+}
+
+// Prefer an operation explicitly named by the user when that name resolves to
+// exactly one entry in the live registry. This is deliberately generic: the
+// resolver knows neither capability ids nor business verbs. Prefix matching
+// covers natural inflections such as an operation name followed by a suffix.
+function resolveMentionedRegistryOperation(objective, candidates) {
+  const words = String(objective ?? '')
+    .normalize('NFKD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+    .match(/[a-z0-9]+/g) ?? [];
+  const matches = candidates.flatMap((candidate) => candidate.operations
+    .filter((operation) => String(operation).split(/[._-]+/).some((token) =>
+      token.length >= 4 && words.some((word) => word.startsWith(token))))
+    .map((operation) => ({ capability: candidate.id, operation })));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function selectionWithProvider(session, selection, candidates) {
+  const { capability, operation } = selection;
   const providers = providersFor(session, capability)
     .filter((provider) => !operation || (provider.capability?.supportedOperations ?? []).includes(operation))
     .sort((a, b) => String(a.agentInstanceId).localeCompare(String(b.agentInstanceId)));

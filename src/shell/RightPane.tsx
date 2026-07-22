@@ -19,7 +19,6 @@ type LogLineParts = { time: string | null; message: string };
 // 4 slots (was 6): items can now span up to 5 lines each (wrapped label +
 // wrapped status/error), so fewer, readable entries beat more, truncated ones.
 const ACTIVITY_SLOTS = Array.from({ length: 4 }, (_, index) => index);
-const LOG_SLOTS = Array.from({ length: 24 }, (_, index) => index);
 const PLAN_VIEWPORT_ROWS = 12;
 
 function wrapLine(value: string, width: number) {
@@ -306,12 +305,15 @@ export function LogPanel(props: { logs: string[]; width: number; filter?: string
   const [activeLogTab, setActiveLogTab] = createSignal<'flow' | 'agent-status'>('flow');
   const lineWidth = () => Math.max(8, props.width - 2);
   const isAgentStatus = (line: string) => /agent[_ -]?status/i.test(line);
+  // Newest-first (reverse) so the latest trace / agent-status line is at the
+  // top. No slice cap: the scrollbox holds the full history and scrolls,
+  // instead of silently dropping everything past a fixed slot count.
   const filteredLogs = () => filterRuntimeLogs(props.logs, props.filter ?? '')
-    .filter((line) => activeLogTab() === 'agent-status' ? isAgentStatus(line) : !isAgentStatus(line));
-  const visibleLines = createMemo(() => logRenderLines(filteredLogs(), lineWidth()).slice(0, 24));
-  const segmentsAt = (index: number): LogSegment[] => visibleLines()[index] ?? [];
+    .filter((line) => activeLogTab() === 'agent-status' ? isAgentStatus(line) : !isAgentStatus(line))
+    .reverse();
+  const allLines = createMemo(() => logRenderLines(filteredLogs(), lineWidth()));
   return (
-    <box flexGrow={1} flexDirection="column" padding={1} focusable={false}>
+    <box flexGrow={2} flexDirection="column" padding={1} focusable={false}>
       <box height={1} flexDirection="row">
         <text
           fg={activeLogTab() === 'flow' ? '#0B1020' : '#D6DEE8'}
@@ -327,10 +329,18 @@ export function LogPanel(props: { logs: string[]; width: number; filter?: string
           onMouseUp={() => setActiveLogTab('agent-status')}
         />
       </box>
-      <box flexGrow={1} flexDirection="column" overflow="hidden">
-        <Index each={LOG_SLOTS}>
-          {(slot) => {
-            const segments = () => segmentsAt(slot());
+      <scrollbox
+        flexGrow={1}
+        focusable={false}
+        scrollY={true}
+        scrollX={false}
+        stickyStart="top"
+        viewportCulling={true}
+        verticalScrollbarOptions={{ visible: allLines().length > 0 }}
+      >
+        <Index each={allLines()}>
+          {(line) => {
+            const segments = () => line();
             const segmentAt = (position: number): LogSegment => segments()[position] ?? { text: '', fg: '#AAB7C4' };
             const usedWidth = (upTo: number) => segments().slice(0, upTo).reduce((total, segment) => total + segment.text.length, 0);
             const widthFor = (position: number) => {
@@ -342,7 +352,7 @@ export function LogPanel(props: { logs: string[]; width: number; filter?: string
                 : Math.min(segment.text.length, lineWidth() - usedWidth(position));
             };
             return (
-              <box height={1} flexDirection="row" overflow="hidden">
+              <box height={1} flexShrink={0} flexDirection="row" overflow="hidden">
                 <text width={widthFor(0)} fg={segmentAt(0).fg} content={segmentAt(0).text} />
                 <text width={widthFor(1)} fg={segmentAt(1).fg} content={segmentAt(1).text} />
                 <text width={widthFor(2)} fg={segmentAt(2).fg} content={segmentAt(2).text} />
@@ -350,7 +360,7 @@ export function LogPanel(props: { logs: string[]; width: number; filter?: string
             );
           }}
         </Index>
-      </box>
+      </scrollbox>
     </box>
   );
 }

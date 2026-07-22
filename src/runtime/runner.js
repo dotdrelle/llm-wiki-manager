@@ -141,9 +141,14 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
   // loop would re-ingest this run's own turns and duplicate them.
   const runConversationSeed = conversationSeed(session, currentInput);
 
+  // The conversational loop path ends with the agent's own natural-language
+  // reply; the deterministic parallel scheduler has no agent voice, so only
+  // that path gets a synthesized outcome summary (announceRunOutcome).
+  let usedParallelScheduler = false;
   while (true) {
     sanitizeSessionPlanForExecution(session, runId);
-    const result = shouldUseParallelScheduler(session.headlessPlan)
+    usedParallelScheduler = shouldUseParallelScheduler(session.headlessPlan);
+    const result = usedParallelScheduler
       ? await runRuntimeParallelPlan(agent, session, input, {
         signal,
         timeoutMs,
@@ -190,6 +195,7 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
         emitRuntimeLog(session, 'runtime: run ended by user cancellation (no replan)');
         return { ok: false, result, cancelled: true };
       }
+      if (usedParallelScheduler) await announceRunOutcome(session, { runId, ok: false, signal });
       dispatchAgentEvent(session, createAgentEvent('run_error', {
         origin: 'runtime',
         runId,
@@ -269,6 +275,7 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
       }
     }
 
+    if (usedParallelScheduler) await announceRunOutcome(session, { runId, ok: true, signal });
     dispatchAgentEvent(session, createAgentEvent('run_done', {
       origin: 'runtime',
       runId,
@@ -276,6 +283,62 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
     }));
     return { ok: true, evaluation };
   }
+}
+
+// Emit ONE natural-language Donna message summarizing how the run finished,
+// instead of the client streaming a per-job line for every task. Uses the
+// workspace LLM to phrase it, degrading to a plain templated fact line if the
+// LLM is unavailable or errors — the run must never block on this summary.
+async function announceRunOutcome(session, { runId, ok, signal = null } = {}) {
+  const plan = Array.isArray(session.headlessPlan) ? session.headlessPlan : [];
+  if (plan.length === 0) return;
+  let failed = 0;
+  let cancelled = 0;
+  let completed = 0;
+  let firstError = null;
+  for (const step of plan) {
+    const status = String(step?.status ?? '').toLowerCase();
+    if (['failed', 'error', 'stalled'].includes(status)) {
+      failed += 1;
+      firstError ??= String(
+        step?.error?.message ?? step?.error?.code ?? step?.error
+        ?? step?.result?.error?.message ?? step?.result?.error?.code ?? '',
+      ).trim() || null;
+    } else if (['cancelled', 'canceled'].includes(status)) {
+      cancelled += 1;
+    } else if (['done', 'complete', 'completed', 'success', 'succeeded'].includes(status)) {
+      completed += 1;
+    }
+  }
+  const total = plan.length;
+  const factLine = ok && failed === 0
+    ? `Plan terminé avec succès — ${completed}/${total} tâche(s) réussie(s).`
+    : `Plan terminé en erreur — ${completed}/${total} tâche(s) réussie(s), ${failed} en erreur${cancelled ? `, ${cancelled} annulée(s)` : ''}.${firstError ? ` Première erreur : ${firstError}.` : ''}`;
+  let content = factLine;
+  const llm = session.llm;
+  if (llm && typeof llm.completeWithTools === 'function') {
+    try {
+      const result = await llm.completeWithTools({
+        system: [
+          'You are Donna, an orchestration assistant reporting a run result to the user.',
+          'Rephrase the outcome facts in ONE short, natural sentence, in the same language as the facts.',
+          'No lists, no headers, no raw job ids — just a concise human summary.',
+        ].join('\n'),
+        tools: [],
+        messages: [{ role: 'user', content: `Run outcome facts:\n${factLine}` }],
+        signal,
+      });
+      const phrased = String(result?.content ?? '').trim();
+      if (phrased) content = phrased;
+    } catch {
+      // Degrade to the templated fact line — never fail the run on the summary.
+    }
+  }
+  dispatchAgentEvent(session, createAgentEvent('assistant_message', {
+    origin: 'runtime',
+    runId,
+    payload: { content },
+  }));
 }
 
 export async function runRuntimeParallelPlan(agent, session, input, {

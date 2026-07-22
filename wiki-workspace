@@ -756,6 +756,7 @@ read_lines_into_array() {
   eval "$array_name=()"
   local line
   while IFS= read -r line; do
+    [[ -n "${line//[[:space:]]/}" ]] || continue
     eval "$array_name+=(\"\$line\")"
   done < <("$@")
 }

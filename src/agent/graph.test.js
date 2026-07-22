@@ -25,7 +25,9 @@ test('Donna cannot answer an explicit action with manual instructions instead of
     runtime: { url: 'http://runtime.test' },
     llm: {
       async completeWithTools({ tools }) {
-        if (tools.length === 0) return { content: '{"action":true}', message: { role: 'assistant', content: '{"action":true}' }, tool_calls: null };
+        if (tools.some((tool) => tool.function?.name === 'classify_action_request')) {
+          return { content: null, message: { role: 'assistant', content: null }, tool_calls: [{ id: 'classify', type: 'function', function: { name: 'classify_action_request', arguments: '{"action":true}' } }] };
+        }
         mainCalls += 1;
         if (mainCalls === 1) {
           return {
@@ -910,8 +912,8 @@ test('forced delegation is cleared after one valid tool call and does not loop',
     commands: ['status'],
     llm: {
       async completeWithTools({ toolChoice, tools }) {
-        if (tools.length === 0) {
-          return { content: '{"action":true}', message: { role: 'assistant', content: '{"action":true}' }, tool_calls: null };
+        if (tools.some((tool) => tool.function?.name === 'classify_action_request')) {
+          return { content: null, message: { role: 'assistant', content: null }, tool_calls: [{ id: 'classify', type: 'function', function: { name: 'classify_action_request', arguments: '{"action":true}' } }] };
         }
         calls += 1;
         choices.push(toolChoice);

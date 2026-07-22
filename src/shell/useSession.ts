@@ -16,8 +16,6 @@ import {
   completionDescription,
   conversationMessages,
   createSession,
-  appendRuntimePlanCompletionMessages,
-  appendRuntimeRunCompletionMessage,
   runtimeUnavailableAgentMessage,
   sanitizeRuntimeStateForDisplay,
 } from './repl.js';
@@ -386,14 +384,21 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
         continue;
       }
       if (role === 'user') {
-        // The user's own message was already pushed optimistically (see
-        // useAgent.ts) and marked _pending — confirm that entry instead of
-        // adding a second copy. No matching pending entry (e.g. history
-        // restored after a fresh reconnect) falls through to a normal push.
+        // The user's own message was already pushed optimistically — either
+        // marked _pending (web / runtime-submit path, useAgent.ts) OR as a plain
+        // entry by the interactive agent turn (repl.js runAgentTurn) that then
+        // delegated. Adopt whichever already exists instead of appending a
+        // second identical copy (the delegation seeds the run with the same
+        // objective, which comes back through this merge).
         const pendingIndex = target.findIndex((entry: any) => entry._pending && entry.role === 'user' && entry.content === content);
         if (pendingIndex !== -1) {
           delete target[pendingIndex]._pending;
           backed.push(target[pendingIndex]);
+          continue;
+        }
+        const localIndex = target.findIndex((entry: any) => entry.role === 'user' && entry.content === content && !backed.includes(entry));
+        if (localIndex !== -1) {
+          backed.push(target[localIndex]);
           continue;
         }
       }
@@ -413,10 +418,14 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
         if (((session as any).workspace ?? null) !== workspace) return;
         const displayState = sanitizeRuntimeStateForDisplay(state);
         setRuntimeState(displayState);
+        // The per-job "Job terminé" lines and the canned plan summary are gone:
+        // the runtime now emits ONE natural-language Donna message at completion
+        // (see announceRunOutcome in runner.js), which arrives through the
+        // conversation merge below. Detect that the chat grew to keep the
+        // welcome-hidden / scroll-to-latest behavior.
+        const beforeLength = conversationMessages(session).length;
         mergeRuntimeConversation(displayState);
-        const appended = appendRuntimePlanCompletionMessages(session, displayState)
-          + appendRuntimeRunCompletionMessage(session, displayState);
-        if (appended > 0) {
+        if (conversationMessages(session).length > beforeLength) {
           setShowWelcome(false);
           setConversationScroll(0);
         }

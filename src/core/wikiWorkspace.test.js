@@ -45,6 +45,7 @@ test('container refresh pulls and renews only services that are already running'
   const script = await readFile(new URL('../../wiki-workspace', import.meta.url), 'utf8');
 
   assert.match(script, /refresh_running_services\(\) \{/);
+  assert.match(script, /\[\[ -n "\$\{line\/\/\[\[:space:\]\]\/\}" \]\] \|\| continue/);
   assert.match(script, /ps --status running --services/);
   assert.match(script, /"\$@" pull "\$\{running_services\[@\]\}"/);
   assert.match(script, /refresh_running_services 'No running external agent containers to refresh' 'Refreshed running agents: %s' _agents_dc/);

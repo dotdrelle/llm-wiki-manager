@@ -12,7 +12,6 @@ import { useSession } from './useSession';
 import { buildMcpStatus } from '../core/mcp.js';
 import { loadWikircProfile, summarizeWikircConfig } from '../core/wikirc.js';
 import { listWorkspaces } from '../core/workspaces.js';
-import { postRuntimeShutdown } from '../runtime/client.js';
 import { runPreflightChecks, withRuntimePreflight } from '../core/startupCheck.js';
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -163,16 +162,16 @@ function App(props: {
   let selectionCopyTimer: ReturnType<typeof setTimeout> | null = null;
   let startupKeyboardEventId = 0;
   let lastCopiedSelection = '';
-  let runtimeShutdownRequested = false;
   const state = useSession(props);
   const startup = createMemo(() => startupInfo(props.packageJson, props.initialWorkspaceName));
   const conversationRows = createMemo(() => Math.max(4, dimensions().height - 5 - chatInputHeight()));
   const rightColumns = createMemo(() => {
     const width = dimensions().width;
-    // 38% / cap 56 (was 32% / cap 44): the Plan/Activity/Logs panes carry job
+    // 38% + 2 columns / cap 58: the Plan/Activity/Logs panes carry job
     // labels, file names and error messages — 40 columns truncated everything
-    // into unreadable stubs.
-    return Math.max(30, Math.min(56, Math.floor(width * 0.38)));
+    // into unreadable stubs. The small addition uses the terminal's right-side
+    // slack without making the conversation pane noticeably narrower.
+    return Math.max(32, Math.min(58, Math.floor(width * 0.38) + 2));
   });
   const leftColumns = createMemo(() => Math.max(32, dimensions().width - rightColumns() - 1));
   const conversationColumns = createMemo(() => {
@@ -212,18 +211,6 @@ function App(props: {
     if (workspaceLoaded) await state.submitInput('/status');
   };
 
-  // "Open a workspace" is really one composite action (load it, then bring
-  // its services up) — named here so it has one definition instead of being
-  // inlined as three sequential submitInput calls in openAction.
-  const openWorkspaceAndStartServices = async (workspaceName?: string | null) => {
-    const loaded = await loadWorkspace(workspaceName);
-    if (loaded) {
-      await state.submitInput('/start agents');
-      await state.submitInput('/start all');
-    }
-    return loaded;
-  };
-
   const refreshPreflight = async () => {
     setPreflightBusy(true);
     try {
@@ -243,37 +230,11 @@ function App(props: {
       void refreshPreflight();
       return;
     }
-    if (action === 'start-services') {
-      void (async () => {
-        setPreflightBusy(true);
-        try {
-          await openWorkspaceAndStartServices(workspaceName ?? startupInfo(props.packageJson, props.initialWorkspaceName).workspaceName);
-          const next = await runPreflightChecks();
-          setPreflight(withRuntimePreflight(next, props.runtime));
-        } finally {
-          setPreflightBusy(false);
-        }
-      })();
-      return;
-    }
-    if (action === 'open-logs') {
-      setScreen('main');
-      void (async () => {
-        const loaded = await loadDefaultWorkspace();
-        if (!loaded) return;
-        const containerCheck = preflight().checks?.find((check: any) => check.kind === 'containers');
-        const service = containerCheck?.context?.unavailable?.[0];
-        if (service) await state.submitInput(`/logs ${service} 120`);
-        else await state.submitInput('/services');
-        await state.submitInput('/mcp status');
-      })();
-      return;
-    }
     setScreen('main');
     void (async () => {
       try {
         if (action === 'open-workspace') {
-          const loaded = await openWorkspaceAndStartServices(workspaceName ?? startupInfo(props.packageJson, props.initialWorkspaceName).workspaceName);
+          const loaded = await loadWorkspace(workspaceName ?? startupInfo(props.packageJson, props.initialWorkspaceName).workspaceName);
           await showDefaultStatus(loaded);
         } else if (action === 'new-conversation' || action === 'run-workflow') {
           const loaded = await loadDefaultWorkspace();
@@ -323,10 +284,6 @@ function App(props: {
   onCleanup(() => {
     if (copyHintTimer) clearTimeout(copyHintTimer);
     if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
-    if (props.runtime?.url && !runtimeShutdownRequested) {
-      runtimeShutdownRequested = true;
-      void postRuntimeShutdown({ url: props.runtime.url }).catch(() => {});
-    }
   });
 
   const spinnerTimer = setInterval(() => {

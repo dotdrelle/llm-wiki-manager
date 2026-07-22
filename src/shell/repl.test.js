@@ -43,6 +43,85 @@ test('ShellUI renders the user header full-width before constraining only its bo
   assert.match(source, /messageHeaderSegments\(message\.role, columns\)/);
 });
 
+test('ShellUI renders newest-first order in both Runtime and Agent status', async () => {
+  const source = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
+  const filteredLogs = source.slice(
+    source.indexOf('const filteredLogs ='),
+    source.indexOf('const allLines ='),
+  );
+  assert.match(filteredLogs, /activeLogTab\(\) === 'agent-status'/);
+  assert.match(filteredLogs, /isAgentStatus\(line\)/);
+  assert.doesNotMatch(filteredLogs, /\.reverse\(\)/);
+  const renderedLogs = source.slice(
+    source.indexOf('function logRenderLines'),
+    source.indexOf('function logEntryLines'),
+  );
+  assert.match(renderedLogs, /return blocks\.reverse\(\)\.flat\(\)/);
+});
+
+test('Activity uses only visible jobs and leaves remaining height to Flow/Trace', async () => {
+  const source = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
+  const activityPanel = source.slice(
+    source.indexOf('export function ActivityPanel'),
+    source.indexOf('type LogSegment'),
+  );
+  assert.match(activityPanel, /<Index each=\{visibleSlots\(\)\}>/);
+  assert.doesNotMatch(activityPanel, /<Index each=\{ACTIVITY_SLOTS\}>/);
+  assert.match(activityPanel, /paddingX=\{1\}/);
+  assert.doesNotMatch(activityPanel, /updatedLine\(activity\(\)\)/);
+  assert.doesNotMatch(activityPanel, /marginTop=/);
+  const logPanel = source.slice(
+    source.indexOf('export function LogPanel'),
+    source.indexOf('export function QueuePanel'),
+  );
+  assert.doesNotMatch(logPanel, /marginTop=\{1\}/);
+  assert.match(activityPanel, /wrapLine\(activityDetailText\(item\), lineWidth\(\)\)\.slice\(0, 2\)/);
+  assert.match(source, /`Task \$\{Math\.max\(1, taskIndex\)\}\/\$\{taskTotal\}`/);
+  assert.match(source, /`Step \$\{Math\.max\(1, stepIndex\)\}\/\$\{stepTotal\}`/);
+  assert.match(source, /`Batch \$\{Math\.min\(batchCount, Math\.max\(1, batchIndex \+ 1\)\)\}\/\$\{batchCount\}`/);
+  assert.match(source, /instructionCount/);
+  assert.match(source, /stabilizeKept/);
+});
+
+test('ShellUI launcher never starts agents or workspace services implicitly', async () => {
+  const tui = await readFile(new URL('./tui.tsx', import.meta.url), 'utf8');
+  const startup = await readFile(new URL('./StartupScreen.tsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(tui, /submitInput\('\/start (?:agents|agent|all)'\)/);
+  assert.doesNotMatch(startup, /start-services|Start services|start agents and services/i);
+  assert.doesNotMatch(startup, /open-logs|Open diagnostics/i);
+  assert.match(startup, /Select and load a workspace/);
+});
+
+test('ShellUI lets the right pane extend to the terminal edge', async () => {
+  const tui = await readFile(new URL('./tui.tsx', import.meta.url), 'utf8');
+  const pane = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
+  assert.match(tui, /Math\.min\(58, Math\.floor\(width \* 0\.38\) \+ 2\)/);
+  assert.match(pane, /paddingLeft=\{1\}/);
+  assert.doesNotMatch(pane, /height="100%" flexDirection="column" padding=\{1\}/);
+});
+
+test('Flow/Trace does not repeat the runtime source prefix on every line', async () => {
+  const source = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
+  const entryRenderer = source.slice(
+    source.indexOf('function logEntryLines'),
+    source.indexOf('export function LogPanel'),
+  );
+  assert.match(entryRenderer, /sourceMatch/);
+  assert.doesNotMatch(entryRenderer, /prefix\.push\(\{ text: `\$\{source\}/);
+  assert.match(entryRenderer, /prefix\.push\(\{ text: `\$\{parts\.time\} /);
+});
+
+test('runtime logs have a separator and a concise Runtime tab label', async () => {
+  const source = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
+  const logPanel = source.slice(
+    source.indexOf('export function LogPanel'),
+    source.indexOf('export function QueuePanel'),
+  );
+  assert.match(logPanel, /content=\{'─'\.repeat\(lineWidth\(\)\)\}/);
+  assert.match(logPanel, /content=" Runtime "/);
+  assert.doesNotMatch(logPanel, /Flow \/ Trace/);
+});
+
 test('ShellUI turns HTTP URLs into valid links without trailing punctuation', () => {
   assert.deepEqual(httpLinkParts('Voir https://example.test/docs?q=ok.'), [
     { text: 'Voir ' },

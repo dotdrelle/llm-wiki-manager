@@ -136,12 +136,12 @@ export async function runtimeHealthOrNull(url = runtimeUrlFromEnv(), token = run
   }
 }
 
-// Contract with the user: the shell OWNS the runtime it started — leaving it
-// alive after exit produced zombie runtimes running yesterday's code and
-// yesterday's endpoints. Nuance preserved: if a run is active anywhere, the
-// runtime is left alive so the run survives the shell (that promise stays).
+// Close the runtime attached to the shell when it is idle, including a process
+// reused at startup. Restricting cleanup to `started: true` left ownerless
+// runtimes occupying port 7788 with another manager directory/token.
+// An active run still survives the shell.
 export async function shutdownOwnedRuntime(runtime, { log = (_message) => {}, timeoutMs = 3000 } = {}) {
-  if (!runtime?.url || !runtime?.started) return { action: 'kept', reason: 'not_owned' };
+  if (!runtime?.url) return { action: 'kept', reason: 'unavailable' };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Math.max(1, Number(timeoutMs) || 3000));
   try {
@@ -156,7 +156,7 @@ export async function shutdownOwnedRuntime(runtime, { log = (_message) => {}, ti
       return { action: 'kept', reason: 'run_active', activeRuns };
     }
     await postRuntimeShutdown({ url: runtime.url, token: runtime.token, signal: controller.signal });
-    log('runtime arrêté (démarré par ce shell, aucun run en cours).');
+    log('runtime arrêté (aucun run en cours).');
     return { action: 'shutdown' };
   } catch (err) {
     if (controller.signal.aborted) {

@@ -7,9 +7,7 @@ export type StartupAction =
   | 'open-workspace'
   | 'run-workflow'
   | 'init-workspace'
-  | 'retry-preflight'
-  | 'start-services'
-  | 'open-logs';
+  | 'retry-preflight';
 
 type StartupItem = {
   action: StartupAction;
@@ -124,7 +122,7 @@ export function StartupScreen(props: {
       {
         action: 'open-workspace',
         label: 'Open workspace',
-        detail: 'Select, load, then start agents and services',
+        detail: 'Select and load a workspace',
       },
       initWorkspaceItem('Create and configure a new workspace'),
       {
@@ -135,8 +133,6 @@ export function StartupScreen(props: {
     ];
     if (props.preflight?.status === 'degraded') {
       base.push({ action: 'retry-preflight', label: 'Retry pending checks', detail: 'Recheck Docker, Internet, containers and MCP' });
-      base.push({ action: 'start-services', label: 'Start services', detail: 'Start agents and workspace containers, then recheck' });
-      base.push({ action: 'open-logs', label: 'Open diagnostics', detail: 'Show service logs and detailed MCP status' });
     }
     return base;
   });

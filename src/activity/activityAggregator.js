@@ -71,21 +71,37 @@ function groupLine(group, activities) {
   const running = group.tasks.filter((task) => ACTIVE.has(statusOf(task)));
   const failed = group.tasks.find((task) => statusOf(task) === 'failed');
   const waitingApproval = group.tasks.some((task) => ['pending_approval', 'waiting_approval'].includes(statusOf(task)));
-  const activeAgents = new Set(running.map((task) => task.agentInstanceId).filter(Boolean)).size;
-  const activeProgress = running
-    .map((task) => progressForTask(task, activities))
-    .find((value) => value != null);
+  // Activity polling can advance before the persisted task projection catches
+  // up. Treat a live, linked activity as authoritative instead of rendering
+  // the whole group as "validation 0%" while a worker visibly runs at 35%.
+  const activePair = group.tasks
+    .map((task) => ({ task, activity: activityForTask(task, activities) }))
+    .find(({ activity }) => activity && !activity.terminal && !DONE.has(statusOf(activity)));
+  const activeTask = activePair?.task ?? running[0] ?? null;
+  const activeActivity = activePair?.activity
+    ?? running.map((task) => activityForTask(task, activities)).find(Boolean);
+  const activeAgents = new Set([
+    ...running.map((task) => task.agentInstanceId),
+    activeTask?.agentInstanceId,
+  ].filter(Boolean)).size;
+  const activeProgress = Number.isFinite(Number(activeActivity?.progress?.percent))
+    ? Number(activeActivity.progress.percent)
+    : running.map((task) => Number(task?.progress?.percent)).find(Number.isFinite);
   let icon = '[ ]';
   let status = 'en attente';
-  if (failed) {
+  // A group may contain an earlier failure while another independent task is
+  // still progressing. Show the live worker as running; surface the group
+  // failure once no work remains. Otherwise its business label was rendered
+  // red even though that exact task was healthy and advancing.
+  if (running.length > 0 || activeActivity) {
+    icon = '[...]';
+    status = activeProgress != null ? `${Math.round(activeProgress)} %` : `${done}/${total}`;
+  } else if (failed) {
     icon = '[!]';
     status = 'error';
   } else if (done === total) {
     icon = '[x]';
     status = 'done';
-  } else if (running.length > 0) {
-    icon = '[...]';
-    status = activeProgress != null ? `${Math.round(activeProgress)} %` : `${done}/${total}`;
   } else if (waitingApproval) {
     icon = '[!]';
     status = 'validation';
@@ -100,12 +116,28 @@ function groupLine(group, activities) {
   // text. Fall back to the task-completion ratio when nothing is running.
   const percent = running.length > 0 && activeProgress != null
     ? Math.round(activeProgress)
+    : activeActivity && activeProgress != null
+      ? Math.round(activeProgress)
     : (total > 0 ? Math.round((done / total) * 100) : null);
+  const phaseTasks = activeTask
+    ? group.tasks.filter((task) => String(task.operation ?? '') === String(activeTask.operation ?? ''))
+    : [];
+  const taskIndex = activeTask ? phaseTasks.indexOf(activeTask) + 1 : null;
+  const taskTotal = phaseTasks.length || null;
   return {
     id: `group:${group.id}`,
     label: `${icon} ${group.label} - ${status}${agents}`,
     status,
-    progress: { done, total, percent },
+    // Preserve the active worker's business progress (source/template/
+    // deliverable, phase and detail). ShellUI can then show the same useful
+    // information as the direct wiki CLI instead of only "knowledge.update".
+    progress: {
+      ...(activeActivity?.progress ?? {}),
+      done,
+      total,
+      percent,
+      ...(taskIndex ? { taskIndex, taskTotal, taskOperation: activeTask?.operation ?? null } : {}),
+    },
     activeAgents,
   };
 }
@@ -121,15 +153,13 @@ function activityLine(activity) {
   };
 }
 
-function progressForTask(task, activities) {
+function activityForTask(task, activities) {
   const taskId = String(task.id ?? task.step ?? '');
   const activityKey = task.activityKey ?? task.ownerActivityKey ?? null;
-  const match = activities.find((activity) =>
+  return activities.find((activity) =>
     (activityKey && (activity.key === activityKey || activity.id === activityKey))
     || String(activity?.progress?.stepId ?? '') === taskId,
   );
-  const value = Number(match?.progress?.percent ?? task.progress?.percent);
-  return Number.isFinite(value) ? value : null;
 }
 
 function statusOf(task) {

@@ -503,7 +503,7 @@ async function runRuntime(argv, agent) {
   const { defaultRuntimeStateDir, openRuntimeStore, RECOVERABLE_QUEUE_STATUSES } = await import('../runtime/store.js');
   const { startRuntimeServer } = await import('../runtime/server.js');
   const { recoverActiveRuns } = await import('../runtime/recoveryManager.js');
-  const { emitRuntimeLog, startActivitySupervisor, cancelActiveActivityJobs } = await import('../runtime/supervisor.js');
+  const { emitRuntimeLog, startActivitySupervisor, cancelActiveActivityJobs, discoverAgentsOnce } = await import('../runtime/supervisor.js');
   const { resolveRuntimeAuthToken } = await import('../runtime/auth.js');
   const { createSqliteQueueStore } = await import('../runtime/queueStore.js');
   const { createApprovalManager } = await import('../runtime/approvals.js');
@@ -805,6 +805,12 @@ async function runRuntime(argv, agent) {
     const { resolveObjective } = await import('../orchestrator/objectiveResolver.js');
     const { validateFragment } = await import('../orchestrator/planValidator.js');
     const session = context.session;
+    // The supervisor starts discovery asynchronously. A delegation submitted
+    // immediately after opening ShellUI must not observe the transient empty
+    // registry and fail while the provider is already healthy. Refresh the
+    // live endpoints and await one discovery pass before resolving.
+    await refreshMcpRuntimeStatus(session);
+    await discoverAgentsOnce(session, { registry: session.agentRegistry });
     let selection;
     try {
       selection = await resolveObjective(objective, session);

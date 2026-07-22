@@ -274,6 +274,7 @@ const AgentState = Annotation.Root({
   invalidResponseRetries: Annotation({ default: () => 0 }),
   invalidToolCallRetries: Annotation({ default: () => 0 }),
   forceDelegation: Annotation({ default: () => false }),
+  terminalToolFailure: Annotation({ default: () => false }),
 });
 
 function invalidToolCalls(toolCalls) {
@@ -1368,6 +1369,7 @@ export function createAgentGraph(options = {}) {
   async function toolExecutorNode(state) {
     const toolCalls = state.pendingToolCalls ?? [];
     const toolResultMessages = [];
+    let terminalFailure = null;
 
     for (const call of toolCalls) {
       const resolved = resolveToolCallName(state.session.mcp, call.function.name, INTERNAL_TOOL_SERVERS);
@@ -1456,6 +1458,12 @@ export function createAgentGraph(options = {}) {
           resultText = JSON.stringify(result, null, 2);
         } else if (server === 'runtime') {
           resultText = await handleRuntimeControlTool(state.session, tool, args);
+          if (tool === 'delegate' && /^Runtime control error \(delegate\):/i.test(resultText)) {
+            terminalFailure = resultText
+              .replace(/^Runtime control error \(delegate\):\s*/i, '')
+              .replace(/^Delegation failed during objective_resolution:\s*/i, '');
+            ok = false;
+          }
         } else if (server !== 'shell') {
           await awaitRunApproval(state.session, { runId, tool: toolName });
           await awaitToolApproval(state.session, {
@@ -1551,15 +1559,34 @@ export function createAgentGraph(options = {}) {
         tool_call_id: call.id,
         content: boundedResult,
       });
+      if (terminalFailure) break;
     }
 
+    if (terminalFailure) {
+      const response = `Action non lancée : ${terminalFailure}`;
+      emitAgentEvent(state.session, 'assistant_message', 'agent_guard', { content: response });
+      return {
+        response,
+        messages: toolResultMessages,
+        pendingToolCalls: null,
+        forceDelegation: false,
+        terminalToolFailure: true,
+        invalidToolCallRetries: 0,
+        invalidResponseRetries: 0,
+      };
+    }
     return {
       messages: toolResultMessages,
       pendingToolCalls: null,
       forceDelegation: false,
       invalidToolCallRetries: 0,
       invalidResponseRetries: 0,
+      terminalToolFailure: false,
     };
+  }
+
+  function routeToolExecutor(state) {
+    return state.terminalToolFailure ? END : 'orchestrator';
   }
 
   function routeOrchestrator(state) {
@@ -1575,7 +1602,7 @@ export function createAgentGraph(options = {}) {
     .addNode('tool_executor', toolExecutorNode)
     .addEdge(START, 'orchestrator')
     .addConditionalEdges('orchestrator', routeOrchestrator)
-    .addEdge('tool_executor', 'orchestrator')
+    .addConditionalEdges('tool_executor', routeToolExecutor)
     .compile();
 
   // LangGraph's default recursionLimit is 25 super-steps. Each tool round

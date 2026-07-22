@@ -52,6 +52,28 @@ test('shutdownOwnedRuntime reports progress and stops an idle owned runtime', as
   }
 });
 
+test('shutdownOwnedRuntime also stops an idle reused runtime', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (_url, options = {}) => {
+    calls.push(options.method ?? 'GET');
+    return new Response(JSON.stringify(calls.length === 1 ? { activeRuns: [] } : { shutdown: true }), {
+      status: calls.length === 1 ? 200 : 202,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  try {
+    const result = await shutdownOwnedRuntime(
+      { url: 'http://127.0.0.1:7788', started: false, token: null },
+      { timeoutMs: 100 },
+    );
+    assert.equal(result.action, 'shutdown');
+    assert.deepEqual(calls, ['GET', 'POST']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('shutdownOwnedRuntime bounds an unresponsive shutdown', async () => {
   const originalFetch = globalThis.fetch;
   const logs = [];

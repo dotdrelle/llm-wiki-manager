@@ -948,6 +948,44 @@ test('forced delegation is cleared after one valid tool call and does not loop',
   }
 });
 
+test('a rejected runtime delegation is terminal and never loops', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 422,
+    json: async () => ({
+      error: 'Delegation failed during objective_resolution: No orchestrable capability is currently available.',
+    }),
+  });
+  let calls = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    llm: {
+      async completeWithTools() {
+        calls += 1;
+        return {
+          content: null,
+          message: { role: 'assistant', content: null },
+          tool_calls: [{
+            id: 'delegate-failure',
+            type: 'function',
+            function: { name: 'runtime__delegate', arguments: '{"objective":"Lance ingestion"}' },
+          }],
+        };
+      },
+    },
+  });
+
+  try {
+    const result = await createAgentGraph().invoke({ input: 'lance ingestion', session });
+    assert.equal(calls, 1);
+    assert.equal(result.response, 'Action non lancée : No orchestrable capability is currently available.');
+    assert.equal(result.terminalToolFailure, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 // Guard: the system prompt must never show a connected tool's bare name
 // outside its qualified server__tool form. Bare mentions are what teach the
 // model to emit unqualified tool calls (the cme_status incident). The bare

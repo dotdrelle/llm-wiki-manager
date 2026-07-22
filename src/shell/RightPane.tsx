@@ -69,13 +69,59 @@ function queueColor(status: string) {
   return activityColor(status);
 }
 
-function activityLine(activity: any) {
-  const detail = activity?.progress?.detail ?? null;
-  const phase = activity?.progress?.step ?? activity?.progress?.phase ?? activity?.progress?.currentStep ?? null;
-  // On failure the error message is the information that matters — surface
-  // it instead of repeating the bare status the label color already conveys.
+function activityDetailText(activity: any) {
   const error = activityErrorText(activity);
-  return [activity?.status ?? 'unknown', error ?? detail ?? phase].filter(Boolean).join(' · ');
+  if (error) return error;
+  const progress = activity?.progress ?? {};
+  const stepIndex = Number(progress.stepIndex);
+  const stepTotal = Number(progress.stepTotal);
+  const batchIndex = Number(progress.batchIndex);
+  const batchCount = Number(progress.batchCount);
+  const instructionCount = Number(progress.instructionCount);
+  const taskIndex = Number(progress.taskIndex);
+  const taskTotal = Number(progress.taskTotal);
+  const taskProgress = Number.isFinite(taskIndex) && Number.isFinite(taskTotal) && taskTotal > 0
+    ? `Task ${Math.max(1, taskIndex)}/${taskTotal}`
+    : null;
+  const stepProgress = Number.isFinite(stepIndex) && Number.isFinite(stepTotal) && stepTotal > 0
+    ? `Step ${Math.max(1, stepIndex)}/${stepTotal}`
+    : null;
+  const batchProgress = Number.isFinite(batchIndex) && Number.isFinite(batchCount) && batchCount > 0
+    ? `Batch ${Math.min(batchCount, Math.max(1, batchIndex + 1))}/${batchCount}`
+    : null;
+  const instructions = Number.isFinite(instructionCount) && instructionCount > 0
+    ? `${instructionCount} instructions`
+    : null;
+  const detail = batchProgress && /^batch\s+\d+\/\d+/i.test(String(progress.detail ?? ''))
+    ? null
+    : progress.detail;
+  const stabilize = [
+    ['kept', progress.stabilizeKept],
+    ['merged', progress.stabilizeMerged],
+    ['inserted', progress.stabilizeInserted],
+    ['removed', progress.stabilizeRemoved],
+  ].filter(([, value]) => Number.isFinite(Number(value)))
+    .map(([label, value]) => `${label} ${Number(value)}`)
+    .join(', ');
+  const values = [
+    taskProgress,
+    stepProgress,
+    batchProgress,
+    progress.label,
+    detail,
+    instructions,
+    stabilize || null,
+    progress.currentStep ?? progress.step ?? progress.phase,
+  ].map((value) => String(value ?? '').trim()).filter(Boolean);
+  return [...new Set(values)].join(' · ');
+}
+
+function activityDisplayLabel(activity: any) {
+  const businessLabel = activity?._aggregated ? activity?.progress?.label : null;
+  const raw = String(businessLabel ?? activity?.label ?? `${activity?.source ?? 'mcp'} ${activity?.kind ?? 'job'}`);
+  // The percentage has its own right-aligned badge; do not repeat it in the
+  // label (aggregate activities often arrive as "knowledge.update - 85 %").
+  return raw.replace(/\s*[-–—·]\s*\d+\s*%\s*$/, '').trim();
 }
 
 function activityErrorText(activity: any): string | null {
@@ -92,14 +138,6 @@ function activityPercentBadge(activity: any): { text: string; bg: string; fg: st
   const pct = Math.round(val);
   if (pct >= 100) return { text: ` 100% `, bg: '#15803d', fg: '#dcfce7' };
   return { text: ` ${pct}% `, bg: '#1e3a5f', fg: '#93c5fd' };
-}
-
-function updatedLine(activity: any) {
-  const source = activity?.source ?? 'mcp';
-  const id = activity?.id ? `#${activity.id}` : null;
-  if (!activity?.updatedAt) return [source, id].filter(Boolean).join(' ');
-  const age = Math.max(0, Math.round((Date.now() - Date.parse(activity.updatedAt)) / 1000));
-  return [source, id, `${age}s ago`].filter(Boolean).join(' · ');
 }
 
 // Single source of truth for terminal-status aliases so a plan step's icon and
@@ -189,12 +227,13 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
 export function ActivityPanel(props: { activities: any[]; width: number }) {
   const lineWidth = () => Math.max(8, props.width - 2);
   const visible = () => props.activities.slice(-ACTIVITY_SLOTS.length).reverse();
+  const visibleSlots = () => visible().map((_activity, index) => index);
   const activityAt = (index: number) => visible()[index] ?? null;
   return (
-    <box flexShrink={0} flexDirection="column" padding={1}>
+    <box flexShrink={0} flexDirection="column" paddingX={1}>
       <text width={lineWidth()} fg="#D6DEE8" content="Activity" />
       <Show when={visible().length > 0} fallback={<text width={lineWidth()} fg="#7F8C8D" content="no active jobs" />}>
-        <Index each={ACTIVITY_SLOTS}>
+        <Index each={visibleSlots()}>
           {(slot) => {
             const activity = () => activityAt(slot());
             // Wrap instead of hard-truncating: a 40-column pane cut labels to
@@ -204,8 +243,8 @@ export function ActivityPanel(props: { activities: any[]; width: number }) {
             const labelLines = () => {
               const item = activity();
               if (!item) return [''];
-              const label = String(item.progress?.label ?? item.label ?? `${item.source ?? 'mcp'} ${item.kind ?? 'job'}`);
-              const lines = wrapLine(label, lineWidth()).slice(0, 2);
+              const label = activityDisplayLabel(item);
+              const lines = wrapLine(label, Math.max(8, lineWidth() - badgeLen())).slice(0, 2);
               if (lines.length === 2 && String(label).length > lines[0].length + lines[1].length) {
                 lines[1] = fit(lines[1], lineWidth());
               }
@@ -213,23 +252,19 @@ export function ActivityPanel(props: { activities: any[]; width: number }) {
             };
             const badge = () => activityPercentBadge(activity());
             const badgeLen = () => badge()?.text.length ?? 0;
-            const statusLines = () => {
+            const detailLines = () => {
               const item = activity();
-              if (!item) return [''];
-              return wrapLine(activityLine(item), Math.max(8, lineWidth() - badgeLen())).slice(0, 2);
+              if (!item) return [];
+              return wrapLine(activityDetailText(item), lineWidth()).slice(0, 2);
             };
             const statusColor = () => (activityErrorText(activity()) ? '#F38BA8' : '#AAB7C4');
             return (
-              <box flexDirection="column" marginTop={slot() === 0 ? 1 : 0}>
-                <text width={lineWidth()} fg={activityColor(activity()?.status)} content={labelLines()[0]} />
-                <Show when={labelLines()[1]}>
-                  <text width={lineWidth()} fg={activityColor(activity()?.status)} content={labelLines()[1]} />
-                </Show>
+              <box flexDirection="column">
                 <box height={1} flexDirection="row">
                   <text
                     width={lineWidth() - badgeLen()}
-                    fg={statusColor()}
-                    content={activity() ? fit(statusLines()[0], lineWidth() - badgeLen()) : ''}
+                    fg={activityColor(activity()?.status)}
+                    content={fit(labelLines()[0], lineWidth() - badgeLen())}
                   />
                   <text
                     width={badgeLen()}
@@ -238,10 +273,12 @@ export function ActivityPanel(props: { activities: any[]; width: number }) {
                     content={badge()?.text ?? ''}
                   />
                 </box>
-                <Show when={statusLines()[1]}>
-                  <text width={lineWidth()} fg={statusColor()} content={fit(statusLines()[1], lineWidth())} />
+                <Show when={labelLines()[1]}>
+                  <text width={lineWidth()} fg={activityColor(activity()?.status)} content={labelLines()[1]} />
                 </Show>
-                <text width={lineWidth()} fg="#7F8C8D" content={activity() ? fit(updatedLine(activity()), lineWidth()) : ''} />
+                <Index each={detailLines()}>
+                  {(line) => <text width={lineWidth()} fg={statusColor()} content={fit(line(), lineWidth())} />}
+                </Index>
               </box>
             );
           }}
@@ -265,9 +302,9 @@ function logMessageColor(message: string): string {
 }
 
 function logRenderLines(logs: string[], width: number): LogSegment[][] {
-  // Newest entry FIRST (descending): the freshest information belongs at the
-  // top of the pane. Wrapped continuation lines stay attached below their
-  // entry's first line.
+  // Runtime history arrives oldest-first. Reverse complete entry blocks once
+  // so the newest event is at the top while wrapped continuation lines remain
+  // attached below their own entry.
   const blocks: LogSegment[][][] = [];
   for (const raw of logs) {
     blocks.push(logEntryLines(raw, width));
@@ -280,11 +317,12 @@ function logEntryLines(raw: string, width: number): LogSegment[][] {
   for (const item of [raw]) {
     const rawLine = item;
     const sourceMatch = String(rawLine).match(/^(runtime)\s+(.*)$/);
-    const source = sourceMatch ? sourceMatch[1] : null;
     const rest = sourceMatch ? sourceMatch[2] : String(rawLine);
     const parts = logLineParts(rest);
     const prefix: LogSegment[] = [];
-    if (source) prefix.push({ text: `${source} `, fg: '#C6A0F6' });
+    // This pane already contains runtime logs exclusively. Repeating the word
+    // "runtime" on every row consumed ~8 columns and squeezed the useful
+    // message into the middle of narrow terminals.
     if (parts.time) prefix.push({ text: `${parts.time} `, fg: '#89B4FA' });
     const prefixLength = prefix.reduce((total, segment) => total + segment.text.length, 0);
     const messageColor = logMessageColor(parts.message);
@@ -305,20 +343,19 @@ export function LogPanel(props: { logs: string[]; width: number; filter?: string
   const [activeLogTab, setActiveLogTab] = createSignal<'flow' | 'agent-status'>('flow');
   const lineWidth = () => Math.max(8, props.width - 2);
   const isAgentStatus = (line: string) => /agent[_ -]?status/i.test(line);
-  // Newest-first (reverse) so the latest trace / agent-status line is at the
-  // top. No slice cap: the scrollbox holds the full history and scrolls,
-  // instead of silently dropping everything past a fixed slot count.
+  // Filtering preserves the runtime history order. logRenderLines performs
+  // the single block-level reversal shared by both tabs.
   const filteredLogs = () => filterRuntimeLogs(props.logs, props.filter ?? '')
-    .filter((line) => activeLogTab() === 'agent-status' ? isAgentStatus(line) : !isAgentStatus(line))
-    .reverse();
+    .filter((line) => activeLogTab() === 'agent-status' ? isAgentStatus(line) : !isAgentStatus(line));
   const allLines = createMemo(() => logRenderLines(filteredLogs(), lineWidth()));
   return (
-    <box flexGrow={2} flexDirection="column" padding={1} focusable={false}>
+    <box flexGrow={2} flexDirection="column" paddingX={1} focusable={false}>
+      <text width={lineWidth()} fg="#4B5563" content={'─'.repeat(lineWidth())} />
       <box height={1} flexDirection="row">
         <text
           fg={activeLogTab() === 'flow' ? '#0B1020' : '#D6DEE8'}
           bg={activeLogTab() === 'flow' ? '#89B4FA' : undefined}
-          content=" Flow / Trace "
+          content=" Runtime "
           onMouseUp={() => setActiveLogTab('flow')}
         />
         <text fg="#4B5563" content=" " />
@@ -444,7 +481,16 @@ export function RightPane(props: {
     [...props.activities].reverse().find((activity) => !activity.terminal) ?? props.activities.at(-1),
   );
   return (
-    <box width={props.width} height="100%" flexDirection="column" gap={1} padding={1} overflow="hidden" focusable={false}>
+    <box
+      width={props.width}
+      height="100%"
+      flexDirection="column"
+      paddingLeft={1}
+      paddingTop={1}
+      paddingBottom={1}
+      overflow="hidden"
+      focusable={false}
+    >
       <TabHeader active={props.activeTab} queueCount={props.queueInfo.active} width={props.width} onTabClick={props.onTabClick} />
       <Show when={props.pendingApprovals.length > 0}>
         <box height={2} flexDirection="column" border={['left']} borderStyle="heavy" borderColor="#FBBF24" paddingX={1}>

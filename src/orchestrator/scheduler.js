@@ -9,7 +9,11 @@ export function resolveSchedulerConcurrency(value = process.env.WIKI_MANAGER_SCH
     : DEFAULT_SCHEDULER_CONCURRENCY;
 }
 
-export function resolvePlanConcurrency({ plan = [], agents = [], configured = null } = {}) {
+// Display-only breakdown of the SAME computation resolvePlanConcurrency uses.
+// resolvePlanConcurrency delegates to this so the number surfaced to the UIs can
+// never diverge from the number the scheduler actually enforces. Never used to
+// gate scheduling — only `.limit` feeds startReadyTasks.
+export function describePlanConcurrency({ plan = [], agents = [], configured = null } = {}) {
   const capabilities = new Set(plan.map((task) => task?.requiredCapability).filter(Boolean).map(String));
   const assignedAgents = new Set(plan.map((task) => task?.agentInstanceId).filter(Boolean).map(String));
   const relevantAgents = agents.filter((agent) => {
@@ -17,12 +21,28 @@ export function resolvePlanConcurrency({ plan = [], agents = [], configured = nu
     if (id && assignedAgents.has(id)) return true;
     return (agent?.description?.capabilities ?? []).some((capability) => capabilities.has(String(capability?.id ?? '')));
   });
-  const values = [
-    positiveInteger(configured),
-    ...plan.flatMap(concurrencyValues),
-    ...relevantAgents.flatMap(concurrencyValues),
-  ].filter(Boolean);
-  return values.length > 0 ? Math.max(1, Math.min(...values)) : DEFAULT_SCHEDULER_CONCURRENCY;
+  const ceiling = positiveInteger(configured);
+  const agentValues = relevantAgents.flatMap(concurrencyValues).filter(Boolean);
+  const taskValues = plan.flatMap(concurrencyValues).filter(Boolean);
+  const values = [ceiling, ...taskValues, ...agentValues].filter(Boolean);
+  const limit = values.length > 0 ? Math.max(1, Math.min(...values)) : DEFAULT_SCHEDULER_CONCURRENCY;
+  const otherMin = [...taskValues, ...agentValues].length > 0
+    ? Math.min(...taskValues, ...agentValues)
+    : null;
+  // The manager ceiling "bit" when it is the (uniquely) binding constraint: it
+  // is set, equals the resolved limit, and is strictly below every other input.
+  const cappedByCeiling = ceiling != null && limit === ceiling && (otherMin == null || ceiling < otherMin);
+  return {
+    limit,
+    ceiling: ceiling ?? null,
+    agentLimit: agentValues.length > 0 ? Math.min(...agentValues) : null,
+    taskLimit: taskValues.length > 0 ? Math.min(...taskValues) : null,
+    cappedByCeiling,
+  };
+}
+
+export function resolvePlanConcurrency(options = {}) {
+  return describePlanConcurrency(options).limit;
 }
 
 export function resolveCapabilityConcurrency(agent = null, ...constraints) {

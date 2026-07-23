@@ -107,9 +107,81 @@ export function projectWorkflow(state = {}, events = []) {
     activity,
     waitingReasons,
     warnings,
+    usage: summarizeTokenUsage(events),
+    timingByTask: summarizeTaskTiming(events),
   };
   projected.graph = aggregateGraph(projected, events);
   return projected;
+}
+
+// Per-task wall-clock timing, derived from the lifecycle events. Start = the
+// first assigned/started event, finish = the last terminal event. Display-only
+// (the inspector shows duration + orders tasks into a temporal flow); never used
+// for scheduling.
+function summarizeTaskTiming(events = []) {
+  const byTask = {};
+  const START_EVENTS = new Set(['task.assigned', 'task.started']);
+  const END_EVENTS = new Set(['task.completed', 'task.failed', 'task.result_returned']);
+  for (const event of events) {
+    if (!START_EVENTS.has(event.type) && !END_EVENTS.has(event.type)) continue;
+    const taskId = String(event.taskId ?? event.payload?.taskId ?? '').replace(/^task:/, '');
+    if (!taskId) continue;
+    const ts = Number(new Date(event.ts).getTime());
+    if (!Number.isFinite(ts)) continue;
+    const entry = byTask[taskId] ?? (byTask[taskId] = { startedAt: null, finishedAt: null, durationMs: null });
+    if (START_EVENTS.has(event.type)) {
+      entry.startedAt = entry.startedAt == null ? ts : Math.min(entry.startedAt, ts);
+    } else {
+      entry.finishedAt = entry.finishedAt == null ? ts : Math.max(entry.finishedAt, ts);
+    }
+  }
+  for (const entry of Object.values(byTask)) {
+    if (entry.startedAt != null && entry.finishedAt != null && entry.finishedAt >= entry.startedAt) {
+      entry.durationMs = entry.finishedAt - entry.startedAt;
+    }
+  }
+  return byTask;
+}
+
+function summarizeTokenUsage(events = []) {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let totalTokens = 0;
+  let inputKnown = false;
+  let outputKnown = false;
+  let totalKnown = false;
+  const byTask = {};
+  const seen = new Set();
+  for (const event of events) {
+    if (!['task.result_returned', 'task.completed', 'task.failed'].includes(event.type)) continue;
+    const result = event.payload?.result ?? {};
+    const metrics = result.metrics ?? event.payload?.metrics ?? {};
+    const attemptId = result.attemptId ?? event.payload?.attemptId ?? event.id;
+    if (attemptId && seen.has(attemptId)) continue;
+    if (attemptId) seen.add(attemptId);
+    const input = metricNumber(metrics.inputTokens ?? metrics.promptTokens ?? metrics.prompt_tokens);
+    const output = metricNumber(metrics.outputTokens ?? metrics.completionTokens ?? metrics.completion_tokens);
+    const total = metricNumber(metrics.totalTokens ?? metrics.total_tokens ?? metrics.tokens);
+    if (input != null) { inputTokens += input; inputKnown = true; }
+    if (output != null) { outputTokens += output; outputKnown = true; }
+    if (total != null) { totalTokens += total; totalKnown = true; }
+    else if (input != null || output != null) { totalTokens += (input ?? 0) + (output ?? 0); totalKnown = true; }
+    const taskId = String(event.taskId ?? event.payload?.taskId ?? '');
+    if (taskId && (input != null || output != null || total != null)) {
+      const current = byTask[taskId] ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0, inputKnown: false, outputKnown: false, totalKnown: false };
+      if (input != null) { current.inputTokens += input; current.inputKnown = true; }
+      if (output != null) { current.outputTokens += output; current.outputKnown = true; }
+      current.totalTokens += total ?? ((input ?? 0) + (output ?? 0));
+      current.totalKnown = true;
+      byTask[taskId] = current;
+    }
+  }
+  return { inputTokens, outputTokens, totalTokens, inputKnown, outputKnown, totalKnown, byTask };
+}
+
+function metricNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
 function currentRun(state, events) {

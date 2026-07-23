@@ -1208,6 +1208,10 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     return {
       ...baseState,
       runs,
+      // Resolved scheduler concurrency for the live run (display-only). Null for
+      // replayed/historical state — the UIs then fall back to the plan-derived
+      // value. Never consumed by scheduling.
+      concurrency: session?._runConcurrency ?? null,
       workflow: projectWorkflow({ ...baseState, runs, workspace }, events ?? session?.agentEvents ?? []),
     };
   }

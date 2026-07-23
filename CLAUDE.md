@@ -85,7 +85,7 @@ src/orchestrator/           Generic, business-agnostic orchestration core
   capabilityResolver.js     Deterministic agent selection (no fuzzy matching)
   planValidator.js          DAG/contract/budget validation of fragments
   planIntegrator.js         Fragment integration, plan revisions, events
-  scheduler.js              Ready-task computation, effective concurrency
+  scheduler.js              Ready-task computation, effective concurrency (resolvePlanConcurrency = MIN of agent/ceiling/task limits; describePlanConcurrency exposes the same number + cappedByCeiling for the UIs)
   dependencyResolver.js     Deps, groups, barriers
   lockManager.js            Task/administrative locks
   budgetManager.js          Per-run budgets (tasks, attempts, duration…)
@@ -319,6 +319,15 @@ Key modules in `src/runtime/`:
   the item as `pending_approval`; `POST /approve?itemId=...` or shell
   `/approve item <id>` unblocks. Timeout defaults to 10 min
   (`WIKI_MANAGER_APPROVAL_TIMEOUT_MS`, or `approvalTimeoutMs` per run).
+  Directly-launched capability runs (ingest/pipeline via `preparedDelegation`)
+  now **wait by default**: the scheduler emits a per-task `approval.requested`
+  for each mutating task and blocks on `approvalCovered()` until a run-scope
+  grant arrives ("valide tout" / `/approve` / the Approve button). Auto-approval
+  fires only when the caller passes `autoApprove: true` (headless/CI). A granted
+  run/group scope also flips its covered `pending_approval` grants to `approved`
+  in the store and cascades on run purge (no orphan grants). Pending approvals
+  are surfaced in both UIs: Shell right-pane amber banner + plan step `[⏸]`,
+  and `serve` banner above the composer (`POST /api/runtime/approve`).
 - **`supervisor.js`**: polls non-terminal `_activity` items on an interval.
   Exposes `pollBusy` set shared with the runner.
 - **`lifecycle.js`**: `ensureRuntime` — resolves token, health-checks an existing
@@ -504,7 +513,18 @@ sequential chain. `applyAgentProjectionToSession` stores the result on
 `/state` as `workflow`.
 
 `/state` exposes: `status`, `plan`, `activities`, `conversation`, `evaluation`,
-`replans`, `approvals`, `runs`, `queue`, `workflow`, `eventsCursor`.
+`replans`, `approvals`, `runs`, `queue`, `workflow`, `eventsCursor`,
+`concurrency`.
+
+`projectWorkflow` also emits `usage` (token totals + `byTask`) and
+`timingByTask` (`{ startedAt, finishedAt, durationMs }` per task, derived from
+`task.started`/`assigned`/`completed`/`failed` events) — display-only, used by
+the serve run-graph inspector to show the per-task flow (ordered by start) with
+duration and tokens in/out. `getState()` additionally surfaces the live run's
+resolved scheduler concurrency as `state.concurrency = { limit, ceiling,
+agentLimit, cappedByCeiling }` (from `session._runConcurrency`, set once by the
+runner). Both the Shell and serve run summaries read it for the authoritative
+"max ×N" and the amber "(ceiling)" marker; never consumed by scheduling.
 
 Any MCP can opt into manager monitoring by returning additive `_activity`
 metadata with `id`, `source`, `kind`, `label`, `status`, optional `progress`,

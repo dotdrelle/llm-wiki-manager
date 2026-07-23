@@ -11,7 +11,7 @@ import { approvalRequestForTask } from '../orchestrator/approvalPolicy.js';
 import { PENDING_STATUSES, tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
 import { assertValidatedFragment } from '../orchestrator/planValidator.js';
 import { createResultAggregator } from '../orchestrator/resultAggregator.js';
-import { drainActive, resolvePlanConcurrency, startReadyTasks } from '../orchestrator/scheduler.js';
+import { describePlanConcurrency, drainActive, startReadyTasks } from '../orchestrator/scheduler.js';
 import { emitRuntimeLog, pollActivitiesOnce } from './supervisor.js';
 
 // 0 by default: automatic replans turn evaluator/replanner TEXT into
@@ -363,11 +363,24 @@ export async function runRuntimeParallelPlan(agent, session, input, {
   const configuredConcurrency = Number(concurrency) > 0
     ? Number(concurrency)
     : Number(process.env.WIKI_MANAGER_CAPABILITY_CONCURRENCY || process.env.WIKI_MANAGER_SCHEDULER_CONCURRENCY);
-  const limit = resolvePlanConcurrency({
+  const concurrencyDetail = describePlanConcurrency({
     plan: session.headlessPlan ?? [],
     agents,
     configured: configuredConcurrency,
   });
+  const limit = concurrencyDetail.limit;
+  // Publish the RESOLVED concurrency so both UIs show the real dispatch cap
+  // (not a value re-derived from the fragment). Display-only: scheduling still
+  // uses `limit` exactly as before. NOTE: this is a plain field assignment — do
+  // NOT emit a runtime_log here (it runs before ensurePlanProjection and would
+  // clobber session.headlessPlan via applyAgentProjectionToSession). The audit
+  // line is folded into the existing "parallel plan enabled" log below.
+  session._runConcurrency = {
+    limit,
+    ceiling: concurrencyDetail.ceiling,
+    agentLimit: concurrencyDetail.agentLimit,
+    cappedByCeiling: concurrencyDetail.cappedByCeiling,
+  };
   const active = new Map();
   const attempts = attemptManager ?? createAttemptManager();
   const assigner = assignmentManager ?? createAssignmentManager({ session });
@@ -392,7 +405,7 @@ export async function runRuntimeParallelPlan(agent, session, input, {
   };
   sanitizeSessionPlanForExecution(session, runId);
   ensurePlanProjection(session, runId);
-  emitRuntimeLog(session, `scheduler: parallel plan enabled (concurrency ${limit})`);
+  emitRuntimeLog(session, `scheduler: parallel plan enabled (concurrency ${limit}; agent=${concurrencyDetail.agentLimit ?? 'n/a'}, ceiling=${concurrencyDetail.ceiling ?? 'none'}${concurrencyDetail.cappedByCeiling ? ' → capped by manager ceiling' : ''})`);
   // Interactive approvals do NOT expire: the user has /approve, "valide
   // tout", /cancel and /run kill — an arbitrary timer only created mystery
   // failures. A deadline exists only when explicitly configured (headless

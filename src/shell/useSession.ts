@@ -321,6 +321,52 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
       ? lastVisiblePlan.map((step) => ({ ...step }))
       : current;
   });
+  const runSummary = createMemo(() => {
+    version();
+    const workflow = runtimeState()?.workflow;
+    const tasks = Array.isArray(workflow?.nodes)
+      ? workflow.nodes.filter((node: any) => node.type === 'task')
+      : [];
+    if (tasks.length === 0) return null;
+
+    const graphNodes = Array.isArray(workflow?.graph?.nodes) ? workflow.graph.nodes : [];
+    const graphEdges = Array.isArray(workflow?.graph?.edges) ? workflow.graph.edges : [];
+    const agents = new Set<string>();
+    for (const task of tasks) {
+      if (task.executor) agents.add(String(task.executor));
+      const assignmentIds = graphEdges
+        .filter((edge: any) => edge.type === 'assigned_to' && edge.from === task.id)
+        .map((edge: any) => edge.to);
+      for (const assignmentId of assignmentIds) {
+        graphEdges
+          .filter((edge: any) => edge.type === 'uses_agent' && edge.from === assignmentId)
+          .forEach((edge: any) => agents.add(String(edge.to).replace(/^agent:/, '')));
+      }
+    }
+
+    const activeParallel = tasks.filter((task: any) => String(task.status) === 'running').length;
+    const groupConcurrency = graphNodes
+      .filter((node: any) => node.type === 'task_group')
+      .map((node: any) => Number(node.raw?.recommendedConcurrency))
+      .filter((value: number) => Number.isFinite(value) && value > 0);
+    // Authoritative resolved concurrency published by the runtime; fall back to
+    // the plan-derived value for replayed/historical runs.
+    const resolved = runtimeState()?.concurrency;
+    const maxParallel = Number.isFinite(Number(resolved?.limit))
+      ? Number(resolved.limit)
+      : Math.max(1, activeParallel, ...groupConcurrency);
+    const done = tasks.filter((task: any) => String(task.status) === 'done').length;
+    const usage = workflow?.usage ?? {};
+    const tokens = (known: unknown, value: unknown) =>
+      known ? new Intl.NumberFormat().format(Number(value) || 0) : '—';
+
+    return [
+      `${agents.size} agent${agents.size === 1 ? '' : 's'}`,
+      `parallel ${activeParallel}/×${maxParallel}${resolved?.cappedByCeiling ? ' (ceiling)' : ''}`,
+      `${done}/${tasks.length} tasks`,
+      `${tokens(usage.inputKnown, usage.inputTokens)} in · ${tokens(usage.outputKnown, usage.outputTokens)} out`,
+    ].join(' · ');
+  });
   const visibleLogs = createMemo(() => {
     version();
     const runtimeLogs = runtimeState()?.logs;
@@ -728,6 +774,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     toggleRightTab,
     selectRightTab,
     plan,
+    runSummary,
     pendingApprovals,
     conversationScroll,
     scrollConversation,

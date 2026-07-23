@@ -395,6 +395,7 @@ function App(props: {
             activities={state.activities()}
             logs={state.logs()}
             plan={state.plan()}
+            runSummary={state.runSummary()}
             queueItems={state.queueItems()}
             queueInfo={state.queueInfo()}
             activeTab={state.rightTab()}

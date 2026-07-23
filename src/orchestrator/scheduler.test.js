@@ -7,6 +7,7 @@ import { createBudgetManager } from './budgetManager.js';
 import { readyTasks, tasksAwaitingApproval } from './dependencyResolver.js';
 import { createLockManager } from './lockManager.js';
 import {
+  describePlanConcurrency,
   effectiveConcurrency,
   resolveCapabilityConcurrency,
   resolvePlanConcurrency,
@@ -139,6 +140,28 @@ test('scheduler uses the relevant agent declaration instead of hard-capping plan
   assert.equal(resolvePlanConcurrency({ plan, agents }), 10);
   assert.equal(resolvePlanConcurrency({ plan, agents, configured: 3 }), 3);
   assert.equal(resolvePlanConcurrency({ plan, agents, configured: 20 }), 10);
+});
+
+test('describePlanConcurrency mirrors resolvePlanConcurrency and flags the ceiling', () => {
+  const plan = [{ id: 'task-1', requiredCapability: 'ingest' }];
+  const agents = [{ description: { capabilities: [{ id: 'ingest' }], limits: { recommendedConcurrency: 10, maxConcurrency: 12 } } }];
+
+  // The number must never diverge from what the scheduler enforces.
+  for (const configured of [undefined, 3, 20]) {
+    const opts = configured === undefined ? { plan, agents } : { plan, agents, configured };
+    assert.equal(describePlanConcurrency(opts).limit, resolvePlanConcurrency(opts));
+  }
+
+  // Ceiling binds → flagged.
+  const capped = describePlanConcurrency({ plan, agents, configured: 3 });
+  assert.equal(capped.limit, 3);
+  assert.equal(capped.ceiling, 3);
+  assert.equal(capped.cappedByCeiling, true);
+
+  // Ceiling above the agent declaration → does not bind, not flagged.
+  const loose = describePlanConcurrency({ plan, agents, configured: 20 });
+  assert.equal(loose.limit, 10);
+  assert.equal(loose.cappedByCeiling, false);
 });
 
 test('scheduler ignores unrelated agents and falls back to three without declarations', () => {

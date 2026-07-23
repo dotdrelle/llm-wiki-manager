@@ -110,6 +110,11 @@ services:
       - WIKI_CONFIG_PATH=${WIKI_CONFIG_PATH:-}
       - PRODUCTION_ALLOWED_STEPS=${PRODUCTION_ALLOWED_STEPS:-doctor,ingest,ingest_plan,ingest_apply,build,export,polish,pipeline}
       - PRODUCTION_REQUIRE_CONFIRMATION=${PRODUCTION_REQUIRE_CONFIRMATION:-false}
+      # Parallelism levers — effective concurrency ≈ recommendedConcurrency.
+      # Intermediate defaults (4/8). Low profile 2/4, high profile 8/16.
+      # See docs/configuration.md § "Parallelism & throughput".
+      - PRODUCTION_RECOMMENDED_CONCURRENCY=${PRODUCTION_RECOMMENDED_CONCURRENCY:-4}
+      - PRODUCTION_MAX_CONCURRENCY=${PRODUCTION_MAX_CONCURRENCY:-8}
       - PRODUCTION_JOBS_DIR=${PRODUCTION_JOBS_DIR:-/workspace/.wiki/production-jobs}
       - PRODUCTION_LOCKS_DIR=${PRODUCTION_LOCKS_DIR:-/workspace/.wiki/production-jobs/locks}
     ports:

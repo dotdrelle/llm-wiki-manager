@@ -286,6 +286,97 @@ selected `.wikirc.yaml.<name>` drives the running services.
 
 ---
 
+## 5. Parallelism & throughput
+
+By default the stack runs several tasks at once so a capable machine is actually
+used instead of idling. This section explains every lever and how they compose,
+so you can tune it up (or down) with confidence.
+
+### The mental model
+
+The number of tasks that run in parallel for a capability run (ingest, build,
+export, polish, pipeline) is:
+
+```
+effective concurrency = MIN(
+    agent recommendedConcurrency,   # PRODUCTION_RECOMMENDED_CONCURRENCY
+    agent maxConcurrency,           # PRODUCTION_MAX_CONCURRENCY
+    manager ceiling,                # WIKI_MANAGER_CAPABILITY_CONCURRENCY (optional)
+    per-task limits in the plan
+)
+```
+
+It is a **minimum**, so the smallest of these wins. In practice
+`recommendedConcurrency` is the binding value, which is why raising only the
+manager ceiling (`WIKI_MANAGER_CAPABILITY_CONCURRENCY`) does nothing: that
+variable can only *lower* the result, never raise it above what the agent
+advertises.
+
+Then, independently, **locks cap real parallelism per phase** — even at a high
+number, two tasks only run together if their write scopes do not overlap:
+
+- **Ingest — planning** (`ingest_plan`, read-only): fully parallel. This is the
+  phase your concurrency number actually buys.
+- **Ingest — apply** (`ingest_apply`): takes the global `workspace-write` lock
+  **and** is chained task-to-task, so applies are **strictly serialized (1 at a
+  time), by design** to keep wiki writes consistent. No setting parallelizes this.
+- **Build** (per template): scoped to `template:<name>`, so distinct templates
+  build in parallel.
+- **Export / Polish** (per deliverable): scoped to `deliverable:<path>`, so
+  distinct deliverables run in parallel; the same deliverable is serialized.
+
+Finally, the **LLM backend is the real throughput ceiling**: each build / polish /
+apply task calls the wiki's model. If your model endpoint only serves one request
+at a time, N parallel tasks just queue on the model (or time out). Match the
+concurrency to what your LLM endpoint can serve concurrently (e.g. vLLM/llama.cpp
+`--parallel`/`n_parallel`, or multiple replicas).
+
+### Where the levers live
+
+| Lever | Where | Effect |
+| --- | --- | --- |
+| `PRODUCTION_RECOMMENDED_CONCURRENCY` | production agent container | **Primary** — sets effective parallel tasks |
+| `PRODUCTION_MAX_CONCURRENCY` | production agent container | Hard ceiling the agent will never exceed (keep ≥ recommended) |
+| `WIKI_MANAGER_CAPABILITY_CONCURRENCY` | manager runtime env | Optional ceiling; only lowers. Leave unset to let the agent decide |
+
+Raising only `PRODUCTION_MAX_CONCURRENCY` is not enough — bump
+`PRODUCTION_RECOMMENDED_CONCURRENCY` too.
+
+### Profiles
+
+The shipped **default is intermediate: `4 / 8`** (≈ 4 tasks in parallel).
+
+```bash
+# Low — conservative / small box / single-instance LLM (≈ 2 parallel)
+PRODUCTION_RECOMMENDED_CONCURRENCY=2
+PRODUCTION_MAX_CONCURRENCY=4
+
+# Default — intermediate, ships out of the box (≈ 4 parallel)
+PRODUCTION_RECOMMENDED_CONCURRENCY=4
+PRODUCTION_MAX_CONCURRENCY=8
+
+# High — beefy multi-core host + LLM served with real concurrency (≈ 8 parallel)
+PRODUCTION_RECOMMENDED_CONCURRENCY=8
+PRODUCTION_MAX_CONCURRENCY=16
+```
+
+Set these next to the manager `.env` (they are passed through to the
+`production-mcp` service by the generated compose), then recreate the agent
+container. Keep `WIKI_MANAGER_CAPABILITY_CONCURRENCY` unset or ≥ your target.
+
+### Verifying and going higher without errors
+
+- Watch the runtime log line `capability-plan: N task(s) integrated … ` and the
+  fragment's `recommendedConcurrency` — that is the concurrency actually chosen
+  for the run.
+- Increase in steps (4 → 6 → 8) and watch for LLM timeouts; a task that times out
+  is retried, but repeated timeouts mean the LLM endpoint, not the task count, is
+  the bottleneck.
+- Expect the *plan* and *build/export/polish* phases to fan out; the *apply*
+  phase stays serial by design, so a pure-ingest run is gated by that phase.
+
+---
+
 ## How the keys connect, end to end
 
 1. **Donna → external agents** — Donna reads `mcp.endpoints.json`, sends the

@@ -550,6 +550,25 @@ or the shell command `/approve item <id>`. The approval timeout defaults to 10
 minutes and can be changed with `WIKI_MANAGER_APPROVAL_TIMEOUT_MS` or
 `approvalTimeoutMs` in the `/run` body.
 
+Directly-launched capability runs (ingest, pipeline) now **wait for approval by
+default** before their mutating tasks: reply "valide tout", run `/approve`, or
+click Approve in either UI (Shell right-pane banner, or the `serve` banner above
+the composer). Auto-approval only happens when the run is started with
+`autoApprove: true` (headless/CI).
+
+### Parallelism & throughput
+
+The number of tasks that run at once is `MIN(agent recommendedConcurrency, agent
+maxConcurrency, WIKI_MANAGER_CAPABILITY_CONCURRENCY, per-task limits)` — a
+minimum, so the manager ceiling can only lower it. The production agent ships
+intermediate defaults (`PRODUCTION_RECOMMENDED_CONCURRENCY=4` /
+`PRODUCTION_MAX_CONCURRENCY=8`, ≈ 4 parallel); locks then cap real parallelism
+per phase (`ingest_apply` stays serial). The resolved value is shown in both
+UIs' run summary and on the run node of the execution graph, with an amber
+"(ceiling)" marker when the manager ceiling binds. Low/high profiles, the lock
+model and the LLM-backend caveat are in
+[docs/configuration.md § "Parallelism & throughput"](docs/configuration.md).
+
 While a run is active, `GET`/`POST /control` still answers without waiting for
 it to finish: `{"action":"status"}` returns the current run/plan/queue state,
 `{"action":"explain"}` adds a one-line plain-language summary, and

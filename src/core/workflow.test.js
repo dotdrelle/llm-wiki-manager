@@ -64,3 +64,60 @@ test('projectWorkflow reports approval and queue waiting reasons', () => {
   assert.ok(workflow.waitingReasons.includes('approval:approval-1'));
   assert.ok(workflow.waitingReasons.includes('queue:queued-1'));
 });
+
+test('projectWorkflow aggregates input and output tokens once per attempt', () => {
+  const state = {
+    status: 'done',
+    runId: 'run-usage',
+    plan: [{ id: 'build', description: 'Build', status: 'done' }],
+    activities: [],
+    queue: [],
+    approvals: [],
+  };
+  const result = {
+    attemptId: 'attempt-1',
+    metrics: { inputTokens: 1200, outputTokens: 300, totalTokens: 1500 },
+  };
+  const workflow = projectWorkflow(state, [
+    { id: 'event-1', type: 'task.result_returned', runId: 'run-usage', taskId: 'build', payload: { result } },
+    { id: 'event-2', type: 'task.completed', runId: 'run-usage', taskId: 'build', payload: { result } },
+  ]);
+
+  assert.deepEqual(workflow.usage, {
+    inputTokens: 1200,
+    outputTokens: 300,
+    totalTokens: 1500,
+    inputKnown: true,
+    outputKnown: true,
+    totalKnown: true,
+    byTask: {
+      build: {
+        inputTokens: 1200,
+        outputTokens: 300,
+        totalTokens: 1500,
+        inputKnown: true,
+        outputKnown: true,
+        totalKnown: true,
+      },
+    },
+  });
+});
+
+test('projectWorkflow derives per-task timing (start, finish, duration) from lifecycle events', () => {
+  const state = {
+    status: 'done',
+    runId: 'run-timing',
+    plan: [{ id: 'ingest', description: 'Ingest', status: 'done' }],
+    activities: [],
+    queue: [],
+    approvals: [],
+  };
+  const workflow = projectWorkflow(state, [
+    { id: 'e1', type: 'task.started', runId: 'run-timing', taskId: 'ingest', ts: '2026-07-23T10:00:00.000Z', payload: {} },
+    { id: 'e2', type: 'task.completed', runId: 'run-timing', taskId: 'ingest', ts: '2026-07-23T10:00:12.500Z', payload: {} },
+  ]);
+
+  assert.equal(workflow.timingByTask.ingest.startedAt, Date.parse('2026-07-23T10:00:00.000Z'));
+  assert.equal(workflow.timingByTask.ingest.finishedAt, Date.parse('2026-07-23T10:00:12.500Z'));
+  assert.equal(workflow.timingByTask.ingest.durationMs, 12500);
+});

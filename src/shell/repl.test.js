@@ -100,6 +100,19 @@ test('ShellUI lets the right pane extend to the terminal edge', async () => {
   assert.doesNotMatch(pane, /height="100%" flexDirection="column" padding=\{1\}/);
 });
 
+test('ShellUI shows the canonical run summary above the plan', async () => {
+  const session = await readFile(new URL('./useSession.ts', import.meta.url), 'utf8');
+  const pane = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
+  const tui = await readFile(new URL('./tui.tsx', import.meta.url), 'utf8');
+  assert.match(session, /const runSummary = createMemo/);
+  assert.match(session, /agent\$\{agents\.size === 1/);
+  assert.match(session, /parallel \$\{activeParallel\}\/×\$\{maxParallel\}/);
+  assert.match(session, /usage\.inputKnown/);
+  assert.match(session, /usage\.outputKnown/);
+  assert.match(pane, /summary=\{props\.runSummary\}/);
+  assert.match(tui, /runSummary=\{state\.runSummary\(\)\}/);
+});
+
 test('Flow/Trace does not repeat the runtime source prefix on every line', async () => {
   const source = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
   const entryRenderer = source.slice(

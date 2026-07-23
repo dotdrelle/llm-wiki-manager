@@ -180,7 +180,7 @@ function queueSummary(item: QueueItem) {
   return parts.join(' ');
 }
 
-export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: string; spinnerFrame?: string }) {
+export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: string; summary?: string | null; spinnerFrame?: string }) {
   // Keep one column for the native vertical scrollbar when the plan is long.
   const lineWidth = () => Math.max(8, props.width - 3);
   const firstPending = () => props.plan.find((s) => s.status === 'pending')?.step ?? null;
@@ -201,9 +201,17 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
     return visualRows() > PLAN_VIEWPORT_ROWS ? `${label} (${props.plan.length}) · scroll` : label;
   };
   const viewportRows = () => Math.min(PLAN_VIEWPORT_ROWS, Math.max(1, visualRows()));
+  const summaryLines = () => props.summary ? wrapLine(props.summary, lineWidth()).slice(0, 2) : [];
   return (
     <box flexShrink={0} flexDirection="column" padding={1}>
       <text width={lineWidth()} fg="#D6DEE8" content={fit(title(), lineWidth())} />
+      <Show when={summaryLines().length > 0}>
+        <box flexShrink={0} flexDirection="column">
+          <Index each={summaryLines()}>
+            {(line) => <text width={lineWidth()} fg="#89B4FA" content={line()} />}
+          </Index>
+        </box>
+      </Show>
       <scrollbox
         height={viewportRows()}
         focusable={false}
@@ -478,6 +486,7 @@ export function RightPane(props: {
   activities: any[];
   logs: string[];
   plan: PlanStep[] | null;
+  runSummary?: string | null;
   queueItems: QueueItem[];
   queueInfo: QueueInfo;
   activeTab: 'plan' | 'queue';
@@ -511,7 +520,7 @@ export function RightPane(props: {
       <Show when={props.activeTab === 'queue'} fallback={(
         <>
           <Show when={props.plan && props.plan.length > 0}>
-            <PlanPanel width={props.width} plan={props.plan!} jobName={planJobName()} spinnerFrame={props.spinnerFrame} />
+            <PlanPanel width={props.width} plan={props.plan!} jobName={planJobName()} summary={props.runSummary} spinnerFrame={props.spinnerFrame} />
           </Show>
           <ActivityPanel width={props.width} activities={props.activities} />
         </>

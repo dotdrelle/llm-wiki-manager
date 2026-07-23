@@ -5,6 +5,20 @@ import { aggregateActivity } from './activityAggregator.js';
 import { visibleActivityEvents } from './activityDeduplicator.js';
 import { calculateWeightedProgress } from './progressCalculator.js';
 
+test('a group awaiting approval renders a distinct pause glyph, not a failure', () => {
+  const aggregated = aggregateActivity({
+    plan: [
+      { id: 'publish', label: 'Publication', groupId: 'publish', status: 'pending_approval', progressWeight: 1 },
+    ],
+    activities: [],
+  });
+  const line = aggregated.lines.find((item) => /publish|Publication/.test(item.label));
+  assert.ok(line, 'the awaiting-approval group is present');
+  assert.match(line.label, /\[⏸\]/, 'uses the pause glyph');
+  assert.doesNotMatch(line.label, /\[!\]|\[✗\]/, 'never reuses the failure glyph');
+  assert.equal(line.status, 'validation');
+});
+
 test('activityDeduplicator keeps one visible entry for repeated 2 percent polls', () => {
   const events = Array.from({ length: 50 }, () => ({
     type: 'activity_upserted',
@@ -54,7 +68,7 @@ test('aggregateActivity exposes initial synthesis and grouped display lines', ()
 
   assert.deepEqual(activity.initialSynthesis, ['120 sources detectees', '6 traitements simultanes recommandes']);
   assert.equal(activity.progress.percent, 54);
-  assert.ok(activity.lines.some((line) => /\[x\] collect - done/.test(line.label)));
+  assert.ok(activity.lines.some((line) => /\[✓\] collect - done/.test(line.label)));
   assert.ok(activity.lines.some((line) => /\[\.\.\.\] customer-data\.enrich - 63 %/.test(line.label)));
   const enrichLine = activity.lines.find((line) => /customer-data\.enrich/.test(line.label));
   assert.equal(enrichLine.progress.label, 'Export rapport.md');
@@ -92,7 +106,7 @@ test('aggregateActivity keeps activities not attached to any plan task visible',
 
   const aggregated = aggregateActivity(state, []);
   const labels = aggregated.lines.map((line) => line.label).join('\n');
-  assert.match(labels, /\[x\] .* done/, 'the done plan group stays visible');
+  assert.match(labels, /\[✓\] .* done/, 'the done plan group stays visible');
   assert.match(labels, /Ingest b87acaf6/, 'the unattached running ingest must appear');
   const ingestLine = aggregated.lines.find((line) => /Ingest/.test(line.label));
   assert.equal(ingestLine.status, 'running');

@@ -287,7 +287,10 @@ function App(props: {
   });
 
   const spinnerTimer = setInterval(() => {
-    if (state.busy()) setSpinnerIndex((value) => (value + 1) % 10);
+    // Advance while the chat is streaming OR a runtime run is executing. Without
+    // executionActive(), the plan spinner froze on frame 0 during a scheduler-
+    // driven run (no conversation turn), so it looked static.
+    if (state.busy() || state.executionActive()) setSpinnerIndex((value) => (value + 1) % 10);
   }, 90);
   onCleanup(() => {
     clearInterval(spinnerTimer);
@@ -399,6 +402,7 @@ function App(props: {
             pendingApprovals={state.pendingApprovals()}
             onApprove={() => { void state.submitInput('/approve'); }}
             onTabClick={state.selectRightTab}
+            spinnerFrame={SPINNER_FRAMES[spinnerIndex()] ?? SPINNER_FRAMES[0]}
           />
           <SlashDialog context={state.activeEditor() ? null : state.slash()} />
           <FileEditorDialog

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { forwardRuntimeApproval } from './wiki-manager.js';
+import {
+  forwardRuntimeApproval,
+  resolvePreparedDelegationApproval,
+} from './wiki-manager.js';
 
 test('runtime approval bridge preserves the complete run-scoped grant', async () => {
   let forwarded = null;
@@ -25,4 +28,40 @@ test('runtime approval bridge preserves the complete run-scoped grant', async ()
 
   assert.deepEqual(forwarded, request);
   assert.deepEqual(result, { approved: true });
+});
+
+test('prepared delegation waits for explicit approval by default', () => {
+  let calls = 0;
+  const result = resolvePreparedDelegationApproval({
+    runId: 'run-gated',
+    approvalManager: {
+      approve() {
+        calls += 1;
+      },
+    },
+  });
+
+  assert.equal(calls, 0);
+  assert.deepEqual(result, { approved: false, awaitingApproval: true });
+});
+
+test('prepared delegation only approves when autoApprove is explicitly true', () => {
+  let forwarded = null;
+  const result = resolvePreparedDelegationApproval({
+    autoApprove: true,
+    runId: 'run-headless',
+    approvalManager: {
+      approve(request) {
+        forwarded = request;
+        return { approved: true };
+      },
+    },
+  });
+
+  assert.deepEqual(forwarded, { scope: 'run', runId: 'run-headless' });
+  assert.deepEqual(result, {
+    approved: true,
+    awaitingApproval: false,
+    result: { approved: true },
+  });
 });

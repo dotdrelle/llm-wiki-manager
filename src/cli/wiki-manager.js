@@ -114,6 +114,18 @@ export async function forwardRuntimeApproval(getWorkspaceContext, request = {}) 
   return context.approvalManager?.approve(request) ?? { approved: false };
 }
 
+export function resolvePreparedDelegationApproval({
+  autoApprove = false,
+  approvalManager = null,
+  runId,
+} = {}) {
+  if (autoApprove !== true || typeof approvalManager?.approve !== 'function') {
+    return { approved: false, awaitingApproval: true };
+  }
+  const result = approvalManager.approve({ scope: 'run', runId });
+  return { approved: true, awaitingApproval: false, result };
+}
+
 function timestampForFile() {
   return new Date().toISOString().replace(/[:.]/g, '-');
 }
@@ -923,14 +935,24 @@ async function runRuntime(argv, agent) {
           throw new Error(`Delegated plan integration failed: ${(integrated.errors ?? []).map((error) => error.message ?? error.code ?? String(error)).join('; ')}`);
         }
         emitRuntimeLog(session, `delegation: ${prepared.fragment.tasks.length} validated task(s) integrated from ${prepared.provider.serverName}.agent_plan (${prepared.capability}/${prepared.operation})`);
-        // Demandé = consenti: a directly-delegated run carries the user's
-        // explicit consent, so auto-approve its initial plan. Persisting a
-        // run-scope grant (via the approval manager) makes the scheduler's
-        // readyTasks approval check pass, so the tasks run without re-prompting.
-        // Replanned tasks are integrated later without a fresh grant.
-        if (context.approvalManager?.approve) {
-          context.approvalManager.approve({ scope: 'run', runId });
-          emitRuntimeLog(session, `approval: run ${runId} auto-approved (user-requested action)`);
+        // Real approval gate (opt-out): a directly-delegated run only skips the
+        // human approval step when the caller explicitly opts in via
+        // `autoApprove` (e.g. headless/CI, or a future "trust this run" toggle).
+        // By default the run WAITS: integrate() above created the per-task
+        // approval requests, and the scheduler's approvalCovered() filter blocks
+        // the mutating tasks until a run-scope grant arrives (/approve or
+        // "valide tout"). This keeps a visible pending_approval window instead of
+        // resolving it programmatically ~30ms after launch, which no polled UI
+        // could ever render.
+        const approval = resolvePreparedDelegationApproval({
+          autoApprove: body.autoApprove,
+          approvalManager: context.approvalManager,
+          runId,
+        });
+        if (approval.approved) {
+          emitRuntimeLog(session, `approval: run ${runId} auto-approved (autoApprove opt-in)`);
+        } else {
+          emitRuntimeLog(session, `approval: run ${runId} awaiting explicit approval before mutations (/approve or « valide tout »)`);
         }
         body._planReady?.resolve?.({ runId, planRevision: session.agentProjection?.planRevision ?? 0 });
       }

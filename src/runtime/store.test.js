@@ -540,6 +540,48 @@ test('runtime store persists bounded approval grants', () => {
   store.close();
 });
 
+test('runtime store: a run-scope grant marks covered task grants approved (no orphans)', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  // Two per-task approval requests for the same run.
+  for (const taskId of ['run-x:ingest-a', 'run-x:ingest-b']) {
+    store.persistEvent(createAgentEvent('approval.requested', {
+      origin: 'runtime',
+      runId: 'run-x',
+      workspace: 'docs',
+      taskId,
+      payload: { id: `approval:${taskId}`, scope: 'task', runId: 'run-x', workspaceId: 'docs', taskId },
+    }));
+  }
+  assert.equal(store.listApprovalGrants({ runId: 'run-x' }).filter((g) => g.status === 'pending_approval').length, 2);
+
+  // A single run-scope grant covers both.
+  store.persistEvent(createAgentEvent('approval.granted', {
+    origin: 'runtime',
+    runId: 'run-x',
+    workspace: 'docs',
+    payload: { id: 'grant-run-x', scope: 'run', runId: 'run-x', workspaceId: 'docs' },
+  }));
+  const grants = store.listApprovalGrants({ runId: 'run-x' });
+  assert.equal(grants.filter((g) => g.status === 'pending_approval').length, 0, 'no task grant left pending');
+  assert.equal(grants.filter((g) => g.status === 'approved').length, 3, 'both tasks + run grant approved');
+  store.close();
+});
+
+test('runtime store: clearWorkspaceState removes approval grants', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  store.persistEvent(createAgentEvent('run_started', { origin: 'runtime', runId: 'run-y', workspace: 'docs', payload: { runId: 'run-y' } }));
+  store.persistEvent(createAgentEvent('approval.requested', {
+    origin: 'runtime', runId: 'run-y', workspace: 'docs', taskId: 'run-y:t',
+    payload: { id: 'approval:run-y:t', scope: 'task', runId: 'run-y', workspaceId: 'docs', taskId: 'run-y:t' },
+  }));
+  assert.equal(store.listApprovalGrants({ runId: 'run-y' }).length, 1);
+  store.clearWorkspaceState({ workspace: 'docs' });
+  assert.equal(store.listApprovalGrants({ runId: 'run-y' }).length, 0);
+  store.close();
+});
+
 test('runtime store orders events by durable sequence', () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
   const store = openRuntimeStore({ stateDir });

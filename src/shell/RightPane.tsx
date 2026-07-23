@@ -145,11 +145,16 @@ function activityPercentBadge(activity: any): { text: string; bg: string; fg: st
 // pending icon). Shared by planStepColor and PlanPanel's icon().
 const DONE_STATUSES = ['done', 'complete', 'completed', 'success', 'succeeded'];
 const FAILED_STATUSES = ['failed', 'error'];
+// A task blocked on a human decision — distinct from both running and pending,
+// so it must not render as a neutral gray "[ ]" (indistinguishable from
+// not-started) nor as a running step.
+const APPROVAL_STATUSES = ['pending_approval', 'waiting_approval'];
 
 function planStepColor(step: PlanStep, firstPendingStep: number | null) {
   const status = String(step.status ?? '').toLowerCase();
   if (DONE_STATUSES.includes(status)) return '#8BD5CA';
   if (FAILED_STATUSES.includes(status)) return '#F38BA8';
+  if (APPROVAL_STATUSES.includes(status)) return '#FBBF24';
   if (status === 'running') return '#89B4FA';
   if (step.step === firstPendingStep) return '#89B4FA';
   return '#7F8C8D';
@@ -175,7 +180,7 @@ function queueSummary(item: QueueItem) {
   return parts.join(' ');
 }
 
-export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: string }) {
+export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: string; spinnerFrame?: string }) {
   // Keep one column for the native vertical scrollbar when the plan is long.
   const lineWidth = () => Math.max(8, props.width - 3);
   const firstPending = () => props.plan.find((s) => s.status === 'pending')?.step ?? null;
@@ -183,7 +188,11 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
     const status = String(rawStatus ?? '').toLowerCase();
     if (DONE_STATUSES.includes(status)) return '[✓]';
     if (FAILED_STATUSES.includes(status)) return '[✗]';
-    return status === 'running' ? '[…]' : '[ ]';
+    if (APPROVAL_STATUSES.includes(status)) return '[⏸]';
+    // Animated braille spinner on the running step: a long production job (LLM
+    // building a template) otherwise leaves the whole plan visually frozen. Same
+    // frames as the chat spinner. Falls back to a static glyph if not supplied.
+    return status === 'running' ? `[${props.spinnerFrame ?? '…'}]` : '[ ]';
   };
   const visualRows = createMemo(() => props.plan.reduce((total, step) =>
     total + wrapLine(`${icon(step.status)} ${step.step}. ${step.description}`, lineWidth()).slice(0, 2).length, 0));
@@ -476,6 +485,7 @@ export function RightPane(props: {
   pendingApprovals: any[];
   onApprove: () => void;
   onTabClick: (tab: 'plan' | 'queue') => void;
+  spinnerFrame?: string;
 }) {
   const planJobName = () => activityJobName(
     [...props.activities].reverse().find((activity) => !activity.terminal) ?? props.activities.at(-1),
@@ -501,7 +511,7 @@ export function RightPane(props: {
       <Show when={props.activeTab === 'queue'} fallback={(
         <>
           <Show when={props.plan && props.plan.length > 0}>
-            <PlanPanel width={props.width} plan={props.plan!} jobName={planJobName()} />
+            <PlanPanel width={props.width} plan={props.plan!} jobName={planJobName()} spinnerFrame={props.spinnerFrame} />
           </Show>
           <ActivityPanel width={props.width} activities={props.activities} />
         </>

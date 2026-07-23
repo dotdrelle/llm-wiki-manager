@@ -534,6 +534,20 @@ export async function runRuntimeParallelPlan(agent, session, input, {
               workspace: session.workspace ?? null,
               payload: request,
             }));
+            // Reflect the block on the task's plan step so the UIs can render it
+            // distinctly (amber "[⏸]" in the Shell, banner/badge in serve)
+            // instead of leaving it as a neutral "pending" indistinguishable
+            // from a not-started step. Only promote a plain pending task — never
+            // overwrite a status the planner already set (e.g. waiting_approval).
+            const currentStatus = String(task.status ?? '').toLowerCase();
+            if (!['pending_approval', 'waiting_approval'].includes(currentStatus)) {
+              dispatchAgentEvent(session, createAgentEvent('plan_step_updated', {
+                origin: 'runtime',
+                runId,
+                taskId,
+                payload: { taskId, status: 'pending_approval' },
+              }));
+            }
           }
           if (newlyRequested.length > 0) {
             dispatchAgentEvent(session, createAgentEvent('assistant_message', {

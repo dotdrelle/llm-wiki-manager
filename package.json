@@ -1,6 +1,6 @@
 {
   "name": "@dotdrelle/wiki-manager",
-  "version": "0.14.16",
+  "version": "0.14.19",
   "description": "Agentic shell and orchestration cockpit for llm-wiki workspaces.",
   "license": "PolyForm-Noncommercial-1.0.0",
   "author": "dotrelle",

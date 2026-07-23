@@ -541,6 +541,12 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   const listApprovalGrantsByRunStatement = db.prepare(`
     SELECT * FROM approval_grants WHERE run_id = ? ORDER BY created_at ASC, id ASC
   `);
+  const listPendingApprovalGrantsByRunStatement = db.prepare(`
+    SELECT * FROM approval_grants WHERE run_id = ? AND status = 'pending_approval'
+  `);
+  const markApprovalGrantApprovedStatement = db.prepare(`
+    UPDATE approval_grants SET status = 'approved', granted_at = ? WHERE id = ?
+  `);
 
   function persistEvent(event) {
     if (NON_PERSISTED_EVENT_TYPES.has(event.type)) return event;
@@ -687,10 +693,12 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       const delResults = db.prepare('DELETE FROM task_results WHERE task_id IN (SELECT id FROM tasks WHERE run_id = ?)');
       const delAssignments = db.prepare('DELETE FROM task_assignments WHERE task_id IN (SELECT id FROM tasks WHERE run_id = ?)');
       const delAttempts = db.prepare('DELETE FROM task_attempts WHERE run_id = ?');
+      const delApprovals = db.prepare('DELETE FROM approval_grants WHERE run_id = ?');
       for (const runId of runIds) {
         delResults.run(runId);
         delAssignments.run(runId);
         delAttempts.run(runId);
+        delApprovals.run(runId);
       }
       const events = (workspace
         ? db.prepare('DELETE FROM events WHERE workspace = ?').run(workspace)
@@ -1020,6 +1028,29 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       status === 'approved' ? (payload.grantedAt ?? event.ts) : null,
       status === 'rejected' ? (payload.rejectedAt ?? event.ts) : null,
     );
+    // Mirror the in-memory projection's markCoveredApprovalsApproved into the
+    // persisted table: a broad (run/group) grant covers the per-task
+    // pending_approval requests, so mark them approved here too. Without this,
+    // the scheduler proceeds (the projection knows they're covered) but the
+    // approval_grants table keeps them pending_approval forever — orphaned rows
+    // that pile up (32 per run observed) and survive run purges.
+    if (status === 'approved') {
+      const grantedAt = payload.grantedAt ?? event.ts;
+      const grant = {
+        scope: String(payload.scope ?? 'run'),
+        runId: String(runId),
+        workspaceId: event.workspace ?? payload.workspaceId ?? payload.workspace ?? null,
+        planRevision: payload.planRevision == null ? null : Number(payload.planRevision),
+        groupId: payload.groupId ?? null,
+        approvalClasses: normalizeApprovalClasses(payload.approvalClasses ?? payload.approvalClass),
+        ids: new Set([payload.taskId, payload.itemId, payload.approvalId, payload.id, event.taskId]
+          .filter(Boolean).map(String)),
+      };
+      for (const row of listPendingApprovalGrantsByRunStatement.all(String(runId))) {
+        if (String(row.id) === String(id)) continue;
+        if (persistedGrantCovers(grant, row)) markApprovalGrantApprovedStatement.run(grantedAt, row.id);
+      }
+    }
   }
 
   function lifecycleTaskId(event) {
@@ -1281,9 +1312,11 @@ function purgeOldTerminalRuns(db, now = new Date()) {
   db.exec('BEGIN');
   try {
     const deleteEvents = db.prepare('DELETE FROM events WHERE run_id = ? OR json_extract(payload, \'$.runId\') = ?');
+    const deleteApprovals = db.prepare('DELETE FROM approval_grants WHERE run_id = ?');
     const deleteRun = db.prepare('DELETE FROM runs WHERE id = ?');
     for (const runId of oldRuns) {
       deleteEvents.run(runId, runId);
+      deleteApprovals.run(runId);
       deleteRun.run(runId);
     }
     db.exec('COMMIT');
@@ -1401,6 +1434,23 @@ function normalizeApprovalClasses(value) {
   if (value == null) return [];
   const values = Array.isArray(value) ? value : [value];
   return [...new Set(values.map((item) => String(item).trim()).filter(Boolean))];
+}
+
+// Persisted-table twin of markCoveredApprovalsApproved (core/agentEvents.js):
+// does `grant` (already-approved) cover the pending approval_grants `row`?
+// Kept in sync with that reducer so the DB never disagrees with the projection.
+function persistedGrantCovers(grant, row) {
+  if (grant.runId != null && row.run_id != null && String(grant.runId) !== String(row.run_id)) return false;
+  if (grant.workspaceId != null && row.workspace_id != null && String(grant.workspaceId) !== String(row.workspace_id)) return false;
+  if (grant.planRevision != null && row.plan_revision != null && Number(grant.planRevision) !== Number(row.plan_revision)) return false;
+  const rowClasses = row.approval_classes ? normalizeApprovalClasses(parseJsonMaybe(row.approval_classes)) : [];
+  if (grant.approvalClasses.length > 0 && rowClasses.length > 0 && !rowClasses.some((item) => grant.approvalClasses.includes(item))) return false;
+  if (grant.scope === 'group' && String(grant.groupId ?? '') !== String(row.group_id ?? '')) return false;
+  if (grant.scope === 'task' || grant.scope === 'tool') {
+    const rowIds = [row.task_id, row.id].filter(Boolean).map(String);
+    if (!rowIds.some((id) => grant.ids.has(id))) return false;
+  }
+  return true;
 }
 
 function parseJsonMaybe(value) {

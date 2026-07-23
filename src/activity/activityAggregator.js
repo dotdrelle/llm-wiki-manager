@@ -93,17 +93,21 @@ function groupLine(group, activities) {
   // still progressing. Show the live worker as running; surface the group
   // failure once no work remains. Otherwise its business label was rendered
   // red even though that exact task was healthy and advancing.
+  // Glyphs mirror the Shell PlanPanel so the two never disagree: done is a
+  // check (not a cross — "[x]" read as a failure X), failure is a distinct
+  // cross, and an approval wait gets its own pause glyph instead of reusing the
+  // failure "[!]".
   if (running.length > 0 || activeActivity) {
     icon = '[...]';
     status = activeProgress != null ? `${Math.round(activeProgress)} %` : `${done}/${total}`;
   } else if (failed) {
-    icon = '[!]';
+    icon = '[✗]';
     status = 'error';
   } else if (done === total) {
-    icon = '[x]';
+    icon = '[✓]';
     status = 'done';
   } else if (waitingApproval) {
-    icon = '[!]';
+    icon = '[⏸]';
     status = 'validation';
   } else if (done > 0) {
     icon = '[...]';

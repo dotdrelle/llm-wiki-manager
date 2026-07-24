@@ -99,6 +99,18 @@ test('/connector completions expose list and Google authorization', () => {
   assert.deepEqual(completionContext('/connector auth ', session)?.matches, ['google']);
 });
 
+test('/connector hands deterministic facts to Donna for localized natural-language output', async () => {
+  const result = await handleSlashCommand('/connector list', {
+    packageJson: { version: 'test' },
+    session: {},
+  });
+
+  assert.equal(result.rawOutput, true);
+  assert.match(result.output ?? '', /No workspace is currently loaded/);
+  assert.match(result.agentTrigger ?? '', /profil workspace/);
+  assert.match(result.agentTrigger ?? '', /Ne relance pas la commande/);
+});
+
 test('/skills run sends the private skill body to Donna without rendering it as command output', async () => {
   const root = await mkdtemp(join(tmpdir(), 'wiki-manager-skill-run-'));
   const skillDir = join(root, '.wiki', 'skills');

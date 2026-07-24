@@ -523,6 +523,61 @@ test('discoverMcpTools downgrades connected endpoint when tool discovery fails',
   }
 });
 
+test('discoverMcpTools initializes SDK servers that report no valid session', async () => {
+  const originalFetch = globalThis.fetch;
+  const methods = [];
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    methods.push(body.method);
+    if (body.method === 'tools/list' && !init.headers['mcp-session-id']) {
+      return {
+        ok: false,
+        status: 400,
+        headers: { get: () => null },
+        text: async () => '{"jsonrpc":"2.0","error":{"code":-32000,"message":"No valid session"},"id":null}',
+      };
+    }
+    if (body.method === 'initialize') {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => name === 'mcp-session-id' ? 'session-1' : null },
+        text: async () => '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18"}}',
+      };
+    }
+    if (body.method === 'notifications/initialized') {
+      return {
+        ok: true,
+        status: 202,
+        headers: { get: () => null },
+        text: async () => '',
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => '{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"connectors_google_status"}]}}',
+    };
+  };
+
+  try {
+    const status = await discoverMcpTools({
+      connectors: {
+        status: 'configured',
+        url: 'http://127.0.0.1:3338/mcp/',
+        headers: { authorization: 'Bearer token' },
+      },
+    });
+
+    assert.equal(status.connectors.status, 'connected');
+    assert.deepEqual(status.connectors.tools.map((tool) => tool.name), ['connectors_google_status']);
+    assert.deepEqual(methods, ['tools/list', 'initialize', 'notifications/initialized', 'tools/list']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('callMcpTool parses SSE responses after keepalive comments', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => ({

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -52,6 +53,144 @@ function errorDiagnostic(err) {
 function unavailableRuntime(err) {
   const reason = err instanceof Error ? err.message : String(err);
   return { url: null, error: reason };
+}
+
+export function buildExecutorOnlyFragment({ objective, workspace, selection }) {
+  const provider = selection.provider;
+  const capability = provider.capability ?? {};
+  const agentInstanceId = String(provider.agentInstanceId ?? provider.serverName);
+  const label = String(objective ?? '').trim() || `${selection.operation} ${selection.capability}`;
+  const mutationClass = typeof capability.mutationClass === 'string'
+    ? capability.mutationClass
+    : null;
+  const requiresApproval = capability.defaultRequiresApproval === true || Boolean(mutationClass);
+  return {
+    contractVersion: String(provider.description?.contractVersion ?? '1'),
+    agentInstanceId,
+    capability: selection.capability,
+    summary: {
+      label,
+      initialSynthesis: [],
+      estimatedTasks: 1,
+    },
+    groups: [],
+    tasks: [{
+      id: `${selection.operation}-${randomUUID()}`,
+      label,
+      requiredCapability: selection.capability,
+      operation: selection.operation,
+      arguments: selection.arguments ?? {},
+      dependsOn: [],
+      parallelizable: false,
+      inputRefs: [],
+      expectedOutputRefs: [],
+      locks: [`${selection.capability}:${String(workspace)}`],
+      requiresApproval,
+      ...(mutationClass ? { approvalClass: mutationClass } : {}),
+      ...(requiresApproval ? { approvalSummary: label } : {}),
+      idempotencyKey: randomUUID(),
+      progressWeight: 1,
+    }],
+    expectedOutputs: [],
+  };
+}
+
+/**
+ * Fill a single-task executor's arguments from the natural-language objective,
+ * generically — against the capability's own declared `inputSchema`, with no
+ * per-agent or per-provider knowledge in the manager. This lets Donna honour
+ * stated constraints ("les 10 derniers mails", "de LinkedIn") while keeping
+ * `runtime__delegate` agnostic (it still only carries the objective).
+ *
+ * Degrades gracefully (cf. provider compatibility): forced tool_choice first,
+ * then a JSON-text completion, then no arguments — the executor uses its own
+ * defaults. It never throws and never invents identifiers.
+ */
+export async function resolveExecutorArguments({ llm, objective, capability, signal } = {}) {
+  const schema = capability?.inputSchema;
+  const objectiveText = String(objective ?? '').trim();
+  if (
+    !objectiveText
+    || !llm
+    || typeof llm.completeWithTools !== 'function'
+    || !schema
+    || typeof schema !== 'object'
+    || !schema.properties
+    || typeof schema.properties !== 'object'
+    || Object.keys(schema.properties).length === 0
+  ) {
+    return {};
+  }
+  const system = [
+    'Extract structured arguments for a task from the user objective.',
+    'Only fill a field when the objective explicitly states or clearly implies its value.',
+    'Omit every field that is not stated. Never invent identifiers, queries, filters or counts.',
+    'Return the arguments object only.',
+  ].join('\n');
+  const tool = {
+    type: 'function',
+    function: {
+      name: 'set_task_arguments',
+      description: String(capability.description ?? 'Task arguments for the selected capability.'),
+      parameters: {
+        type: 'object',
+        additionalProperties: schema.additionalProperties ?? false,
+        properties: schema.properties,
+      },
+    },
+  };
+  const messages = [{ role: 'user', content: objectiveText }];
+  try {
+    const result = await llm.completeWithTools({
+      system,
+      tools: [tool],
+      toolChoice: { type: 'function', function: { name: 'set_task_arguments' } },
+      messages,
+      signal,
+    });
+    const call = (result?.tool_calls ?? []).find((item) => item?.function?.name === 'set_task_arguments');
+    const fromCall = call ? safeParseArgumentObject(call.function?.arguments) : null;
+    if (fromCall) return pruneArgumentsToSchema(fromCall, schema);
+    const fromText = safeParseArgumentObject(result?.content);
+    if (fromText) return pruneArgumentsToSchema(fromText, schema);
+  } catch {
+    // Fall through to the tool-less path.
+  }
+  try {
+    const result = await llm.completeWithTools({
+      system: `${system}\nReturn a single JSON object only.`,
+      tools: [],
+      messages,
+      signal,
+    });
+    const fromText = safeParseArgumentObject(result?.content);
+    if (fromText) return pruneArgumentsToSchema(fromText, schema);
+  } catch {
+    // Give up: the executor will use its own defaults.
+  }
+  return {};
+}
+
+function safeParseArgumentObject(text) {
+  const cleaned = String(text ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  if (!cleaned) return null;
+  try {
+    const value = JSON.parse(cleaned);
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function pruneArgumentsToSchema(value, schema) {
+  const allowed = schema.properties ?? {};
+  const acceptsExtra = schema.additionalProperties !== false;
+  const out = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (entry === undefined || entry === null) continue;
+    if (Object.hasOwn(allowed, key) || acceptsExtra) out[key] = entry;
+  }
+  return out;
 }
 
 function createSession() {
@@ -831,34 +970,60 @@ async function runRuntime(argv, agent) {
     }
     const provider = selection.provider;
     let planResult;
-    try {
-      planResult = await callMcpTool(
-        session.mcp,
-        provider.serverName,
-        'agent_plan',
-        {
-          capability: selection.capability,
-          operation: selection.operation,
-          objective,
-          workspace: { revision: String(Date.now()) },
-          constraints: {
-            maxConcurrency: resolveCapabilityConcurrency(
-              provider,
-              undefined,
-              process.env.WIKI_MANAGER_CAPABILITY_CONCURRENCY,
-            ),
-            requireApprovalForMutations: true,
+    const orchestration = provider.description?.orchestration ?? {};
+    const canPlan = orchestration.canPlan !== false;
+    const singleTaskExecutor = orchestration.canPlan === false
+      && orchestration.singleTaskOnly === true;
+    let fragment;
+    if (canPlan) {
+      try {
+        planResult = await callMcpTool(
+          session.mcp,
+          provider.serverName,
+          'agent_plan',
+          {
+            capability: selection.capability,
+            operation: selection.operation,
+            objective,
+            workspace: { revision: String(Date.now()) },
+            constraints: {
+              maxConcurrency: resolveCapabilityConcurrency(
+                provider,
+                undefined,
+                process.env.WIKI_MANAGER_CAPABILITY_CONCURRENCY,
+              ),
+              requireApprovalForMutations: true,
+            },
           },
+        );
+      } catch (err) {
+        const endpoint = session.mcp?.[provider.serverName]?.url ?? 'unknown endpoint';
+        throw new Error(
+          `Delegation failed during agent_plan: provider=${provider.serverName} endpoint=${endpoint} ${errorDiagnostic(err)}`,
+          { cause: err },
+        );
+      }
+      fragment = parseJsonText(formatMcpToolResult(planResult));
+    } else if (singleTaskExecutor) {
+      const extractedArguments = await resolveExecutorArguments({
+        llm: session.llm,
+        objective,
+        capability: provider.capability,
+        signal: session._abortSignal,
+      });
+      fragment = buildExecutorOnlyFragment({
+        objective,
+        workspace: session.workspace ?? context.workspace ?? 'workspace',
+        selection: {
+          ...selection,
+          arguments: { ...(selection.arguments ?? {}), ...extractedArguments },
         },
-      );
-    } catch (err) {
-      const endpoint = session.mcp?.[provider.serverName]?.url ?? 'unknown endpoint';
+      });
+    } else {
       throw new Error(
-        `Delegation failed during agent_plan: provider=${provider.serverName} endpoint=${endpoint} ${errorDiagnostic(err)}`,
-        { cause: err },
+        `Agent ${provider.agentInstanceId ?? provider.serverName} cannot plan and does not declare singleTaskOnly:true.`,
       );
     }
-    const fragment = parseJsonText(formatMcpToolResult(planResult));
     if (!Array.isArray(fragment?.tasks) || fragment.tasks.length === 0) {
       throw new Error(fragment?.summary?.initialSynthesis?.[0] ?? `No task was planned for ${selection.capability}/${selection.operation}.`);
     }

@@ -963,20 +963,20 @@ export function buildAgentSystemPrompt(state) {
     `Current wikirc profile: ${wikirc}.`,
     `Available primitives: ${commandList(state.session)}.`,
     'Only announce or call slash commands that appear exactly in Available primitives. Do not invent command names, subcommands, or arguments.',
-    'Connected MCP tools you may call directly (server__tool naming convention) — reads AND single-step actions like configuring or adding a connector source, converting a document, sending, or searching. Only the heavy multi-step operations (ingest, build, export, polish, pipeline) go through runtime__delegate to get their parallel plan. Everything listed below is directly callable:',
+    'Connected MCP tools you may call directly (server__tool naming convention). Everything listed below is directly callable. When the requested action has no matching direct tool, call runtime__delegate with the original objective: the runtime resolves it against the discovered agent capability contracts, including executor-only single-task capabilities.',
     mcpTools,
     'Current local MCP job queue:',
     formatQueue(state.session),
     'Available skills:',
     skills,
-    'In interactive agent mode you may call only the read-only tools and runtime control/delegation tools actually provided to you.',
+    'In interactive agent mode, call only tools actually provided to you. Any directly offered tool stays direct; never substitute an orchestration-contract tool yourself.',
     'When the user asks for an action that can be performed with connected MCP tools or safe primitives, do not answer with future intent such as "I will call...", "I am going to run...", or "launching..." unless you also call the tool in the same turn. Either call the tool now, ask for the exact missing required arguments, or explain the concrete blocker.',
     'Execution truthfulness: never invent a job id, status, percentage, duration, generated file, file content, URL, command, or tool result. An action is executed only when you call an available tool and receive its result. Examples and placeholders are forbidden in execution reports.',
     'After any completed action, give a short factual summary based only on the tool result: outcome and concrete outputs or references actually returned. Mention a viewing primitive only when it exists in Available primitives and is relevant. Never invent results, interpret generated content beyond what the tool returned, or fabricate a verification checklist.',
     'You are in AGENT mode, so you can actually act. You MAY close with ONE short, natural follow-up — a single sentence phrased as an offer, and only when it genuinely helps and is an action you can perform right here (delegate it or call a tool), e.g. "Want me to start ingesting these pages?" (phrased in the reply language). This is what makes you feel like an assistant rather than a readout. Only offer what you can truly do in agent mode — never an offer that would require another mode. Keep it to that one line: never produce a "Next steps"/"Prochaines étapes"/"À suivre" list, a checklist, an options menu, or commands for the user to type. If nothing useful naturally follows, simply stop after the answer — do not pad.',
     'When calling a tool, emit no preliminary narration. Call it directly; the PLAN and Activity panels show progress. After completion, keep the final response concise and proportional to the result.',
     'Write the way a thoughtful colleague speaks: warm, plain, and to the point. For a simple factual question, 1 to 3 sentences is the sweet spot. Stay synthetic and information-dense — use only the lines needed, and never exceed roughly 15 to 20 short lines even for a detailed answer. Never expose internal reasoning, repeated checks, tool-selection commentary, or a chronological diary. Prioritize the result, essential facts, concrete errors, and actual outputs — but say them in human language, not as a field dump.',
-    'Only the heavy multi-step operations — ingest, build, export, polish, pipeline — are delegated via runtime__delegate (for their DAG and parallelism). Single-step actions — configuring or adding a connector source, converting a document, sending, searching — are called directly on the connected tool. Never call an agent orchestration-contract or plan tool directly.',
+    'Call a matching direct tool when one is offered. Otherwise, for an action backed by a discovered agent capability, call runtime__delegate with the original objective. This applies to both planner agents and executor-only single-task agents. Never call an agent orchestration-contract or plan tool directly.',
     'For any question about the current workspace inventory or what is waiting there, call wiki__wiki_workspace_status first and answer only from its result. This is the canonical read-only workspace state; do not reconstruct it from upload, connector, or production tools.',
     'Tool identifiers are private implementation details. Never print MCP tool names such as server__tool in a user-facing answer. Describe the human result instead.',
     'Internal data shapes are private too. Never quote raw JSON field names (e.g. pendingSources.files), internal directory paths (e.g. raw/untracked/), or config keys in a user-facing answer — translate them into plain language. Say "36 pages sources sont en attente d\'ingestion", not the field or path they came from.',
@@ -985,10 +985,10 @@ export function buildAgentSystemPrompt(state) {
     'For service actions, recommend only available service primitives from Available primitives, with the exact service name when the primitive supports one.',
     'Scope discipline: execute ONLY the action(s) the user explicitly requested. Never chain additional mutating operations (ingest, build, export, polish, delete, send…) that the user did not ask for — even when diagnostics or recommendations suggest them. Finish with the requested result and stop. Example: "applique les recommandations de config" means apply the config; it does NOT authorize launching the ingest those recommendations mention.',
     state.session.runtime?.url
-      ? 'The runtime is connected and runtime__delegate is bound and available for heavy orchestrated operations (ingest, build, export, polish, pipeline). Single-step connector actions such as configure, authenticate, add a source, convert, search, or send use the connected MCP tool directly. Never delegate connector configuration to an export capability.'
+      ? 'The runtime is connected and runtime__delegate is available for any requested capability action that has no matching direct tool. When a matching direct tool is offered, call it directly; otherwise let the runtime resolve the objective from discovered capability contracts.'
       : 'No runtime is connected, so you cannot execute actions. State that plainly and name the runtime connection as the missing capability — do not invent a workaround.',
     'If the connector or service needed for a requested read or action is absent from the Connected MCP tools above (its service is not running — e.g. CME, documents, or production), say plainly that this service is not connected and name it as the missing capability. Never redirect a simple read (e.g. "give me the CME config") to an "agent action", never invent its result, and never propose a workaround. Only requests you can actually serve with a listed tool are answered with data.',
-    'For heavy orchestrated operations only (ingest, build, export, polish, pipeline), call runtime__delegate with the user objective only. For a single-step connector action, call the offered connector tool directly. Never choose a capability, operation, agent, plan, or implementation yourself. Never call <provider>__agent_plan, <provider>__agent_execute, legacy production__production_start_job, wiki__plan_set, or wiki__plan_done from interactive chat.',
+    'For an action with no matching direct tool, call runtime__delegate with the user objective only. The runtime chooses the capability, operation, agent and plan, including a validated single task for executor-only agents. Never choose those identifiers yourself. Never call <provider>__agent_plan, <provider>__agent_execute, legacy production__production_start_job, wiki__plan_set, or wiki__plan_done from interactive chat.',
     'Do not ask the user which sources, files, connectors, or templates to use for an ingest, build, or export: the specialized agent discovers them from the workspace. When the objective is clear (e.g. "lance une ingestion"), delegate it as stated, without a clarifying question.',
     'Promise only what the resolved capability actually exposes in its declared contract (the input schema the specialized agent publishes for that capability). When the user requests an execution parameter — a batch or chunk size, a count "N at a time", concurrency, ordering, priority, or any tuning knob — apply it only if that parameter exists in the target capability\'s published input schema. Otherwise do not confirm or promise it: delegate the objective, and if the user explicitly asked for that parameter, say plainly in one line that you started the work but do not control that aspect (the runtime and the specialized agent decide it). Never state or imply a parameter was applied when the agent contract cannot enforce it.',
     'If runtime__delegate returns a blocker or no specialized provider is available, report only that concrete blocker concisely. Never replace the missing execution path with a suggested slash command, skill, MCP tool name, manual file move, administrator escalation, or alternative workflow unless the user explicitly asks for alternatives.',
@@ -1097,8 +1097,46 @@ function isReadOnlyMcpCall(session, server, tool) {
     .find((item) => String(item?.name ?? '') === tool || String(item?.name ?? '').endsWith(`__${tool}`));
   return isDonnaReadTool({
     function: { name: `${server}__${tool}` },
-    readOnly: descriptor?.readOnly === true,
+    readOnly: descriptor?.annotations?.readOnlyHint === true || descriptor?.readOnly === true,
   });
+}
+
+function hasExecutedActionTool(messages, session) {
+  for (const message of messages ?? []) {
+    for (const call of message?.tool_calls ?? []) {
+      const resolved = resolveToolCallName(session?.mcp, call?.function?.name ?? '', INTERNAL_TOOL_SERVERS);
+      const { server, tool } = resolved;
+      if (!server) continue;
+      if (server === 'runtime') {
+        if (tool !== 'status') return true;
+        continue;
+      }
+      if (server === 'shell') {
+        if (tool !== 'read_command') return true;
+        continue;
+      }
+      if (server === 'wiki' && (tool === 'plan_set' || tool === 'plan_done')) return true;
+      if (!isReadOnlyMcpCall(session, server, tool)) return true;
+    }
+  }
+  return false;
+}
+
+function hasExecutedReadOnlyTool(messages, session) {
+  for (const message of messages ?? []) {
+    for (const call of message?.tool_calls ?? []) {
+      const { server, tool } = resolveToolCallName(
+        session?.mcp,
+        call?.function?.name ?? '',
+        INTERNAL_TOOL_SERVERS,
+      );
+      if (server === 'runtime' && tool === 'status') return true;
+      if (server === 'shell' && tool === 'read_command') return true;
+      if (server && !['runtime', 'shell'].includes(server)
+        && isReadOnlyMcpCall(session, server, tool)) return true;
+    }
+  }
+  return false;
 }
 
 export function createAgentGraph(options = {}) {
@@ -1226,9 +1264,17 @@ export function createAgentGraph(options = {}) {
         emitAgentEvent(state.session, 'assistant_message', 'llm', { content: '' });
         state.session._onStep?.(`[${iterations + 1}/${MAX_TOOL_ITERATIONS}] ${result.tool_calls.length} MCP action${result.tool_calls.length > 1 ? 's' : ''} queued…`);
         // On iteration 0 persist the user message too so it survives the loop.
+        // Some OpenAI-compatible providers return tool_calls only at the
+        // top-level result and omit them from `message`. Preserve the calls in
+        // the transcript so follow-up guards can distinguish a status check
+        // from an action that was actually executed.
+        const assistantToolMessage = {
+          ...(result.message ?? { role: 'assistant', content: result.content ?? null }),
+          tool_calls: result.tool_calls,
+        };
         const newMessages = iterations === 0
-          ? [{ role: 'user', content: state.input }, result.message]
-          : [result.message];
+          ? [{ role: 'user', content: state.input }, assistantToolMessage]
+          : [assistantToolMessage];
         return {
           pendingToolCalls: result.tool_calls,
           allowedToolNames: tools.map((item) => item?.function?.name).filter(Boolean),
@@ -1250,7 +1296,7 @@ export function createAgentGraph(options = {}) {
             result.message ?? { role: 'assistant', content: result.content ?? '' },
             {
               role: 'user',
-              content: 'Your previous response did not execute the requested action because it called no tool. Do not narrate or simulate execution. Call the appropriate available tool now. Never invent results.',
+              content: 'Your previous response did not execute the requested action because it called no tool. Do not narrate or simulate execution. Call the matching direct tool now; if no matching direct tool is offered, call runtime__delegate with the original objective. Never invent results.',
             },
           ],
           toolIterations: 1,
@@ -1261,6 +1307,28 @@ export function createAgentGraph(options = {}) {
       }
 
       const canDelegate = tools.some((item) => item?.function?.name === 'runtime__delegate');
+      if (iterations > 0 && canDelegate && !state.forceDelegation
+        && hasExecutedReadOnlyTool(conversationMessages, state.session)
+        && !hasExecutedActionTool(conversationMessages, state.session)
+        && await classifyRequestedAction(llm, state.input, state.session._abortSignal)) {
+        state.session._onStreamReset?.();
+        state.session._onStep?.('Agent: read-only checks completed but requested action not executed — delegating…');
+        return {
+          pendingToolCalls: null,
+          messages: [
+            result.message ?? { role: 'assistant', content: result.content ?? '' },
+            {
+              role: 'user',
+              content: 'You only performed read-only/status checks and did not execute the requested action. Call runtime__delegate now with the original objective only.',
+            },
+          ],
+          toolIterations: iterations + 1,
+          readyToStream: false,
+          inputClassification: classification,
+          retryWithoutTool: true,
+          forceDelegation: true,
+        };
+      }
       if (!runtimeExecution && iterations === 0 && canDelegate && !state.retryWithoutTool
         && await classifyRequestedAction(llm, state.input, state.session._abortSignal)) {
         state.session._onStreamReset?.();
@@ -1580,6 +1648,7 @@ export function createAgentGraph(options = {}) {
         messages: toolResultMessages,
         pendingToolCalls: null,
         forceDelegation: false,
+        retryWithoutTool: false,
         terminalToolFailure: true,
         invalidToolCallRetries: 0,
         invalidResponseRetries: 0,
@@ -1589,6 +1658,7 @@ export function createAgentGraph(options = {}) {
       messages: toolResultMessages,
       pendingToolCalls: null,
       forceDelegation: false,
+      retryWithoutTool: false,
       invalidToolCallRetries: 0,
       invalidResponseRetries: 0,
       terminalToolFailure: false,

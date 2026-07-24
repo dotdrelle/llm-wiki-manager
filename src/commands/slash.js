@@ -1028,16 +1028,17 @@ export async function handleSlashCommand(line, context) {
     }
     case 'connector': {
       const subcommand = args[1] ?? 'list';
+      const connectorResult = (output) => rawCommandResult(`/connector ${args.slice(1).join(' ')}`.trim(), output);
       if (!context.session.workspace) {
-        return { output: 'No workspace loaded. Use /use <workspace>.' };
+        return connectorResult('No workspace is currently loaded.');
       }
       await refreshMcpRuntimeStatus(context.session);
       const connectorMcp = context.session.mcp?.connectors;
       if (!connectorMcp || connectorMcp.status !== 'connected') {
-        return { output: 'Connectors are unavailable. Enable CONNECTORS_ENABLED and start the agents.' };
+        return connectorResult('The connectors service is unavailable or disabled.');
       }
       if (subcommand === 'list') {
-        if (args[2]) return { output: 'Usage: /connector list' };
+        if (args[2]) return connectorResult('The connector list request has invalid extra arguments.');
         try {
           const result = await callMcpTool(
             context.session.mcp,
@@ -1047,15 +1048,15 @@ export async function handleSlashCommand(line, context) {
           );
           const payload = parseJsonText(formatMcpToolResult(result));
           const status = payload?.status === 'configured' ? 'authorized' : 'not authorized';
-          return { output: `google (Gmail read-only): ${status}` };
+          return connectorResult(`google (Gmail read-only): ${status}`);
         } catch (err) {
-          return { output: `google (Gmail read-only): unavailable (${err instanceof Error ? err.message : String(err)})` };
+          return connectorResult(`google (Gmail read-only): unavailable (${err instanceof Error ? err.message : String(err)})`);
         }
       }
       if (subcommand === 'auth') {
         const connector = String(args[2] ?? '').toLowerCase();
         if (!['google', 'gmail'].includes(connector)) {
-          return { output: 'Usage: /connector auth <google>' };
+          return connectorResult('The requested connector is unsupported. The available connector is google (Gmail read-only).');
         }
         try {
           const result = await callMcpTool(
@@ -1067,20 +1068,20 @@ export async function handleSlashCommand(line, context) {
           const payload = parseJsonText(formatMcpToolResult(result));
           const authorizationUrl = payload?.authorizationUrl;
           if (payload?.ok !== true || typeof authorizationUrl !== 'string') {
-            return { output: `Google authorization could not start (${payload?.error ?? 'missing authorization URL'}).` };
+            return connectorResult(`Google authorization could not start (${payload?.error ?? 'missing authorization URL'}).`);
           }
           const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
           try {
             execFileSync(opener, [authorizationUrl], { stdio: 'ignore' });
-            return { output: 'Google authorization opened in your browser. Return here after approval, then run /connector list.' };
+            return connectorResult('Google authorization opened successfully in the user browser.');
           } catch {
-            return { output: `Open this URL to authorize Google:\n${authorizationUrl}` };
+            return connectorResult(`Google authorization requires the user to open this URL: ${authorizationUrl}`);
           }
         } catch (err) {
-          return { output: `Google authorization could not start (${err instanceof Error ? err.message : String(err)}).` };
+          return connectorResult(`Google authorization could not start (${err instanceof Error ? err.message : String(err)}).`);
         }
       }
-      return { output: 'Usage: /connector <list|auth <google>>' };
+      return connectorResult('The requested connector action is unsupported. Available actions: list and auth google.');
     }
     case 'cancel': {
       // Alias of /run cancel — people type /cancel when they want out.

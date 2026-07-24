@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
 
-const WIKI_MANAGER_VERSION = '0.14.21';
+const WIKI_MANAGER_VERSION = '0.14.23';
 
 function envValue(key) {
   const filePath = managerEnvFile();
@@ -85,6 +85,10 @@ export function readChatAccessConfig() {
       servers[name] = { allow: '*' };
     } else if (Array.isArray(entry?.allow)) {
       servers[name] = { allow: entry.allow.map(String).filter(Boolean) };
+    }
+    if (Array.isArray(entry?.allowActions)) {
+      servers[name] ??= { allow: [] };
+      servers[name].allowActions = entry.allowActions.map(String).filter(Boolean);
     }
   }
   const maxToolIterations = Number.isFinite(Number(chatAccess.maxToolIterations)) && Number(chatAccess.maxToolIterations) > 0
@@ -284,7 +288,7 @@ async function mcpRequest(endpoint, method, params, signal, options = {}) {
     let response = await doRequest(method, params);
     let text = await response.text();
 
-    if (response.status === 400 && /session ID/i.test(text)) {
+    if (response.status === 400 && /session(?:\s+ID)?/i.test(text)) {
       endpoint._sessionId = null;
       const initResponse = await fetch(endpoint.url, {
         method: 'POST',
@@ -532,6 +536,7 @@ export async function discoverMcpTools(mcpStatus) {
           name: tool.name,
           description: tool.description ?? '',
           inputSchema: tool.inputSchema,
+          annotations: tool.annotations,
         })),
         toolError: null,
       };

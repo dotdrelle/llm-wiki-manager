@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import YAML from 'yaml';
 import { cacertEnv, ensureCacertComposeOverride } from './cacert.js';
 import { checkMissingDockerImages } from './dockerImages.js';
-import { managerEnvFile, readEnvFile, resolveAgentsDataDir } from './env.js';
+import { managerEnvFile, managerMcpEndpointsFile, readEnvFile, resolveAgentsDataDir } from './env.js';
 import { managerRoot } from './workspaces.js';
 
 const execFileAsync = promisify(execFile);
@@ -119,6 +119,12 @@ function composeEnv(session) {
     AGENTS_DATA_DIR: resolveAgentsDataDir(session),
     WORKSPACE_NAME: session.workspace,
     WIKI_WORKSPACE_PATH: session.workspacePath,
+    // The serve container reads external connectors from /mcp.endpoints.json.
+    // Mount the SAME file the runtime reads (managerStateDir), not the package
+    // dir's copy — otherwise serve and the runtime diverge (different servers,
+    // unresolved tokens) depending on where wiki-manager was launched from.
+    WIKI_MANAGER_MCP_ENDPOINTS_FILE:
+      process.env.WIKI_MANAGER_MCP_ENDPOINTS_FILE ?? managerMcpEndpointsFile(),
     ...(session.wikirc?.fileName && { WIKI_CONFIG_PATH: session.wikirc.fileName }),
   };
 }

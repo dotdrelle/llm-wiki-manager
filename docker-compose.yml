@@ -37,7 +37,10 @@ services:
     stop_grace_period: 10s
     volumes:
       - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}:/workspace
-      - ./mcp.endpoints.json:/mcp.endpoints.json:ro
+      # Absolute path to the running instance's endpoints file (set by the
+      # manager to managerStateDir/mcp.endpoints.json). Falls back to the
+      # package-relative file only when launched without the manager.
+      - ${WIKI_MANAGER_MCP_ENDPOINTS_FILE:-./mcp.endpoints.json}:/mcp.endpoints.json:ro
       - ${AGENTS_DATA_DIR:-./.agents-data}/documents/input:/documents/input
       - ${AGENTS_DATA_DIR:-./.agents-data}/documents/uploads:/documents/uploads
       # TLS certificates — uncomment if WIKI_SERVE_TLS_CERT_PATH is set
@@ -53,6 +56,11 @@ services:
       - DOCUMENTS_MCP_PORT
       - CME_MCP_AUTH_TOKEN
       - DOCUMENTS_MCP_AUTH_TOKEN
+      # Connectors MCP: the serve panel resolves ${CONNECTORS_MCP_AUTH_TOKEN} in
+      # /mcp.endpoints.json from process.env only, so it must be forwarded here
+      # (symmetric with cme/documents) or the panel sends an empty Bearer → 401.
+      - CONNECTORS_MCP_PORT
+      - CONNECTORS_MCP_AUTH_TOKEN
       - CONNECTORS_OAUTH_START_TOKEN=${OAUTH_START_TOKEN:-}
       - WORKSPACE_NAME
       - DOCUMENT_INPUT_DIR=/documents/input

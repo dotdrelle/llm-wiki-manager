@@ -642,10 +642,10 @@ start/state secrets when missing. It adds a regular, standard MCP `connectors`
 entry to `mcp.endpoints.json`. Setting `CONNECTORS_ENABLED=false` and running
 `agents up` removes that entry again, so disabled services are not probed. No
 non-standard `enabled` property is written to MCP configuration files.
-The matching `chatAccess.connectors` allow-list is managed at the same time and
-exposes only `connectors_google_status` and
-`connectors_google_oauth_start`. Orchestration tools such as `agent_execute`
-are never exposed directly to served chat.
+The matching `chatAccess.connectors` policy is managed at the same time. Its
+read-only `allow` list exposes `connectors_google_status`, while the explicit
+`allowActions` list exposes only `connectors_google_oauth_start`. Orchestration
+tools such as `agent_execute` are never exposed directly to served chat.
 
 Connector authorization is also available without asking the LLM. These two
 commands work in both the Shell UI and the `llm-wiki serve` chat:

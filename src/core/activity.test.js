@@ -29,6 +29,11 @@ test('normalizeActivity: plan null when no plan field', () => {
   assert.equal(a.plan, null);
 });
 
+test('normalizeActivity: succeeded is terminal', () => {
+  const a = normalizeActivity({ id: 'job-connectors', status: 'succeeded' });
+  assert.equal(a.terminal, true);
+});
+
 test('isCancelledStatus recognizes both cancellation spellings', () => {
   assert.equal(isCancelledStatus('cancelled'), true);
   assert.equal(isCancelledStatus('canceled'), true);

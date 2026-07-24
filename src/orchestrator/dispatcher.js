@@ -3,7 +3,7 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { emitRuntimeLog, pollActivitiesOnce } from '../runtime/supervisor.js';
 
-const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled', 'canceled', 'complete', 'completed', 'success', 'error']);
+const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled', 'canceled', 'complete', 'completed', 'success', 'succeeded', 'error']);
 
 export function createDispatcher({
   session = null,

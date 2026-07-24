@@ -13,7 +13,7 @@ function basename(value) {
 }
 
 function terminalStatus(status) {
-  return ['done', 'failed', 'cancelled', 'canceled', 'complete', 'completed', 'success', 'error'].includes(String(status ?? '').toLowerCase());
+  return ['done', 'failed', 'cancelled', 'canceled', 'complete', 'completed', 'success', 'succeeded', 'error'].includes(String(status ?? '').toLowerCase());
 }
 
 export function activityKey(activity) {

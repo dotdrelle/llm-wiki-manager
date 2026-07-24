@@ -86,6 +86,12 @@ services:
 
   connectors:
     profiles: [connectors]
+    # Local iteration: build the image from the connectors repo instead of
+    # pulling the published tag. `image:` is kept so the build is tagged with the
+    # same name; restore image-only before publishing a release.
+    build:
+      context: ../agent-external/agent-connectors
+      dockerfile: Dockerfile
     image: dotdrelle/agent-connectors:latest
     user: "${UID:-1000}:${GID:-1000}"
     ports:

@@ -72,6 +72,29 @@ export async function postRuntimeRun(input, {
   return response.json();
 }
 
+export async function postRuntimeTurn(input, {
+  url = runtimeUrlFromEnv(),
+  token = runtimeToken(),
+  workspace = null,
+  mode = 'agent',
+} = {}) {
+  const response = await fetch(runtimeEndpoint(url, '/turn', workspace), {
+    method: 'POST',
+    headers: {
+      ...runtimeHeaders(token),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ input, workspace, mode }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const err = new Error(payload.error ?? `Runtime turn failed: HTTP ${response.status}`);
+    err.status = response.status;
+    throw err;
+  }
+  return payload;
+}
+
 export async function postRuntimeDelegate(objective, {
   url = runtimeUrlFromEnv(),
   token = runtimeToken(),

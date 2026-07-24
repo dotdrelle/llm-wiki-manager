@@ -1,6 +1,6 @@
 import { createSignal } from 'solid-js';
 import { postRuntimeCancel } from '../runtime/client.js';
-import { conversationMessages, recordRuntimeUnavailableAgentInput, runLine, shouldHandleFreeTextLocally, submitRuntimeRun } from './repl.js';
+import { conversationMessages, recordRuntimeUnavailableAgentInput, runLine, shouldHandleFreeTextLocally, submitRuntimeTurn } from './repl.js';
 
 export function useAgent(props: { agent: unknown; packageJson: Record<string, unknown>; session: Record<string, any>; chatMode: () => boolean; runtimeUrl?: string | null; runtimeUnavailableReason?: string | null; refresh: () => void; addLog: (line: string) => void; onRuntimeAccepted?: () => void }) {
   const [busy, setBusy] = createSignal(false);
@@ -33,20 +33,16 @@ export function useAgent(props: { agent: unknown; packageJson: Record<string, un
         // confirm this exact entry instead of pushing a second copy once the
         // same user message comes back from the runtime's own /state.
         conversationMessages(props.session).push({ role: 'user', content: trimmed, _pending: true });
-        const outcome = await submitRuntimeRun(trimmed, {
+        // Let Donna decide while the runtime is still idle. If the objective
+        // maps to an agent capability, runtime__delegate then starts the real
+        // run. Posting natural language straight to /run made that run active
+        // too early and intentionally hid delegation after a status check.
+        const outcome = await submitRuntimeTurn(trimmed, {
           runtime: { url: props.runtimeUrl },
           session: props.session,
         });
-        if (outcome.kind === 'accepted') {
-          props.onRuntimeAccepted?.();
-          const runId = (outcome as any).result?.runId ?? null;
-          // Light, immediate feedback in the chat: without it an accepted run
-          // is invisible until its first activity lands in the side panels.
-          conversationMessages(props.session).push({
-            role: 'command',
-            content: `▶ Run accepté${runId ? ` (${String(runId).slice(0, 8)})` : ''} — progression dans le panneau Activity, réponse ici à la fin du run.`,
-          });
-          props.addLog('runtime: run accepted');
+        if (outcome.kind === 'turn' || (outcome as any).result?.accepted === true) {
+          props.addLog('runtime: agent turn accepted');
         } else if (outcome.kind === 'queued') {
           // The server localizes control-lane acknowledgements from the
           // session language (src/runtime/controlMessages.js) — always prefer

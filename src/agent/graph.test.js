@@ -1147,7 +1147,8 @@ test('agent graph accepts plan steps with known capabilities and null capability
 test('buildAgentSystemPrompt assigns capability resolution exclusively to the runtime', () => {
   const withAgents = buildAgentSystemPrompt({ session: sessionBase({ agentRegistrySnapshot: orchestrableAgentSnapshot() }) });
   assert.match(withAgents, /call runtime__delegate with the user objective only/);
-  assert.match(withAgents, /Never choose a capability, operation, agent, plan, or implementation yourself/);
+  assert.match(withAgents, /executor-only single-task agents/);
+  assert.match(withAgents, /Never choose those identifiers yourself/);
   assert.doesNotMatch(withAgents, /ONLY values allowed in requiredCapability/);
 });
 
@@ -1306,6 +1307,106 @@ test('runtime action retries a text-only hallucination and requires a real tool 
     assert.doesNotMatch(result.response, /faux-job-123|rapport\.pdf/);
     assert.match(result.response, /deliverables\/result\.md/);
     assert.equal(session.headlessPlan?.[0]?.status, 'done');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('interactive action delegates after a connector status check did not execute the requested collection', async () => {
+  const originalFetch = globalThis.fetch;
+  let delegatedObjective = null;
+  globalThis.fetch = async (url, options = {}) => {
+    if (String(url).includes('/delegate')) {
+      const body = JSON.parse(String(options.body ?? '{}'));
+      delegatedObjective = body.objective;
+      return {
+        ok: true,
+        status: 202,
+        json: async () => ({
+          accepted: true,
+          runId: 'collect-run',
+          delegation: { tasks: 1, agent: 'connectors' },
+        }),
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({
+        result: { content: [{ type: 'text', text: '{"ok":true,"status":"configured"}' }] },
+      }),
+    };
+  };
+  let modelCalls = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    mcp: {
+      connectors: {
+        status: 'connected',
+        url: 'http://connectors.test/mcp/',
+        tools: [{
+          name: 'connectors_google_status',
+          description: 'Read Google authorization status.',
+          inputSchema: { type: 'object', properties: { workspace: { type: 'string' } } },
+        }],
+      },
+    },
+    llm: {
+      async completeWithTools({ tools }) {
+        if (tools.some((tool) => tool.function.name === 'classify_action_request')) {
+          return {
+            content: null,
+            tool_calls: [{
+              id: 'classification',
+              type: 'function',
+              function: { name: 'classify_action_request', arguments: '{"action":true}' },
+            }],
+          };
+        }
+        modelCalls += 1;
+        if (modelCalls === 1) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: 'status',
+              type: 'function',
+              function: { name: 'connectors__connectors_google_status', arguments: '{"workspace":"docs"}' },
+            }],
+          };
+        }
+        if (modelCalls === 2) {
+          return {
+            content: 'Le statut est configuré mais je ne peux pas collecter.',
+            message: { role: 'assistant', content: 'Le statut est configuré mais je ne peux pas collecter.' },
+            tool_calls: null,
+          };
+        }
+        if (modelCalls === 3) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: 'delegate',
+              type: 'function',
+              function: { name: 'runtime__delegate', arguments: '{"objective":"charge les 10 derniers mails"}' },
+            }],
+          };
+        }
+        return {
+          content: 'Collecte lancée.',
+          message: { role: 'assistant', content: 'Collecte lancée.' },
+          tool_calls: null,
+        };
+      },
+    },
+  });
+
+  try {
+    const result = await createAgentGraph().invoke({ input: 'charge les 10 derniers mails', session });
+    assert.equal(delegatedObjective, 'charge les 10 derniers mails');
+    assert.equal(result.response, 'Collecte lancée.');
   } finally {
     globalThis.fetch = originalFetch;
   }

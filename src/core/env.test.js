@@ -50,7 +50,9 @@ test('scaffold merges missing top-level keys into an existing endpoints file', (
     assert.deepEqual(merged.mcpServers.custom, { url: 'http://localhost:9999/mcp/' });
     assert.ok(merged.mcpServers.cme);
     assert.ok(merged.mcpServers.documents);
-    assert.ok(merged.chatAccess?.servers?.wiki);
+    // Server keys must match the connected MCP endpoint keys (the tool-call
+    // prefix): the wiki server is "llm-wiki", not "wiki".
+    assert.ok(merged.chatAccess?.servers?.['llm-wiki']);
   });
 });
 

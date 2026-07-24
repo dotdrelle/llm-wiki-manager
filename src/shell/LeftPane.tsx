@@ -1,6 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { For, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import { StyledText, bg as styledBg, fg as styledFg, link as styledLink } from '@opentui/core';
+import { execFile } from 'node:child_process';
 import { colorForRenderedLine, helpCommandParts, keyValueParts, renderPlainMarkdown } from './renderer';
 import { httpLinkParts, wrapHttpLinks } from './externalLinks.js';
 
@@ -59,6 +60,19 @@ function styledSegments(segments: Segment[]) {
     if (segment.url) chunk = styledLink(segment.url)(chunk);
     return chunk;
   }));
+}
+
+function openSingleLineLink(segments: Segment[]) {
+  const urls = [...new Set(segments.map((segment) => segment.url).filter(Boolean))] as string[];
+  if (urls.length !== 1) return;
+  try {
+    const parsed = new URL(urls[0]);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+    const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
+    execFile(opener, [parsed.toString()], () => {});
+  } catch {
+    // Invalid URLs remain copyable text and never reach the system opener.
+  }
 }
 type RenderedLine = {
   segments: Segment[];
@@ -549,7 +563,12 @@ export function ConversationView(props: {
               ) : null}
             </box>
           ) : (
-            <box height={1} flexDirection="row" overflow="hidden">
+            <box
+              height={1}
+              flexDirection="row"
+              overflow="hidden"
+              onMouseUp={() => openSingleLineLink(line.segments)}
+            >
               <text>{styledSegments(line.segments)}</text>
             </box>
           )

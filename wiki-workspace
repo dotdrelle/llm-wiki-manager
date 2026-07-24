@@ -485,9 +485,20 @@ if (enabled === 'true') {
       Authorization: 'Bearer ${CONNECTORS_MCP_AUTH_TOKEN}',
     },
   };
-  config.chatAccess.servers.connectors ??= {
-    allow: ['connectors_google_status', 'connectors_google_oauth_start'],
-  };
+  config.chatAccess.servers.connectors ??= {};
+  const connectorAccess = config.chatAccess.servers.connectors;
+  connectorAccess.allow = [
+    ...new Set([
+      ...(Array.isArray(connectorAccess.allow) ? connectorAccess.allow : []),
+      'connectors_google_status',
+    ].filter((tool) => tool !== 'connectors_google_oauth_start')),
+  ];
+  connectorAccess.allowActions = [
+    ...new Set([
+      ...(Array.isArray(connectorAccess.allowActions) ? connectorAccess.allowActions : []),
+      'connectors_google_oauth_start',
+    ]),
+  ];
 } else {
   delete config.mcpServers.connectors;
   delete config.chatAccess.servers.connectors;

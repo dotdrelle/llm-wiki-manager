@@ -26,10 +26,6 @@ jobs:
           path: agent-external/agent-cme
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/agent-mailer-api
-          path: agent-external/agent-mailer-api
-      - uses: actions/checkout@v4
-        with:
           repository: ${{ github.repository_owner }}/agent-wiki-documents
           path: agent-external/agent-wiki-documents
       - uses: oven-sh/setup-bun@v2

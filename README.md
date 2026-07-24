@@ -393,7 +393,6 @@ of you in the browser (create → configure → start the agents → open).
 | [`agent-cme`](https://github.com/dotdrelle/agent-cme) | Global Confluence to Markdown MCP exporter; workspace injected automatically by Donna |
 | [`agent-wiki-production`](https://github.com/dotdrelle/agent-wiki-production) | Workspace-scoped production jobs: ingest, build, export, polish, pipeline |
 | [`agent-wiki-documents`](https://github.com/dotdrelle/agent-wiki-documents) | Document conversion MCP: PDF/Office/HTML/images → Markdown (OCR-capable) |
-| [`agent-mailer-api`](https://github.com/dotdrelle/agent-mailer-api) | Optional external mailer MCP endpoint (user-side override, not in the default stack) |
 
 ## Workspace Model
 
@@ -601,15 +600,10 @@ automatically from the manager workspaces directory. Agent state is stored under
 
 #### Optional agents and user overrides
 
-Anything beyond the default stack (for example the MailerSend agent) is an
-external connector operated at the user's charge — built and published, but
-not part of the delivery. To enable one, create a file named
+Anything beyond the default stack is an external connector operated and
+configured independently by the user. To run one alongside the packaged
+agents, create a file named
 `agents.docker-compose.override.yml` **next to your `.env`**:
-
-```bash
-cp "$(npm root -g)/@dotdrelle/wiki-manager/agents.docker-compose.mailer.example.yml" \
-   agents.docker-compose.override.yml
-```
 
 `agents up` includes it automatically when present (standard Docker Compose
 merge: new services are added, same-name keys override the defaults — you can
@@ -618,7 +612,8 @@ yours: wiki-manager never generates or overwrites it. Complete the setup by
 adding the connector's variables to your `.env` and its endpoint block to
 your `mcp.endpoints.json` — every variable an external MCP endpoint needs
 lives in the `.env` and is referenced as `${VAR_NAME}` from
-`mcp.endpoints.json`. Detailed steps are in the example file header.
+`mcp.endpoints.json`. A connector running outside the manager Compose stack
+only needs an entry in `mcp.endpoints.json`.
 
 Workspace-native MCP servers (`llm-wiki`, `production`) stay configured through
 each workspace `.env`. External agents are workspace-agnostic: the active
@@ -1029,7 +1024,7 @@ llm-wiki-manager/
 │       ├── useAgent.ts     # agent call wrapper (drives the @langchain/langgraph run)
 │       └── renderer.ts     # markdown stripping and line coloring
 ├── docker-compose.yml      # workspace-scoped stack (serve, mcp-http, production-mcp)
-├── agents.docker-compose.yml  # global external agents (cme, documents, mailer)
+├── agents.docker-compose.yml  # packaged global external agents
 ├── wiki-workspace
 ├── .env.example            # template for local .env (WORKSPACES_ROOT, agent tokens, …)
 ├── mcp.endpoints.example.json

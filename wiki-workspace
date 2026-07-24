@@ -224,7 +224,7 @@ agents_compose() {
     local cacert_args=()
     WORKSPACES_ROOT="$workspaces_root" AGENTS_DATA_DIR="$agents_data_dir" \
       read_lines_into_array cacert_args cacert_compose_args "$agents_compose_file" "agents.cacert.compose.yml"
-    # User-owned override: optional external agents (e.g. mailer) live in a
+    # User-owned override: optional external agents live in a
     # file the user maintains NEXT TO the .env — never generated, never
     # overwritten by package updates.
     local override_args=()
@@ -819,8 +819,7 @@ cacert_compose_args() {
     done <<< "$services"
   } > "$tmp_override"
   # Always replace generated state: package updates may add/remove services,
-  # and retaining an older override creates invalid phantom services (for
-  # example a removed optional mailer with no image in the current base file).
+  # and retaining an older override creates invalid phantom services.
   mv "$tmp_override" "$override_path"
   printf '%s\n' -f "$override_path"
 }

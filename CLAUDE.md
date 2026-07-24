@@ -115,8 +115,8 @@ generated `.wiki/runtime/` compose overrides) belongs in the user-selected
 manager directory, not in the installed npm package directory. On first
 interactive/runtime launch, missing `.env` and `mcp.endpoints.json` are
 scaffolded from the packaged examples (real paths substituted); `agents up`
-generates the missing agent auth tokens. Optional external connectors (e.g.
-mailer) are enabled via a user-owned `agents.docker-compose.override.yml`
+generates the missing agent auth tokens. Optional external connectors are
+enabled via a user-owned `agents.docker-compose.override.yml`
 next to the `.env` — auto-included by `agents up`, never generated or
 overwritten by the manager.
 

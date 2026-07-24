@@ -36,7 +36,6 @@ addCheck('llm-wiki package', readJson('llm-wiki/package.json').version, targetVe
 for (const [relativePath, label] of [
   ['agent-wiki-production/production_mcp_server.py', 'production agent'],
   ['agent-external/agent-cme/cme_mcp_server.py', 'cme agent'],
-  ['agent-external/agent-mailer-api/mailer_mcp_server.py', 'mailer agent'],
   ['agent-external/agent-wiki-documents/document_mcp_server.py', 'documents agent'],
 ]) {
   matchVersion(relativePath, /_AGENT_VERSION\s*=\s*"([^"]+)"/, label);
@@ -74,7 +73,6 @@ if (process.env.CHECK_DOCKER_IMAGES === '1') {
     'llm-wiki',
     'llm-wiki-manager',
     'agent-cme',
-    'agent-mailer-api',
     'agent-wiki-documents',
     'agent-wiki-production',
   ];

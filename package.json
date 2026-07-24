@@ -27,7 +27,6 @@
     "wiki-workspace",
     "docker-compose.yml",
     "agents.docker-compose.yml",
-    "agents.docker-compose.mailer.example.yml",
     "mcp.endpoints.example.json",
     ".env.example",
     "tsconfig.json",

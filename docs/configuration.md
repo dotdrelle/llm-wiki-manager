@@ -29,7 +29,7 @@ Mapped onto the four configuration files:
 
 | File | Owner | Scope | Holds |
 | --- | --- | --- | --- |
-| `llm-wiki-manager/.env` | manager | **global** | shared secrets: agent MCP tokens, MailerSend, OCR LLM, optional provider keys, port overrides |
+| `llm-wiki-manager/.env` | manager | **global** | shared secrets: packaged agent MCP tokens, OCR LLM, optional provider keys, port overrides |
 | `llm-wiki-manager/mcp.endpoints.json` | manager | global | where each external agent lives + which `Bearer`/header to send |
 | `workspaces/<name>/.env` | manager | per workspace | ports, workspace path, and the wiki's own MCP tokens |
 | `workspaces/<name>/.wikirc.yaml` (+ `.wikirc.yaml.<profile>`) | workspace | per workspace | the LLM and vector configuration (provider/model/apiKey/baseUrl/retrieval) |
@@ -54,15 +54,12 @@ workspace `.wikirc.yaml`.
 | `AGENTS_DATA_DIR` | no | persistent agent state (CME config, document queues). Defaults to `./.agents-data/` |
 | `CME_MCP_AUTH_TOKEN` | recommended | Bearer token guarding the CME agent. Must match the header in `mcp.endpoints.json` |
 | `DOCUMENTS_MCP_AUTH_TOKEN` | recommended | Bearer token guarding the documents agent |
-| `MAILER_MCP_AUTH_TOKEN` | recommended | Bearer token guarding the mailer agent |
-| `MAILERSEND_API_KEY` | for mail | MailerSend API key |
-| `MAILERSEND_FROM_EMAIL` / `MAILERSEND_FROM_NAME` | for mail | default sender identity |
 | `DOCUMENT_LLM_BASE_URL` | no | OpenAI-compatible vision endpoint for document OCR (defaults to OpenAI) |
 | `DOCUMENT_LLM_MODEL` | no | OCR model name |
 | `DOCUMENT_LLM_API_KEY` | for OCR | key for the OCR provider (or reuse `OPENAI_API_KEY`) |
 | `DOCUMENT_LLM_TIMEOUT_SECONDS` | no | OCR request timeout |
 | `EXA_MCP_API_KEY` | only if Exa enabled | used by `mcp.endpoints.json` when the Exa endpoint is declared |
-| `CME_MCP_PORT` / `DOCUMENTS_MCP_PORT` / `MAILER_MCP_PORT` | no | port overrides (defaults `3336` / `3337` / `3335`) |
+| `CME_MCP_PORT` / `DOCUMENTS_MCP_PORT` | no | port overrides (defaults `3336` / `3337`) |
 | `NODE_USE_ENV_PROXY` | behind an HTTP proxy | set to `1` so the Node runtime's `fetch` calls use `HTTP_PROXY` / `HTTPS_PROXY` |
 | `HTTP_PROXY` / `HTTPS_PROXY` | behind an HTTP proxy | proxy URL, including its scheme and port |
 | `NO_PROXY` | recommended with a proxy | hosts that must remain direct, notably the local runtime and MCP endpoints |
@@ -122,10 +119,6 @@ UI. Values support `${VAR}` interpolation resolved from the process environment
     "documents": {
       "url": "http://host.docker.internal:${DOCUMENTS_MCP_PORT:-3337}/mcp/",
       "headers": { "Authorization": "Bearer ${DOCUMENTS_MCP_AUTH_TOKEN}" }
-    },
-    "mailer": {
-      "url": "http://host.docker.internal:${MAILER_MCP_PORT:-3335}/mcp/",
-      "headers": { "Authorization": "Bearer ${MAILER_MCP_AUTH_TOKEN}" }
     },
     "exa": {
       "url": "https://mcp.exa.ai/mcp",

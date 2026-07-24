@@ -1266,7 +1266,7 @@ export async function runCli(argv) {
     }
     const { runOpenTuiShell, runStartupWizard } = await import('../shell/tui.tsx');
     // Fresh directory → copy mcp.endpoints.json/.env from the packaged
-    // examples so external agents (cme, mailer, documents) connect out of
+    // examples so external agents (cme and documents) connect out of
     // the box. Done here (and in `runtime`), NOT at import time: --version
     // in a random cwd must not litter files.
     const scaffolded = ensureManagerScaffold({ log: (message) => console.log(`[wiki-manager] ${message}`) });

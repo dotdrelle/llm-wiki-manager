@@ -49,8 +49,8 @@
 <text x="198" y="322" text-anchor="middle" class="t" font-size="12">Documents</text>
 <text x="198" y="338" text-anchor="middle" class="s" font-size="9">OCR / ingest</text>
 <rect x="268" y="300" width="96" height="48" rx="8" class="box"/>
-<text x="316" y="322" text-anchor="middle" class="t" font-size="12">Mailer</text>
-<text x="316" y="338" text-anchor="middle" class="s" font-size="9">e-mail</text>
+<text x="316" y="322" text-anchor="middle" class="t" font-size="12">External</text>
+<text x="316" y="338" text-anchor="middle" class="s" font-size="9">optional MCP</text>
 
 <path d="M135,222 C105,250 90,272 80,298" class="mcp" fill="none" stroke-width="1.4" marker-end="url(#aMcp)"/>
 <path d="M155,222 L196,298" class="mcp" fill="none" stroke-width="1.4" marker-end="url(#aMcp)"/>
@@ -98,6 +98,6 @@
 <path d="M545,466 L862,466 L862,194 L832,194" class="mcp" fill="none" stroke-width="1.4" stroke-dasharray="6 4" marker-end="url(#aMcp)"/>
 
 <!-- bottom note -->
-<text x="440" y="540" text-anchor="middle" class="s" font-size="11"><tspan class="mcpt" font-weight="700">root .env</tspan> = shared MCP secrets (agent tokens, MailerSend, OCR)</text>
+<text x="440" y="540" text-anchor="middle" class="s" font-size="11"><tspan class="mcpt" font-weight="700">root .env</tspan> = shared MCP secrets (agent tokens, OCR)</text>
 <text x="440" y="560" text-anchor="middle" class="s" font-size="11"><tspan class="llmt" font-weight="700">workspace .env</tspan> = ports + wiki MCP tokens  ·  <tspan class="llmt" font-weight="700">.wikirc.yaml</tspan> = LLM &amp; vector keys</text>
 </svg>

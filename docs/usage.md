@@ -61,7 +61,7 @@ endpoints are declared in `mcp.endpoints.json` (created from
 ### Start and verify the agents
 
 ```bash
-wiki-workspace agents up          # start cme, documents, mailer (packaged compose)
+wiki-workspace agents up          # start the packaged external agents
 wiki-workspace agents status      # ✅ each agent should report healthy
 ```
 
@@ -142,13 +142,6 @@ Originals are stored under `.agents-data/documents/input/<workspace>/`; converte
 Markdown lands in `<workspace>/raw/untracked/`. Images, scanned PDFs, and images
 embedded in PDF/Office documents are sent through LLM OCR automatically. If the
 agent is down, uploads stay staged and can be converted later.
-
-### Mailer — send-only e-mail
-
-The `mailer` agent sends deliverables by e-mail via MailerSend. Its credentials
-live in the manager `.env` (e.g. `MAILERSEND_API_KEY` and the matching auth
-token referenced in `mcp.endpoints.json`); no per-workspace setup is required.
-Trigger it from chat (*"e-mail this deliverable to …"*) or via `/mcp call`.
 
 ### Endpoints & tokens recap
 

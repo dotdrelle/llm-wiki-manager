@@ -42,8 +42,8 @@ export function managerMcpEndpointsFile() {
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 // First-run scaffolding: a fresh install directory has neither
-// mcp.endpoints.json nor .env, so the external agents (cme, mailer,
-// documents) silently never connect — /status shows no agents and Donna has
+// mcp.endpoints.json nor .env, so the external agents (cme and documents)
+// silently never connect — /status shows no agents and Donna has
 // no CME tools to configure anything with. Copy the packaged examples so a
 // fresh directory works out of the box with the default agent ports. Optional
 // credentials can be added later for the external services the user enables.

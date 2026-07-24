@@ -12,7 +12,6 @@ connection method depends on the transport each server uses.
 | `agent-wiki-production` | Streamable HTTP | 3102 |
 | `agent-cme` | Streamable HTTP | 3336 |
 | `agent-external/documents` | Streamable HTTP | 3337 |
-| `agent-mailer-api` | Streamable HTTP | 3335 |
 
 ---
 
@@ -93,12 +92,6 @@ when Docker Desktop is running; on Linux, use `127.0.0.1`.
       "url": "http://localhost:3337/mcp/",
       "headers": {
         "Authorization": "Bearer <DOCUMENTS_MCP_AUTH_TOKEN>"
-      }
-    },
-    "mailer": {
-      "url": "http://localhost:3335/mcp/",
-      "headers": {
-        "Authorization": "Bearer <MAILER_MCP_AUTH_TOKEN>"
       }
     }
   }

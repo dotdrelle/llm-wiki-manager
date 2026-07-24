@@ -93,6 +93,12 @@ test('/new without a name shows usage', async () => {
   assert.match(result.output ?? '', /Usage/i);
 });
 
+test('/connector completions expose list and Google authorization', () => {
+  const session = { commands: ['connector'] };
+  assert.deepEqual(completionContext('/connector ', session)?.matches, ['auth', 'list']);
+  assert.deepEqual(completionContext('/connector auth ', session)?.matches, ['google']);
+});
+
 test('/skills run sends the private skill body to Donna without rendering it as command output', async () => {
   const root = await mkdtemp(join(tmpdir(), 'wiki-manager-skill-run-'));
   const skillDir = join(root, '.wiki', 'skills');

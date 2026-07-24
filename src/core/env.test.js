@@ -45,8 +45,11 @@ test('scaffold merges missing top-level keys into an existing endpoints file', (
     const created = ensureManagerScaffold();
     assert.ok(created.some((item) => item.includes('chatAccess')));
     const merged = JSON.parse(readFileSync(endpointsFile, 'utf8'));
-    // Operator's servers untouched; new key added from the example.
-    assert.deepEqual(merged.mcpServers, { custom: { url: 'http://localhost:9999/mcp/' } });
+    // Operator's server is untouched; packaged servers are added without
+    // replacing any existing definitions.
+    assert.deepEqual(merged.mcpServers.custom, { url: 'http://localhost:9999/mcp/' });
+    assert.ok(merged.mcpServers.cme);
+    assert.ok(merged.mcpServers.documents);
     assert.ok(merged.chatAccess?.servers?.wiki);
   });
 });

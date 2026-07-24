@@ -76,6 +76,7 @@ const COMMAND_COMPLETION_DESCRIPTIONS = {
   '/stop': 'Stop one service or the workspace service set.',
   '/logs': 'Show recent logs for a service.',
   '/mcp': 'Inspect or call workspace MCP servers.',
+  '/connector': 'List connectors or authorize one — /connector auth <connector>.',
   '/wiki': 'Run llm-wiki commands for the active workspace.',
   '/skills': 'List workspace skills.',
   '/upload': 'Upload a document — /upload <path>',
@@ -150,7 +151,7 @@ export function createSession() {
     wikircConfig: null,
     language: null,
     mcp: null,
-    commands: ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'upload', 'uploads', 'clear', 'chat', 'agent', 'openui', 'run', 'cancel', 'queue', 'approve'],
+    commands: ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'connector', 'wiki', 'skills', 'upload', 'uploads', 'clear', 'chat', 'agent', 'openui', 'run', 'cancel', 'queue', 'approve'],
     chatMode: true,
     llm: null,
     activities: {},
@@ -251,6 +252,8 @@ function completionValuesFor(parts, inputBuffer, session) {
   if (command === '/mcp' && previousToken === 'tools') return mcpNames(session);
   if (command === '/mcp' && previousToken === 'call') return mcpNames(session);
   if (command === '/mcp' && parts[1] === 'call' && tokenIndex === 3) return mcpToolNames(session, parts[2]);
+  if (command === '/connector' && tokenIndex === 1) return ['auth', 'list'];
+  if (command === '/connector' && previousToken === 'auth') return ['google'];
   if (command === '/upload' && tokenIndex === 1) return ['convert'];
   if (command === '/upload' && parts[1] === 'convert' && tokenIndex === 2) return ['pending'];
   if (command === '/uploads' && tokenIndex === 1) return ['clean', 'list'];

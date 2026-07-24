@@ -403,7 +403,8 @@ test('Donna refuses to delegate connector authentication to an export capability
   globalThis.fetch = async (url, options = {}) => {
     fetchedUrls.push(String(url));
     const body = JSON.parse(String(options.body ?? '{}'));
-    assert.equal(body.params?.name, 'start_google_auth');
+    assert.equal(body.params?.name, 'connectors_google_oauth_start');
+    assert.deepEqual(body.params?.arguments, { workspace: 'docs' });
     return {
       ok: true,
       status: 200,
@@ -415,16 +416,16 @@ test('Donna refuses to delegate connector authentication to an export capability
   const session = sessionBase({
     runtime: { url: 'http://runtime.test' },
     mcp: {
-      'google-workspace': {
+      connectors: {
         status: 'connected',
         url: 'http://google.test/mcp',
         tools: [
           {
-            name: 'start_google_auth',
+            name: 'connectors_google_oauth_start',
             description: 'Manually initiate Google OAuth authentication flow.',
             inputSchema: { type: 'object', additionalProperties: true },
           },
-          { name: 'search_gmail_messages', inputSchema: { type: 'object', additionalProperties: true } },
+          { name: 'connectors_google_status', inputSchema: { type: 'object', additionalProperties: true } },
         ],
       },
     },
@@ -439,7 +440,7 @@ test('Donna refuses to delegate connector authentication to an export capability
         if (turn === 2) return {
           content: null,
           message: { role: 'assistant', content: null },
-          tool_calls: [{ id: 'google-auth', type: 'function', function: { name: 'google-workspace__start_google_auth', arguments: '{}' } }],
+          tool_calls: [{ id: 'google-auth', type: 'function', function: { name: 'connectors__connectors_google_oauth_start', arguments: '{}' } }],
         };
         return {
           content: 'J’ai lancé l’authentification. Ouvre le lien fourni.',

@@ -25,7 +25,7 @@ import { listWorkspaces } from '../core/workspaces.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageJsonPath = resolve(__dirname, '../../package.json');
 const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
-const SHELL_COMMANDS = ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'wiki', 'skills', 'clear', 'chat', 'agent', 'approve'];
+const SHELL_COMMANDS = ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'connector', 'wiki', 'skills', 'clear', 'chat', 'agent', 'approve'];
 
 function valueAfter(argv, flag) {
   const index = argv.indexOf(flag);
@@ -1204,10 +1204,6 @@ export async function runCli(argv) {
   if (argv[0] === 'runtime') {
     const scaffolded = ensureManagerScaffold({ log: (message) => console.log(`[wiki-manager] ${message}`) });
     if (scaffolded.length > 0) loadManagerEnv();
-    const imageRefresh = await refreshRunningContainers({
-      onStep: (message) => console.log(`[wiki-manager] ${message}`),
-    });
-    logImageRefreshErrors(imageRefresh);
     const agent = createAgentGraph();
     await runRuntime(argv.slice(1), agent);
     return;

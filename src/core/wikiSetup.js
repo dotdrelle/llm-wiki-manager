@@ -6,12 +6,36 @@ import { promisify } from 'node:util';
 import YAML from 'yaml';
 import { checkMissingDockerImages } from './dockerImages.js';
 import { patchWikircProfile } from './wikirc.js';
-import { managerEnvFile, managerMcpEndpointsFile, resolveAgentsDataDir } from './env.js';
+import { managerEnvFile, managerMcpEndpointsFile, readEnvFile, resolveAgentsDataDir } from './env.js';
 import { createWorkspace, findWorkspace, isValidWorkspaceName, listWorkspaces, managerRoot, workspacesDir } from './workspaces.js';
 
 const execFileAsync = promisify(execFile);
 
+function enabled(value) {
+  return /^(?:1|true|yes|on)$/i.test(String(value ?? '').trim());
+}
+
+export function configuredAgentImages(config, activeProfiles = new Set()) {
+  return Object.values(config.services ?? {})
+    .filter((service) => {
+      const profiles = Array.isArray(service?.profiles) ? service.profiles : [];
+      return profiles.length === 0 || profiles.some((profile) => activeProfiles.has(profile));
+    })
+    .map((service) => service?.image)
+    .filter(Boolean);
+}
+
 async function missingAgentImages() {
+  let managerEnv = {};
+  try {
+    managerEnv = readEnvFile(managerEnvFile());
+  } catch {
+    // A missing manager .env is valid during first-run setup.
+  }
+  const activeProfiles = new Set();
+  if (enabled(managerEnv.CONNECTORS_ENABLED ?? process.env.CONNECTORS_ENABLED)) {
+    activeProfiles.add('connectors');
+  }
   const composeFiles = [
     join(managerRoot(), 'agents.docker-compose.yml'),
     join(dirname(managerEnvFile()), 'agents.docker-compose.override.yml'),
@@ -19,7 +43,7 @@ async function missingAgentImages() {
   const images = [...new Set(composeFiles.flatMap((filePath) => {
     try {
       const config = YAML.parse(readFileSync(filePath, 'utf8')) ?? {};
-      return Object.values(config.services ?? {}).map((service) => service?.image).filter(Boolean);
+      return configuredAgentImages(config, activeProfiles);
     } catch {
       return [];
     }

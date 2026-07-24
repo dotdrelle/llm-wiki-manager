@@ -222,6 +222,8 @@ agents_compose() {
 
   _agents_dc() {
     local cacert_args=()
+    local profile_args=()
+    connectors_enabled && profile_args+=(--profile connectors)
     WORKSPACES_ROOT="$workspaces_root" AGENTS_DATA_DIR="$agents_data_dir" \
       read_lines_into_array cacert_args cacert_compose_args "$agents_compose_file" "agents.cacert.compose.yml"
     # User-owned override: optional external agents live in a
@@ -231,8 +233,9 @@ agents_compose() {
     local user_override="$MANAGER_STATE_DIR/agents.docker-compose.override.yml"
     [[ -f "$user_override" ]] && override_args+=(-f "$user_override")
     WORKSPACES_ROOT="$workspaces_root" AGENTS_DATA_DIR="$agents_data_dir" \
+      COMPOSE_PROFILES= \
       docker compose --project-directory "$DEFAULT_MANAGER_DIR" \
-        ${compose_env_args[@]+"${compose_env_args[@]}"} -f "$agents_compose_file" ${override_args[@]+"${override_args[@]}"} ${cacert_args[@]+"${cacert_args[@]}"} -p wiki-agents "$@"
+        ${compose_env_args[@]+"${compose_env_args[@]}"} -f "$agents_compose_file" ${override_args[@]+"${override_args[@]}"} ${cacert_args[@]+"${cacert_args[@]}"} ${profile_args[@]+"${profile_args[@]}"} -p wiki-agents "$@"
   }
 
   case "$subcommand" in
@@ -250,6 +253,7 @@ agents_compose() {
       compose_env_args=()
       [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
       mkdir -p "$agents_data_dir/cme" "$agents_data_dir/documents/input" "$agents_data_dir/documents/output" "$agents_data_dir/documents/uploads"
+      connectors_enabled && mkdir -p "$agents_data_dir/connectors"
       mkdir -p "$workspaces_root"
       $do_pull && _agents_dc pull
       local up_args=(up -d)
@@ -260,8 +264,10 @@ agents_compose() {
       printf 'Workspaces root: %s\n' "$workspaces_root"
       printf 'Agents data:     %s\n' "$agents_data_dir"
       [[ -z "$CACERT_PATH" ]] || printf 'CA cert:         %s -> /wiki-manager-ca.pem\n' "$CACERT_PATH"
-      printf 'Agents: cme=:%s  documents=:%s\n' \
+      printf 'Agents: cme=:%s  documents=:%s' \
         "${CME_MCP_PORT:-3336}" "${DOCUMENTS_MCP_PORT:-3337}"
+      connectors_enabled && printf '  connectors=:%s' "${CONNECTORS_MCP_PORT:-3338}"
+      printf '\n'
       [[ ! -f "$MANAGER_STATE_DIR/agents.docker-compose.override.yml" ]] || printf 'User override: agents.docker-compose.override.yml included\n'
       ;;
     down)
@@ -409,7 +415,7 @@ ensure_runtime_node() {
 }
 
 ensure_agent_tokens() {
-  # The external agents (cme, documents) authenticate with tokens
+  # External agents authenticate with tokens
   # from the manager .env — generate any missing one, exactly like the
   # workspace and runtime tokens are generated. Leaving them empty made a
   # fresh install start agents nobody could talk to.
@@ -423,6 +429,34 @@ ensure_agent_tokens() {
       printf 'Generated %s in %s\n' "$key" "$MANAGER_ENV_FILE"
     fi
   done
+  if connectors_enabled; then
+    for key in CONNECTORS_MCP_AUTH_TOKEN OAUTH_STATE_SECRET OAUTH_START_TOKEN; do
+      token="$(env_value "$MANAGER_ENV_FILE" "$key" "")"
+      if [[ -z "$token" ]]; then
+        token="$(generate_token)"
+        mkdir -p "$(dirname "$MANAGER_ENV_FILE")"
+        set_env_value "$MANAGER_ENV_FILE" "$key" "$token"
+        printf 'Generated %s in %s\n' "$key" "$MANAGER_ENV_FILE"
+      fi
+    done
+    local callback_url connectors_port
+    callback_url="$(env_value "$MANAGER_ENV_FILE" GOOGLE_OAUTH_CALLBACK_URL "")"
+    if [[ -z "$callback_url" ]]; then
+      connectors_port="$(env_value "$MANAGER_ENV_FILE" CONNECTORS_MCP_PORT "${CONNECTORS_MCP_PORT:-3338}")"
+      callback_url="http://127.0.0.1:${connectors_port}/oauth/google/callback"
+      set_env_value "$MANAGER_ENV_FILE" GOOGLE_OAUTH_CALLBACK_URL "$callback_url"
+      printf 'Configured local GOOGLE_OAUTH_CALLBACK_URL in %s\n' "$MANAGER_ENV_FILE"
+    fi
+  fi
+}
+
+connectors_enabled() {
+  local enabled
+  enabled="$(env_value "$MANAGER_ENV_FILE" CONNECTORS_ENABLED "${CONNECTORS_ENABLED:-false}")"
+  case "$enabled" in
+    1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 ensure_endpoints_file() {
@@ -433,6 +467,33 @@ ensure_endpoints_file() {
     cp "$ROOT_DIR/mcp.endpoints.example.json" "$MANAGER_ENDPOINTS_FILE"
     printf 'Created %s from packaged example\n' "$MANAGER_ENDPOINTS_FILE"
   fi
+  [[ -f "$MANAGER_ENDPOINTS_FILE" ]] || return
+  local connector_state=false
+  connectors_enabled && connector_state=true
+  node - "$MANAGER_ENDPOINTS_FILE" "$connector_state" <<'NODE'
+import fs from 'node:fs';
+
+const [, , filePath, enabled] = process.argv;
+const config = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+config.mcpServers ??= {};
+config.chatAccess ??= { maxToolIterations: 8, servers: {} };
+config.chatAccess.servers ??= {};
+if (enabled === 'true') {
+  config.mcpServers.connectors ??= {
+    url: 'http://host.docker.internal:${CONNECTORS_MCP_PORT:-3338}/mcp/',
+    headers: {
+      Authorization: 'Bearer ${CONNECTORS_MCP_AUTH_TOKEN}',
+    },
+  };
+  config.chatAccess.servers.connectors ??= {
+    allow: ['connectors_google_status', 'connectors_google_oauth_start'],
+  };
+} else {
+  delete config.mcpServers.connectors;
+  delete config.chatAccess.servers.connectors;
+}
+fs.writeFileSync(filePath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
 }
 
 ensure_manager_runtime_token() {
@@ -476,8 +537,12 @@ runtime_pid_matches() {
   [[ "$command" == *"/bin/wiki-manager.js runtime"* || "$command" == *" bin/wiki-manager.js runtime"* ]]
 }
 
+runtime_port() {
+  env_value "$MANAGER_ENV_FILE" WIKI_MANAGER_RUNTIME_PORT "${WIKI_MANAGER_RUNTIME_PORT:-7788}"
+}
+
 runtime_health_url() {
-  printf 'http://127.0.0.1:%s/health\n' "${WIKI_MANAGER_RUNTIME_PORT:-7788}"
+  printf 'http://127.0.0.1:%s/health\n' "$(runtime_port)"
 }
 
 runtime_health_check() {
@@ -497,11 +562,24 @@ runtime_health_check() {
   RUNTIME_URL="$url" RUNTIME_TOKEN="$token" "$node_bin" --input-type=module -e "const h=process.env.RUNTIME_TOKEN?{Authorization:'Bearer '+process.env.RUNTIME_TOKEN}:{}; const r=await fetch(process.env.RUNTIME_URL,{headers:h}); process.exit(r.ok?0:1);"
 }
 
+wait_for_runtime_health() {
+  local attempts="${1:-60}"
+  local i=0
+  while (( i < attempts )); do
+    runtime_health_check && return 0
+    runtime_pid_running || return 1
+    sleep 0.25
+    (( i++ )) || true
+  done
+  return 1
+}
+
 runtime_command() {
   local subcommand="$1"
   shift
   local host="${WIKI_MANAGER_RUNTIME_HOST:-0.0.0.0}"
-  local port="${WIKI_MANAGER_RUNTIME_PORT:-7788}"
+  local port
+  port="$(runtime_port)"
   local pid_file log_file node_bin token
   pid_file="$(runtime_pid_file)"
   log_file="$(runtime_log_file)"
@@ -519,17 +597,21 @@ runtime_command() {
         return
       fi
       if runtime_pid_running; then
-        printf 'agent-runtime process is already running (pid %s), but health is not ready yet.\n' "$(cat "$pid_file")"
-        return
+        printf 'Waiting for agent-runtime process (pid %s)...\n' "$(cat "$pid_file")"
+      else
+        WIKI_WORKSPACES_DIR="$WORKSPACES_DIR" \
+        WIKI_MANAGER_ENV_FILE="$MANAGER_ENV_FILE" \
+        WIKI_MANAGER_STATE_DIR="$MANAGER_RUNTIME_DIR" \
+        WIKI_MANAGER_RUNTIME_TOKEN="$token" \
+        nohup "$node_bin" "$ROOT_DIR/bin/wiki-manager.js" runtime --host "$host" --port "$port" --state-dir "$MANAGER_RUNTIME_DIR" > "$log_file" 2>&1 &
+        printf '%s\n' "$!" > "$pid_file"
       fi
-      WIKI_WORKSPACES_DIR="$WORKSPACES_DIR" \
-      WIKI_MANAGER_ENV_FILE="$MANAGER_ENV_FILE" \
-      WIKI_MANAGER_STATE_DIR="$MANAGER_RUNTIME_DIR" \
-      WIKI_MANAGER_RUNTIME_TOKEN="$token" \
-      nohup "$node_bin" "$ROOT_DIR/bin/wiki-manager.js" runtime --host "$host" --port "$port" --state-dir "$MANAGER_RUNTIME_DIR" > "$log_file" 2>&1 &
-      printf '%s\n' "$!" > "$pid_file"
-      sleep 0.5
-      printf 'agent-runtime started on http://127.0.0.1:%s (pid %s)\n' "$port" "$(cat "$pid_file")"
+      if ! wait_for_runtime_health; then
+        printf 'agent-runtime failed to become healthy at %s\n' "$(runtime_health_url)" >&2
+        [[ ! -f "$log_file" ]] || tail -20 "$log_file" >&2
+        return 1
+      fi
+      printf 'agent-runtime healthy on http://127.0.0.1:%s (pid %s)\n' "$port" "$(cat "$pid_file")"
       printf 'state: %s\nlog:   %s\n' "$MANAGER_RUNTIME_DIR" "$log_file"
       ;;
     down|stop)

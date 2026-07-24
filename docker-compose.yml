@@ -53,6 +53,7 @@ services:
       - DOCUMENTS_MCP_PORT
       - CME_MCP_AUTH_TOKEN
       - DOCUMENTS_MCP_AUTH_TOKEN
+      - CONNECTORS_OAUTH_START_TOKEN=${OAUTH_START_TOKEN:-}
       - WORKSPACE_NAME
       - DOCUMENT_INPUT_DIR=/documents/input
       - DOCUMENT_UPLOADS_DIR=/documents/uploads
@@ -61,6 +62,7 @@ services:
       - PRODUCTION_MCP_PROXY_URL=http://host.docker.internal:${PRODUCTION_MCP_PORT:-3102}/mcp/
       - WIKI_MANAGER_RUNTIME_URL=http://host.docker.internal:${WIKI_MANAGER_RUNTIME_PORT:-7788}
       - WIKI_MANAGER_RUNTIME_TOKEN=${WIKI_MANAGER_RUNTIME_TOKEN:-}
+      - CONNECTORS_AGENT_URL=http://host.docker.internal:${CONNECTORS_MCP_PORT:-3338}
       # HTTPS — set paths inside the container (e.g. /certs/server.crt) and uncomment the volume above
       #- WIKI_SERVE_TLS_CERT_PATH=/certs/server.crt
       #- WIKI_SERVE_TLS_KEY_PATH=/certs/server.key

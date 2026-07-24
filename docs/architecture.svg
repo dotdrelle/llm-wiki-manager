@@ -96,7 +96,7 @@
 <rect x="244" y="469" width="486" height="27" rx="7" class="box"/><rect x="244" y="469" width="5" height="27" rx="2.5" fill="#0f9d8f"/>
 <text x="261" y="486" class="t" font-size="11">optional connector<tspan class="s" font-size="10"> — external MCP integration</tspan></text>
 <rect x="244" y="499" width="486" height="27" rx="7" class="box"/><rect x="244" y="499" width="5" height="27" rx="2.5" fill="#0f9d8f"/>
-<text x="261" y="516" class="t" font-size="11">google-workspace<tspan class="s" font-size="10"> — Drive · Docs · Gmail</tspan></text>
+<text x="261" y="516" class="t" font-size="11">connectors<tspan class="s" font-size="10"> — Gmail · SaaS</tspan></text>
 <rect x="244" y="529" width="486" height="27" rx="7" class="box"/><rect x="244" y="529" width="5" height="27" rx="2.5" fill="#0f9d8f"/>
 <text x="261" y="546" class="t" font-size="11">external MCP<tspan class="s" font-size="10"> — user-configured capability</tspan></text>
 <rect x="244" y="559" width="486" height="27" rx="7" class="box"/><rect x="244" y="559" width="5" height="27" rx="2.5" fill="#0f9d8f"/>

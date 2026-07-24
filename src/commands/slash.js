@@ -631,6 +631,7 @@ ${helpPair('/skills', 'List skills', '/skills show <n>', 'Show skill')}
 ${helpPair('/skills run <n>', 'Run skill guide', '/skills edit <n>', 'Edit skill')}
 ${helpPair('/mcp status', 'MCP status', '/mcp endpoints', 'MCP endpoints')}
 ${helpPair('/mcp tools [mcp]', 'MCP tools', '/mcp call ...', 'Call MCP tool')}
+${helpPair('/connector list', 'Connector auth status', '/connector auth <n>', 'Authorize connector')}
 ${helpPair('/upload <path>', 'Upload document', '/uploads', 'Uploaded docs')}
 ${helpPair('/upload convert pending', 'Convert pending', '/uploads clean', 'Clean uploads')}
 ${helpPair('/wiki', 'Run wiki index', '/wiki run <args>', 'Raw wiki CLI')}
@@ -1024,6 +1025,62 @@ export async function handleSlashCommand(line, context) {
         }
       }
       return { output: 'Usage: /mcp <status|endpoints|tools|call> [mcp]' };
+    }
+    case 'connector': {
+      const subcommand = args[1] ?? 'list';
+      if (!context.session.workspace) {
+        return { output: 'No workspace loaded. Use /use <workspace>.' };
+      }
+      await refreshMcpRuntimeStatus(context.session);
+      const connectorMcp = context.session.mcp?.connectors;
+      if (!connectorMcp || connectorMcp.status !== 'connected') {
+        return { output: 'Connectors are unavailable. Enable CONNECTORS_ENABLED and start the agents.' };
+      }
+      if (subcommand === 'list') {
+        if (args[2]) return { output: 'Usage: /connector list' };
+        try {
+          const result = await callMcpTool(
+            context.session.mcp,
+            'connectors',
+            'connectors_google_status',
+            { workspace: context.session.workspace },
+          );
+          const payload = parseJsonText(formatMcpToolResult(result));
+          const status = payload?.status === 'configured' ? 'authorized' : 'not authorized';
+          return { output: `google (Gmail read-only): ${status}` };
+        } catch (err) {
+          return { output: `google (Gmail read-only): unavailable (${err instanceof Error ? err.message : String(err)})` };
+        }
+      }
+      if (subcommand === 'auth') {
+        const connector = String(args[2] ?? '').toLowerCase();
+        if (!['google', 'gmail'].includes(connector)) {
+          return { output: 'Usage: /connector auth <google>' };
+        }
+        try {
+          const result = await callMcpTool(
+            context.session.mcp,
+            'connectors',
+            'connectors_google_oauth_start',
+            { workspace: context.session.workspace },
+          );
+          const payload = parseJsonText(formatMcpToolResult(result));
+          const authorizationUrl = payload?.authorizationUrl;
+          if (payload?.ok !== true || typeof authorizationUrl !== 'string') {
+            return { output: `Google authorization could not start (${payload?.error ?? 'missing authorization URL'}).` };
+          }
+          const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
+          try {
+            execFileSync(opener, [authorizationUrl], { stdio: 'ignore' });
+            return { output: 'Google authorization opened in your browser. Return here after approval, then run /connector list.' };
+          } catch {
+            return { output: `Open this URL to authorize Google:\n${authorizationUrl}` };
+          }
+        } catch (err) {
+          return { output: `Google authorization could not start (${err instanceof Error ? err.message : String(err)}).` };
+        }
+      }
+      return { output: 'Usage: /connector <list|auth <google>>' };
     }
     case 'cancel': {
       // Alias of /run cancel — people type /cancel when they want out.

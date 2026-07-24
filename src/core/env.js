@@ -68,10 +68,23 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
         const example = JSON.parse(readFileSync(endpointsExample, 'utf8'));
         if (current && typeof current === 'object' && !Array.isArray(current)) {
           const missing = Object.keys(example).filter((key) => !(key in current));
+          const currentServers = current.mcpServers;
+          const exampleServers = example.mcpServers;
+          const missingServers = currentServers && typeof currentServers === 'object' && !Array.isArray(currentServers)
+            && exampleServers && typeof exampleServers === 'object' && !Array.isArray(exampleServers)
+            ? Object.keys(exampleServers).filter((key) => !(key in currentServers))
+            : [];
           if (missing.length > 0) {
             for (const key of missing) current[key] = example[key];
+          }
+          for (const key of missingServers) currentServers[key] = exampleServers[key];
+          if (missing.length > 0 || missingServers.length > 0) {
             writeFileSync(endpointsFile, `${JSON.stringify(current, null, 2)}\n`);
-            created.push(`mcp.endpoints.json keys: ${missing.join(', ')}`);
+            const changes = [
+              missing.length > 0 ? `keys: ${missing.join(', ')}` : '',
+              missingServers.length > 0 ? `servers: ${missingServers.join(', ')}` : '',
+            ].filter(Boolean).join('; ');
+            created.push(`mcp.endpoints.json ${changes}`);
           }
         }
       } catch {

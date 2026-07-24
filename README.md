@@ -486,7 +486,7 @@ cp .env.example .env
 
 The `.env` file is loaded automatically by both `wiki-manager` (Node/Bun process)
 and `wiki-workspace` (Docker Compose). It sets `WORKSPACES_ROOT`, per-agent auth
-tokens and optional port overrides; credentials of optional connectors you enable via the user override.
+tokens, optional port overrides, and credentials for enabled connectors.
 
 ### External MCP endpoints
 
@@ -598,9 +598,100 @@ generates the missing agent auth tokens into your manager `.env` and seeds
 automatically from the manager workspaces directory. Agent state is stored under
 `./.agents-data/` unless `AGENTS_DATA_DIR` is set.
 
+An `npm -g update @dotdrelle/wiki-manager` replaces the packaged Compose files
+but preserves the operator-owned `.env`, `mcp.endpoints.json`, workspaces, agent
+data, and runtime database. Missing standard endpoint definitions are migrated
+additively; existing endpoint definitions are never overwritten.
+
+The Gmail connector agent is packaged but opt-in. Enable it in the manager
+`.env`:
+
+```dotenv
+CONNECTORS_ENABLED=true
+# Optional locally; generated from CONNECTORS_MCP_PORT when empty:
+GOOGLE_OAUTH_CALLBACK_URL=
+```
+
+For a local installation, `wiki-workspace agents up` fills an empty callback
+with:
+
+```text
+http://127.0.0.1:<CONNECTORS_MCP_PORT>/oauth/google/callback
+```
+
+With the default port, register this exact redirect URI in Google Cloud
+Console:
+
+```text
+http://127.0.0.1:3338/oauth/google/callback
+```
+
+The browser resolves `127.0.0.1`; Docker forwards the published host port to
+the connectors container. For a remote deployment, set an explicit public
+HTTPS callback instead. In both cases the configured URL must match the Google
+Cloud redirect URI exactly.
+
+The local flow uses the public wikiLLM Desktop OAuth Client ID with PKCE and
+does not require a Client Secret. Normal users set neither Google credential.
+`GOOGLE_OAUTH_CLIENT_ID` remains an advanced override for private/internal
+Google projects, and `GOOGLE_OAUTH_CLIENT_SECRET` is an optional compatibility
+override for administrators using a confidential web client.
+
+`agents up` also generates the connectors MCP token plus distinct OAuth
+start/state secrets when missing. It adds a regular, standard MCP `connectors`
+entry to `mcp.endpoints.json`. Setting `CONNECTORS_ENABLED=false` and running
+`agents up` removes that entry again, so disabled services are not probed. No
+non-standard `enabled` property is written to MCP configuration files.
+The matching `chatAccess.connectors` allow-list is managed at the same time and
+exposes only `connectors_google_status` and
+`connectors_google_oauth_start`. Orchestration tools such as `agent_execute`
+are never exposed directly to served chat.
+
+Connector authorization is also available without asking the LLM. These two
+commands work in both the Shell UI and the `llm-wiki serve` chat:
+
+```text
+/connector list
+/connector auth google
+```
+
+The first reports the Gmail read-only authorization state for the active
+workspace. The second opens Google's OAuth page in the browser. Asking Donna
+to configure or check Google remains supported through the direct connector
+tools above.
+
+The Compose profile is an internal implementation detail. Do not set
+`COMPOSE_PROFILES` and do not add provider names such as Gmail or Slack to it:
+one `agent-connectors` service hosts all connector providers.
+
+For a public serve deployment, authorization can be started through the
+same-origin proxy:
+
+```bash
+curl -X POST https://wiki.example.com/api/connectors/google/oauth/start \
+  -H 'Origin: https://wiki.example.com' \
+  -H 'X-LLM-WIKI-OAUTH: 1' \
+  -H 'Content-Type: application/json' \
+  -d '{"instanceId":"google-1"}'
+```
+
+Open the returned `authorizationUrl`. The workspace is injected by serve and
+cannot be selected by the browser request.
+
+Donna discovers the agent contract automatically from the `connectors` MCP
+endpoint. With only one provider, no routing entry is required. To pin it
+explicitly in a workspace profile:
+
+```yaml
+capabilityRouting:
+  external-source.collect:
+    preferredAgents: [connectors]
+    allowedAgents: [connectors]
+```
+
 #### Optional agents and user overrides
 
-Anything beyond the default stack is an external connector operated and
+Anything beyond the packaged stack is an external connector operated and
 configured independently by the user. To run one alongside the packaged
 agents, create a file named
 `agents.docker-compose.override.yml` **next to your `.env`**:

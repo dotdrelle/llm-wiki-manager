@@ -562,7 +562,8 @@ function assertAgentReadSlashCommandAllowed(commandLine) {
 function withActiveWorkspaceForExternalTool(session, server, tool, args) {
   const needsWorkspace =
     (server === 'documents' && tool.startsWith('documents_') && tool !== 'documents_status') ||
-    (server === 'cme' && tool.startsWith('cme_') && tool !== 'cme_export_cancel' && !(tool === 'cme_export_status' && args.job_id));
+    (server === 'cme' && tool.startsWith('cme_') && tool !== 'cme_export_cancel' && !(tool === 'cme_export_status' && args.job_id)) ||
+    (server === 'connectors' && tool.startsWith('connectors_'));
   if (!needsWorkspace) return args;
   if (!session.workspace) {
     throw new Error(`No active workspace available for ${server}.${tool}. Use /use <workspace> first.`);
@@ -820,7 +821,16 @@ function connectorConfigurationTarget(session, objective) {
   if (!/(?:configur|connect|authent|oauth|setup|sign[ -]?in)/i.test(text)) return null;
   for (const [serverName, server] of Object.entries(session?.mcp ?? {})) {
     if (server?.status !== 'connected' || !Array.isArray(server.tools) || server.tools.length === 0) continue;
-    const aliases = String(serverName).toLowerCase().split(/[^a-z0-9]+/).filter((part) => part.length >= 3);
+    const genericAliasParts = new Set([
+      'auth', 'authenticate', 'connect', 'connector', 'connectors',
+      'configure', 'oauth', 'setup', 'start', 'status',
+    ]);
+    const aliases = [
+      serverName,
+      ...server.tools.map((tool) => tool?.name ?? ''),
+    ]
+      .flatMap((value) => String(value).toLowerCase().split(/[^a-z0-9]+/))
+      .filter((part) => part.length >= 3 && !genericAliasParts.has(part));
     if (!aliases.some((alias) => text.includes(alias))) continue;
     const setupTool = server.tools.find((tool) => {
       const name = String(tool?.name ?? '').toLowerCase();

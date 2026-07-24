@@ -12,6 +12,11 @@ test('wiki-workspace autostarts host runtime before workspace services', async (
   assert.match(script, /start_workspace_services "\$workspace"\n\n  local serve_port prod_port/);
   assert.match(script, /start_workspace_services "\$workspace"\n      local serve_port production_port/);
   assert.match(script, /ensure_runtime_up\n      printf 'Starting mcp-http/);
+  assert.match(script, /wait_for_runtime_health\(\) \{/);
+  assert.match(script, /if ! wait_for_runtime_health; then/);
+  assert.match(script, /runtime_port\(\) \{\n  env_value "\$MANAGER_ENV_FILE" WIKI_MANAGER_RUNTIME_PORT/);
+  assert.match(script, /port="\$\(runtime_port\)"/);
+  assert.doesNotMatch(script, /sleep 0\.5\n      printf 'agent-runtime started/);
 });
 
 test('wiki-workspace checks runtime pid command before killing', async () => {
@@ -30,6 +35,26 @@ test('wiki-workspace regenerates CA compose overrides instead of retaining remov
   assert.match(script, /local tmp_override="\$override_path\.tmp\.\$\$"/);
   assert.match(script, /mv "\$tmp_override" "\$override_path"/);
   assert.match(script, /Changes are overwritten on the next compose command/);
+});
+
+test('wiki-workspace provisions connector secrets and persistent state', async () => {
+  const script = await readFile(new URL('../../wiki-workspace', import.meta.url), 'utf8');
+
+  assert.match(script, /connectors_enabled\(\) \{/);
+  assert.match(script, /CONNECTORS_ENABLED/);
+  assert.doesNotMatch(script, /\$\{enabled,,\}/);
+  assert.match(script, /\[Tt\]\[Rr\]\[Uu\]\[Ee\]/);
+  assert.match(script, /profile_args\+=\(--profile connectors\)/);
+  assert.match(script, /COMPOSE_PROFILES= \\\n      docker compose/);
+  assert.match(script, /if connectors_enabled; then/);
+  assert.match(script, /CONNECTORS_MCP_AUTH_TOKEN OAUTH_STATE_SECRET OAUTH_START_TOKEN/);
+  assert.match(script, /http:\/\/127\.0\.0\.1:\$\{connectors_port\}\/oauth\/google\/callback/);
+  assert.match(script, /set_env_value "\$MANAGER_ENV_FILE" GOOGLE_OAUTH_CALLBACK_URL/);
+  assert.match(script, /"\$agents_data_dir\/connectors"/);
+  assert.match(script, /config\.mcpServers\.connectors \?\?=/);
+  assert.match(script, /config\.chatAccess\.servers\.connectors \?\?=/);
+  assert.match(script, /delete config\.mcpServers\.connectors/);
+  assert.match(script, /delete config\.chatAccess\.servers\.connectors/);
 });
 
 test('workspace creation keeps mutable manager files outside the installed package', async () => {

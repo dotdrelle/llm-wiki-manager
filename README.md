@@ -517,6 +517,45 @@ process environment (including the `.env` loaded at startup):
 Copy `mcp.endpoints.example.json` to `mcp.endpoints.json` and set the matching
 token variables in `.env`.
 
+### `chatAccess`: which tools chat may use
+
+Declaring a server above makes its tools available to **`/agent`** — no further
+declaration, ever. Plug in a new MCP and Donna discovers and uses its tools
+immediately.
+
+The optional `chatAccess` block is the authorization layer for **`/chat`**,
+which is closed by default. It decides which tools chat may use, and nothing
+else:
+
+```json
+"chatAccess": {
+  "maxToolIterations": 8,
+  "servers": {
+    "cme":  { "allow": ["cme_status", "cme_sources_list", "cme_export_status"] },
+    "exa":  { "allow": ["*"] }
+  }
+}
+```
+
+| entry | effect in `/chat` |
+| --- | --- |
+| server absent | none of its tools — agent-only |
+| `"allow": ["*"]` | every tool the server exposes |
+| `"allow": [names]` | exactly those tools |
+
+Every server uses this one shape. The list is authoritative: naming a tool is
+the decision, whatever the tool is called. No name heuristic filters it — a
+tool name is not a contract, and a third-party MCP is free to name its tools
+however it likes.
+
+`/chat` carries no plan: it performs direct unitary actions only. The
+orchestration entry points (`agent_plan`, `agent_execute`,
+`production_start_job`, and plan mutation) are therefore never offered to it,
+including under `"*"`. Multi-step work belongs to `/agent`.
+
+An `allowActions` key written by an older manager is folded into `allow` on
+read and removed on the next `agents up`.
+
 MCP `tools/call` requests retry transient HTTP/MCP failures before the run fails.
 They also share a per-endpoint outbound control budget (45 RPM by default,
 configurable with `WIKI_MANAGER_MCP_REQUESTS_PER_MINUTE`). This budget is
@@ -642,10 +681,11 @@ start/state secrets when missing. It adds a regular, standard MCP `connectors`
 entry to `mcp.endpoints.json`. Setting `CONNECTORS_ENABLED=false` and running
 `agents up` removes that entry again, so disabled services are not probed. No
 non-standard `enabled` property is written to MCP configuration files.
-The matching `chatAccess.connectors` policy is managed at the same time. Its
-read-only `allow` list exposes `connectors_google_status`, while the explicit
-`allowActions` list exposes only `connectors_google_oauth_start`. Orchestration
-tools such as `agent_execute` are never exposed directly to served chat.
+The matching `chatAccess.connectors` policy is managed at the same time, in the
+same shape as every other server — a single `allow` list holding
+`connectors_google_status` and `connectors_google_oauth_start`, so chat can
+report the authorization state and start it. See
+[`chatAccess`](#chataccess-which-tools-chat-may-use).
 
 Connector authorization is also available without asking the LLM. These two
 commands work in both the Shell UI and the `llm-wiki serve` chat:

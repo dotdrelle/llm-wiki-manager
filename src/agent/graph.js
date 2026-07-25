@@ -1083,7 +1083,7 @@ export function isDonnaReadTool(item) {
 // production agent) is delegated for its DAG/parallelism; plain single-step
 // tools are called directly. This is a blocklist, not a whitelist, so adding a
 // new MCP never silently disables its tools.
-function isOrchestrationBypassTool(name) {
+export function isOrchestrationBypassTool(name) {
   const full = String(name ?? '');
   if (!full) return true;
   if (full === 'wiki__plan_set' || full === 'wiki__plan_done') return true;

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
 import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
-import { buildAgentSystemPrompt, formatLlmUnavailableMessage, isDonnaReadTool } from '../agent/graph.js';
+import { buildAgentSystemPrompt, formatLlmUnavailableMessage, isOrchestrationBypassTool } from '../agent/graph.js';
 import { handleSlashCommand } from '../commands/slash.js';
 import { serviceDescription, serviceNames as composeServiceNames } from '../core/compose.js';
 import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
@@ -291,24 +291,43 @@ function isDonnaRole(role) {
   return role === 'donna' || role === LEGACY_DONNA_ROLE;
 }
 
-// Read-only MCP tools exposed to /chat. The operator declares which tools per
-// server in the `chatAccess` config (mcp.endpoints.json). /chat is extended to
-// those tools ONLY, filtered through the same read-only test Donna's /agent
-// mode uses (isDonnaReadTool), and only when their server is connected — so
-// /chat can answer live state questions ("le CME est-il configuré ?") but can
-// never mutate or delegate. Actions still belong to /agent, which has all tools.
-export function chatReadTools(session) {
+// MCP tools exposed to /chat. `chatAccess` (mcp.endpoints.json) is a per-mode
+// authorization layer deciding which tools /chat may use — nothing else. It is
+// the operator's declaration and it is AUTHORITATIVE:
+//
+//   - server absent      → none of its tools exist in /chat. Closed by default.
+//   - "allow": ["*"]     → every tool the server exposes.
+//   - "allow": [names]   → exactly those. Taking the time to name a tool IS the
+//                          decision, whatever the name looks like.
+//
+// /agent is unaffected: it uses every discovered, connected server with no
+// chatAccess declaration at all, so plugging in a new MCP makes it work with
+// Donna immediately.
+//
+// This used to be double-gated by a read-verb name heuristic (isDonnaReadTool),
+// which silently dropped an explicitly allow-listed tool that did not look
+// read-only — the reason a second `allowActions` key had to be invented for
+// connectors_google_oauth_start. A tool name is not a contract: the heuristic
+// also classified `collect` as a read while external-source.collect writes to
+// the workspace, and it would mis-sort any third-party MCP naming its tools
+// differently. Gone.
+//
+// isOrchestrationBypassTool stays: /chat carries no plan, only direct unitary
+// actions. agent_plan/agent_execute/production_start_job and plan mutation
+// would start work outside the plan and its approval gate.
+export function chatAllowedTools(session) {
   const servers = session?.chatAccess?.servers;
   if (!servers) return [];
   const scopedMcp = Object.fromEntries(
     Object.entries(session.mcp ?? {}).filter(([name]) => Object.hasOwn(servers, name)),
   );
   return buildLlmTools(scopedMcp).filter((item) => {
-    const { server, tool } = parseToolCallName(item.function.name);
+    const name = item.function.name;
+    if (isOrchestrationBypassTool(name)) return false;
+    const { server, tool } = parseToolCallName(name);
     const entry = servers[server];
-    const declared = entry.allow === '*' ? true : (Array.isArray(entry.allow) && entry.allow.includes(tool));
-    const declaredAction = Array.isArray(entry.allowActions) && entry.allowActions.includes(tool);
-    return (declared && isDonnaReadTool(item)) || declaredAction;
+    if (entry.allow === '*') return true;
+    return Array.isArray(entry.allow) && entry.allow.includes(tool);
   });
 }
 
@@ -1300,15 +1319,17 @@ async function runAgentTurn(input, { agent, session, onUpdate, onStep, displayIn
   return {};
 }
 
-// Bounded read-only tool loop for /chat. Only the tools declared in chatAccess
-// (and read-only) are offered; every call goes through callMcpTool, and any
-// tool the model names outside the offered set is refused — /chat can never
-// mutate or delegate. maxToolIterations caps the loop.
-async function runChatReadToolLoop({ input, session, history, donnaMessage, onUpdate, onStep, readTools, openWikiPages, contextMessages = [] }) {
-  const allowed = new Set(readTools.map((item) => item.function.name));
+// Bounded tool loop for /chat. Only the tools chatAccess authorizes for this
+// server are offered; every call goes through callMcpTool, and any tool the
+// model names outside the offered set is refused. /chat performs direct
+// unitary actions only — it never plans or delegates, which is why the
+// orchestration tools are filtered out upstream. maxToolIterations caps the
+// loop.
+async function runChatToolLoop({ input, session, history, donnaMessage, onUpdate, onStep, allowedTools, openWikiPages, contextMessages = [] }) {
+  const allowed = new Set(allowedTools.map((item) => item.function.name));
   // /chat only supplies the policy; the loop mechanic lives in runBoundedToolLoop.
   // executeCall enforces the allow-list and turns each call into a text result;
-  // it never mutates and refuses anything outside the offered read set.
+  // it refuses anything outside the offered set.
   const executeCall = async (call) => {
     const rawName = call.function?.name ?? '';
     const { server, tool } = resolveToolCallName(session.mcp, rawName);
@@ -1331,7 +1352,7 @@ async function runChatReadToolLoop({ input, session, history, donnaMessage, onUp
     llm: session.llm,
     system: buildDirectChatSystemPrompt(session, openWikiPages),
     messages: [...history, ...contextMessages, { role: 'user', content: input }],
-    tools: readTools,
+    tools: allowedTools,
     executeCall,
     maxIterations: Math.min(8, Number(session?.chatAccess?.maxToolIterations) || 4),
     signal: session._abortSignal,
@@ -1355,11 +1376,11 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
   const donnaMessage = { role: 'donna', content: '' };
   messages.push(donnaMessage);
   onUpdate?.();
-  const readTools = chatReadTools(session);
-  const canUseReadTools = readTools.length > 0 && typeof session.llm.completeWithTools === 'function';
+  const allowedTools = chatAllowedTools(session);
+  const canUseTools = allowedTools.length > 0 && typeof session.llm.completeWithTools === 'function';
   try {
-    if (canUseReadTools) {
-      await runChatReadToolLoop({ input, session, history, donnaMessage, onUpdate, onStep, readTools });
+    if (canUseTools) {
+      await runChatToolLoop({ input, session, history, donnaMessage, onUpdate, onStep, allowedTools });
     } else {
       onStep?.('Chat: streaming direct answer…');
       for await (const delta of session.llm.stream({
@@ -1392,14 +1413,14 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
 }
 
 // Headless equivalent of runDirectChatTurn for HTTP callers (the runtime /turn
-// in chat mode). Reuses the exact same read-only policy — chatReadTools +
-// runChatReadToolLoop + buildDirectChatSystemPrompt — so there is no second
+// in chat mode). Reuses the exact same authorization policy — chatAllowedTools
+// + runChatToolLoop + buildDirectChatSystemPrompt — so there is no second
 // implementation of chat access; it just returns the final text instead of
 // driving a live repl bubble. The caller must have seeded session.chatAccess
-// (and session.mcp) so chatReadTools can resolve the allow-listed read tools.
+// (and session.mcp) so chatAllowedTools can resolve the allow-listed tools.
 export async function runHeadlessChatTurn(session, input, { history = [], onStep, openWikiPages, openWikiPage } = {}) {
   const donnaMessage = { role: 'donna', content: '' };
-  const readTools = chatReadTools(session);
+  const allowedTools = chatAllowedTools(session);
   // Keep the singular option as a compatibility input for older serve builds.
   // Only paths enter the prompt; reading remains the model's generic tool call.
   const selectedPages = sanitizeOpenWikiPages(openWikiPages ?? openWikiPage);
@@ -1408,9 +1429,9 @@ export async function runHeadlessChatTurn(session, input, { history = [], onStep
   // (up to five) are each folded in as their own delimited block.
   const attachedDocs = await readSelectedPageDocuments(session, selectedPages);
   const contextMessages = buildAttachedDocMessages(attachedDocs);
-  const canUseReadTools = readTools.length > 0 && typeof session.llm?.completeWithTools === 'function';
-  if (canUseReadTools) {
-    await runChatReadToolLoop({ input, session, history, donnaMessage, onStep, readTools, openWikiPages: selectedPages, contextMessages });
+  const canUseTools = allowedTools.length > 0 && typeof session.llm?.completeWithTools === 'function';
+  if (canUseTools) {
+    await runChatToolLoop({ input, session, history, donnaMessage, onStep, allowedTools, openWikiPages: selectedPages, contextMessages });
     return donnaMessage.content;
   }
   if (typeof session.llm?.stream === 'function') {

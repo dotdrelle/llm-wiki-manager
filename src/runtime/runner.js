@@ -841,7 +841,9 @@ async function runDispatchedTask(task, {
         assignment,
         jobId: result?.jobId,
         error: result?.error?.code ?? result?.error?.message ?? result?.status ?? 'failed',
-        detail: 'task terminal',
+        // Carry the agent's own reason instead of a constant: "task terminal"
+        // told the operator nothing about WHY the task ended.
+        detail: result?.error?.message ?? result?.error?.code ?? 'task terminal',
       }));
       return { ok: false, taskId, result, assignment };
     }

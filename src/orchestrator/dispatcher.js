@@ -115,7 +115,7 @@ export async function execute(task, assignment, {
           jobId,
           status: lastStatus?.result?.status ?? lastStatus?.status,
           outputs: lastStatus?.result?.outputRefs ?? [],
-          error: lastStatus?.result?.error?.code ?? lastStatus?.result?.error?.message ?? null,
+          error: normalizeTaskError(lastStatus?.result?.error)?.code ?? null,
           detail: 'terminal status',
         }));
         return taskResultFromStatus(task, assignment, jobId, lastStatus, attempt);
@@ -135,7 +135,7 @@ export async function execute(task, assignment, {
           jobId,
           status: lastStatus?.result?.status ?? lastStatus?.status,
           outputs: lastStatus?.result?.outputRefs ?? [],
-          error: lastStatus?.result?.error?.code ?? lastStatus?.result?.error?.message ?? null,
+          error: normalizeTaskError(lastStatus?.result?.error)?.code ?? null,
           detail: 'terminal status',
         }));
         return taskResultFromStatus(task, assignment, jobId, lastStatus, attempt);
@@ -213,20 +213,49 @@ function taskResultFromStatus(task, assignment, jobId, statusPayload, attempt = 
     status: result.status ?? statusPayload?.status,
     outputRefs: Array.isArray(result.outputRefs) ? result.outputRefs : [],
     metrics: result.metrics ?? {},
-    error: result.error ?? null,
+    error: normalizeTaskError(result.error),
     rawStatus: statusPayload,
   };
 }
 
+// An agent may report a terminal failure either as an object ({code, message})
+// or as a bare reason string — the contract mandates neither, and the
+// executor-only agents report the latter. Consumers (runner logs, the UIs)
+// only ever read `.code`/`.message`, so an unnormalized string silently
+// became `null` and every failure surfaced as a bare "failed" with no reason.
+// Normalize once, here, so the shape is uniform for every downstream reader.
+export function normalizeTaskError(rawError, { fallbackCode = null, fallbackMessage = null } = {}) {
+  if (rawError && typeof rawError === 'object') {
+    const code = String(rawError.code ?? rawError.message ?? fallbackCode ?? 'failed');
+    return {
+      code,
+      message: String(rawError.message ?? rawError.code ?? fallbackMessage ?? code),
+      retryable: rawError.retryable === true
+        || transientError(rawError.code)
+        || transientError(rawError.message),
+    };
+  }
+  if (rawError === null || rawError === undefined || String(rawError).trim() === '') {
+    if (!fallbackCode) return null;
+    return {
+      code: String(fallbackCode),
+      message: String(fallbackMessage ?? fallbackCode),
+      retryable: transientError(fallbackCode),
+    };
+  }
+  const code = String(rawError);
+  return {
+    code,
+    message: String(fallbackMessage ?? code),
+    retryable: transientError(code),
+  };
+}
+
 function rejectedTaskResult(task, assignment, payload, attempt = null) {
-  const rawError = payload?.error;
-  const error = rawError && typeof rawError === 'object'
-    ? { ...rawError }
-    : {
-        code: String(rawError ?? 'execution_rejected'),
-        message: String(payload?.message ?? rawError ?? 'agent_execute rejected task'),
-        retryable: transientError(rawError ?? payload?.message),
-      };
+  const error = normalizeTaskError(payload?.error, {
+    fallbackCode: 'execution_rejected',
+    fallbackMessage: payload?.message ?? 'agent_execute rejected task',
+  });
   return {
     ok: false,
     taskId: String(task.id ?? task.step),
@@ -236,11 +265,7 @@ function rejectedTaskResult(task, assignment, payload, attempt = null) {
     status: 'failed',
     outputRefs: [],
     metrics: {},
-    error: {
-      code: String(error.code ?? 'execution_rejected'),
-      message: String(error.message ?? error.code ?? 'agent_execute rejected task'),
-      retryable: error.retryable === true || transientError(error.code) || transientError(error.message),
-    },
+    error,
     rawStatus: payload,
   };
 }

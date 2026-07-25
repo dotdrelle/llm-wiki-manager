@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
 
-const WIKI_MANAGER_VERSION = '0.14.23';
+const WIKI_MANAGER_VERSION = '0.15.25';
 
 function envValue(key) {
   const filePath = managerEnvFile();
@@ -64,11 +64,18 @@ function normalizeExternalUrlForRuntime(url) {
   return url;
 }
 
-// Config-driven policy for the /chat read-only toolset — NOT /agent, which has
-// the full toolset and ignores this. The endpoints file's "chatAccess" block
-// declares, per server, which tools /chat may call ("*" or a list), plus a
-// maxToolIterations budget. Operator-owned, agnostic allow-list. Returns null
-// when not configured — then /chat stays a plain, tool-less conversation.
+// Config-driven policy for the /chat toolset — NOT /agent, which has the full
+// toolset and ignores this. The endpoints file's "chatAccess" block declares,
+// per server, which tools /chat may call ("*" or a list), plus a
+// maxToolIterations budget. Every server uses the SAME shape: one `allow` key.
+// Operator-owned, agnostic allow-list. Returns null when not configured — then
+// /chat stays a plain, tool-less conversation.
+//
+// `allowActions` is a legacy key from the connectors work: it carved out a
+// second list for tools the read-verb heuristic rejected, which made one
+// server's entry shaped differently from every other. It is folded into
+// `allow` on read so existing installs keep working without regenerating
+// their endpoints file, but nothing writes it any more.
 export function readChatAccessConfig() {
   const filePath = managerMcpEndpointsFile();
   if (!existsSync(filePath)) return null;
@@ -81,14 +88,15 @@ export function readChatAccessConfig() {
     // "*" is also commonly written as a one-element array (["*"]) since every
     // other "allow" example in this config is an array of tool names — treat
     // both forms as the same wildcard rather than silently allowing nothing.
+    const legacyActions = Array.isArray(entry?.allowActions)
+      ? entry.allowActions.map(String).filter(Boolean)
+      : [];
     if (entry?.allow === '*' || (Array.isArray(entry?.allow) && entry.allow.length === 1 && entry.allow[0] === '*')) {
       servers[name] = { allow: '*' };
     } else if (Array.isArray(entry?.allow)) {
-      servers[name] = { allow: entry.allow.map(String).filter(Boolean) };
-    }
-    if (Array.isArray(entry?.allowActions)) {
-      servers[name] ??= { allow: [] };
-      servers[name].allowActions = entry.allowActions.map(String).filter(Boolean);
+      servers[name] = { allow: [...new Set([...entry.allow.map(String).filter(Boolean), ...legacyActions])] };
+    } else if (legacyActions.length > 0) {
+      servers[name] = { allow: legacyActions };
     }
   }
   const maxToolIterations = Number.isFinite(Number(chatAccess.maxToolIterations)) && Number(chatAccess.maxToolIterations) > 0

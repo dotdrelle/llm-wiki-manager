@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   applyRuntimeStateToShellSession,
-  chatReadTools,
+  chatAllowedTools,
   createSession,
   runHeadlessChatTurn,
   sanitizeOpenWikiPage,
@@ -622,7 +622,7 @@ test('submitRuntimeRun sends a control message instead of /run while a run is ac
   }
 });
 
-test('chatReadTools exposes only declared, read-only MCP tools to /chat', () => {
+test('chatAllowedTools exposes exactly the declared MCP tools to /chat', () => {
   const session = {
     chatAccess: {
       servers: {
@@ -645,13 +645,14 @@ test('chatReadTools exposes only declared, read-only MCP tools to /chat', () => 
       },
     },
   };
-  const names = chatReadTools(session).map((item) => item.function.name).sort();
-  // cme_setup: not declared. cme_export_run: declared but a write (excluded by
-  // the read-only guard). documents_status: server absent from chatAccess.
-  assert.deepEqual(names, ['cme__cme_sources_list', 'cme__cme_status']);
+  const names = chatAllowedTools(session).map((item) => item.function.name).sort();
+  // cme_setup: not declared. documents_status: server absent from chatAccess.
+  // cme_export_run: declared, so it is offered — the allow-list is the
+  // operator's explicit decision, not a suggestion filtered by a heuristic.
+  assert.deepEqual(names, ['cme__cme_export_run', 'cme__cme_sources_list', 'cme__cme_status']);
 });
 
-test('chatReadTools accepts wiki_collect_context ("collect" is a read verb)', () => {
+test('chatAllowedTools offers every declared tool, reads and writes alike', () => {
   const session = {
     chatAccess: {
       servers: {
@@ -669,39 +670,122 @@ test('chatReadTools accepts wiki_collect_context ("collect" is a read verb)', ()
       },
     },
   };
-  const names = chatReadTools(session).map((item) => item.function.name).sort();
-  // wiki_write_page: declared but a write — excluded by the read-only guard
-  // even if an operator allow-lists it by mistake.
-  assert.deepEqual(names, ['wiki__wiki_collect_context', 'wiki__wiki_search_context']);
+  const names = chatAllowedTools(session).map((item) => item.function.name).sort();
+  assert.deepEqual(
+    names,
+    ['wiki__wiki_collect_context', 'wiki__wiki_search_context', 'wiki__wiki_write_page'],
+  );
 });
 
-test('chatReadTools accepts only actions explicitly declared in allowActions', () => {
+test('chatAllowedTools "*" offers every tool of the server, writes included', () => {
+  const session = {
+    chatAccess: { servers: { exa: { allow: '*' } } },
+    mcp: {
+      exa: {
+        status: 'connected',
+        tools: [
+          { name: 'web_search_exa', inputSchema: { type: 'object', properties: {} } },
+          { name: 'crawling_exa', inputSchema: { type: 'object', properties: {} } },
+          { name: 'deep_researcher_start', inputSchema: { type: 'object', properties: {} } },
+        ],
+      },
+      documents: {
+        status: 'connected',
+        tools: [{ name: 'documents_status', inputSchema: { type: 'object', properties: {} } }],
+      },
+    },
+  };
+  // No name is inspected: "*" is the operator saying "this whole server".
+  // documents stays out — it is absent from chatAccess, so it is agent-only.
+  assert.deepEqual(
+    chatAllowedTools(session).map((item) => item.function.name).sort(),
+    ['exa__crawling_exa', 'exa__deep_researcher_start', 'exa__web_search_exa'],
+  );
+});
+
+test('chatAllowedTools offers an action no read-verb heuristic would accept', () => {
   const session = {
     chatAccess: {
       servers: {
-        connectors: { allow: [], allowActions: ['connectors_google_oauth_start'] },
+        connectors: {
+          allow: ['connectors_google_status', 'connectors_google_oauth_start'],
+        },
       },
     },
     mcp: {
       connectors: {
         status: 'connected',
-        tools: [{
-          name: 'connectors_google_oauth_start',
-          inputSchema: { type: 'object', properties: {} },
-        }],
+        tools: [
+          { name: 'connectors_google_status', inputSchema: { type: 'object', properties: {} } },
+          { name: 'connectors_google_oauth_start', inputSchema: { type: 'object', properties: {} } },
+        ],
       },
     },
   };
 
   assert.deepEqual(
-    chatReadTools(session).map((item) => item.function.name),
+    chatAllowedTools(session).map((item) => item.function.name).sort(),
+    ['connectors__connectors_google_oauth_start', 'connectors__connectors_google_status'],
+  );
+});
+
+// /chat carries no plan: it performs direct unitary actions only. The
+// orchestration entry points stay out of it whichever way they are declared.
+test('chatAllowedTools never offers orchestration tools, even when allow-listed', () => {
+  const session = {
+    chatAccess: {
+      servers: {
+        connectors: { allow: ['agent_execute', 'agent_plan', 'connectors_google_status'] },
+      },
+    },
+    mcp: {
+      connectors: {
+        status: 'connected',
+        tools: [
+          { name: 'agent_execute', inputSchema: { type: 'object', properties: {} } },
+          { name: 'agent_plan', inputSchema: { type: 'object', properties: {} } },
+          { name: 'connectors_google_status', inputSchema: { type: 'object', properties: {} } },
+        ],
+      },
+    },
+  };
+
+  assert.deepEqual(
+    chatAllowedTools(session).map((item) => item.function.name),
+    ['connectors__connectors_google_status'],
+  );
+
+  const wildcard = { ...session, chatAccess: { servers: { connectors: { allow: '*' } } } };
+  assert.deepEqual(
+    chatAllowedTools(wildcard).map((item) => item.function.name),
+    ['connectors__connectors_google_status'],
+  );
+});
+
+test('chatAllowedTools folds a legacy allowActions entry into allow', () => {
+  const session = {
+    chatAccess: {
+      // Shape produced by readChatAccessConfig for a file written by an older
+      // manager: the legacy key is already merged, so chat keeps working.
+      servers: { connectors: { allow: ['connectors_google_oauth_start'] } },
+    },
+    mcp: {
+      connectors: {
+        status: 'connected',
+        tools: [{ name: 'connectors_google_oauth_start', inputSchema: { type: 'object', properties: {} } }],
+      },
+    },
+  };
+
+  assert.deepEqual(
+    chatAllowedTools(session).map((item) => item.function.name),
     ['connectors__connectors_google_oauth_start'],
   );
 });
 
-test('chatReadTools is empty when no chatAccess is configured', () => {
+test('chatAllowedTools is empty when no chatAccess is configured', () => {
   const session = { mcp: { cme: { status: 'connected', tools: [{ name: 'cme_status', inputSchema: {} }] } } };
-  assert.deepEqual(chatReadTools(session), []);
+  assert.deepEqual(chatAllowedTools(session), []);
 });
 
 test('/chat uses the tool-capable path when read tools are declared', async () => {

@@ -62,6 +62,9 @@ workspace `.wikirc.yaml`.
 | `GOOGLE_OAUTH_CALLBACK_URL` | for Gmail OAuth | generated as a local `127.0.0.1` callback from `CONNECTORS_MCP_PORT` when empty; override with the exact public HTTPS callback for remote deployments |
 | `OAUTH_STATE_TTL_SECONDS` | no | OAuth state lifetime in seconds (default `600`) |
 | `CONNECTORS_RECOMMENDED_CONCURRENCY` / `CONNECTORS_MAX_CONCURRENCY` | no | collection concurrency advertised to Donna (defaults `2` / `4`) |
+| `CONNECTORS_SEND_ENABLED` | no | enables the `communication.send-email` capability (default `true`). Set to `false` to remove any path from a task to an outbound email |
+| `CONNECTORS_SEND_ALLOWED_RECIPIENTS` | recommended | comma-separated allow-list of addresses or `@domain` suffixes; empty means unrestricted |
+| `CONNECTORS_SEND_MAX_RECIPIENTS` / `CONNECTORS_SEND_MAX_BODY_BYTES` | no | per-message ceilings (defaults `25` / `262144`) |
 | `OAUTH_STATE_SECRET` / `OAUTH_START_TOKEN` | for Gmail OAuth | distinct generated secrets for signed state and protected OAuth start |
 | `DOCUMENT_LLM_BASE_URL` | no | OpenAI-compatible vision endpoint for document OCR (defaults to OpenAI) |
 | `DOCUMENT_LLM_MODEL` | no | OCR model name |

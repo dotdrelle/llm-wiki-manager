@@ -35,14 +35,36 @@ export function httpLinkParts(value) {
   return parts.length > 0 ? parts : [{ text }];
 }
 
+// The label the operator actually reads. It used to be `[link: <hostname>]`,
+// which threw away the port and the path even when the whole URL fitted on the
+// line: `/openui` printing `http://localhost:3100` was displayed as
+// `[link: localhost]`, and nothing on screen said which port to open by hand.
+// Show the real URL, and shorten it only when it genuinely does not fit.
+export function linkLabel(url, width) {
+  const columns = Math.max(12, Number(width) || 12);
+  const text = String(url ?? '');
+  if (text.length <= columns) return text;
+  let host = '';
+  try {
+    // `host`, not `hostname`: the port is the part operators need most.
+    host = new URL(text).host;
+  } catch {
+    return text;
+  }
+  if (!host) return text;
+  const short = `${host}/…`;
+  // Never truncate below the host: a clipped `example.tes…` is unusable, while
+  // an overflowing host is still a real token the row simply clips.
+  return short.length <= columns ? short : host;
+}
+
 export function wrapHttpLinks(value, width) {
   const columns = Math.max(12, Number(width) || 12);
   const rows = [[]];
   let used = 0;
   for (const part of httpLinkParts(value)) {
     if (part.url) {
-      const parsed = new URL(part.url);
-      const label = `[link: ${parsed.hostname}]`;
+      const label = linkLabel(part.url, columns);
       if (used > 0 && used + label.length > columns) {
         rows.push([]);
         used = 0;

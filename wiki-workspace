@@ -119,6 +119,13 @@ Configuration:
   Override directory: WIKI_WORKSPACES_DIR=/path/to/dir
   Runtime node: WIKI_MANAGER_NODE_BIN=/path/to/node
   Local CA: --cacert /absolute/path/to/ca.pem (Docker must be able to read this host path)
+
+Compose overrides (next to the manager .env, created once, never regenerated):
+  docker-compose.override.yml         Workspace stack (serve, mcp-http, production-mcp)
+  agents.docker-compose.override.yml  Agents stack (cme, documents, connectors)
+  Use them for proxy passthrough, extra mounts and optional agents.
+  Never edit .wiki/runtime/*.compose.yml — that is generated state, rewritten
+  on every compose command.
 EOF
 }
 
@@ -173,17 +180,48 @@ generate_token() {
   die "cannot generate MCP auth token: openssl and /dev/urandom are unavailable"
 }
 
+# Matches the commented placeholders shipped in .env.example — `# KEY=`,
+# `#KEY=`, `##  KEY=` — but never a prose comment that merely mentions the key.
+commented_assignment() {
+  local line="$1"
+  local key="$2"
+  [[ "$line" =~ ^[[:space:]]*#+[[:space:]]*"$key"= ]]
+}
+
 set_env_value() {
   local file="$1"
   local key="$2"
   local value="$3"
   local tmp="${file}.tmp.$$"
   local wrote=0 line
+  local has_active=0
 
   if [[ -f "$file" ]]; then
+    # Most generated keys (OAUTH_STATE_SECRET, GOOGLE_OAUTH_CALLBACK_URL,
+    # WIKI_MANAGER_RUNTIME_TOKEN…) ship as commented placeholders in
+    # .env.example. Appending the real value at the end of the file left the
+    # commented twin above it, so the .env read top-down still documented the
+    # key as unset — operators re-generated tokens that already existed. Reuse
+    # the placeholder's own line instead, keeping the value under the comment
+    # block that explains it.
+    #
+    # An ACTIVE assignment always wins: it is the operator's own choice, and a
+    # commented line further down must stay commented rather than become a
+    # second, contradictory assignment.
     while IFS= read -r line || [[ -n "$line" ]]; do
       line="${line%$'\r'}"
       if [[ "$line" == "$key="* ]]; then
+        has_active=1
+        break
+      fi
+    done < "$file"
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line%$'\r'}"
+      if [[ "$line" == "$key="* ]]; then
+        printf '%s=%s\n' "$key" "$value"
+        wrote=1
+      elif [[ "$has_active" -eq 0 && "$wrote" -eq 0 ]] && commented_assignment "$line" "$key"; then
         printf '%s=%s\n' "$key" "$value"
         wrote=1
       else
@@ -207,6 +245,7 @@ agents_compose() {
   local subcommand="$1"
   shift
   ensure_manager_endpoints_file
+  ensure_compose_override 'agents.docker-compose.override.example.yml' 'agents.docker-compose.override.yml'
   local agents_compose_file="$ROOT_DIR/agents.docker-compose.yml"
   [[ -f "$agents_compose_file" ]] || die "agents compose file not found: $agents_compose_file"
 
@@ -226,9 +265,9 @@ agents_compose() {
     connectors_enabled && profile_args+=(--profile connectors)
     WORKSPACES_ROOT="$workspaces_root" AGENTS_DATA_DIR="$agents_data_dir" \
       read_lines_into_array cacert_args cacert_compose_args "$agents_compose_file" "agents.cacert.compose.yml"
-    # User-owned override: optional external agents live in a
-    # file the user maintains NEXT TO the .env — never generated, never
-    # overwritten by package updates.
+    # User-owned override: optional external agents, proxy passthrough and
+    # any local fix live in a file the user maintains NEXT TO the .env —
+    # scaffolded once by ensure_compose_override, never overwritten afterwards.
     local override_args=()
     local user_override="$MANAGER_STATE_DIR/agents.docker-compose.override.yml"
     [[ -f "$user_override" ]] && override_args+=(-f "$user_override")
@@ -268,7 +307,7 @@ agents_compose() {
         "${CME_MCP_PORT:-3336}" "${DOCUMENTS_MCP_PORT:-3337}"
       connectors_enabled && printf '  connectors=:%s' "${CONNECTORS_MCP_PORT:-3338}"
       printf '\n'
-      [[ ! -f "$MANAGER_STATE_DIR/agents.docker-compose.override.yml" ]] || printf 'User override: agents.docker-compose.override.yml included\n'
+      [[ ! -f "$MANAGER_STATE_DIR/agents.docker-compose.override.yml" ]] || printf 'User override: %s\n' "$MANAGER_STATE_DIR/agents.docker-compose.override.yml"
       ;;
     down)
       [[ $# -eq 0 ]] || die "agents down does not take arguments"
@@ -430,6 +469,16 @@ ensure_agent_tokens() {
     fi
   done
   if connectors_enabled; then
+    # CONNECTORS_MCP_PORT ships as a commented placeholder, so enabling
+    # connectors left the workspace stack interpolating an unset variable:
+    # `The "CONNECTORS_MCP_PORT" variable is not set` on every compose command,
+    # and serve advertising the connectors endpoint on a blank port. Pin the
+    # value the agents stack is actually using so both stacks agree.
+    if [[ -z "$(env_value "$MANAGER_ENV_FILE" CONNECTORS_MCP_PORT "")" ]]; then
+      mkdir -p "$(dirname "$MANAGER_ENV_FILE")"
+      set_env_value "$MANAGER_ENV_FILE" CONNECTORS_MCP_PORT "${CONNECTORS_MCP_PORT:-3338}"
+      printf 'Pinned CONNECTORS_MCP_PORT=%s in %s\n' "${CONNECTORS_MCP_PORT:-3338}" "$MANAGER_ENV_FILE"
+    fi
     for key in CONNECTORS_MCP_AUTH_TOKEN OAUTH_STATE_SECRET OAUTH_START_TOKEN; do
       token="$(env_value "$MANAGER_ENV_FILE" "$key" "")"
       if [[ -z "$token" ]]; then
@@ -687,6 +736,23 @@ start_workspace_services() {
   compose_for_workspace "$1" up -d serve mcp-http production-mcp
 }
 
+ensure_compose_override() {
+  # User-owned compose overrides. Seeded ONCE from the packaged example and
+  # never rewritten afterwards — the opposite policy from
+  # .wiki/runtime/*.cacert.compose.yml, which is generated state and must always
+  # be replaced. Without a file scaffolded up front, operators hit a corporate
+  # proxy or a missing mount and have no supported place to fix it, so they edit
+  # the generated override and lose the change on the next compose command.
+  local example_name="$1"
+  local target_name="$2"
+  local target="$MANAGER_STATE_DIR/$target_name"
+  [[ -f "$target" ]] && return 0
+  [[ -f "$ROOT_DIR/$example_name" ]] || return 0
+  mkdir -p "$MANAGER_STATE_DIR"
+  cp "$ROOT_DIR/$example_name" "$target"
+  printf 'Created %s (user-owned compose override, never regenerated)\n' "$target" >&2
+}
+
 ensure_manager_endpoints_file() {
   if [[ ! -f "$MANAGER_ENDPOINTS_FILE" && -f "$ROOT_DIR/mcp.endpoints.example.json" ]]; then
     mkdir -p "$(dirname "$MANAGER_ENDPOINTS_FILE")"
@@ -803,6 +869,7 @@ compose_for_workspace() {
   local workspace="$1"
   shift
   need_workspace_env "$workspace"
+  ensure_compose_override 'docker-compose.override.example.yml' 'docker-compose.override.yml'
   local workspace_env ws_path serve_port mcp_port prod_port project agents_data_dir
   workspace_env="$(workspace_env_file "$workspace")"
   ws_path="$(normalize_path "$(workspace_value "$workspace" WIKI_WORKSPACE_PATH)")"
@@ -822,6 +889,12 @@ compose_for_workspace() {
   WIKI_MCP_PORT="$mcp_port" \
   PRODUCTION_MCP_PORT="$prod_port" \
     read_lines_into_array cacert_args cacert_compose_args "$ROOT_DIR/docker-compose.yml" "cacert.compose.yml"
+  # Same contract as the agents stack: a single global user-owned override next
+  # to the .env, merged after the packaged file and before the generated CA
+  # override so the operator can still be overruled on CA paths only.
+  local override_args=()
+  local user_override="$MANAGER_STATE_DIR/docker-compose.override.yml"
+  [[ -f "$user_override" ]] && override_args+=(-f "$user_override")
 
   WIKI_WORKSPACE_PATH="$ws_path" \
   WIKI_SERVE_PORT="$serve_port" \
@@ -829,7 +902,7 @@ compose_for_workspace() {
   PRODUCTION_MCP_PORT="$prod_port" \
   AGENTS_DATA_DIR="$agents_data_dir" \
   docker compose --project-directory "$DEFAULT_MANAGER_DIR" \
-    ${compose_env_args[@]+"${compose_env_args[@]}"} -f "$ROOT_DIR/docker-compose.yml" ${cacert_args[@]+"${cacert_args[@]}"} -p "$project" "$@"
+    ${compose_env_args[@]+"${compose_env_args[@]}"} -f "$ROOT_DIR/docker-compose.yml" ${override_args[@]+"${override_args[@]}"} ${cacert_args[@]+"${cacert_args[@]}"} -p "$project" "$@"
 }
 
 logs_args() {
@@ -1036,6 +1109,8 @@ config_workspace() {
   local target_path="${2:-$WORKSPACES_DIR/$workspace}"
   target_path="$(absolute_path "$target_path")"
   ensure_manager_endpoints_file
+  ensure_compose_override 'docker-compose.override.example.yml' 'docker-compose.override.yml'
+  ensure_compose_override 'agents.docker-compose.override.example.yml' 'agents.docker-compose.override.yml'
 
   local env_file="$target_path/.env"
   [[ -f "$env_file" ]] && die "workspace already configured: $env_file"
@@ -1073,13 +1148,16 @@ config_workspace() {
   WIKI_SERVE_PORT="$serve_port" \
   WIKI_MCP_PORT="$mcp_port" \
     read_lines_into_array cacert_args cacert_compose_args "$ROOT_DIR/docker-compose.yml" "cacert.compose.yml"
+  local override_args=()
+  local user_override="$MANAGER_STATE_DIR/docker-compose.override.yml"
+  [[ -f "$user_override" ]] && override_args+=(-f "$user_override")
 
   WIKI_WORKSPACE_PATH="$target_path" \
   WIKI_SERVE_PORT="$serve_port" \
   WIKI_MCP_PORT="$mcp_port" \
   AGENTS_DATA_DIR="$agents_data_dir" \
     docker compose --project-directory "$DEFAULT_MANAGER_DIR" \
-      ${compose_env_args[@]+"${compose_env_args[@]}"} -f "$ROOT_DIR/docker-compose.yml" ${cacert_args[@]+"${cacert_args[@]}"} run --rm wiki init
+      ${compose_env_args[@]+"${compose_env_args[@]}"} -f "$ROOT_DIR/docker-compose.yml" ${override_args[@]+"${override_args[@]}"} ${cacert_args[@]+"${cacert_args[@]}"} run --rm wiki init
 
   printf 'Workspace ready: %s\n' "$target_path"
   printf 'Start with:      wiki-workspace up %s\n' "$workspace"

@@ -25,7 +25,7 @@ services:
       - ${WIKI_WORKSPACE_PATH:-/tmp/llm-wiki-workspace-not-set}:/workspace
     environment:
       - WIKI_WORKSPACE_PATH=/workspace
-      - WIKI_CONFIG_PATH
+      - WIKI_CONFIG_PATH=${WIKI_CONFIG_PATH:-}
     extra_hosts:
       - host.docker.internal:host-gateway
 
@@ -47,22 +47,28 @@ services:
       #- ${WIKI_SERVE_CERTS_DIR:-./certs}:/certs:ro
     environment:
       - WIKI_WORKSPACE_PATH=/workspace
-      - WIKI_CONFIG_PATH
+      # Every variable below is written as ${VAR:-default}, never as a bare
+      # `- VAR` passthrough. The bare form makes Compose emit
+      # `The "VAR" variable is not set. Defaulting to a blank string.` on stderr
+      # for any key the operator has not written in a .env — the ports and
+      # tokens shipped as commented placeholders in .env.example. The warning is
+      # noise that surfaces in the ShellUI as if it were a failure.
+      - WIKI_CONFIG_PATH=${WIKI_CONFIG_PATH:-}
       - WIKI_MCP_HTTP_PORT=${WIKI_MCP_PORT:-3101}
-      - WIKI_MCP_AUTH_TOKEN
-      - PRODUCTION_MCP_AUTH_TOKEN
-      - PRODUCTION_MCP_PORT
-      - CME_MCP_PORT
-      - DOCUMENTS_MCP_PORT
-      - CME_MCP_AUTH_TOKEN
-      - DOCUMENTS_MCP_AUTH_TOKEN
+      - WIKI_MCP_AUTH_TOKEN=${WIKI_MCP_AUTH_TOKEN:-}
+      - PRODUCTION_MCP_AUTH_TOKEN=${PRODUCTION_MCP_AUTH_TOKEN:-}
+      - PRODUCTION_MCP_PORT=${PRODUCTION_MCP_PORT:-3102}
+      - CME_MCP_PORT=${CME_MCP_PORT:-3336}
+      - DOCUMENTS_MCP_PORT=${DOCUMENTS_MCP_PORT:-3337}
+      - CME_MCP_AUTH_TOKEN=${CME_MCP_AUTH_TOKEN:-}
+      - DOCUMENTS_MCP_AUTH_TOKEN=${DOCUMENTS_MCP_AUTH_TOKEN:-}
       # Connectors MCP: the serve panel resolves ${CONNECTORS_MCP_AUTH_TOKEN} in
       # /mcp.endpoints.json from process.env only, so it must be forwarded here
       # (symmetric with cme/documents) or the panel sends an empty Bearer → 401.
-      - CONNECTORS_MCP_PORT
-      - CONNECTORS_MCP_AUTH_TOKEN
+      - CONNECTORS_MCP_PORT=${CONNECTORS_MCP_PORT:-3338}
+      - CONNECTORS_MCP_AUTH_TOKEN=${CONNECTORS_MCP_AUTH_TOKEN:-}
       - CONNECTORS_OAUTH_START_TOKEN=${OAUTH_START_TOKEN:-}
-      - WORKSPACE_NAME
+      - WORKSPACE_NAME=${WORKSPACE_NAME:-}
       - DOCUMENT_INPUT_DIR=/documents/input
       - DOCUMENT_UPLOADS_DIR=/documents/uploads
       - DOCUMENT_MAX_UPLOAD_BYTES=${DOCUMENT_MAX_UPLOAD_BYTES:-52428800}
@@ -92,12 +98,12 @@ services:
       #- ${WIKI_MCP_CERTS_DIR:-./certs}:/certs:ro
     environment:
       - WIKI_WORKSPACE_PATH=/workspace
-      - WIKI_CONFIG_PATH
-      - WIKI_MCP_AUTH_TOKEN
+      - WIKI_CONFIG_PATH=${WIKI_CONFIG_PATH:-}
+      - WIKI_MCP_AUTH_TOKEN=${WIKI_MCP_AUTH_TOKEN:-}
       # HTTPS — set paths inside the container (e.g. /certs/server.crt) and uncomment the volume above
-      - WIKI_MCP_TLS_CERT_PATH
-      - WIKI_MCP_TLS_KEY_PATH
-      - WIKI_MCP_TLS_CA_PATH
+      - WIKI_MCP_TLS_CERT_PATH=${WIKI_MCP_TLS_CERT_PATH:-}
+      - WIKI_MCP_TLS_KEY_PATH=${WIKI_MCP_TLS_KEY_PATH:-}
+      - WIKI_MCP_TLS_CA_PATH=${WIKI_MCP_TLS_CA_PATH:-}
     ports:
       - '${WIKI_MCP_PORT:-3101}:3333'
     extra_hosts:

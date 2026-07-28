@@ -1,0 +1,82 @@
+# agents.docker-compose.override.yml — user-owned overrides for the agents stack
+#
+# Copied here once by wiki-manager when absent, then NEVER touched again:
+# your edits survive every package update. Do not confuse it with
+# .wiki/runtime/agents.cacert.compose.yml, which is generated state and is
+# rewritten on every compose command — editing that one is always lost.
+#
+# Merge order: agents.docker-compose.yml → this file → generated CA override.
+# `environment` entries merge per variable name; `volumes`, `extra_hosts` and
+# other sequences are appended. Only services declared in the packaged file
+# (cme, documents, connectors) should be extended — inventing a service name
+# here creates a phantom service that compose will try to start.
+#
+# To activate anything below: replace the `services: {}` line at the bottom
+# with your own `services:` block, then `wiki-workspace agents up`.
+# Check the result with `wiki-workspace agents config` before restarting.
+#
+# ── Corporate proxy / VPN ─────────────────────────────────────────────────────
+#
+# Docker never inherits the host environment: exporting HTTP_PROXY in your shell
+# does NOT reach a container. Only `connectors` declares proxy variables in the
+# packaged file, so cme and documents try to reach Confluence and the LLM APIs
+# directly. Declare the variables here, and set their values in the manager .env:
+#
+#     HTTP_PROXY=http://host.docker.internal:3128
+#     HTTPS_PROXY=http://host.docker.internal:3128
+#     NO_PROXY=localhost,127.0.0.1,host.docker.internal
+#
+# Use `host.docker.internal` (never `localhost`, which is the container itself)
+# when the proxy listens on the host — this requires the extra_hosts mapping
+# below on Linux. Set both the upper- and lower-case spellings: Node reads the
+# upper-case ones, Python/requests accepts either but some libraries only look
+# at the lower-case ones.
+#
+#     services:
+#       cme:
+#         environment:
+#           - HTTP_PROXY=${HTTP_PROXY:-}
+#           - HTTPS_PROXY=${HTTPS_PROXY:-}
+#           - http_proxy=${HTTP_PROXY:-}
+#           - https_proxy=${HTTPS_PROXY:-}
+#           - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
+#           - no_proxy=${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
+#         extra_hosts:
+#           - host.docker.internal:host-gateway
+#       documents:
+#         environment:
+#           - HTTP_PROXY=${HTTP_PROXY:-}
+#           - HTTPS_PROXY=${HTTPS_PROXY:-}
+#           - http_proxy=${HTTP_PROXY:-}
+#           - https_proxy=${HTTPS_PROXY:-}
+#           - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
+#           - no_proxy=${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
+#         extra_hosts:
+#           - host.docker.internal:host-gateway
+#
+# A TLS-intercepting proxy also needs its CA inside the containers. Do not mount
+# it here: pass it once with `wiki-workspace --cacert /absolute/path/to/ca.pem`
+# and the manager mounts it into every service with the right env variables
+# (NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE).
+#
+# ── Optional external agents ──────────────────────────────────────────────────
+#
+# The MailerSend agent is built and version-checked but not part of the default
+# delivery. Enable it by declaring it here (credentials stay in the container
+# environment; set MAILERSEND_API_KEY in the manager .env):
+#
+#     services:
+#       mailer:
+#         image: dotdrelle/agent-mailer-api:latest
+#         user: "${UID:-1000}:${GID:-1000}"
+#         ports:
+#           - "${MAILER_MCP_PORT:-3339}:8080"
+#         environment:
+#           - MCP_AUTH_TOKEN=${MAILER_MCP_AUTH_TOKEN:-}
+#           - MAILERSEND_API_KEY=${MAILERSEND_API_KEY:-}
+#         restart: unless-stopped
+#
+# Remember to declare the matching endpoint in mcp.endpoints.json, otherwise
+# Donna never discovers the agent.
+
+services: {}

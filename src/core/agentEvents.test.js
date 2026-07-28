@@ -1,6 +1,43 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from './agentEvents.js';
+import { conversationEventSequences, createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from './agentEvents.js';
+
+function sequenced(events) {
+  return events.map((event, index) => ({ ...event, sequence: index + 1 }));
+}
+
+test('conversationEventSequences maps every entry back to the event that produced it', () => {
+  const events = sequenced([
+    createAgentEvent('user_message', { origin: 'user', payload: { content: 'first question' } }),
+    createAgentEvent('assistant_message', { origin: 'runtime', payload: { content: 'first answer' } }),
+    createAgentEvent('plan_set', { origin: 'tool', payload: { steps: ['do something'] } }),
+    createAgentEvent('user_message', { origin: 'user', payload: { content: 'second question' } }),
+    createAgentEvent('assistant_message', { origin: 'runtime', payload: { content: 'second answer' } }),
+  ]);
+
+  const projection = reduceAgentEvents(events);
+  const sequences = conversationEventSequences(events);
+
+  // One sequence per conversation entry, and the mapping is derived by the same
+  // applyEvent the projection uses, so it cannot drift from what is displayed.
+  assert.equal(sequences.length, projection.conversation.length);
+  assert.deepEqual(sequences, [1, 2, 4, 5]);
+  // Redo on "second question" (index 2) truncates after sequence 4: the plan
+  // event at 3 predates it and survives, the answer at 5 does not.
+  assert.equal(sequences[2], 4);
+});
+
+test('a streamed reply keeps the sequence of the delta that created it', () => {
+  const events = sequenced([
+    createAgentEvent('user_message', { origin: 'user', payload: { content: 'question' } }),
+    createAgentEvent('assistant_delta', { origin: 'runtime', payload: { delta: 'par' } }),
+    createAgentEvent('assistant_delta', { origin: 'runtime', payload: { delta: 'tial' } }),
+  ]);
+
+  // Deltas mutate the last entry in place instead of appending; the entry must
+  // not be re-stamped with every later delta or a redo would truncate too late.
+  assert.deepEqual(conversationEventSequences(events), [1, 2]);
+});
 
 test('reduceAgentEvents: run_started clears stale plan', () => {
   const projection = reduceAgentEvents([

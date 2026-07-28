@@ -5,7 +5,13 @@ import { promisify } from 'node:util';
 import YAML from 'yaml';
 import { cacertEnv, ensureCacertComposeOverride } from './cacert.js';
 import { checkMissingDockerImages } from './dockerImages.js';
-import { managerEnvFile, managerMcpEndpointsFile, readEnvFile, resolveAgentsDataDir } from './env.js';
+import {
+  managerComposeOverrideFile,
+  managerEnvFile,
+  managerMcpEndpointsFile,
+  readEnvFile,
+  resolveAgentsDataDir,
+} from './env.js';
 import { managerRoot } from './workspaces.js';
 
 const execFileAsync = promisify(execFile);
@@ -98,6 +104,11 @@ function composeBaseArgs(session) {
   const compose = composeFile();
   const cacertOverride = ensureCacertComposeOverride(compose);
   const args = ['compose', '-f', compose];
+  // Same merge order as wiki-workspace: packaged file, then the user-owned
+  // override, then the generated CA override last so a --cacert change always
+  // wins over a stale hand-written CA path.
+  const userOverride = managerComposeOverrideFile();
+  if (existsSync(userOverride)) args.push('-f', userOverride);
   if (cacertOverride) args.push('-f', cacertOverride);
   args.push('-p', projectName(session));
   const managerEnvPath = managerEnvFile();
@@ -321,12 +332,18 @@ export async function stopService(session, service) {
 
 export async function serviceLogs(session, service, options = {}) {
   if (!service) throw new Error('Usage: /logs <service> [tail]');
+  // `all`, `ui`, `wiki`, `production` are aliases, not Compose services.
+  // start/stop resolved them; logs passed the word straight to Docker, so
+  // `/logs all` died with `no such service: all` — the one spelling the help
+  // text and the completion list both suggest.
+  const aliases = serviceAliases();
+  const targets = aliases[service] ?? [service];
   const tail = String(Number.isFinite(options.tail) ? options.tail : 120);
-  const output = await runCompose(session, ['logs', '--tail', tail, service], {
+  const output = await runCompose(session, ['logs', '--tail', tail, ...targets], {
     timeout: 60_000,
     maxBuffer: 1024 * 1024 * 8,
   });
-  return output || `No logs for ${service}.`;
+  return output || `No logs for ${targets.join(', ')}.`;
 }
 
 export async function runWikiCli(session, args, options = {}) {

@@ -30,8 +30,40 @@ test('scaffold copies the packaged examples into a fresh directory', () => {
     assert.ok(endpoints.mcpServers);
     assert.ok(endpoints.chatAccess);
     const env = readFileSync(join(dir, '.env'), 'utf8');
-    assert.match(env, /^# WIKI_MANAGER_RUNTIME_HOST=0\.0\.0\.0$/m);
+    // Active, not commented: serve runs in Docker and reaches the runtime
+    // through host.docker.internal, which a loopback bind refuses.
+    assert.match(env, /^WIKI_MANAGER_RUNTIME_HOST=0\.0\.0\.0$/m);
     assert.match(env, /^# WIKI_MANAGER_RUNTIME_PORT=7788$/m);
+  });
+});
+
+test('an install predating the required runtime host receives it on its placeholder', () => {
+  withTempManagerDir((dir) => {
+    const envFile = join(dir, '.env');
+    writeFileSync(envFile, [
+      'WORKSPACES_ROOT=/srv/workspaces',
+      '# WIKI_MANAGER_RUNTIME_PORT=7788',
+      '# WIKI_MANAGER_RUNTIME_HOST=0.0.0.0',
+      '',
+    ].join('\n'));
+
+    const created = ensureManagerScaffold();
+    assert.ok(created.some((item) => item.includes('WIKI_MANAGER_RUNTIME_HOST')));
+    const env = readFileSync(envFile, 'utf8');
+    assert.match(env, /^WIKI_MANAGER_RUNTIME_HOST=0\.0\.0\.0$/m);
+    assert.doesNotMatch(env, /^#\s*WIKI_MANAGER_RUNTIME_HOST=/m);
+    assert.match(env, /^WORKSPACES_ROOT=\/srv\/workspaces$/m);
+  });
+});
+
+test('an operator who deliberately kept the loopback bind is never overruled', () => {
+  withTempManagerDir((dir) => {
+    const envFile = join(dir, '.env');
+    writeFileSync(envFile, 'WIKI_MANAGER_RUNTIME_HOST=127.0.0.1\n');
+
+    const created = ensureManagerScaffold();
+    assert.ok(!created.some((item) => item.includes('WIKI_MANAGER_RUNTIME_HOST')));
+    assert.match(readFileSync(envFile, 'utf8'), /^WIKI_MANAGER_RUNTIME_HOST=127\.0\.0\.1$/m);
   });
 });
 

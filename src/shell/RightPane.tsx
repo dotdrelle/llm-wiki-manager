@@ -458,8 +458,7 @@ export function QueuePanel(props: { items: QueueItem[]; info: QueueInfo; width: 
   );
 }
 
-function TabHeader(props: { active: 'plan' | 'queue'; queueCount: number; width: number; onTabClick: (tab: 'plan' | 'queue') => void }) {
-  const lineWidth = () => Math.max(8, props.width - 2);
+function TabHeader(props: { active: 'plan' | 'queue'; queueCount: number; onTabClick: (tab: 'plan' | 'queue') => void }) {
   const planActive = () => props.active === 'plan';
   return (
     <box height={1} flexDirection="row" paddingX={1}>
@@ -476,7 +475,6 @@ function TabHeader(props: { active: 'plan' | 'queue'; queueCount: number; width:
         content={` Queue (${props.queueCount}) `}
         onMouseUp={() => props.onTabClick('queue')}
       />
-      <text fg="#7F8C8D" content={fit('  Ctrl+Q', Math.max(0, lineWidth() - 24))} />
     </box>
   );
 }
@@ -510,7 +508,7 @@ export function RightPane(props: {
       overflow="hidden"
       focusable={false}
     >
-      <TabHeader active={props.activeTab} queueCount={props.queueInfo.active} width={props.width} onTabClick={props.onTabClick} />
+      <TabHeader active={props.activeTab} queueCount={props.queueInfo.active} onTabClick={props.onTabClick} />
       <Show when={props.pendingApprovals.length > 0}>
         <box height={2} flexDirection="column" border={['left']} borderStyle="heavy" borderColor="#FBBF24" paddingX={1}>
           <text fg="#FBBF24" content={`${props.pendingApprovals.length} approbation(s) requise(s)`} />

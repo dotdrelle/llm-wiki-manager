@@ -151,6 +151,26 @@ export function reduceAgentEvents(events = []) {
   return publicProjection(state);
 }
 
+// Maps every projected conversation entry back to the sequence of the event
+// that produced it. The conversation is derived from the event log, never
+// stored, so "delete everything below this question" can only be expressed as
+// "delete every event after the one that appended it". Replays the same
+// applyEvent used by reduceAgentEvents, so the mapping cannot drift from the
+// projection it describes.
+export function conversationEventSequences(events = []) {
+  const state = createProjectionState();
+  const sequences = [];
+  for (const event of events) {
+    applyEvent(state, event);
+    const sequence = Number.isFinite(Number(event?.sequence)) ? Number(event.sequence) : null;
+    // Streaming deltas mutate the last entry in place instead of appending, so
+    // an entry keeps the sequence of the event that first created it.
+    while (sequences.length < state.conversation.length) sequences.push(sequence);
+    if (sequences.length > state.conversation.length) sequences.length = state.conversation.length;
+  }
+  return sequences;
+}
+
 function createProjectionState() {
   return {
     conversation: [],

@@ -39,6 +39,51 @@ export function managerMcpEndpointsFile() {
   return join(managerStateDir(), 'mcp.endpoints.json');
 }
 
+// User-owned compose overrides, one per stack, next to the manager .env.
+// Deliberately NOT under .wiki/runtime: everything there is generated state
+// that every compose command rewrites (see cacert.js). These two are seeded
+// once and never touched again, so an operator has a supported place to fix a
+// deployment — proxy passthrough, extra mounts, optional agents — instead of
+// editing a generated file and losing the change on the next command.
+export const COMPOSE_OVERRIDES = [
+  { example: 'docker-compose.override.example.yml', target: 'docker-compose.override.yml' },
+  { example: 'agents.docker-compose.override.example.yml', target: 'agents.docker-compose.override.yml' },
+];
+
+export function managerComposeOverrideFile(target = 'docker-compose.override.yml') {
+  return join(managerStateDir(), target);
+}
+
+// Keys the deployment cannot work without. `.env.example` ships them active,
+// but the scaffold only copies that file on first run, so installs predating a
+// new required key never receive it — the same additive-migration gap the
+// endpoints file had.
+export const REQUIRED_ENV_KEYS = {
+  // `serve` runs in Docker and calls the host runtime through
+  // host.docker.internal. A runtime bound to 127.0.0.1 refuses that connection,
+  // and the workspace UI silently shows no runtime. Exposing the port always
+  // generates a token (see resolveRuntimeAuthToken), so this is not an
+  // unauthenticated bind.
+  WIKI_MANAGER_RUNTIME_HOST: '0.0.0.0',
+};
+
+function commentedAssignment(line, key) {
+  return new RegExp(`^\\s*#+\\s*${key}=`).test(line);
+}
+
+// Mirrors set_env_value in wiki-workspace: reuse the commented placeholder so
+// the value lands under the comment block that documents it, and never
+// overwrite an active assignment — that one is the operator's own choice.
+export function writeEnvValueIfMissing(filePath, key, value) {
+  const lines = readFileSync(filePath, 'utf8').split(/\r?\n/);
+  if (lines.some((line) => line.startsWith(`${key}=`))) return false;
+  const placeholder = lines.findIndex((line) => commentedAssignment(line, key));
+  if (placeholder >= 0) lines[placeholder] = `${key}=${value}`;
+  else lines.push(`${key}=${value}`);
+  writeFileSync(filePath, lines.join('\n'));
+  return true;
+}
+
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 // First-run scaffolding: a fresh install directory has neither
@@ -104,6 +149,20 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
       .replace(/^# WIKI_WORKSPACES_DIR=.*$/m, `WIKI_WORKSPACES_DIR=${workspacesRoot}`);
     writeFileSync(envFile, content);
     created.push('.env');
+  } else if (existsSync(envFile)) {
+    for (const [key, value] of Object.entries(REQUIRED_ENV_KEYS)) {
+      if (writeEnvValueIfMissing(envFile, key, value)) created.push(`.env ${key}=${value}`);
+    }
+  }
+  // Seed once, never rewrite: an existing file is the operator's, whatever it
+  // contains. Losing a hand-written proxy block on a package update is exactly
+  // the failure mode this scaffold exists to prevent.
+  for (const { example, target } of COMPOSE_OVERRIDES) {
+    const examplePath = join(packageRoot, example);
+    const targetPath = managerComposeOverrideFile(target);
+    if (!existsSync(examplePath) || existsSync(targetPath)) continue;
+    copyFileSync(examplePath, targetPath);
+    created.push(target);
   }
   if (created.length > 0) {
     log(`configuration initialized successfully in ${managerStateDir()} — created ${created.join(' and ')} from packaged defaults. Optional credentials can be added later for external services.`);

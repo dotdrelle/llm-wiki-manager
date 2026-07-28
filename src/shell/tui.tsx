@@ -4,6 +4,7 @@ import { render, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimen
 import { createMemo, createSignal, onCleanup, Show } from 'solid-js';
 import { FileEditorDialog } from './FileEditorDialog';
 import { LeftPane } from './LeftPane';
+import { openExternalUrl } from './openExternal.js';
 import { RightPane } from './RightPane';
 import { SlashDialog } from './SlashDialog';
 import { SetupWizard } from './SetupWizard';
@@ -74,7 +75,43 @@ function startupInfo(packageJson: Record<string, unknown>, preferredWorkspaceNam
   }
 }
 
+// Ordered from verifiable to hopeful. Each entry is [command, args].
+function clipboardCommands(): Array<[string, string[]]> {
+  if (process.platform === 'darwin') return [['pbcopy', []]];
+  if (process.platform === 'win32') return [['clip', []]];
+  return [
+    ['wl-copy', []],
+    // `xsel` before `xclip`: xclip must keep running to own the X selection and
+    // inherits our stdio, so execFileSync waits on pipes that never close and
+    // the whole ShellUI freezes. xsel forks and releases them.
+    ['xsel', ['--clipboard', '--input']],
+    ['xclip', ['-selection', 'clipboard']],
+  ];
+}
+
 function copyToClipboard(text: string, renderer: unknown) {
+  // Local tools first, OSC 52 last. OSC 52 used to win by default and always
+  // reported success, because writing an escape sequence cannot fail: on
+  // GNOME Terminal / VTE, which does not implement it, the sequence was
+  // swallowed and the ShellUI cheerfully announced "Copied." with an unchanged
+  // clipboard. Selection-copy appeared to work only because the terminal
+  // itself copies selections, without going through this code at all.
+  for (const [command, args] of clipboardCommands()) {
+    try {
+      execFileSync(command, args, {
+        input: text,
+        // Never inherit stdout/stderr: see the xclip note above.
+        stdio: ['pipe', 'ignore', 'ignore'],
+        timeout: 2_000,
+      });
+      return true;
+    } catch {
+      // Missing binary, wrong display server, or timeout: try the next one.
+    }
+  }
+  // Nothing local worked. Over SSH or in a terminal that supports it, OSC 52
+  // is the only remaining option — but it is fire-and-forget, so it is also
+  // the only case where we cannot promise the clipboard was actually written.
   try {
     const osc52 = (renderer as any).copyToClipboardOSC52;
     if (typeof osc52 === 'function') {
@@ -82,27 +119,9 @@ function copyToClipboard(text: string, renderer: unknown) {
       return true;
     }
   } catch {
-    // Fall through to platform clipboard tools.
+    // Renderer without OSC 52 support.
   }
-  try {
-    if (process.platform === 'darwin') {
-      execFileSync('pbcopy', [], { input: text });
-      return true;
-    }
-    if (process.platform === 'win32') {
-      execFileSync('clip', [], { input: text });
-      return true;
-    }
-    try {
-      execFileSync('wl-copy', [], { input: text });
-      return true;
-    } catch {
-      execFileSync('xclip', ['-selection', 'clipboard'], { input: text });
-      return true;
-    }
-  } catch {
-    return false;
-  }
+  return false;
 }
 
 function App(props: {
@@ -326,10 +345,6 @@ function App(props: {
       }, 1600);
       return;
     }
-    if (key.ctrl && keyName === 'q') {
-      state.toggleRightTab();
-      return;
-    }
     if (state.busy()) return;
     if (keyName === 'tab') state.completeSelected();
     if (keyName === 'pageup') state.scrollConversation(conversationRows());
@@ -383,7 +398,21 @@ function App(props: {
             scrollConversation={state.scrollConversation}
             spinnerFrame={SPINNER_FRAMES[spinnerIndex()] ?? SPINNER_FRAMES[0]}
             onInputHeightChange={setChatInputHeight}
-            onCopy={(content) => showCopyHint(copyToClipboard(content, renderer) ? 'Copied.' : 'Copy failed.')}
+            onRedo={(index, content) => { void state.redoMessage(index, content); }}
+            onCopy={(content) => showCopyHint(
+              copyToClipboard(content, renderer)
+                ? 'Copied.'
+                // Actionable, because the fix is one package away: on Linux the
+                // clipboard needs wl-copy (Wayland) or xsel/xclip (X11).
+                : 'Copy failed — install wl-copy, xsel or xclip.',
+            )}
+            onOpenLink={(url) => {
+              if (openExternalUrl(url)) return showCopyHint(`Opening ${url}`);
+              // No usable opener on this machine (headless, container, no
+              // xdg-utils). Leave the operator something actionable instead of
+              // the silent no-op that made links look broken.
+              showCopyHint(copyToClipboard(url, renderer) ? `No browser opener — copied ${url}` : `No browser opener — open ${url}`);
+            }}
           />
           <box width={1} height="100%" flexDirection="column">
             {Array.from({ length: dimensions().height }, () => (

@@ -72,8 +72,14 @@ services:
       - DOCUMENT_OUTPUT_DIR=/documents/output
       - WORKSPACES_ROOT=/workspaces
       - DOCUMENT_MAX_UPLOAD_BYTES=${DOCUMENT_MAX_UPLOAD_BYTES:-52428800}
-      - DOCUMENT_LLM_BASE_URL=${DOCUMENT_LLM_BASE_URL:-https://albert.api.etalab.gouv.fr/v1}
-      - DOCUMENT_LLM_MODEL=${DOCUMENT_LLM_MODEL:-lightonai/LightOnOCR-2-1B}
+      # Deliberately empty defaults: the .env is the only source. A hardcoded
+      # default here sent every deployment to a provider the operator never
+      # chose and could not see, since the keys ship commented. An empty value
+      # also overrides the image's own ENV fallback, so nothing is called until
+      # the operator opts in. The agent already disables LLM OCR when the key or
+      # the model is unset, so this degrades cleanly rather than failing.
+      - DOCUMENT_LLM_BASE_URL=${DOCUMENT_LLM_BASE_URL:-}
+      - DOCUMENT_LLM_MODEL=${DOCUMENT_LLM_MODEL:-}
       - DOCUMENT_LLM_API_KEY=${DOCUMENT_LLM_API_KEY:-}
       - DOCUMENT_LLM_TIMEOUT_SECONDS=${DOCUMENT_LLM_TIMEOUT_SECONDS:-120}
       # HTTPS — uncomment and place cert files in AGENTS_DATA_DIR/certs/

@@ -175,6 +175,32 @@ export function conversationMessages(session) {
   return session.conversations[key];
 }
 
+// Ordered from verifiable to hopeful. Mirrors tui.tsx's clipboardCommands():
+// xsel before xclip because xclip must keep running to own the X selection
+// and inherits our stdio, so execFileSync waits on pipes that never close
+// and hangs the whole shell; xsel forks and releases them.
+function clipboardCommands() {
+  if (process.platform === 'darwin') return [['pbcopy', []]];
+  if (process.platform === 'win32') return [['clip', []]];
+  return [
+    ['wl-copy', []],
+    ['xsel', ['--clipboard', '--input']],
+    ['xclip', ['-selection', 'clipboard']],
+  ];
+}
+
+function copyTextToClipboard(text) {
+  for (const [command, args] of clipboardCommands()) {
+    try {
+      execFileSync(command, args, { input: text, stdio: ['pipe', 'ignore', 'ignore'], timeout: 2_000 });
+      return true;
+    } catch {
+      // Missing binary, wrong display server, or timeout: try the next one.
+    }
+  }
+  return false;
+}
+
 function initialLegacyWelcomeMessage() {
   return [
     'Orchestrator agent ready.',
@@ -1500,7 +1526,10 @@ export async function runLine(line, { agent, packageJson, session, onUpdate, onS
   }
 
   if (trimmed.startsWith('/')) {
-    onStep?.(`Shell: ${trimmed}`);
+    // No command echo here: every caller already records the submitted line
+    // (`input: <line>` in useAgent, readline's own echo in the terminal REPL).
+    // Emitting `Shell: /status` on top produced two log rows for one keystroke,
+    // and only for slash commands — free text got a single row.
     const result = await handleSlashCommand(trimmed, { packageJson, session, onStep, runtime });
     const messages = conversationMessages(session);
     const handoffRawToAgent = Boolean(result.rawOutput && result.agentTrigger && agent);
@@ -1801,17 +1830,11 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
       const lastDonna = [...messages].reverse().find((m) => isDonnaRole(m.role));
       if (lastDonna) {
         const text = stripAnsi(colorizeStatus(lastDonna.content)).replace(/\[[0-9;]*m/g, '');
-        const clipCmd = process.platform === 'darwin'
-          ? { command: 'pbcopy', args: [] }
-          : { command: 'xclip', args: ['-selection', 'clipboard'] };
         const prevLabel = spinnerLabel;
         const prevBusy = busy;
-        try {
-          execFileSync(clipCmd.command, clipCmd.args, { input: text });
-          spinnerLabel = 'Copied to clipboard ✓';
-        } catch {
-          spinnerLabel = 'Copy failed — pbcopy / xclip not available';
-        }
+        spinnerLabel = copyTextToClipboard(text)
+          ? 'Copied to clipboard ✓'
+          : 'Copy failed — install wl-copy, xsel or xclip.';
         busy = true;
         rerender();
         setTimeout(() => { spinnerLabel = prevLabel; busy = prevBusy; rerender(); }, 1800);

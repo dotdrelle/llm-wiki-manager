@@ -150,6 +150,24 @@ export async function postRuntimeCancel({
   return response.json();
 }
 
+// Redo support: keeps the conversation entry at `index` and drops everything
+// the runtime recorded after it. Returns the server's payload so a caller can
+// distinguish "nothing to truncate" from "a run is still active".
+export async function postRuntimeConversationTruncate(index, {
+  url = runtimeUrlFromEnv(),
+  token = runtimeToken(),
+  workspace = null,
+} = {}) {
+  const response = await fetch(runtimeEndpoint(url, '/conversation/truncate', workspace), {
+    method: 'POST',
+    headers: { ...runtimeHeaders(token), 'content-type': 'application/json' },
+    body: JSON.stringify({ index, ...(workspace ? { workspace } : {}) }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) return { truncated: false, reason: payload?.reason ?? `http_${response.status}` };
+  return payload;
+}
+
 export async function postRuntimeKill({
   url = runtimeUrlFromEnv(),
   token = runtimeToken(),

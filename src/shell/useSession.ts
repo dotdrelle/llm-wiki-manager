@@ -9,7 +9,7 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { projectQueue, queueCounts, startNextQueuedJob, syncQueueWithActivity } from '../core/jobQueue.js';
 import { queueStoreFor } from '../core/queueStore.js';
 import { filterRuntimeLogs } from '../core/runtimeLog.js';
-import { fetchRuntimeState, streamRuntimeEvents } from '../runtime/client.js';
+import { fetchRuntimeState, postRuntimeConversationTruncate, streamRuntimeEvents } from '../runtime/client.js';
 import type { ActiveFileEditor } from './FileEditorDialog';
 import {
   completionContext,
@@ -656,6 +656,46 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     return result;
   }
 
+  // Redo: re-ask one question after discarding everything it produced.
+  // `displayIndex` indexes the rendered (windowed) list, so it is translated
+  // back to the full conversation before anything is deleted — otherwise a
+  // scrolled-back redo would truncate at the wrong message.
+  async function redoMessage(displayIndex: number, content: string) {
+    if (conversationBusy()) return { exit: false, busy: true };
+    const full = conversationMessages(session);
+    const windowOffset = Math.max(0, full.length - messages().length);
+    const index = windowOffset + displayIndex;
+    if (index < 0 || index >= full.length) return { exit: false };
+
+    if (props.runtime?.url) {
+      // The runtime derives the conversation from its event log: deleting
+      // locally alone would be undone by the next /state merge.
+      const result = await postRuntimeConversationTruncate(index, {
+        url: props.runtime.url,
+        workspace: (session as any).workspace ?? null,
+      }) as { truncated?: boolean; reason?: string };
+      if (result?.truncated !== true) {
+        addLog(result?.reason === 'run_active'
+          ? 'redo: a run is still active — cancel it first'
+          : result?.reason === 'workspace_required'
+            ? 'redo: select a workspace first'
+            : `redo: runtime refused to truncate (${result?.reason ?? 'unknown'})`);
+        return { exit: false };
+      }
+    }
+    // Drop the question too: resubmitting re-appends it, and keeping it here
+    // would leave the same message twice in the thread.
+    full.splice(index);
+    // Only the current workspace's merge state was invalidated by the
+    // truncate above — clearing every workspace's refs here would desync
+    // other workspaces' `backed` arrays from their untouched `target`
+    // arrays and duplicate their history on the next merge.
+    const currentWorkspace = (session as any).workspace || '__global__';
+    runtimeConversationRefsByWorkspace.get(currentWorkspace)?.splice(0);
+    refresh();
+    return submitInput(content);
+  }
+
   function updateInput(value: string) {
     setInput(value);
     if (value !== dismissedSlashInput()) setDismissedSlashInput(null);
@@ -706,10 +746,6 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
 
   function scrollConversation(delta: number) {
     setConversationScroll((value) => Math.max(0, value + delta));
-  }
-
-  function toggleRightTab() {
-    setRightTab((value) => value === 'plan' ? 'queue' : 'plan');
   }
 
   function selectRightTab(tab: 'plan' | 'queue') {
@@ -771,7 +807,6 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     queueItems,
     queueInfo,
     rightTab,
-    toggleRightTab,
     selectRightTab,
     plan,
     runSummary,
@@ -783,6 +818,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     busy: agentBusy,
     abort,
     submitInput,
+    redoMessage,
     completeSelected,
     dismissSlash,
     moveCompletion,

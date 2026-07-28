@@ -55,7 +55,11 @@ export async function assertRuntimeNode(executable = runtimeNodeExecutable()) {
 }
 
 export async function ensureRuntime({
-  host = process.env.WIKI_MANAGER_RUNTIME_HOST ?? '127.0.0.1',
+  // 0.0.0.0, like `wiki-workspace runtime up` has always used: the shell's
+  // autostarted runtime used to bind 127.0.0.1, so `serve` in Docker got
+  // ECONNREFUSED on host.docker.internal and the workspace UI reported no
+  // runtime. Exposing the port always generates an auth token.
+  host = process.env.WIKI_MANAGER_RUNTIME_HOST ?? '0.0.0.0',
   port = Number(process.env.WIKI_MANAGER_RUNTIME_PORT ?? 7788),
   stateDir = process.env.WIKI_MANAGER_STATE_DIR ?? defaultRuntimeStateDir(),
   url = process.env.WIKI_MANAGER_RUNTIME_URL ?? `http://127.0.0.1:${port}`,

@@ -18,20 +18,25 @@ workspaces/*
 !.github/workflows/*.yml
 
 !docker-compose.yml
+
 # Default external-agent stack shipped with global npm installs.
 !agents.docker-compose.yml
-# Shipped example for the optional user-side agents override.
-!agents.docker-compose.mailer.example.yml
+
+# Shipped templates for the user-owned compose overrides. The generated
+# copies (docker-compose.override.yml / agents.docker-compose.override.yml)
+# stay ignored: they are per-deployment operator files.
+!docker-compose.override.example.yml
+!agents.docker-compose.override.example.yml
 docker-compose*.local.yml
 
 *.json
 !.vscode/
 !.vscode/settings.json
 !mcp.endpoints.example.json
-WIKI_MANAGER_AGENT_SHELL.md
 !package.json
 !pnpm-lock.yaml
 !tsconfig.json
+
 # Build provenance written by scripts/check-versions.js (prepack) — must be
 # tracked and packed so a global install can display <version>+<sha>.
 !src/core/buildInfo.json

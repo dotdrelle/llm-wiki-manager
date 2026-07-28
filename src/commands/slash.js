@@ -1,7 +1,8 @@
-import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { openExternalUrl } from '../shell/openExternal.js';
+import { classifyCommandFailure, failureHint, rawFailureText } from '../core/commandFailure.js';
 import { join, relative } from 'node:path';
-import { composeServices, listServices, runWikiCli, serviceLogs, serviceStates, startService, stopService } from '../core/compose.js';
+import { composeServices, listServices, runWikiCli, serviceLogs, serviceNames, serviceStates, startService, stopService } from '../core/compose.js';
 import {
   applyMcpRuntimeStatus,
   buildMcpStatus,
@@ -187,17 +188,7 @@ function countIndexLinks(workspacePath) {
 function folderStats(files) {
   const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
   const latest = files.reduce((best, file) => (file.mtimeMs > (best?.mtimeMs ?? 0) ? file : best), null);
-  const largest = files.reduce((best, file) => (file.size > (best?.size ?? 0) ? file : best), null);
-  return { count: files.length, totalBytes, latest, largest };
-}
-
-function formatRecentFiles(files, limit = 3) {
-  const recent = [...files].sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, limit);
-  if (recent.length === 0) return '  recent: -';
-  return [
-    '  recent:',
-    ...recent.map((file) => `    - ${file.relativePath} (${formatBytes(file.size)})`),
-  ].join('\n');
+  return { count: files.length, totalBytes, latest };
 }
 
 function collectWorkspaceStats(session) {
@@ -224,7 +215,6 @@ function collectWorkspaceStats(session) {
     deliverables: folderStats(deliverables),
     logs: folderStats(logs),
     index,
-    untrackedFiles: untracked,
   };
 }
 
@@ -265,11 +255,12 @@ function workspaceStatsColumns(stats) {
     statLine('answers', stats.answers),
     `index: ${stats.index.exists ? 'ok' : 'missing'} (${stats.index.links} links)`,
   ]);
+  // Counts only. `largest:` and the `recent:` list printed full relative paths
+  // in a half-width column, so every line wrapped or was clipped and the block
+  // read as noise. The file listing belongs to a command with room for it.
   const rawColumn = sectionBlock('Raw sources', [
     statLine('untracked', stats.untracked),
     statLine('ingested', stats.ingested),
-    stats.untracked.largest ? `largest: ${stats.untracked.largest.relativePath} (${formatBytes(stats.untracked.largest.size)})` : 'largest: -',
-    ...formatRecentFiles(stats.untrackedFiles).split('\n'),
   ]);
   const deliveryColumn = sectionBlock(`Deliverables: ${deliverablesLatest}`, [
     statLine('templates', stats.templates),
@@ -723,6 +714,32 @@ export function localizedOperationResult({ operation, target, status = 'succeede
   };
 }
 
+// Failure counterpart of localizedOperationResult. The raw docker output never
+// reaches the conversation: it goes to the runtime log lane through `step()`,
+// while Donna gets a stable reason code she can phrase — and act on, since
+// every reason maps to something the operator can actually do.
+export function localizedOperationFailure({ operation, target, error }) {
+  const reason = classifyCommandFailure(error);
+  const hint = reason === 'unknown' ? failureHint(error) : '';
+  const facts = JSON.stringify({
+    operation,
+    target,
+    status: 'failed',
+    reason,
+    ...(hint ? { detail: hint } : {}),
+  });
+  return {
+    output: facts,
+    rawOutput: true,
+    agentTrigger: [
+      "Formule l'échec structuré suivant dans la langue et le ton demandés par le profil du workspace.",
+      "Réponds en une ou deux phrases humaines: ce qui a échoué, et l'action concrète que la personne peut faire.",
+      'Ne cite aucune commande, aucun chemin de fichier, aucun drapeau shell ni sortie docker.',
+      `Résultat: ${facts}`,
+    ].join('\n'),
+  };
+}
+
 function formatRuntimeRunStatus(state) {
   const status = state?.status ?? 'unknown';
   const runId = state?.runId ? ` run=${state.runId}` : '';
@@ -770,7 +787,8 @@ export async function handleSlashCommand(line, context) {
       });
     } catch (err) {
       step(formatActivityError('agents', verb, err));
-      return { output: err instanceof Error ? err.message : String(err) };
+      step(`Agents: docker output — ${rawFailureText(err)}`);
+      return localizedOperationFailure({ operation: verb, target: 'agents', error: err });
     }
   };
 
@@ -915,9 +933,9 @@ export async function handleSlashCommand(line, context) {
         const output = await listServices(context.session);
         return rawCommandResult('/services', output);
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
         step(formatActivityError('services', 'list', err));
-        return { output: message };
+        step(`Services: docker output — ${rawFailureText(err)}`);
+        return localizedOperationFailure({ operation: 'list', target: 'workspace-services', error: err });
       }
     }
     case 'start': {
@@ -939,9 +957,9 @@ export async function handleSlashCommand(line, context) {
           images: missingImages,
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        step(formatActivityError('services', 'stop', err));
-        return { output: message };
+        step(formatActivityError('services', 'start', err));
+        step(`Services: docker output — ${rawFailureText(err)}`);
+        return localizedOperationFailure({ operation: 'start', target: service || 'workspace-services', error: err });
       }
     }
     case 'stop': {
@@ -957,21 +975,25 @@ export async function handleSlashCommand(line, context) {
           target: service || 'workspace-services',
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        step(formatActivityError('services', 'logs', err));
-        return { output: message };
+        step(formatActivityError('services', 'stop', err));
+        step(`Services: docker output — ${rawFailureText(err)}`);
+        return localizedOperationFailure({ operation: 'stop', target: service || 'workspace-services', error: err });
       }
     }
     case 'logs': {
       const service = args[1];
+      // A usage mistake is not a runtime failure: keep it a plain instruction
+      // rather than sending it to Donna to be rephrased.
+      if (!service) return { output: `Usage: /logs <service> [tail] — services: ${serviceNames().join(', ')}` };
       const tail = args[2] ? Number(args[2]) : 120;
       try {
         step(`Services: reading logs for ${service ?? 'service'}…`);
         const output = await serviceLogs(context.session, service, { tail });
         return rawCommandResult(`/logs ${[service, args[2]].filter(Boolean).join(' ')}`.trim(), output);
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return { output: message };
+        step(formatActivityError('services', 'logs', err));
+        step(`Services: docker output — ${rawFailureText(err)}`);
+        return localizedOperationFailure({ operation: 'logs', target: service || 'workspace-services', error: err });
       }
     }
     case 'mcp': {
@@ -1070,13 +1092,10 @@ export async function handleSlashCommand(line, context) {
           if (payload?.ok !== true || typeof authorizationUrl !== 'string') {
             return connectorResult(`Google authorization could not start (${payload?.error ?? 'missing authorization URL'}).`);
           }
-          const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
-          try {
-            execFileSync(opener, [authorizationUrl], { stdio: 'ignore' });
+          if (openExternalUrl(authorizationUrl)) {
             return connectorResult('Google authorization opened successfully in the user browser.');
-          } catch {
-            return connectorResult(`Google authorization requires the user to open this URL: ${authorizationUrl}`);
           }
+          return connectorResult(`Google authorization requires the user to open this URL: ${authorizationUrl}`);
         } catch (err) {
           return connectorResult(`Google authorization could not start (${err instanceof Error ? err.message : String(err)}).`);
         }
@@ -1362,13 +1381,8 @@ export async function handleSlashCommand(line, context) {
       const port = context.session.workspaceEnv?.WIKI_SERVE_PORT ?? '3100';
       const url = `http://localhost:${port}`;
       const note = context.session.workspaceEnv ? '' : ' (no workspace loaded — using default port)';
-      const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
-      try {
-        execFileSync(opener, [url], { stdio: 'ignore' });
-        return { output: `Opening web UI: ${url}${note}` };
-      } catch {
-        return { output: `Web UI: ${url}${note}` };
-      }
+      if (openExternalUrl(url)) return { output: `Opening web UI: ${url}${note}` };
+      return { output: `Web UI: ${url}${note}` };
     }
     case 'clear': {
       const key = context.session.workspace || '__global__';

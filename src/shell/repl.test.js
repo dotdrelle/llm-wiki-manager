@@ -21,7 +21,8 @@ import {
   submitRuntimeTurn,
 } from './repl.js';
 import { readFile } from 'node:fs/promises';
-import { httpLinkParts, wrapHttpLinks } from './externalLinks.js';
+import { httpLinkParts, linkLabel, wrapHttpLinks } from './externalLinks.js';
+import { normalizeExternalUrl, openExternalUrl } from './openExternal.js';
 
 test('ShellUI inserts StyledText as a child instead of stringifying it through content', async () => {
   const source = await readFile(new URL('./LeftPane.tsx', import.meta.url), 'utf8');
@@ -41,7 +42,23 @@ test('ShellUI renders the user header full-width before constraining only its bo
   assert.match(source.slice(userBodyBranch), /justifyContent="flex-start"/);
   assert.doesNotMatch(source.slice(userBodyBranch, source.indexOf(') : line.status ?', userBodyBranch)), /#12263A/);
   assert.doesNotMatch(source, /messageHeaderSegments\(message\.role, contentColumns\)/);
-  assert.match(source, /messageHeaderSegments\(message\.role, columns\)/);
+  // The third argument reserves room for [ redo ]; the width stays `columns`.
+  assert.match(source, /messageHeaderSegments\(message\.role, columns(, canRedo)?\)/);
+});
+
+test('redo is offered on user questions only, next to copy', async () => {
+  const source = await readFile(new URL('./LeftPane.tsx', import.meta.url), 'utf8');
+  assert.match(source, /const canRedo = message\.role === 'user' && raw\.trim\(\)\.length > 0;/);
+  assert.match(source, /props\.onRedo\?\.\(line\.redoIndex!, line\.redoContent!\)/);
+
+  const session = await readFile(new URL('./useSession.ts', import.meta.url), 'utf8');
+  // The runtime must be truncated first: its conversation is derived from the
+  // event log and would be merged straight back in otherwise.
+  const truncateIndex = session.indexOf('postRuntimeConversationTruncate(index');
+  const spliceIndex = session.indexOf('full.splice(index)');
+  const submitIndex = session.indexOf('return submitInput(content)');
+  assert.ok(truncateIndex > 0 && spliceIndex > truncateIndex && submitIndex > spliceIndex);
+  assert.match(session, /const windowOffset = Math\.max\(0, full\.length - messages\(\)\.length\);/);
 });
 
 test('ShellUI renders newest-first order in both Runtime and Agent status', async () => {
@@ -144,27 +161,92 @@ test('ShellUI turns HTTP URLs into valid links without trailing punctuation', ()
   ]);
 });
 
-test('long ShellUI URLs use one short label with the complete link target', () => {
+test('a link that fits is shown as the URL itself, never as a [link: host] stub', () => {
+  // `/openui` prints `Web UI: http://localhost:3100`. The old `[link: host]`
+  // label dropped the port, so a failed opener left nothing to type by hand.
+  const url = 'http://localhost:3100';
+  assert.equal(linkLabel(url, 60), url);
+  const links = wrapHttpLinks(`Web UI: ${url}`, 60).flat().filter((part) => part.url);
+  assert.deepEqual(links, [{ text: url, url }]);
+});
+
+test('long ShellUI URLs shorten to host, keeping the full link target', () => {
   const url = 'https://example.test/a/very/long/document';
   const links = wrapHttpLinks(url, 12).flat().filter((part) => part.url);
-  assert.deepEqual(links, [{ text: '[link: example.test]', url }]);
+  // Too narrow even for `host/…`: the host stays whole rather than being
+  // truncated into an unusable fragment.
+  assert.deepEqual(links, [{ text: 'example.test', url }]);
+  assert.equal(linkLabel('https://example.test:8443/a/very/long/document', 20), 'example.test:8443/…');
 });
 
 test('ShellUI makes rendered link lines openable with the system browser', async () => {
   const source = await readFile(new URL('./LeftPane.tsx', import.meta.url), 'utf8');
-  assert.match(source, /onMouseUp=\{\(\) => openSingleLineLink\(line\.segments\)\}/);
-  assert.match(source, /execFile\(opener, \[parsed\.toString\(\)\]/);
+  assert.match(source, /const url = singleLineUrl\(line\.segments\);/);
+  assert.match(source, /props\.onOpenLink\?\.\(url\)/);
+  // Hover feedback: nothing else on screen says a line is clickable.
+  assert.match(source, /onMouseOver=\{\(\) => hoverLink\(singleLineUrl\(line\.segments\)\)\}/);
+  assert.match(source, /onMouseOut=\{\(\) => hoverLink\(null\)\}/);
+  assert.match(source, /setMousePointer\?\.\(url \? 'pointer' : 'default'\)/);
 });
 
 test('ShellUI never splits a link label at the end of a line', () => {
   const url = 'https://example.test/a/very/long/document';
   const rows = wrapHttpLinks(`Voir maintenant ${url}`, 20);
   assert.equal(rows.length, 2);
-  assert.deepEqual(rows[1], [{ text: '[link: example.test]', url }]);
+  assert.deepEqual(rows[1], [{ text: 'example.test/…', url }]);
+});
+
+test('a slash command produces one activity row, not a duplicated echo', async () => {
+  const source = await readFile(new URL('./repl.js', import.meta.url), 'utf8');
+  // useAgent already logs `input: <line>` for every submission; repl.js used to
+  // add `Shell: <line>` on top, but only for slash commands.
+  assert.doesNotMatch(source, /onStep\?\.\(`Shell: \$\{trimmed\}`\)/);
+  const useAgent = await readFile(new URL('./useAgent.ts', import.meta.url), 'utf8');
+  assert.match(useAgent, /props\.addLog\(`input: \$\{trimmed\}`\)/);
+});
+
+test('clipboard copy prefers a verifiable local tool over fire-and-forget OSC 52', async () => {
+  const source = await readFile(new URL('./tui.tsx', import.meta.url), 'utf8');
+  const localIndex = source.indexOf('for (const [command, args] of clipboardCommands())');
+  const osc52Index = source.indexOf('copyToClipboardOSC52');
+  const osc52Call = source.indexOf('osc52.call(renderer, text)');
+  assert.ok(localIndex > 0 && osc52Call > localIndex, 'OSC 52 must be the last resort');
+  assert.ok(osc52Index > 0);
+  // xsel before xclip: xclip holds the X selection and never closes the
+  // inherited pipes, which froze the ShellUI under execFileSync.
+  assert.ok(source.indexOf("'xsel'") < source.indexOf("'xclip'"));
+  assert.match(source, /stdio: \['pipe', 'ignore', 'ignore'\]/);
+  assert.match(source, /timeout: 2_000/);
 });
 
 test('ShellUI leaves malformed URLs as plain text', () => {
   assert.deepEqual(httpLinkParts('Erreur: https://'), [{ text: 'Erreur: https://' }]);
+});
+
+test('opening a link tries every opener the platform offers before giving up', () => {
+  const attempts = [];
+  const failing = (command, args) => {
+    attempts.push([command, args.at(-1)]);
+    throw new Error('ENOENT');
+  };
+
+  // A single missing `xdg-open` used to swallow the click silently; the caller
+  // now learns that nothing worked and can fall back to copying the URL.
+  assert.equal(openExternalUrl('http://localhost:3100', { run: failing }), null);
+  assert.ok(attempts.length >= 1, 'expected at least one opener candidate');
+  assert.ok(attempts.every(([, url]) => url === 'http://localhost:3100'));
+
+  const calls = [];
+  const working = (command, args) => { calls.push(command); };
+  assert.equal(openExternalUrl('http://localhost:3100', { run: working }), 'http://localhost:3100');
+  assert.equal(calls.length, 1, 'must stop at the first opener that succeeds');
+});
+
+test('only http(s) targets ever reach the system opener', () => {
+  for (const value of ['file:///etc/passwd', 'javascript:alert(1)', 'not a url', '', null]) {
+    assert.equal(normalizeExternalUrl(value), null, `${value} must not be openable`);
+    assert.equal(openExternalUrl(value, { run: () => { throw new Error('must not run'); } }), null);
+  }
 });
 
 test('ShellUI preserves every URL when several links share one line', () => {
@@ -172,8 +254,8 @@ test('ShellUI preserves every URL when several links share one line', () => {
     .flat()
     .filter((part) => part.url);
   assert.deepEqual(links, [
-    { text: '[link: one.example]', url: 'https://one.example/a' },
-    { text: '[link: two.example]', url: 'https://two.example/b' },
+    { text: 'https://one.example/a', url: 'https://one.example/a' },
+    { text: 'https://two.example/b', url: 'https://two.example/b' },
   ]);
 });
 

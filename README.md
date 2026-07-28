@@ -729,17 +729,33 @@ capabilityRouting:
     allowedAgents: [connectors]
 ```
 
-#### Optional agents and user overrides
+#### Compose overrides — optional agents, proxies, local fixes
 
-Anything beyond the packaged stack is an external connector operated and
-configured independently by the user. To run one alongside the packaged
-agents, create a file named
-`agents.docker-compose.override.yml` **next to your `.env`**:
+Two override files sit **next to your `.env`**, one per stack:
 
-`agents up` includes it automatically when present (standard Docker Compose
-merge: new services are added, same-name keys override the defaults — you can
-also use it to pin a port or a variable of a default agent). The file is
-yours: wiki-manager never generates or overwrites it. Complete the setup by
+| File | Applies to |
+| --- | --- |
+| `docker-compose.override.yml` | workspace stack (`serve`, `mcp-http`, `production-mcp`, `wiki`) |
+| `agents.docker-compose.override.yml` | agents stack (`cme`, `documents`, `connectors`) |
+
+Both are created for you on first use, from packaged templates full of
+ready-to-uncomment examples, and are **never rewritten afterwards** — your edits
+survive package updates. Do not confuse them with `.wiki/runtime/*.compose.yml`,
+which the manager regenerates on every Compose command; editing those is always
+lost.
+
+Compose merge is standard: new services are added, same-name keys override the
+defaults, `environment` merges per variable name. Only extend services the
+packaged file declares — an invented service name becomes a phantom service
+Compose keeps trying to start.
+
+The most common use behind a VPN is proxy passthrough: containers do not inherit
+the host environment, and only `connectors` ships proxy variables by default. See
+[`docs/configuration.md`](docs/configuration.md) § "Compose overrides" for a
+copy-paste block and the `host.docker.internal` / `NO_PROXY` pitfalls.
+
+The second use is running an external connector alongside the packaged agents.
+Complete the setup by
 adding the connector's variables to your `.env` and its endpoint block to
 your `mcp.endpoints.json` — every variable an external MCP endpoint needs
 lives in the `.env` and is referenced as `${VAR_NAME}` from
@@ -872,11 +888,17 @@ The TUI uses a two-pane layout:
 - **Left** — scrollable conversation thread with a chat input at the bottom.
   Typing `/` opens a slash-command completion overlay just above the input.
   Mouse wheel scrolls the conversation, and selecting text copies it through the
-  TUI clipboard bridge. Message headers also expose a `[ copy ]` target for
-  copying one message. PageUp/PageDown remain available for keyboard scrolling.
+  TUI clipboard bridge. Message headers expose a `[ copy ]` target for copying
+  one message, and user questions also carry `[ redo ]`: it discards every
+  answer, plan step and activity recorded after that question — in the runtime
+  as well as on screen — then re-asks it. Redo is refused while a run is still
+  active; cancel it first. PageUp/PageDown remain available for keyboard
+  scrolling.
 - **Right** — Plan/Queue tabs, active MCP jobs, plus a live log/trace panel.
-  `Ctrl+Q` toggles the tabs; clicking `Plan` or `Queue (N)` selects that tab
-  directly. MCP connection details remain available through `/mcp status`.
+  Click `Plan` or `Queue (N)` to select a tab. `Queue (N)` counts run requests
+  sent while the runtime is already busy, so it reads `(0)` whenever you submit
+  one request at a time. MCP connection details remain available through
+  `/mcp status`.
 
 In the served browser Activity panel, `Clear` is a per-tab display cleanup and
 `Clear all` applies it to Plan, Local activity, Runtime activity, and Logs. It

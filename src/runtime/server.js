@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import { createAgentEvent, dispatchAgentEvent, resetSessionProjection, reduceAgentEvents } from '../core/agentEvents.js';
+import { conversationEventSequences, createAgentEvent, dispatchAgentEvent, resetSessionProjection, reduceAgentEvents } from '../core/agentEvents.js';
 import { activeCacertPath } from '../core/cacert.js';
 import { normalizePlanPatch, rebasePlanPatch } from '../core/planPatch.js';
 import { validateContractInDev } from '../contracts/schemas.js';
@@ -418,6 +418,48 @@ export function startRuntimeServer({
             if (exitOnShutdown) process.exit(0);
           });
         });
+        return;
+      }
+      // Redo: keep the conversation entry at `index` (the question) and drop
+      // everything the runtime recorded after it. The conversation is derived
+      // from the event log, so a UI-side deletion alone would be undone by the
+      // next /state merge — the truncation has to happen here.
+      if (request.method === 'POST' && url.pathname === '/conversation/truncate') {
+        const { body, workspace, context } = await resolveBodyContext(request, url);
+        if (context?.running) {
+          // Truncating under a live run would delete events it is still
+          // appending to. The caller cancels first.
+          sendJson(response, 409, { truncated: false, reason: 'run_active' });
+          return;
+        }
+        const resolvedWorkspace = context?.workspace ?? workspace ?? null;
+        if (!resolvedWorkspace) {
+          // Unscoped, redo would truncate every workspace's event history —
+          // never allow the global/no-workspace conversation to reach it.
+          sendJson(response, 400, { truncated: false, reason: 'workspace_required' });
+          return;
+        }
+        const index = Number(body.index);
+        if (!Number.isInteger(index) || index < 0) {
+          sendJson(response, 400, { truncated: false, reason: 'invalid_index' });
+          return;
+        }
+        const events = store.listEvents({ workspace: resolvedWorkspace });
+        const sequences = conversationEventSequences(events);
+        const boundary = sequences[index];
+        if (!Number.isFinite(boundary)) {
+          sendJson(response, 400, { truncated: false, reason: 'index_out_of_range' });
+          return;
+        }
+        const removedEvents = store.deleteEventsAfter(boundary, { workspace: resolvedWorkspace });
+        // getState prefers the in-memory projection over the event log, so the
+        // deleted answers would survive in RAM without this rehydration.
+        if (context?.session) {
+          resetSessionProjection(context.session);
+          store.hydrateSession(context.session, { workspace: resolvedWorkspace });
+        }
+        publishState(resolvedWorkspace, context);
+        sendJson(response, 200, { truncated: true, index, removedEvents });
         return;
       }
       if (request.method === 'POST' && url.pathname === '/resume') {

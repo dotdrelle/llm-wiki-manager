@@ -66,8 +66,8 @@ workspace `.wikirc.yaml`.
 | `CONNECTORS_SEND_ALLOWED_RECIPIENTS` | recommended | comma-separated allow-list of addresses or `@domain` suffixes; empty means unrestricted |
 | `CONNECTORS_SEND_MAX_RECIPIENTS` / `CONNECTORS_SEND_MAX_BODY_BYTES` | no | per-message ceilings (defaults `25` / `262144`) |
 | `OAUTH_STATE_SECRET` / `OAUTH_START_TOKEN` | for Gmail OAuth | distinct generated secrets for signed state and protected OAuth start |
-| `DOCUMENT_LLM_BASE_URL` | no | OpenAI-compatible vision endpoint for document OCR (defaults to OpenAI) |
-| `DOCUMENT_LLM_MODEL` | no | OCR model name |
+| `DOCUMENT_LLM_BASE_URL` | for OCR | OpenAI-compatible vision endpoint for document OCR. No default: image OCR stays off until this, the model and the key are all set |
+| `DOCUMENT_LLM_MODEL` | for OCR | OCR model name, matching the endpoint above |
 | `DOCUMENT_LLM_API_KEY` | for OCR | key for the OCR provider (or reuse `OPENAI_API_KEY`) |
 | `DOCUMENT_LLM_TIMEOUT_SECONDS` | no | OCR request timeout |
 | `EXA_MCP_API_KEY` | only if Exa enabled | used by `mcp.endpoints.json` when the Exa endpoint is declared |
@@ -76,9 +76,20 @@ workspace `.wikirc.yaml`.
 | `HTTP_PROXY` / `HTTPS_PROXY` | behind an HTTP proxy | proxy URL, including its scheme and port |
 | `NO_PROXY` | recommended with a proxy | hosts that must remain direct, notably the local runtime and MCP endpoints |
 | `WIKI_MANAGER_CONNECTIVITY_URL` | no | HTTPS endpoint used by the ordered ShellUI startup connectivity probe |
+| `WIKI_MANAGER_RUNTIME_HOST` | yes (shipped active) | interface the host runtime binds. `0.0.0.0` by default: `serve` runs in Docker and reaches the runtime through `host.docker.internal`, which a `127.0.0.1` bind refuses. Exposing the port always generates `WIKI_MANAGER_RUNTIME_TOKEN` |
 
 Leaving an agent's `*_MCP_AUTH_TOKEN` empty disables authentication on that
 agent — not recommended outside local development.
+
+Several of these keys are generated on demand by `agents up` and `runtime up`
+(`CONNECTORS_MCP_AUTH_TOKEN`, `OAUTH_STATE_SECRET`, `OAUTH_START_TOKEN`,
+`GOOGLE_OAUTH_CALLBACK_URL`, `WIKI_MANAGER_RUNTIME_TOKEN`). Most of them ship as
+commented placeholders in `.env.example`, so generation **replaces the
+placeholder line in place**, keeping the value under the comment block that
+documents it, instead of appending it at the end of the file behind a commented
+twin. An existing *active* assignment always wins — it is never overwritten, and
+a commented line further down stays commented rather than becoming a second,
+contradictory assignment.
 
 ### VPN or corporate HTTP proxy
 
@@ -112,6 +123,77 @@ clients. `NO_PROXY` prevents local runtime calls, local MCP calls, and
 container-to-host coordination from being sent to the corporate proxy. Without
 `HTTP_PROXY` or `HTTPS_PROXY`, `NODE_USE_ENV_PROXY=1` does not force a proxy and
 normal direct networking remains unchanged.
+
+Those variables cover the **manager process**, not the containers. Docker never
+inherits the host environment: a container only sees a variable that its Compose
+service declares. Of the packaged services, only `connectors` declares the proxy
+variables — `cme`, `documents`, `serve`, `mcp-http` and `production-mcp` do not,
+so they attempt direct connections and fail behind a VPN even when the shell
+works. Declare them in the compose overrides described below.
+
+---
+
+## 1b. Compose overrides — the supported place for local fixes
+
+Two user-owned files live next to the root `.env`:
+
+| File | Stack | Merged by |
+| --- | --- | --- |
+| `docker-compose.override.yml` | `serve`, `mcp-http`, `production-mcp`, `wiki` | `wiki-workspace up/wiki/config`, `/start` in the shell |
+| `agents.docker-compose.override.yml` | `cme`, `documents`, `connectors` | `wiki-workspace agents *` |
+
+Both are created once from the packaged `*.example.yml` templates when absent
+and **never rewritten afterwards** — your edits survive package updates. They
+are the deliberate counterpart to `.wiki/runtime/cacert.compose.yml` and
+`.wiki/runtime/agents.cacert.compose.yml`, which are *generated state*: every
+Compose command replaces them, so an edit there is always lost.
+
+Merge order is packaged file → your override → generated CA override. The CA
+override comes last on purpose, so changing `--cacert` always wins over a stale
+hand-written CA path.
+
+Extend only services that the packaged file declares. A service invented in an
+override is not a no-op: Compose will try to start it, and it keeps existing as
+a phantom service after the real one is renamed or removed.
+
+Proxy passthrough for the agents stack:
+
+```yaml
+# agents.docker-compose.override.yml
+services:
+  cme:
+    environment:
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - http_proxy=${HTTP_PROXY:-}
+      - https_proxy=${HTTPS_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
+      - no_proxy=${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+```
+
+Three things go wrong most often:
+
+- **`localhost` in the proxy URL.** Inside a container that is the container
+  itself. Use `HTTP_PROXY=http://host.docker.internal:<port>` when the proxy
+  listens on the host, and keep the `extra_hosts: host.docker.internal:host-gateway`
+  mapping — it is required on Linux and absent from `cme` and `production-mcp`.
+- **`NO_PROXY` without `host.docker.internal`.** `serve`, the runtime and the
+  MCP servers talk to each other through it; routing that traffic to the
+  corporate proxy breaks the workspace even when the outside world works.
+- **Only the upper-case spelling.** Node reads the upper-case names, some Python
+  libraries read only the lower-case ones. Set both.
+
+A TLS-intercepting proxy also needs its CA *inside* the containers. Do not mount
+it from an override: pass it once with `wiki-workspace --cacert /path/to/ca.pem`
+and the manager mounts it into every service with the four CA variables.
+
+Inspect the merged result before restarting:
+
+```bash
+docker compose -f agents.docker-compose.yml -f agents.docker-compose.override.yml config
+```
 
 ---
 

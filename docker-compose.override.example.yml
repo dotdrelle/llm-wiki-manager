@@ -1,0 +1,81 @@
+# docker-compose.override.yml — user-owned overrides for the workspace stack
+#
+# Copied here once by wiki-manager when absent, then NEVER touched again:
+# your edits survive every package update. Do not confuse it with
+# .wiki/runtime/cacert.compose.yml, which is generated state and is rewritten
+# on every compose command — editing that one is always lost.
+#
+# This file is GLOBAL: it lives next to the manager .env and applies to every
+# workspace stack (`wiki-workspace up <workspace>`, `/start` in the shell). A
+# proxy or a private registry is a property of the machine, not of a workspace,
+# so there is deliberately no per-workspace variant. For values that really do
+# differ per workspace, use workspaces/<name>/.env and reference them here with
+# ${VARIABLE}.
+#
+# Merge order: docker-compose.yml → this file → generated CA override.
+# `environment` entries merge per variable name; `volumes`, `extra_hosts` and
+# other sequences are appended. Only services declared in the packaged file
+# (wiki, serve, mcp-http, production-mcp) should be extended — inventing a
+# service name here creates a phantom service that compose will try to start.
+#
+# To activate anything below: replace the `services: {}` line at the bottom
+# with your own `services:` block, then restart the workspace.
+# Check the result with `wiki-workspace compose <workspace> config`.
+#
+# ── Corporate proxy / VPN ─────────────────────────────────────────────────────
+#
+# Docker never inherits the host environment: exporting HTTP_PROXY in your shell
+# does NOT reach a container. None of the workspace services declares proxy
+# variables, so serve and production-mcp reach LLM endpoints directly. Declare
+# them here and set the values in the manager .env:
+#
+#     HTTP_PROXY=http://host.docker.internal:3128
+#     HTTPS_PROXY=http://host.docker.internal:3128
+#     NO_PROXY=localhost,127.0.0.1,host.docker.internal
+#
+# NO_PROXY must keep host.docker.internal: serve, the runtime and the MCP
+# servers talk to each other through it, and routing that traffic through the
+# proxy breaks the workspace even when the outside world works.
+#
+#     services:
+#       serve:
+#         environment:
+#           - HTTP_PROXY=${HTTP_PROXY:-}
+#           - HTTPS_PROXY=${HTTPS_PROXY:-}
+#           - http_proxy=${HTTP_PROXY:-}
+#           - https_proxy=${HTTPS_PROXY:-}
+#           - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
+#           - no_proxy=${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
+#       production-mcp:
+#         environment:
+#           - HTTP_PROXY=${HTTP_PROXY:-}
+#           - HTTPS_PROXY=${HTTPS_PROXY:-}
+#           - http_proxy=${HTTP_PROXY:-}
+#           - https_proxy=${HTTPS_PROXY:-}
+#           - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
+#           - no_proxy=${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
+#         # production-mcp has no host mapping in the packaged file; add it when
+#         # the proxy (or an LLM endpoint) listens on the host.
+#         extra_hosts:
+#           - host.docker.internal:host-gateway
+#
+# A TLS-intercepting proxy also needs its CA inside the containers. Do not mount
+# it here: pass it once with `wiki-workspace --cacert /absolute/path/to/ca.pem`
+# and the manager mounts it into every service with the right env variables
+# (NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE).
+#
+# ── Other common uses ─────────────────────────────────────────────────────────
+#
+#     services:
+#       serve:
+#         # Extra read-only mount, e.g. a shared templates directory.
+#         volumes:
+#           - /srv/shared/templates:/templates:ro
+#       production-mcp:
+#         # Pin resources on a loaded host.
+#         deploy:
+#           resources:
+#             limits:
+#               cpus: '2.0'
+
+services: {}

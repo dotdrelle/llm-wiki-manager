@@ -29,7 +29,18 @@ type Step =
 type LogEntry = { icon: string; label: string; detail?: string };
 
 const PROVIDERS = ['OpenAI', 'Anthropic', 'Ollama (local)', 'Other (OpenAI-compatible)'];
-const PLACEHOLDER_MODEL_RE = /YOUR_|<your/i;
+// The scaffolded .wikirc.yaml ships fake endpoints and secrets so the file
+// documents its own shape (`https://mon-provider.example.com/v1`,
+// `http://infinity.local:7997/v1`, `YOUR_LLM_API_KEY`…). Preloading them into
+// the wizard turned every field into a plausible-looking answer the operator
+// had to notice and delete — and a skipped step silently wrote the fake value
+// to the real config. Treat them as "not configured" instead.
+const PLACEHOLDER_VALUE_RE = /YOUR_|<your|example\.com|infinity\.local/i;
+
+function configuredValue(value: unknown) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return text && !PLACEHOLDER_VALUE_RE.test(text) ? text : null;
+}
 const MAIN_MENU = ['Agents', 'Workspaces', 'LLM configuration', 'Vector search', '---', 'Close'];
 
 function defaultBaseUrl(provider: string) {
@@ -317,19 +328,20 @@ export function SetupWizard(props: {
       const { config } = loadWikircProfile(workspacePath, context?.profileName ?? 'default');
       if (config?.language) setLanguage(String(config.language));
       if (config?.llm?.provider) {
-        const model = config.llm.model;
         setLlm({
           provider: normalizeProvider(config.llm.provider),
-          baseUrl: config.llm.baseUrl,
-          apiKey: config.llm.apiKey,
-          model: (model && !PLACEHOLDER_MODEL_RE.test(model)) ? model : null,
+          baseUrl: configuredValue(config.llm.baseUrl),
+          apiKey: configuredValue(config.llm.apiKey),
+          model: configuredValue(config.llm.model),
         });
       }
       if (config?.retrieval?.vector) {
         setVector({
           provider: config.retrieval.vector.provider,
-          baseUrl: config.retrieval.vector.baseUrl,
-          apiKey: config.retrieval.vector.apiKey,
+          // Null here is what makes the embeddings step fall back to the base
+          // URL the operator just entered, instead of the scaffold's fake one.
+          baseUrl: configuredValue(config.retrieval.vector.baseUrl),
+          apiKey: configuredValue(config.retrieval.vector.apiKey),
           embeddingModel: config.retrieval.vector.embeddingModel,
           rerankEnabled: config.retrieval.vector.rerankEnabled,
           rerankerModel: config.retrieval.vector.rerankerModel,

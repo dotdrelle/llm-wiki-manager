@@ -676,6 +676,52 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     return tasks.length;
   }
 
+  // Drops every event strictly after `sequence`, i.e. everything that happened
+  // after one conversation entry. Backs the redo action: the question stays,
+  // the answers, plan steps, activities and logs it produced are removed.
+  // Scoped to the workspace so a redo in one workspace never touches another —
+  // requires a real workspace; callers must resolve one before calling this,
+  // an unscoped call would otherwise touch every workspace's history.
+  // Destructive: these events also feed listAuditTrail, so a redo erases that
+  // stretch of audit history too. Runs entirely produced by the deleted range
+  // (no event at/before the boundary) are removed as well, cascading their
+  // task_groups/tasks/task_dependencies/plan_revisions via ON DELETE CASCADE;
+  // the non-cascading side tables (task_assignments/task_attempts/
+  // task_results/approval_grants) are cleared explicitly, same as
+  // clearWorkspaceState below.
+  function deleteEventsAfter(sequence, { workspace = null } = {}) {
+    const boundary = Number(sequence);
+    if (!Number.isFinite(boundary) || !workspace) return 0;
+    const orphanedRunIds = db.prepare(`
+      SELECT DISTINCT run_id FROM events
+      WHERE sequence > ? AND workspace = ? AND run_id IS NOT NULL
+        AND run_id NOT IN (
+          SELECT run_id FROM events WHERE sequence <= ? AND workspace = ? AND run_id IS NOT NULL
+        )
+    `).all(boundary, workspace, boundary, workspace).map((row) => row.run_id);
+    db.exec('BEGIN');
+    try {
+      const delResults = db.prepare('DELETE FROM task_results WHERE task_id IN (SELECT id FROM tasks WHERE run_id = ?)');
+      const delAssignments = db.prepare('DELETE FROM task_assignments WHERE task_id IN (SELECT id FROM tasks WHERE run_id = ?)');
+      const delAttempts = db.prepare('DELETE FROM task_attempts WHERE run_id = ?');
+      const delApprovals = db.prepare('DELETE FROM approval_grants WHERE run_id = ?');
+      const delRun = db.prepare('DELETE FROM runs WHERE id = ?');
+      for (const runId of orphanedRunIds) {
+        delResults.run(runId);
+        delAssignments.run(runId);
+        delAttempts.run(runId);
+        delApprovals.run(runId);
+        delRun.run(runId);
+      }
+      const changes = db.prepare('DELETE FROM events WHERE sequence > ? AND workspace = ?').run(boundary, workspace).changes ?? 0;
+      db.exec('COMMIT');
+      return changes;
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   // Full wipe of a workspace's persisted runtime state: runs (and, via the
   // ON DELETE CASCADE foreign keys, their task_groups/tasks/task_dependencies/
   // plan_revisions/approval_grants), the event log, and the queue. The
@@ -1241,6 +1287,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     interruptRuns,
     cancelActiveTasksForInterruptedRuns,
     clearWorkspaceState,
+    deleteEventsAfter,
     saveQueue,
     listQueue,
     listTasks,

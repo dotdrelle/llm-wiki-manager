@@ -1614,3 +1614,120 @@ test('runtime health reports active runs across workspaces', async (t) => {
     await handle.close();
   }
 });
+
+test('redo truncation drops the aftermath of one question and refuses during a run', async (t) => {
+  const events = [
+    { ...createAgentEvent('user_message', { origin: 'user', payload: { content: 'question' } }), sequence: 1 },
+    { ...createAgentEvent('assistant_message', { origin: 'runtime', payload: { content: 'answer' } }), sequence: 2 },
+  ];
+  let deleted = null;
+  let hydrated = false;
+  let running = true;
+  const store = {
+    dbPath: ':memory:',
+    getState: () => ({ status: 'idle' }),
+    listEvents: () => events,
+    deleteEventsAfter: (sequence, options) => { deleted = { sequence, ...options }; return 1; },
+    hydrateSession: () => { hydrated = true; },
+  };
+
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store,
+      session: {},
+      getContext: async () => ({ workspace: 'demo', session: {}, running }),
+      run: async () => {},
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const url = `http://127.0.0.1:${handle.port}/conversation/truncate`;
+    const post = (body) => fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    // Truncating under a live run would delete events it is still appending.
+    const active = await post({ index: 0 });
+    assert.equal(active.status, 409);
+    assert.equal((await active.json()).reason, 'run_active');
+    assert.equal(deleted, null);
+
+    running = false;
+    const outOfRange = await post({ index: 9 });
+    assert.equal(outOfRange.status, 400);
+    assert.equal((await outOfRange.json()).reason, 'index_out_of_range');
+
+    const invalid = await post({ index: -1 });
+    assert.equal(invalid.status, 400);
+    assert.equal((await invalid.json()).reason, 'invalid_index');
+
+    const ok = await post({ index: 0 });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await ok.json(), { truncated: true, index: 0, removedEvents: 1 });
+    // Keeps the question (sequence 1) and drops everything recorded after it.
+    assert.deepEqual(deleted, { sequence: 1, workspace: 'demo' });
+    // getState prefers the in-memory projection, so the deleted answers would
+    // survive in RAM without this rehydration.
+    assert.equal(hydrated, true);
+  } finally {
+    await handle.close();
+  }
+});
+
+test('redo truncation refuses when no workspace can be resolved', async (t) => {
+  // The global/no-workspace conversation is a real reachable mode (chatting
+  // before /use <workspace>). Without this guard the handler would fall
+  // through to an unscoped store.deleteEventsAfter, wiping every workspace's
+  // event history for one redo click.
+  let deleted = null;
+  const store = {
+    dbPath: ':memory:',
+    getState: () => ({ status: 'idle' }),
+    listEvents: () => [],
+    deleteEventsAfter: (sequence, options) => { deleted = { sequence, ...options }; return 1; },
+    hydrateSession: () => {},
+  };
+
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store,
+      session: {},
+      getContext: async () => ({ workspace: null, session: {}, running: false }),
+      run: async () => {},
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const url = `http://127.0.0.1:${handle.port}/conversation/truncate`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ index: 0 }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).reason, 'workspace_required');
+    assert.equal(deleted, null);
+  } finally {
+    await handle.close();
+  }
+});

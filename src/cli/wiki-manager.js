@@ -660,7 +660,9 @@ async function runRuntime(argv, agent) {
   const { createApprovalManager } = await import('../runtime/approvals.js');
   const { conversationSeed, runRuntimeAgenticWorkflow } = await import('../runtime/runner.js');
 
-  const host = valueAfter(argv, '--host') ?? process.env.WIKI_MANAGER_RUNTIME_HOST ?? '127.0.0.1';
+  // Same default as wiki-workspace runtime up and ensureRuntime: a loopback
+  // bind is invisible to the serve container.
+  const host = valueAfter(argv, '--host') ?? process.env.WIKI_MANAGER_RUNTIME_HOST ?? '0.0.0.0';
   const port = Number(valueAfter(argv, '--port') ?? process.env.WIKI_MANAGER_RUNTIME_PORT ?? 7788);
   const stateDir = valueAfter(argv, '--state-dir') ?? defaultRuntimeStateDir();
   const auth = resolveRuntimeAuthToken({ host, stateDir });

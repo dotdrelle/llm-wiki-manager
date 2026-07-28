@@ -115,10 +115,27 @@ generated `.wiki/runtime/` compose overrides) belongs in the user-selected
 manager directory, not in the installed npm package directory. On first
 interactive/runtime launch, missing `.env` and `mcp.endpoints.json` are
 scaffolded from the packaged examples (real paths substituted); `agents up`
-generates the missing agent auth tokens. Optional external connectors are
-enabled via a user-owned `agents.docker-compose.override.yml`
-next to the `.env` — auto-included by `agents up`, never generated or
-overwritten by the manager.
+generates the missing agent auth tokens.
+
+`set_env_value` (wiki-workspace) writes generated keys onto their commented
+placeholder from `.env.example` (`# OAUTH_STATE_SECRET=`, `#KEY=`, `##  KEY=`)
+rather than appending a duplicate at the end of the file. An active assignment
+always wins and is replaced in place; commented lines below it stay commented,
+so a key never ends up assigned twice. Prose comments merely mentioning a key
+are not touched.
+
+Two user-owned Compose overrides sit next to the `.env`:
+`docker-compose.override.yml` (workspace stack) and
+`agents.docker-compose.override.yml` (agents stack). Both are seeded once from
+the packaged `*.example.yml` templates and **never rewritten** — the opposite
+policy from `.wiki/runtime/*.compose.yml`, which is generated state replaced on
+every Compose command. Merge order per stack: packaged file → user override →
+generated CA override (last, so a `--cacert` change always beats a stale
+hand-written CA path). They are the supported place for proxy passthrough
+(containers do not inherit the host environment; only `connectors` ships proxy
+variables), extra mounts, and optional external agents such as the MailerSend
+connector. Extending a service the packaged file does not declare creates a
+phantom service — don't. See `docs/configuration.md` § "Compose overrides".
 
 ## Shell Model
 
@@ -287,8 +304,8 @@ Key modules in `src/runtime/`:
 - **`server.js`**: `GET /health`, `GET /state`, `GET /events/stream` (SSE),
   `GET /audit` (0.10.3, `listAuditTrail`, filterable by `workspace`/`runId`),
   `POST /run`, `POST /turn`, `POST /cancel`, `POST /kill`, `POST /resume`,
-  `POST /approve`, `GET`/`POST /control`, `GET /config/profiles`, and
-  `POST /config/use`. `running` flag
+  `POST /approve`, `POST /conversation/truncate`, `GET`/`POST /control`,
+  `GET /config/profiles`, and `POST /config/use`. `running` flag
   is set before `await readJson` to close the TOCTOU race on concurrent
   `POST /run` requests. `resolveBodyContext(request, url)` centralizes the
   read-body → resolve-workspace → resolve-context sequence shared by the
@@ -556,9 +573,16 @@ remain the source of truth. Queue state is workspace-scoped.
   `ensureRuntime` from the shell. It requires Node.js 22+ for `node:sqlite`.
   When the shell runs under Bun, lifecycle code starts the runtime with
   `WIKI_MANAGER_NODE_BIN` or `node`, never Bun.
-- The host runtime listens on `127.0.0.1:7788` by default and uses state under
-  `.wiki/runtime/`. `0.0.0.0:7788` requires an explicit `--host 0.0.0.0` or
-  `WIKI_MANAGER_RUNTIME_HOST=0.0.0.0` deployment choice.
+- The host runtime listens on `0.0.0.0:7788` by default — every start path
+  (`wiki-workspace runtime up`, `ensureRuntime`, `wiki-manager runtime`) agrees,
+  and `.env.example` ships `WIKI_MANAGER_RUNTIME_HOST=0.0.0.0` active. A
+  loopback bind is invisible to `serve`, which runs in Docker and connects
+  through `host.docker.internal`. Exposing the port always resolves an auth
+  token (`resolveRuntimeAuthToken` generates `.wiki/runtime/runtime.token`,
+  mode 0600), so it is never an unauthenticated bind. Set
+  `WIKI_MANAGER_RUNTIME_HOST=127.0.0.1` to opt out when nothing runs in a
+  container; `ensureManagerScaffold` never overwrites that choice. State lives
+  under `.wiki/runtime/`.
 - `serve` receives `WIKI_MANAGER_RUNTIME_URL=http://host.docker.internal:7788`
   and `WIKI_MANAGER_RUNTIME_TOKEN` to connect to the runtime.
 - Prefer `wiki-workspace` over raw `docker compose`.

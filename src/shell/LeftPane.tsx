@@ -1,9 +1,10 @@
 /** @jsxImportSource @opentui/solid */
-import { For, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import { StyledText, bg as styledBg, fg as styledFg, link as styledLink } from '@opentui/core';
-import { execFile } from 'node:child_process';
+import { useRenderer } from '@opentui/solid';
 import { colorForRenderedLine, helpCommandParts, keyValueParts, renderPlainMarkdown } from './renderer';
 import { httpLinkParts, wrapHttpLinks } from './externalLinks.js';
+import { normalizeExternalUrl } from './openExternal.js';
 
 const LEGACY_DONNA_ROLE = 'do' + 't';
 
@@ -62,17 +63,11 @@ function styledSegments(segments: Segment[]) {
   }));
 }
 
-function openSingleLineLink(segments: Segment[]) {
+// A row carries a link only when it points at exactly one target; two links on
+// the same line would make a click ambiguous.
+function singleLineUrl(segments: Segment[]) {
   const urls = [...new Set(segments.map((segment) => segment.url).filter(Boolean))] as string[];
-  if (urls.length !== 1) return;
-  try {
-    const parsed = new URL(urls[0]);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
-    const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
-    execFile(opener, [parsed.toString()], () => {});
-  } catch {
-    // Invalid URLs remain copyable text and never reach the system opener.
-  }
+  return urls.length === 1 ? normalizeExternalUrl(urls[0]) : null;
 }
 type RenderedLine = {
   segments: Segment[];
@@ -82,6 +77,8 @@ type RenderedLine = {
   statusLeft?: string;
   statusRight?: string;
   copyContent?: string;
+  redoContent?: string;
+  redoIndex?: number;
 };
 const STATUS_COLUMN_GAP = 2;
 type HelpCard = { title: string; text: string; example: string };
@@ -145,11 +142,15 @@ function WelcomeHelpPanels(props: { width: number }) {
 }
 
 const COPY_BTN = ' [ copy ]';
+// Only user messages carry it: redo re-asks *this* question, so the action has
+// to sit on the message it acts upon.
+const REDO_BTN = ' [ redo ]';
 
-function messageHeaderSegments(role: string, columns: number): Segment[] {
+function messageHeaderSegments(role: string, columns: number, withRedo = false): Segment[] {
   const label = `[${roleLabel(role)}]`;
   const left = '── ';
-  const rightLength = Math.max(2, columns - left.length - label.length - 1 - COPY_BTN.length);
+  const actionsLength = COPY_BTN.length + (withRedo ? REDO_BTN.length : 0);
+  const rightLength = Math.max(2, columns - left.length - label.length - 1 - actionsLength);
   return [
     { text: left, color: '#4B5563' },
     { text: label, color: roleColor(role) },
@@ -415,9 +416,14 @@ function conversationLines(messages: Array<{ role: string; content: string }>, c
     const raw = String(message.content || '');
     const previous = index > 0 ? messages[index - 1] : null;
     const showHeader = !previous || headerGroupKey(previous.role) !== headerGroupKey(message.role);
+    const canRedo = message.role === 'user' && raw.trim().length > 0;
     const headerLines: RenderedLine[] = showHeader
       ? [
-          { segments: messageHeaderSegments(message.role, columns), copyContent: raw },
+          {
+            segments: messageHeaderSegments(message.role, columns, canRedo),
+            copyContent: raw,
+            ...(canRedo ? { redoContent: raw, redoIndex: index } : {}),
+          },
           { segments: [{ text: ' ', color: '#D6DEE8' }] },
         ]
       : [];
@@ -466,7 +472,15 @@ export function ConversationView(props: {
   onScroll: (delta: number) => void;
   spinnerFrame: string;
   onCopy?: (content: string) => void;
+  onRedo?: (index: number, content: string) => void;
+  onOpenLink?: (url: string) => void;
 }) {
+  const renderer = useRenderer();
+  // Terminals have no CSS cursor, but OpenTUI can ask the emulator to swap the
+  // mouse pointer shape. Without it nothing on screen distinguishes a clickable
+  // link from ordinary blue text, so operators never discovered links were
+  // clickable at all.
+  const hoverLink = (url: string | null) => renderer?.setMousePointer?.(url ? 'pointer' : 'default');
   const allLines = createMemo(() => conversationLines(props.messages, props.columns));
   const visibleLines = () => {
     const lines = allLines();
@@ -511,6 +525,13 @@ export function ConversationView(props: {
                 {(seg: Segment) => <text width={seg.width} fg={seg.color} bg={seg.bg}>{seg.text}</text>}
               </For>
               <text fg="#4B5563" content={COPY_BTN} onMouseUp={() => props.onCopy?.(line.copyContent!)} />
+              <Show when={line.redoContent !== undefined}>
+                <text
+                  fg="#FBBF24"
+                  content={REDO_BTN}
+                  onMouseUp={() => props.onRedo?.(line.redoIndex!, line.redoContent!)}
+                />
+              </Show>
             </box>
           ) : line.role === 'user' && line.userBubbleWidth ? (
             <box height={1} flexDirection="row" overflow="hidden">
@@ -567,7 +588,12 @@ export function ConversationView(props: {
               height={1}
               flexDirection="row"
               overflow="hidden"
-              onMouseUp={() => openSingleLineLink(line.segments)}
+              onMouseOver={() => hoverLink(singleLineUrl(line.segments))}
+              onMouseOut={() => hoverLink(null)}
+              onMouseUp={() => {
+                const url = singleLineUrl(line.segments);
+                if (url) props.onOpenLink?.(url);
+              }}
             >
               <text>{styledSegments(line.segments)}</text>
             </box>
@@ -748,6 +774,8 @@ export function LeftPane(props: {
   spinnerFrame: string;
   onInputHeightChange: (height: number) => void;
   onCopy?: (content: string) => void;
+  onRedo?: (index: number, content: string) => void;
+  onOpenLink?: (url: string) => void;
 }) {
   const modeColor = () => props.chatMode ? '#22C55E' : '#06B6D4';
   const modeLabel = () => props.chatMode ? 'CHAT MODE  direct LLM, no tools' : 'AGENTIC MODE  LangGraph + MCP tools';
@@ -777,6 +805,8 @@ export function LeftPane(props: {
           onScroll={props.scrollConversation}
           spinnerFrame={props.spinnerFrame}
           onCopy={props.onCopy}
+          onRedo={props.onRedo}
+          onOpenLink={props.onOpenLink}
         />
       )}
       <ChatInput

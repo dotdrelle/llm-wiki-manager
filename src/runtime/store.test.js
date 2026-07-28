@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
-import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
+import { conversationEventSequences, createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { openRuntimeStore } from './store.js';
 
 function runtimeStateDir() {
@@ -1016,5 +1016,93 @@ test('runtime store identifies recoverable workspaces and interrupts stale runs'
   assert.deepEqual(store.listRecoverableRuns({ workspace: 'acme' }).map((run) => run.id), ['run-acme']);
   assert.equal(store.interruptRuns({ workspace: 'acme' }), 1);
   assert.equal(store.listRuns({ workspace: 'acme' })[0].status, 'interrupted');
+  store.close();
+});
+
+test('deleteEventsAfter removes one question\'s aftermath and nothing else', () => {
+  const stateDir = runtimeStateDir();
+  const store = openRuntimeStore({ stateDir });
+  const persist = (type, payload, workspace) => store.persistEvent({
+    ...createAgentEvent(type, { origin: 'runtime', payload }),
+    workspace,
+  });
+
+  persist('user_message', { content: 'first question' }, 'docs');
+  persist('assistant_message', { content: 'first answer' }, 'docs');
+  persist('user_message', { content: 'second question' }, 'docs');
+  persist('assistant_message', { content: 'second answer' }, 'docs');
+  // A redo in one workspace must never touch another's history.
+  persist('user_message', { content: 'other workspace' }, 'acme');
+
+  const events = store.listEvents({ workspace: 'docs' });
+  const sequences = conversationEventSequences(events);
+  // Keep "second question" (index 2), drop everything recorded after it.
+  const removed = store.deleteEventsAfter(sequences[2], { workspace: 'docs' });
+
+  assert.equal(removed, 1);
+  assert.deepEqual(
+    store.getProjection({ workspace: 'docs' }).conversation.map((message) => message.content),
+    ['first question', 'first answer', 'second question'],
+  );
+  assert.equal(store.listEvents({ workspace: 'acme' }).length, 1);
+  // A boundary that does not exist is a no-op rather than a silent wipe.
+  assert.equal(store.deleteEventsAfter(undefined, { workspace: 'docs' }), 0);
+  assert.equal(store.listEvents({ workspace: 'docs' }).length, 3);
+  store.close();
+});
+
+test('deleteEventsAfter without a workspace is a no-op, never an unscoped wipe', () => {
+  const stateDir = runtimeStateDir();
+  const store = openRuntimeStore({ stateDir });
+  store.persistEvent(createAgentEvent('user_message', { origin: 'user', workspace: 'docs', payload: { content: 'q' } }));
+  store.persistEvent(createAgentEvent('user_message', { origin: 'user', workspace: 'acme', payload: { content: 'q' } }));
+
+  assert.equal(store.deleteEventsAfter(0, { workspace: null }), 0);
+  assert.equal(store.deleteEventsAfter(0, {}), 0);
+  assert.equal(store.listEvents({ workspace: 'docs' }).length, 1);
+  assert.equal(store.listEvents({ workspace: 'acme' }).length, 1);
+  store.close();
+});
+
+test('deleteEventsAfter removes bookkeeping only for runs entirely produced by the deleted range', () => {
+  const stateDir = runtimeStateDir();
+  const store = openRuntimeStore({ stateDir });
+  const taskEvents = (runId, taskId) => [
+    createAgentEvent('run_started', {
+      origin: 'runtime', runId, workspace: 'docs', payload: { input: 'build docs', workspace: 'docs' },
+    }),
+    createAgentEvent('task.created', {
+      origin: 'plan_integrator', runId, taskId, workspace: 'docs', payload: { runId, task: plannedTask(taskId) },
+    }),
+    createAgentEvent('task.assigned', {
+      origin: 'assignment_manager', runId, taskId, workspace: 'docs',
+      payload: { runId, taskId, attemptId: `${taskId}:attempt-1`, assignment: {
+        attemptId: `${taskId}:attempt-1`, agentInstanceId: 'production-main', agentId: 'production', poolId: 'production-pool',
+      } },
+    }),
+    createAgentEvent('task.started', {
+      origin: 'dispatcher', runId, taskId, workspace: 'docs',
+      payload: { runId, taskId, attemptId: `${taskId}:attempt-1`, jobId: 'job-1', startedAt: '2026-07-07T10:00:00.000Z' },
+    }),
+  ];
+
+  // A run that completed before the redo boundary must survive untouched.
+  for (const event of taskEvents('run-before', 'run-before:build-a')) store.persistEvent(event);
+  const boundarySequence = store.listEvents({ workspace: 'docs' }).at(-1).sequence;
+  // A run triggered by the redone question — entirely after the boundary — is
+  // what redo is dropping, so its bookkeeping should go with it.
+  for (const event of taskEvents('run-after', 'run-after:build-a')) store.persistEvent(event);
+
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM runs').get().n, 2);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM task_assignments').get().n, 2);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM task_attempts').get().n, 2);
+
+  store.deleteEventsAfter(boundarySequence, { workspace: 'docs' });
+
+  assert.deepEqual(store.listRuns({ workspace: 'docs' }).map((run) => run.id), ['run-before']);
+  assert.deepEqual(store.listTasks({ runId: 'run-before' }).map((task) => task.id), ['run-before:build-a']);
+  assert.equal(store.listTasks({ runId: 'run-after' }).length, 0);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM task_assignments').get().n, 1);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM task_attempts').get().n, 1);
   store.close();
 });

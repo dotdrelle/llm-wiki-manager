@@ -667,10 +667,28 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     const index = windowOffset + displayIndex;
     if (index < 0 || index >= full.length) return { exit: false };
 
-    if (props.runtime?.url) {
+    const workspaceKey = (session as any).workspace || '__global__';
+    // The local thread and the runtime conversation are NOT the same list:
+    // slash-command output, help panels and any other local-only entry live in
+    // `full` but were never recorded as events. Sending a `full` index straight
+    // to /conversation/truncate therefore points at the wrong entry — or past
+    // the end (`index_out_of_range`) — as soon as one local entry precedes the
+    // redone question. `backed` is index-aligned with the runtime conversation,
+    // so it is the only correct translation table.
+    const backed = runtimeConversationRefsByWorkspace.get(workspaceKey) ?? [];
+    let runtimeIndex = backed.indexOf(full[index]);
+    if (runtimeIndex === -1) {
+      // Local-only entry: truncate after the last runtime-backed entry that
+      // still precedes it, so nothing recorded before the question is lost.
+      for (let i = backed.length - 1; i >= 0; i -= 1) {
+        if (full.indexOf(backed[i]) < index) { runtimeIndex = i; break; }
+      }
+    }
+
+    if (props.runtime?.url && runtimeIndex >= 0) {
       // The runtime derives the conversation from its event log: deleting
       // locally alone would be undone by the next /state merge.
-      const result = await postRuntimeConversationTruncate(index, {
+      const result = await postRuntimeConversationTruncate(runtimeIndex, {
         url: props.runtime.url,
         workspace: (session as any).workspace ?? null,
       }) as { truncated?: boolean; reason?: string };
@@ -690,8 +708,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     // truncate above — clearing every workspace's refs here would desync
     // other workspaces' `backed` arrays from their untouched `target`
     // arrays and duplicate their history on the next merge.
-    const currentWorkspace = (session as any).workspace || '__global__';
-    runtimeConversationRefsByWorkspace.get(currentWorkspace)?.splice(0);
+    runtimeConversationRefsByWorkspace.get(workspaceKey)?.splice(0);
     refresh();
     return submitInput(content);
   }

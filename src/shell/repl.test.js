@@ -54,11 +54,27 @@ test('redo is offered on user questions only, next to copy', async () => {
   const session = await readFile(new URL('./useSession.ts', import.meta.url), 'utf8');
   // The runtime must be truncated first: its conversation is derived from the
   // event log and would be merged straight back in otherwise.
-  const truncateIndex = session.indexOf('postRuntimeConversationTruncate(index');
+  const truncateIndex = session.indexOf('postRuntimeConversationTruncate(runtimeIndex');
   const spliceIndex = session.indexOf('full.splice(index)');
   const submitIndex = session.indexOf('return submitInput(content)');
   assert.ok(truncateIndex > 0 && spliceIndex > truncateIndex && submitIndex > spliceIndex);
   assert.match(session, /const windowOffset = Math\.max\(0, full\.length - messages\(\)\.length\);/);
+});
+
+test('redo translates the local thread index into a runtime conversation index', async () => {
+  const session = await readFile(new URL('./useSession.ts', import.meta.url), 'utf8');
+  const redo = session.slice(
+    session.indexOf('async function redoMessage('),
+    session.indexOf('function updateInput('),
+  );
+  // The local thread holds entries the runtime never recorded (slash-command
+  // output, help panels). Passing the raw local index to /conversation/truncate
+  // is what produced `index_out_of_range`; `backed` is the translation table.
+  assert.match(redo, /const backed = runtimeConversationRefsByWorkspace\.get\(workspaceKey\)/);
+  assert.match(redo, /let runtimeIndex = backed\.indexOf\(full\[index\]\)/);
+  assert.match(redo, /if \(full\.indexOf\(backed\[i\]\) < index\)/);
+  assert.match(redo, /props\.runtime\?\.url && runtimeIndex >= 0/);
+  assert.doesNotMatch(redo, /postRuntimeConversationTruncate\(index/);
 });
 
 test('ShellUI renders newest-first order in both Runtime and Agent status', async () => {

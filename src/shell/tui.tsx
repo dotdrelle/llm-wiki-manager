@@ -398,7 +398,6 @@ function App(props: {
             scrollConversation={state.scrollConversation}
             spinnerFrame={SPINNER_FRAMES[spinnerIndex()] ?? SPINNER_FRAMES[0]}
             onInputHeightChange={setChatInputHeight}
-            onRedo={(index, content) => { void state.redoMessage(index, content); }}
             onCopy={(content) => showCopyHint(
               copyToClipboard(content, renderer)
                 ? 'Copied.'

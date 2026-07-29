@@ -4,7 +4,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { handleSlashCommand, localizedOperationResult } from './slash.js';
+import { agentConcurrencySections, compactBaseUrl, compactMcpStatus, handleSlashCommand, localizedOperationResult } from './slash.js';
 import { completionContext } from '../shell/repl.js';
 
 test('deterministic operation results ask Donna to localize compact facts without leaking commands', () => {
@@ -13,6 +13,68 @@ test('deterministic operation results ask Donna to localize compact facts withou
   assert.deepEqual(JSON.parse(result.output), { operation: 'start', target: 'agents', status: 'succeeded' });
   assert.match(result.agentTrigger, /une seule phrase humaine et naturelle/);
   assert.doesNotMatch(result.agentTrigger, /\/start|Docker|compose/);
+});
+
+test('/status MCP overview contains only connector name, port and status', () => {
+  const output = compactMcpStatus({
+    connectors: {
+      url: 'http://localhost:3338/mcp/',
+      status: 'connected',
+      tools: Array.from({ length: 20 }, (_, index) => ({ name: `long_tool_${index}` })),
+      toolError: 'a very long technical error that must stay out of the overview',
+    },
+    cme: {
+      configuredUrl: 'http://host.docker.internal:3336/mcp/',
+      status: 'configured',
+      detail: 'some long runtime detail',
+    },
+  });
+
+  assert.equal(output, '◐ cme  :3336  configured\n● connectors  :3338  connected');
+  assert.doesNotMatch(output, /tools|error|detail|http/i);
+});
+
+test('/status base URL displays only its domain while retaining the full link', () => {
+  assert.equal(
+    compactBaseUrl('https://albert.api.etalab.gouv.fr/v1'),
+    '[albert.api.etalab.gouv.fr](https://albert.api.etalab.gouv.fr/v1)',
+  );
+  assert.equal(compactBaseUrl('http://localhost:11434/v1'), '[localhost:11434](http://localhost:11434/v1)');
+  assert.equal(compactBaseUrl(undefined), '-');
+});
+
+test('/status replaces Internal and Hints with effective agent concurrency', () => {
+  const sections = agentConcurrencySections({
+    agentRegistrySnapshot: [
+      {
+        serverName: 'production',
+        description: {
+          agentType: 'production',
+          limits: { recommendedConcurrency: 6, maxConcurrency: 10 },
+        },
+      },
+      {
+        serverName: 'connectors',
+        description: {
+          agentType: 'connectors',
+          limits: { recommendedConcurrency: 3, maxConcurrency: 5 },
+        },
+      },
+    ],
+  }, {
+    WIKI_MANAGER_CAPABILITY_CONCURRENCY: '4',
+    WIKI_MANAGER_SCHEDULER_CONCURRENCY: '7',
+  });
+
+  assert.match(sections.production, /Parallelism & throughput/);
+  assert.match(sections.production, /effective: 4/);
+  assert.match(sections.production, /recommended: 6/);
+  assert.match(sections.production, /maximum: 10/);
+  assert.doesNotMatch(sections.production, /manager ceiling/);
+  assert.match(sections.production, /scheduler workers: 7/);
+  assert.match(sections.collection, /Collection concurrency/);
+  assert.match(sections.collection, /effective: 3/);
+  assert.doesNotMatch(`${sections.production}\n${sections.collection}`, /Internal|Hints/);
 });
 
 test('start result tells Donna when missing container components were installed', () => {
@@ -30,6 +92,43 @@ test('start result tells Donna when missing container components were installed'
     images: ['dotdrelle/llm-wiki:latest'],
   });
   assert.match(result.agentTrigger, /downloaded-and-installed-missing-components/);
+});
+
+test('/start all covers the agents as well as the workspace services', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('./slash.js', import.meta.url), 'utf8');
+  const start = source.slice(source.indexOf("case 'start': {"), source.indexOf("case 'stop': {"));
+
+  // "all" used to start the workspace services only, which left every external
+  // agent down while the wording promised the opposite.
+  assert.match(start, /const startsAgents = service === 'all';/);
+  assert.match(start, /const target = service === 'services' \? undefined : service;/);
+  assert.match(start, /await runAgentCommand\(startAgents, 'start'\)/);
+  assert.match(start, /if \(agentsResult\?\.failed\) return agentsResult;/);
+  assert.match(start, /if \(!context\.session\.workspace \|\| !context\.session\.workspacePath/);
+  assert.match(start, /service === 'agents' \|\| service === 'agent'/);
+});
+
+test('a started agent stack reloads the env and the MCP endpoints the script rewrote', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('./slash.js', import.meta.url), 'utf8');
+  const runAgent = source.slice(source.indexOf('const runAgentCommand ='), source.indexOf('switch (command)'));
+
+  assert.match(runAgent, /if \(verb === 'start'\)/);
+  assert.match(runAgent, /loadManagerEnv\(\{ override: true \}\);/);
+  assert.match(runAgent, /await refreshMcpRuntimeStatus\(context\.session\)/);
+});
+
+test('/start completes to the three documented targets', async () => {
+  const { completionDescription } = await import('../shell/repl.js');
+  const { matches } = completionContext('/start ', {});
+
+  for (const expected of ['all', 'agents', 'services']) {
+    assert.ok(matches.includes(expected), `${expected} missing from ${JSON.stringify(matches)}`);
+  }
+  assert.match(completionDescription('all', ['/start']), /services AND the external agents/);
+  assert.match(completionDescription('agents', ['/start']), /agents only/);
+  assert.match(completionDescription('services', ['/start']), /workspace services only/);
 });
 
 test('/workspace delete removes files and clears current session context after confirmation', async () => {

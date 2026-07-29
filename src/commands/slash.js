@@ -30,6 +30,8 @@ import {
   summarizeWikircConfig,
 } from '../core/wikirc.js';
 import { applySessionWikircProfile } from '../core/sessionConfig.js';
+import { loadManagerEnv } from '../core/env.js';
+import { resolveSchedulerConcurrency } from '../orchestrator/scheduler.js';
 import {
   deleteWorkspaceAndFiles,
   finalizeCreatedWorkspace,
@@ -81,6 +83,18 @@ function twoColumns(left, right) {
     out.push(r ? `${l}\t${r}` : l);
   }
   return out.join('\n');
+}
+
+export function compactBaseUrl(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '-';
+  try {
+    const parsed = new URL(raw);
+    const label = parsed.host || parsed.hostname;
+    return label ? `[${label}](${raw})` : raw;
+  } catch {
+    return raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '') || '-';
+  }
 }
 
 function commandLabel(value) {
@@ -222,20 +236,68 @@ function statLine(label, stat) {
   return `${label}: ${stat.count} (${formatBytes(stat.totalBytes)})`;
 }
 
-function workspaceStatsColumns(stats) {
+function positiveConcurrency(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.max(1, Math.floor(parsed)) : fallback;
+}
+
+function discoveredAgentLimits(session, agentType) {
+  const agents = session?.agentRegistry?.snapshot?.() ?? session?.agentRegistrySnapshot ?? [];
+  const agent = agents.find((entry) =>
+    String(entry?.description?.agentType ?? '').toLowerCase() === agentType
+    || String(entry?.serverName ?? '').toLowerCase().includes(agentType));
+  return agent?.description?.limits ?? {};
+}
+
+export function agentConcurrencySections(session, env = process.env) {
+  const managerCeiling = positiveConcurrency(env.WIKI_MANAGER_CAPABILITY_CONCURRENCY, null);
+  const productionLimits = discoveredAgentLimits(session, 'production');
+  const productionRecommended = positiveConcurrency(
+    productionLimits.recommendedConcurrency ?? env.PRODUCTION_RECOMMENDED_CONCURRENCY,
+    4,
+  );
+  const productionMaximum = positiveConcurrency(
+    productionLimits.maxConcurrency ?? env.PRODUCTION_MAX_CONCURRENCY,
+    8,
+  );
+  const productionEffective = Math.min(
+    productionRecommended,
+    productionMaximum,
+    managerCeiling ?? Number.POSITIVE_INFINITY,
+  );
+
+  const connectorLimits = discoveredAgentLimits(session, 'connectors');
+  const collectionRecommended = positiveConcurrency(
+    connectorLimits.recommendedConcurrency ?? env.CONNECTORS_RECOMMENDED_CONCURRENCY,
+    2,
+  );
+  const collectionMaximum = positiveConcurrency(
+    connectorLimits.maxConcurrency ?? env.CONNECTORS_MAX_CONCURRENCY,
+    4,
+  );
+  const collectionEffective = Math.min(
+    collectionRecommended,
+    collectionMaximum,
+    managerCeiling ?? Number.POSITIVE_INFINITY,
+  );
+
+  return {
+    production: sectionBlock('Parallelism & throughput', [
+      `effective: ${productionEffective}`,
+      `recommended: ${productionRecommended}`,
+      `maximum: ${productionMaximum}`,
+      `scheduler workers: ${resolveSchedulerConcurrency(env.WIKI_MANAGER_SCHEDULER_CONCURRENCY)}`,
+    ]),
+    collection: sectionBlock('Collection concurrency', [
+      `effective: ${collectionEffective}`,
+      `recommended: ${collectionRecommended}`,
+      `maximum: ${collectionMaximum}`,
+    ]),
+  };
+}
+
+function workspaceStatsColumns(stats, session) {
   if (!stats) return { left: 'No workspace loaded.', right: '' };
-  const hints = [];
-  if (stats.untracked.count > 0) {
-    hints.push(`${stats.untracked.count} raw/untracked document(s) are waiting for ingest.`);
-  }
-  if (!stats.index.exists) {
-    hints.push('wiki/index.md is missing.');
-  } else if (stats.index.links === 0) {
-    hints.push('wiki/index.md exists but has no markdown/wiki links.');
-  }
-  if (stats.wiki.count === 0) {
-    hints.push('The wiki has no markdown pages yet.');
-  }
 
   const wikiLatest = formatDate(Math.max(
       stats.wiki.latest?.mtimeMs ?? 0,
@@ -266,14 +328,11 @@ function workspaceStatsColumns(stats) {
     statLine('templates', stats.templates),
     statLine('deliverables', stats.deliverables),
   ]);
-  const internalColumn = sectionBlock('Internal', [
-    `logs: ${stats.logs.count} (${formatBytes(stats.logs.totalBytes)})`,
-  ]);
-  const hintsColumn = sectionBlock('Hints', hints.length > 0 ? hints : ['No immediate content action detected.']);
+  const concurrency = agentConcurrencySections(session);
 
   return {
     left: [wikiColumn, deliveryColumn].join('\n\n'),
-    right: [rawColumn, internalColumn, hintsColumn].join('\n\n'),
+    right: [rawColumn, concurrency.production, concurrency.collection].join('\n\n'),
   };
 }
 
@@ -349,6 +408,36 @@ function mcpEndpointsText(mcpStatus) {
         : `token: ${endpoint.token ? 'configured' : 'missing'}`;
       const url = endpoint.url ?? '-';
       return `${name}\t${url}\t${auth}\tstatus: ${endpoint.status}`;
+    })
+    .join('\n');
+}
+
+function mcpPort(endpoint) {
+  const value = String(endpoint?.url ?? endpoint?.configuredUrl ?? '');
+  try {
+    const parsed = new URL(value);
+    if (parsed.port) return parsed.port;
+    if (parsed.protocol === 'https:') return '443';
+    if (parsed.protocol === 'http:') return '80';
+  } catch {
+    // Placeholders in configured URLs are not valid URL syntax; use the
+    // resolved trailing numeric port when one is present.
+  }
+  return value.match(/:(\d+)(?:\/|$)/)?.[1] ?? '-';
+}
+
+export function compactMcpStatus(mcpStatus) {
+  const entries = Object.entries(mcpStatus ?? {});
+  if (entries.length === 0) return '○ none';
+  return entries
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, endpoint]) => {
+      const marker = endpoint.status === 'connected'
+        ? '●'
+        : endpoint.status === 'configured'
+          ? '◐'
+          : '○';
+      return `${marker} ${name}  :${mcpPort(endpoint)}  ${endpoint.status ?? 'unknown'}`;
     })
     .join('\n');
 }
@@ -511,8 +600,7 @@ export async function refreshMcpRuntimeStatus(session) {
 async function statusText(session) {
   const states = await refreshMcpRuntimeStatus(session);
   const workspaceStats = collectWorkspaceStats(session);
-  const workspaceColumn = sectionBlock('Workspace', [
-    `workspace: ${session.workspace ?? '-'}`,
+  const workspaceColumn = sectionBlock(`Workspace · ${session.workspace ?? '-'}`, [
     `path: ${compactPath(session.workspacePath ?? '-')}`,
     `env: ${compactPath(session.workspaceEnvFile ?? '-')}`,
   ]);
@@ -522,22 +610,20 @@ async function statusText(session) {
     `llm: ${session.llm ? 'configured' : 'missing'}`,
     `provider: ${session.wikircConfig?.llm?.provider ?? '-'}`,
     `model: ${session.wikircConfig?.llm?.model ?? '-'}`,
-    `baseUrl: ${session.wikircConfig?.llm?.baseUrl ?? '-'}`,
+    `baseUrl: ${compactBaseUrl(session.wikircConfig?.llm?.baseUrl)}`,
   ]);
   const runtimeColumn = sectionBlock('Runtime', (states ? serviceStatesText(states) : 'Docker runtime not available or no workspace loaded.').split('\n'));
-  const mcpColumn = sectionBlock('MCP', formatMcpStatus(session.mcp).split('\n'));
-  const mcpToolsColumn = sectionBlock('MCP tool summary', formatMcpToolSummary(session.mcp).split('\n'));
-  const stats = workspaceStatsColumns(workspaceStats);
+  const mcpColumn = sectionBlock('MCP', compactMcpStatus(session.mcp).split('\n'));
+  const stats = workspaceStatsColumns(workspaceStats, session);
 
   const leftColumn = [workspaceColumn, stats.left, runtimeColumn, mcpColumn].filter(Boolean).join('\n\n');
-  const rightColumn = [configColumn, stats.right, mcpToolsColumn].filter(Boolean).join('\n\n');
+  const rightColumn = [configColumn, stats.right].filter(Boolean).join('\n\n');
 
-  // Leading/trailing padding row on *both* columns so the boxed pair doesn't
-  // butt directly against the pane border when the view is scrolled to show
-  // the tail. A single space on each side (not '') keeps the row tab-joined,
-  // so both the left and right box render — an empty string on either side
-  // of the tab makes twoColumns drop the pairing and only the left box shows.
-  const pad = ' \t ';
+  // Leading/trailing blank row so the boxed pair doesn't butt directly against
+  // the pane border when the view is scrolled to show the tail. It is padding,
+  // not data: LeftPane renders a row that is blank on both sides as a plain
+  // spacer, so no empty bordered box is drawn past the last real line.
+  const pad = ' ';
   return [pad, twoColumns(leftColumn, rightColumn), pad].join('\n');
 }
 
@@ -616,7 +702,7 @@ ${helpPair('/workspace list', 'Workspaces', '/new <n> [path]', 'New workspace')}
 ${helpPair('/use <workspace>', 'Use workspace', '/status', 'Session status')}
 ${helpPair('/config list', 'Config profiles', '/config use <n>', 'Use config')}
 ${helpPair('/config edit <n>', 'Edit config', '/workspace delete <n>', 'Delete workspace')}
-${helpPair('/services', 'Services', '/start [all|service|agents]', 'Start service(s)')}
+${helpPair('/services', 'Services', '/start [all|agents|services]', 'all = services + agents')}
 ${helpPair('/stop [all|service|agents]', 'Stop service(s)', '/logs <service>', 'Service logs')}
 ${helpPair('/skills', 'List skills', '/skills show <n>', 'Show skill')}
 ${helpPair('/skills run <n>', 'Run skill guide', '/skills edit <n>', 'Edit skill')}
@@ -656,11 +742,12 @@ export function printHelp(packageJson) {
   console.log(helpText(packageJson));
 }
 
-function rawCommandAgentPrompt(command, output) {
+export function rawCommandAgentPrompt(command, output) {
   return [
     `L'utilisateur a lancé la commande shell ${command}.`,
-    'Voici la sortie brute collectée par la commande déterministe. Ne relance pas la commande et ne modifie pas les données.',
+    'Voici la sortie brute collectée par la commande déterministe. Ne relance pas la commande, ne modifie pas les données et n’appelle aucun outil.',
     'Réponds à l’utilisateur à partir de ces faits, en appliquant le profil workspace et les préférences de présentation déjà chargés dans ton prompt système.',
+    'Ne reproduis pas les détails techniques, identifiants internes, chemins, noms de conteneurs ou sorties brutes. Donne seulement le résultat utile en langage naturel.',
     '',
     'Sortie brute:',
     '```text',
@@ -731,6 +818,10 @@ export function localizedOperationFailure({ operation, target, error }) {
   return {
     output: facts,
     rawOutput: true,
+    // The status only lived inside the serialized facts, so a caller chaining
+    // two operations (/start all = agents then services) had to re-parse JSON
+    // to know whether to continue. Surface it as a plain flag.
+    failed: true,
     agentTrigger: [
       "Formule l'échec structuré suivant dans la langue et le ton demandés par le profil du workspace.",
       "Réponds en une ou deux phrases humaines: ce qui a échoué, et l'action concrète que la personne peut faire.",
@@ -779,6 +870,19 @@ export async function handleSlashCommand(line, context) {
     try {
       step(`Agents: ${verb}ing external agents…`);
       const missingImages = await collectMissingImages(step, fn);
+      if (verb === 'start') {
+        // `wiki-workspace agents up` generates the agent tokens into the
+        // manager .env and adds the profiled entries to mcp.endpoints.json.
+        // Both were read at boot, so without re-reading them the endpoint the
+        // script just wrote resolves with an empty ${..._AUTH_TOKEN} and the
+        // freshly started agent stays "credential not set" until a restart.
+        step('Agents: reloading manager environment and MCP endpoints…');
+        // The script may have replaced a blank/generated token that was
+        // already loaded at boot. A non-overriding dotenv reload would keep
+        // the stale process value and defeat the refresh.
+        loadManagerEnv({ override: true });
+        await refreshMcpRuntimeStatus(context.session);
+      }
       return localizedOperationResult({
         operation: verb,
         target: 'agents',
@@ -945,21 +1049,37 @@ export async function handleSlashCommand(line, context) {
       // falls back to the hardcoded COMPOSE_SERVICES constant instead.
       const service = args[1];
       if (service === 'agents' || service === 'agent') return runAgentCommand(startAgents, 'start');
+      // "all" used to mean "the workspace services", which left the external
+      // agents down and looked like nothing had happened. It now means what an
+      // operator reads into it: the whole stack. `/start services` keeps the
+      // workspace-only behaviour.
+      const startsAgents = service === 'all';
+      const target = service === 'services' ? undefined : service;
       try {
-        step(`Services: starting ${service ?? 'workspace services'}…`);
-        const missingImages = await collectMissingImages(step, (opts) => startService(context.session, service, opts));
+        if (startsAgents) {
+          // Validate the workspace half before mutating the global agents
+          // stack. Otherwise `/start all` with no active workspace starts the
+          // agents successfully and only then fails, leaving a partial start.
+          if (!context.session.workspace || !context.session.workspacePath || !context.session.workspaceEnv?.WORKSPACE_NAME) {
+            throw new Error('No workspace loaded. Use /use <workspace>.');
+          }
+          const agentsResult = await runAgentCommand(startAgents, 'start');
+          if (agentsResult?.failed) return agentsResult;
+        }
+        step(`Services: starting ${target ?? 'workspace services'}…`);
+        const missingImages = await collectMissingImages(step, (opts) => startService(context.session, target, opts));
         step('Services: refreshing MCP runtime…');
         await refreshMcpRuntimeStatus(context.session);
         return localizedOperationResult({
           operation: 'start',
-          target: service || 'workspace-services',
+          target: startsAgents ? 'all-services-and-agents' : (target || 'workspace-services'),
           componentAction: componentInstallAction(missingImages),
           images: missingImages,
         });
       } catch (err) {
         step(formatActivityError('services', 'start', err));
         step(`Services: docker output — ${rawFailureText(err)}`);
-        return localizedOperationFailure({ operation: 'start', target: service || 'workspace-services', error: err });
+        return localizedOperationFailure({ operation: 'start', target: target || 'workspace-services', error: err });
       }
     }
     case 'stop': {

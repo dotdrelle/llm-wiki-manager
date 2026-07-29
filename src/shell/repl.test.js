@@ -7,6 +7,7 @@ import {
   applyRuntimeStateToShellSession,
   chatAllowedTools,
   createSession,
+  isProductHelpQuestion,
   runHeadlessChatTurn,
   sanitizeOpenWikiPage,
   sanitizeOpenWikiPages,
@@ -42,23 +43,14 @@ test('ShellUI renders the user header full-width before constraining only its bo
   assert.match(source.slice(userBodyBranch), /justifyContent="flex-start"/);
   assert.doesNotMatch(source.slice(userBodyBranch, source.indexOf(') : line.status ?', userBodyBranch)), /#12263A/);
   assert.doesNotMatch(source, /messageHeaderSegments\(message\.role, contentColumns\)/);
-  // The third argument reserves room for [ redo ]; the width stays `columns`.
-  assert.match(source, /messageHeaderSegments\(message\.role, columns(, canRedo)?\)/);
+  assert.match(source, /messageHeaderSegments\(message\.role, columns\)/);
 });
 
-test('redo is offered on user questions only, next to copy', async () => {
+test('ShellUI exposes copy without a reply or redo action', async () => {
   const source = await readFile(new URL('./LeftPane.tsx', import.meta.url), 'utf8');
-  assert.match(source, /const canRedo = message\.role === 'user' && raw\.trim\(\)\.length > 0;/);
-  assert.match(source, /props\.onRedo\?\.\(line\.redoIndex!, line\.redoContent!\)/);
-
-  const session = await readFile(new URL('./useSession.ts', import.meta.url), 'utf8');
-  // The runtime must be truncated first: its conversation is derived from the
-  // event log and would be merged straight back in otherwise.
-  const truncateIndex = session.indexOf('postRuntimeConversationTruncate(runtimeIndex');
-  const spliceIndex = session.indexOf('full.splice(index)');
-  const submitIndex = session.indexOf('return submitInput(content)');
-  assert.ok(truncateIndex > 0 && spliceIndex > truncateIndex && submitIndex > spliceIndex);
-  assert.match(session, /const windowOffset = Math\.max\(0, full\.length - messages\(\)\.length\);/);
+  assert.match(source, /const COPY_BTN = ' \[ copy \]';/);
+  assert.doesNotMatch(source, /\[\s*(?:reply|redo)\s*\]/i);
+  assert.doesNotMatch(source, /onRedo|redoContent|redoIndex|REDO_BTN/);
 });
 
 test('redo translates the local thread index into a runtime conversation index', async () => {
@@ -388,6 +380,29 @@ test('applyRuntimeStateToShellSession preserves terminal diagnostics when runtim
   assert.deepEqual(session.agentProjection.planPatches, [{ id: 'old-patch' }]);
 });
 
+test('runtime sync does not resurrect a terminal plan dismissed by a newer user turn', () => {
+  const session = createSession();
+  session._dismissedTerminalRunId = 'old-run';
+  applyRuntimeStateToShellSession(session, {
+    runId: 'old-run',
+    status: 'error',
+    conversation: [{ role: 'assistant', content: 'Old failure' }],
+    plan: [{ id: 'old-task', status: 'failed' }],
+    activities: [{ key: 'old-job', status: 'failed', terminal: true }],
+    logs: ['old error'],
+    summary: 'Old run failed',
+    workflow: { nodes: [{ id: 'task:old' }], relations: [] },
+    planPatches: [{ id: 'old-patch' }],
+  });
+
+  assert.equal(session.headlessPlan, null);
+  assert.deepEqual(session.activities, {});
+  assert.equal(session.workflow, null);
+  assert.deepEqual(session.agentProjection.logs, []);
+  assert.equal(session.agentProjection.summary, null);
+  assert.deepEqual(session.agentProjection.conversation, [{ role: 'assistant', content: 'Old failure' }]);
+});
+
 test('legacy runtime sync does not synthesize per-job or canned completion messages', () => {
   const session = createSession();
   applyRuntimeStateToShellSession(session, {
@@ -565,6 +580,53 @@ test('/agent <question> reports an unavailable runtime without leaving chat mode
   assert.equal(result.oneShotAgent, true);
   assert.deepEqual(conversationMessages(session).map((message) => message.role), ['user', 'command']);
   assert.match(conversationMessages(session).at(-1).content, /runtime stopped/);
+});
+
+test('every slash-command result is presented by Donna when an agent is available', async () => {
+  const session = createSession();
+  let synthesisInput = '';
+  const agent = {
+    async invoke({ input, session: activeSession }) {
+      synthesisInput = input;
+      assert.equal(activeSession._responseSynthesisOnly, true);
+      return { response: 'Vous utilisez wiki-manager test.' };
+    },
+  };
+
+  const result = await runLine('/version', {
+    agent,
+    packageJson: { version: 'test' },
+    session,
+  });
+
+  assert.equal(result.exit, false);
+  assert.ok(synthesisInput.includes('commande shell /version'));
+  assert.deepEqual(conversationMessages(session).map((message) => message.role), ['user', 'donna']);
+  assert.equal(conversationMessages(session)[0].content, '/version');
+  assert.equal(conversationMessages(session)[1].content, 'Vous utilisez wiki-manager test.');
+  assert.equal(session._responseSynthesisOnly, undefined);
+});
+
+test('/status remains an immediate deterministic display without Donna', async () => {
+  const session = createSession();
+  let invoked = false;
+  const agent = {
+    async invoke() {
+      invoked = true;
+      return { response: 'must not run' };
+    },
+  };
+
+  const result = await runLine('/status', {
+    agent,
+    packageJson: { version: 'test' },
+    session,
+  });
+
+  assert.equal(result.exit, false);
+  assert.equal(invoked, false);
+  assert.equal(conversationMessages(session).at(-1)?.role, 'command');
+  assert.match(conversationMessages(session).at(-1)?.content ?? '', /Workspace · -/);
 });
 
 test('runLine does not update workspace profile before Donna handles the request', async () => {
@@ -745,9 +807,9 @@ test('chatAllowedTools exposes exactly the declared MCP tools to /chat', () => {
   };
   const names = chatAllowedTools(session).map((item) => item.function.name).sort();
   // cme_setup: not declared. documents_status: server absent from chatAccess.
-  // cme_export_run: declared, so it is offered — the allow-list is the
-  // operator's explicit decision, not a suggestion filtered by a heuristic.
-  assert.deepEqual(names, ['cme__cme_export_run', 'cme__cme_sources_list', 'cme__cme_status']);
+  // cme_export_run is an orchestration bypass and stays hidden even when an
+  // older allow-list still names it.
+  assert.deepEqual(names, ['cme__cme_sources_list', 'cme__cme_status']);
 });
 
 test('chatAllowedTools offers every declared tool, reads and writes alike', () => {
@@ -938,6 +1000,15 @@ test('runHeadlessChatTurn (HTTP /chat) uses the read-tool path and returns text'
   assert.ok(usedComplete, 'completeWithTools path was taken');
   assert.match(reply, /CME est configuré/);
   assert.doesNotMatch(reply, /STREAM_FALLBACK/);
+});
+
+test('product-help questions are detected without treating ordinary domain questions as product help', () => {
+  assert.equal(isProductHelpQuestion('À quoi correspond Parallelism & throughput ?'), true);
+  assert.equal(isProductHelpQuestion('Comment fonctionne Donna ?'), true);
+  assert.equal(isProductHelpQuestion('Explique le panneau /status'), true);
+  assert.equal(isProductHelpQuestion('Comment fonctionnent les approbations ?'), true);
+  assert.equal(isProductHelpQuestion('Que dit le wiki sur la météo ?'), false);
+  assert.equal(isProductHelpQuestion('Résume ce document'), false);
 });
 
 test('sanitizeOpenWikiPage accepts wiki and untracked markdown context paths', () => {

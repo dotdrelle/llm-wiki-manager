@@ -77,8 +77,6 @@ type RenderedLine = {
   statusLeft?: string;
   statusRight?: string;
   copyContent?: string;
-  redoContent?: string;
-  redoIndex?: number;
 };
 const STATUS_COLUMN_GAP = 2;
 type HelpCard = { title: string; text: string; example: string };
@@ -142,14 +140,11 @@ function WelcomeHelpPanels(props: { width: number }) {
 }
 
 const COPY_BTN = ' [ copy ]';
-// Only user messages carry it: redo re-asks *this* question, so the action has
-// to sit on the message it acts upon.
-const REDO_BTN = ' [ redo ]';
 
-function messageHeaderSegments(role: string, columns: number, withRedo = false): Segment[] {
+function messageHeaderSegments(role: string, columns: number): Segment[] {
   const label = `[${roleLabel(role)}]`;
   const left = '── ';
-  const actionsLength = COPY_BTN.length + (withRedo ? REDO_BTN.length : 0);
+  const actionsLength = COPY_BTN.length;
   const rightLength = Math.max(2, columns - left.length - label.length - 1 - actionsLength);
   return [
     { text: left, color: '#4B5563' },
@@ -370,6 +365,13 @@ function statusValueColor(value: string) {
 function statusSegments(value: string): Segment[] {
   const text = value || ' ';
   const trimmed = text.trim();
+  const linkedValue = text.match(/^(\s*[A-Za-z][A-Za-z0-9 _./-]{0,34}:\s*)\[([^\]]+)\]\((https?:\/\/[^)]+)\)\s*$/);
+  if (linkedValue) {
+    return [
+      { text: linkedValue[1], color: '#8BD5CA' },
+      { text: linkedValue[2], color: '#5DADE2', url: linkedValue[3] },
+    ];
+  }
   if (trimmed && !text.startsWith(' ') && !trimmed.includes(':') && !/^[●◐○-]/.test(trimmed)) {
     return [{ text, color: '#FBBF24' }];
   }
@@ -416,13 +418,11 @@ function conversationLines(messages: Array<{ role: string; content: string }>, c
     const raw = String(message.content || '');
     const previous = index > 0 ? messages[index - 1] : null;
     const showHeader = !previous || headerGroupKey(previous.role) !== headerGroupKey(message.role);
-    const canRedo = message.role === 'user' && raw.trim().length > 0;
     const headerLines: RenderedLine[] = showHeader
       ? [
           {
-            segments: messageHeaderSegments(message.role, columns, canRedo),
+            segments: messageHeaderSegments(message.role, columns),
             copyContent: raw,
-            ...(canRedo ? { redoContent: raw, redoIndex: index } : {}),
           },
           { segments: [{ text: ' ', color: '#D6DEE8' }] },
         ]
@@ -433,6 +433,11 @@ function conversationLines(messages: Array<{ role: string; content: string }>, c
         ...headerLines,
         ...raw.split('\n').map((line) => {
           const { left, right } = statusColumns(line || ' ');
+          // A row with nothing on either side is vertical padding, not data.
+          // Rendering it as a status row drew an empty blue-bordered box under
+          // the last real line — the leftover visible at the bottom right of
+          // /status. Emit a plain spacer so the boxes stop with the content.
+          if (!left.trim() && !right.trim()) return { segments: [{ text: ' ', color: '#D6DEE8' }] };
           return { status: true, statusLeft: left, statusRight: right, segments: [] };
         }),
         { segments: [{ text: ' ', color: '#D6DEE8' }] },
@@ -472,15 +477,18 @@ export function ConversationView(props: {
   onScroll: (delta: number) => void;
   spinnerFrame: string;
   onCopy?: (content: string) => void;
-  onRedo?: (index: number, content: string) => void;
   onOpenLink?: (url: string) => void;
 }) {
   const renderer = useRenderer();
+  const [hoveredUrl, setHoveredUrl] = createSignal<string | null>(null);
   // Terminals have no CSS cursor, but OpenTUI can ask the emulator to swap the
   // mouse pointer shape. Without it nothing on screen distinguishes a clickable
   // link from ordinary blue text, so operators never discovered links were
   // clickable at all.
-  const hoverLink = (url: string | null) => renderer?.setMousePointer?.(url ? 'pointer' : 'default');
+  const hoverLink = (url: string | null) => {
+    setHoveredUrl(url);
+    renderer?.setMousePointer?.(url ? 'pointer' : 'default');
+  };
   const allLines = createMemo(() => conversationLines(props.messages, props.columns));
   const visibleLines = () => {
     const lines = allLines();
@@ -516,7 +524,9 @@ export function ConversationView(props: {
         event.stopPropagation?.();
       }}
     >
-      <text height={1} fg="#7F8C8D">{scrollHint()}</text>
+      <text height={1} fg={hoveredUrl() ? '#5DADE2' : '#7F8C8D'}>
+        {hoveredUrl() ? `↗ ${hoveredUrl()}` : scrollHint()}
+      </text>
       <For each={visibleLines()}>
         {(line) => (
           line.copyContent !== undefined ? (
@@ -525,13 +535,6 @@ export function ConversationView(props: {
                 {(seg: Segment) => <text width={seg.width} fg={seg.color} bg={seg.bg}>{seg.text}</text>}
               </For>
               <text fg="#4B5563" content={COPY_BTN} onMouseUp={() => props.onCopy?.(line.copyContent!)} />
-              <Show when={line.redoContent !== undefined}>
-                <text
-                  fg="#FBBF24"
-                  content={REDO_BTN}
-                  onMouseUp={() => props.onRedo?.(line.redoIndex!, line.redoContent!)}
-                />
-              </Show>
             </box>
           ) : line.role === 'user' && line.userBubbleWidth ? (
             <box height={1} flexDirection="row" overflow="hidden">
@@ -562,7 +565,19 @@ export function ConversationView(props: {
                 overflow="hidden"
               >
                 <For each={statusSegments(line.statusLeft ?? '')}>
-                  {(seg) => <text width={seg.width} fg={seg.color} bg="#111318">{seg.text}</text>}
+                  {(seg) => (
+                    <text
+                      width={seg.width}
+                      fg={seg.color}
+                      bg="#111318"
+                      onMouseOver={() => hoverLink(seg.url ? normalizeExternalUrl(seg.url) : null)}
+                      onMouseOut={() => hoverLink(null)}
+                      onMouseUp={() => {
+                        const url = seg.url ? normalizeExternalUrl(seg.url) : null;
+                        if (url) props.onOpenLink?.(url);
+                      }}
+                    >{seg.text}</text>
+                  )}
                 </For>
               </box>
               {line.statusRight ? (
@@ -578,7 +593,19 @@ export function ConversationView(props: {
                   overflow="hidden"
                 >
                   <For each={statusSegments(line.statusRight)}>
-                    {(seg) => <text width={seg.width} fg={seg.color} bg="#111318">{seg.text}</text>}
+                    {(seg) => (
+                      <text
+                        width={seg.width}
+                        fg={seg.color}
+                        bg="#111318"
+                        onMouseOver={() => hoverLink(seg.url ? normalizeExternalUrl(seg.url) : null)}
+                        onMouseOut={() => hoverLink(null)}
+                        onMouseUp={() => {
+                          const url = seg.url ? normalizeExternalUrl(seg.url) : null;
+                          if (url) props.onOpenLink?.(url);
+                        }}
+                      >{seg.text}</text>
+                    )}
                   </For>
                 </box>
               ) : null}
@@ -774,7 +801,6 @@ export function LeftPane(props: {
   spinnerFrame: string;
   onInputHeightChange: (height: number) => void;
   onCopy?: (content: string) => void;
-  onRedo?: (index: number, content: string) => void;
   onOpenLink?: (url: string) => void;
 }) {
   const modeColor = () => props.chatMode ? '#22C55E' : '#06B6D4';
@@ -805,7 +831,6 @@ export function LeftPane(props: {
           onScroll={props.scrollConversation}
           spinnerFrame={props.spinnerFrame}
           onCopy={props.onCopy}
-          onRedo={props.onRedo}
           onOpenLink={props.onOpenLink}
         />
       )}

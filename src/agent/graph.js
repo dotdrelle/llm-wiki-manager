@@ -376,7 +376,10 @@ async function classifyRequestedAction(llm, input, signal) {
   const system = [
     'Classify whether the user explicitly requests a real state-changing action now.',
     'Actions include starting, stopping, importing, ingesting, building, exporting, configuring, writing, deleting, or sending.',
-    'Questions, explanations, status questions, greetings, and hypothetical discussions are not actions.',
+    'Questions, explanations, status questions, greetings, hypothetical discussions, and bare capability questions are not actions.',
+    'Requests to refresh, show, or update the displayed plan/status are status reads, not state-changing actions.',
+    'A bare capability question such as "can you send an email?" or "peux-tu envoyer un mail ?" asks what the assistant can do; it does not request execution.',
+    'A concrete imperative or polite request such as "send this email to Alice" or "peux-tu envoyer ce message à Alice ?" is an action.',
     'Return JSON only: {"action":true} or {"action":false}.',
   ].join('\n');
   const messages = [{ role: 'user', content: String(input ?? '') }];
@@ -425,6 +428,28 @@ async function classifyRequestedAction(llm, input, signal) {
   } catch {
     return false;
   }
+}
+
+function looksLikeCapabilityQuestion(input) {
+  return /^(?:can|could|would)\s+you\b|^are\s+you\s+able\b|^do\s+you\s+(?:know\s+how|support)\b|^tu\s+peux\b|^vous\s+pouvez\b|^peux[\s-]*tu\b|^pouvez[\s-]*vous\b|^est[\s-]*ce\s+que\s+tu\s+peux\b/i
+    .test(String(input ?? '').trim());
+}
+
+function delegationBlockerForDonna(rawFailure) {
+  const cleaned = String(rawFailure ?? '')
+    .replace(/^[A-Za-z][A-Za-z0-9_]*Error\s*:?\s*/i, '')
+    .replace(/\s*Available capabilities:\s*[\s\S]*$/i, '')
+    .trim();
+  const reason = /No connected agent can do that|No orchestrable capability/i.test(cleaned)
+    ? 'No connected agent currently supports the requested action.'
+    : 'The requested action could not be assigned to a connected agent.';
+  return JSON.stringify({
+    delegated: false,
+    blocker: 'unsupported_action',
+    reason,
+    instruction:
+      'Answer the user naturally in their language. Explain the concrete limitation briefly. Do not expose exception names, capability identifiers, tool names, UUIDs, or internal routing details. Do not retry or claim that an action started.',
+  });
 }
 
 function summarizeToolArguments(rawArguments) {
@@ -816,9 +841,14 @@ async function handleRuntimeControlTool(session, tool, args = {}) {
   }
 }
 
-function connectorConfigurationTarget(session, objective) {
-  const text = String(objective ?? '').toLowerCase();
-  if (!/(?:configur|connect|authent|oauth|setup|sign[ -]?in)/i.test(text)) return null;
+export function connectorConfigurationTarget(session, objective) {
+  const recentContext = (session?.agentProjection?.conversation ?? [])
+    .slice(-6)
+    .filter((message) => message?.role === 'user')
+    .map((message) => String(message?.content ?? ''))
+    .join(' ');
+  const text = `${recentContext} ${String(objective ?? '')}`.trim().toLowerCase();
+  if (!/(?:configur|connect|authent|oauth|setup|sign[ -]?in|\bpat\b|api[ _-]?token|credential|identifiant|mot de passe|password)/i.test(text)) return null;
   for (const [serverName, server] of Object.entries(session?.mcp ?? {})) {
     if (server?.status !== 'connected' || !Array.isArray(server.tools) || server.tools.length === 0) continue;
     const genericAliasParts = new Set([
@@ -977,6 +1007,7 @@ export function buildAgentSystemPrompt(state) {
     'When calling a tool, emit no preliminary narration. Call it directly; the PLAN and Activity panels show progress. After completion, keep the final response concise and proportional to the result.',
     'Write the way a thoughtful colleague speaks: warm, plain, and to the point. For a simple factual question, 1 to 3 sentences is the sweet spot. Stay synthetic and information-dense — use only the lines needed, and never exceed roughly 15 to 20 short lines even for a detailed answer. Never expose internal reasoning, repeated checks, tool-selection commentary, or a chronological diary. Prioritize the result, essential facts, concrete errors, and actual outputs — but say them in human language, not as a field dump.',
     'Call a matching direct tool when one is offered. Otherwise, for an action backed by a discovered agent capability, call runtime__delegate with the original objective. This applies to both planner agents and executor-only single-task agents. Never call an agent orchestration-contract or plan tool directly.',
+    'Configuration is not a business run. When a connected server offers a setup or configuration tool, use it directly; never delegate configuration to an export, collect, send, build, or ingest capability. Read that server status first when existing non-secret values are needed, then ask only for required values that are still missing.',
     'For any question about the current workspace inventory or what is waiting there, call wiki__wiki_workspace_status first and answer only from its result. This is the canonical read-only workspace state; do not reconstruct it from upload, connector, or production tools.',
     'Tool identifiers are private implementation details. Never print MCP tool names such as server__tool in a user-facing answer. Describe the human result instead.',
     'Internal data shapes are private too. Never quote raw JSON field names (e.g. pendingSources.files), internal directory paths (e.g. raw/untracked/), or config keys in a user-facing answer — translate them into plain language. Say "36 pages sources sont en attente d\'ingestion", not the field or path they came from.',
@@ -998,6 +1029,7 @@ export function buildAgentSystemPrompt(state) {
       ? `Workspace profile (.wiki/profile.md) — durable user preferences, apply these to every reply (tone, tutoiement/vouvoiement, formatting, etc.):\n${workspaceProfile}`
       : null,
     'Runtime control: you have runtime__status, runtime__cancel, runtime__kill, runtime__approve and runtime__enqueue. When the user asks to stop, remove, clean or kill the current run, its jobs or the queue ("supprime le job et la queue", "arr\u00eate tout"), call runtime__kill (or runtime__cancel for a soft stop of just the run) and confirm what was stopped. When the user explicitly asks to delete, reset, abandon or replace the current plan, call runtime__kill with purge=true; never set purge=true for a simple stop. For questions about what is running or queued, call runtime__status and answer from its data. When the user consents to a pending approval in any phrasing ("vas-y", "ok pour l\'export"), call runtime__approve. When the user asks for a NEW action while a run is active, do not execute it: propose runtime__enqueue (run it after) or, if they insist it replaces the current work, runtime__kill then the new action.',
+    'When the user asks to refresh, show, or update the displayed plan or status, call runtime__status. This is a state refresh request, not a new business capability, and must never be delegated.',
     'Report every runtime control outcome exactly as the tool returned it \u2014 never embellish. If runtime__kill reports 0 run(s)/0 task(s)/0 purged, say there was nothing active to stop or purge; do NOT claim a run, plan, pending approval or queue item was removed. If runtime__status returns an error or could not be read, say the runtime state could not be retrieved and do not describe a state you never obtained. Never assert that something was cleaned, cancelled, approved or purged unless that specific tool result confirms it.',
     'Durable profile updates are actions in this stabilized version: delegate them instead of writing directly.',
   ].filter(Boolean).join('\n');
@@ -1089,7 +1121,10 @@ export function isOrchestrationBypassTool(name) {
   if (full === 'wiki__plan_set' || full === 'wiki__plan_done') return true;
   const sep = full.indexOf('__');
   const tool = sep === -1 ? full : full.slice(sep + 2);
-  return tool === 'agent_plan' || tool === 'agent_execute' || tool === 'production_start_job';
+  return tool === 'agent_plan'
+    || tool === 'agent_execute'
+    || tool === 'production_start_job'
+    || tool === 'cme_export_run';
 }
 
 function isReadOnlyMcpCall(session, server, tool) {
@@ -1195,7 +1230,9 @@ export function createAgentGraph(options = {}) {
       WIKI_PLAN_DONE_TOOL,
       ...buildLlmTools(state.session.mcp),
     ];
-    const tools = toolsForClassification(classification, writeTools, state.session);
+    const tools = state.terminalToolFailure || state.session._responseSynthesisOnly
+      ? []
+      : toolsForClassification(classification, writeTools, state.session);
     const system = buildAgentSystemPrompt(state);
 
     // On iteration 0: prior history is in state.messages, user input must be appended.
@@ -1445,6 +1482,7 @@ export function createAgentGraph(options = {}) {
   }
 
   async function toolExecutorNode(state) {
+    const llm = state.session.llm ?? options.llm ?? null;
     const toolCalls = state.pendingToolCalls ?? [];
     const toolResultMessages = [];
     let terminalFailure = null;
@@ -1535,12 +1573,41 @@ export function createAgentGraph(options = {}) {
           const result = await updateWorkspaceProfilePreference(state.session, args.preference);
           resultText = JSON.stringify(result, null, 2);
         } else if (server === 'runtime') {
-          resultText = await handleRuntimeControlTool(state.session, tool, args);
+          const isCapabilityQuestion = tool === 'delegate'
+            && !state.session._currentRunIdentity
+            && looksLikeCapabilityQuestion(String(args.objective ?? state.input ?? ''))
+            && !await classifyRequestedAction(
+              llm,
+              String(args.objective ?? state.input ?? ''),
+              state.session._abortSignal,
+            );
+          resultText = isCapabilityQuestion
+            ? JSON.stringify({
+                delegated: false,
+                capabilityQuestion: true,
+                instruction: 'Answer the user conversationally about whether this action is supported. Do not create a plan or claim that execution started.',
+              })
+            : await handleRuntimeControlTool(state.session, tool, args);
           if (tool === 'delegate' && /^Runtime control error \(delegate\):/i.test(resultText)) {
-            terminalFailure = resultText
+            const delegationFailure = resultText
               .replace(/^Runtime control error \(delegate\):\s*/i, '')
               .replace(/^Delegation failed during objective_resolution:\s*/i, '');
-            ok = false;
+            const needsInput = delegationFailure.match(/^Delegation requires input:\s*(.+)$/i);
+            if (needsInput) {
+              // Missing provider-required fields are a conversational blocker,
+              // not an execution failure. Feed the generic field list back to
+              // Donna so she can ask naturally in the workspace language.
+              resultText = JSON.stringify({
+                delegated: false,
+                needsInput: true,
+                missingRequiredFields: needsInput[1].split(',').map((item) => item.trim()).filter(Boolean),
+                instruction: 'Ask the user for the missing required information. Do not expose internal validation details.',
+              });
+            } else {
+              terminalFailure = delegationFailure;
+              resultText = delegationBlockerForDonna(delegationFailure);
+              ok = false;
+            }
           }
         } else if (server !== 'shell') {
           await awaitRunApproval(state.session, { runId, tool: toolName });
@@ -1641,10 +1708,7 @@ export function createAgentGraph(options = {}) {
     }
 
     if (terminalFailure) {
-      const response = `Action non lancée : ${terminalFailure}`;
-      emitAgentEvent(state.session, 'assistant_message', 'agent_guard', { content: response });
       return {
-        response,
         messages: toolResultMessages,
         pendingToolCalls: null,
         forceDelegation: false,
@@ -1666,7 +1730,7 @@ export function createAgentGraph(options = {}) {
   }
 
   function routeToolExecutor(state) {
-    return state.terminalToolFailure ? END : 'orchestrator';
+    return 'orchestrator';
   }
 
   function routeOrchestrator(state) {

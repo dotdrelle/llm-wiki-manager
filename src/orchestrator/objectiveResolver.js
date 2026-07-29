@@ -1,3 +1,18 @@
+// Distinguishes "nothing here can do that" from a genuine resolution failure:
+// the first is a normal answer Donna gives the user, the second is a defect.
+export class ObjectiveNotOrchestrableError extends Error {
+  constructor(objective, candidates = [], reason = '') {
+    const available = candidates.map((item) => item.id).join(', ') || 'none';
+    super(
+      `No connected agent can do that.${reason ? ` ${String(reason).trim()}` : ''}`
+      + ` Available capabilities: ${available}.`,
+    );
+    this.name = 'ObjectiveNotOrchestrableError';
+    this.objective = String(objective ?? '');
+    this.candidates = candidates.map((item) => item.id);
+  }
+}
+
 export async function resolveObjective(objective, session) {
   const candidates = capabilityCandidates(session);
   if (candidates.length === 0) throw new Error('No orchestrable capability is currently available.');
@@ -10,6 +25,12 @@ export async function resolveObjective(objective, session) {
     system: [
       'You resolve one user objective against a closed capability registry.',
       'Select exactly one listed capability and one of its supported operations.',
+      // Without an explicit way out, the model has to pick SOMETHING: an
+      // objective no listed capability covers ("authorize Gmail") came back as
+      // workspace.diagnose/doctor and launched an unrelated job. Declining is
+      // a valid answer and the caller turns it into a plain reply.
+      'If no listed capability can achieve the objective, do not pick the closest one:',
+      'return {"capability":null,"reason":"<short reason>"}.',
       'Never invent identifiers. Return JSON only: {"capability":"...","operation":"..."}.',
     ].join('\n'),
     tools: [],
@@ -20,6 +41,9 @@ export async function resolveObjective(objective, session) {
     signal: session?._abortSignal,
   });
   const selection = parseJson(result?.content);
+  if (selection?.capability === null) {
+    throw new ObjectiveNotOrchestrableError(objective, candidates, selection?.reason);
+  }
   const capability = String(selection?.capability ?? '');
   const operation = String(selection?.operation ?? '');
   const candidate = candidates.find((item) => item.id === capability);

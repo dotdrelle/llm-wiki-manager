@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildAgentSystemPrompt, createAgentGraph, invalidSuggestedSlashCommands, invalidUserFacingToolNames, knownCapabilityIds, normalizeToolArgumentsFromSchema } from './graph.js';
+import { buildAgentSystemPrompt, connectorConfigurationTarget, createAgentGraph, invalidSuggestedSlashCommands, invalidUserFacingToolNames, isOrchestrationBypassTool, knownCapabilityIds, normalizeToolArgumentsFromSchema } from './graph.js';
 
 test('user-facing response guard hides MCP identifiers generically', () => {
   const session = sessionBase();
@@ -11,6 +11,29 @@ test('user-facing response guard hides MCP identifiers generically', () => {
     invalidUserFacingToolNames('Utilisez production__production_start_job.', session),
     ['production__production_start_job'],
   );
+});
+
+test('CME setup stays direct while CME export execution stays orchestrated', () => {
+  assert.equal(isOrchestrationBypassTool('cme__cme_export_run'), true);
+  assert.equal(isOrchestrationBypassTool('cme__cme_setup'), false);
+});
+
+test('configuration routing retains the recent CME conversation context', () => {
+  const target = connectorConfigurationTarget({
+    agentProjection: {
+      conversation: [{ role: 'user', content: 'je veux configurer le CME' }],
+    },
+    mcp: {
+      cme: {
+        status: 'connected',
+        tools: [
+          { name: 'cme_setup', description: 'Configure Confluence credentials.' },
+          { name: 'cme_export_run', description: 'Run export.' },
+        ],
+      },
+    },
+  }, 'configurer l’agent wiki');
+  assert.deepEqual(target, { serverName: 'cme', setupTool: 'cme_setup' });
 });
 
 test('Donna cannot answer an explicit action with manual instructions instead of delegating', async () => {
@@ -52,6 +75,68 @@ test('Donna cannot answer an explicit action with manual instructions instead of
     const result = await createAgentGraph().invoke({ input: 'lance ingestion', session });
     assert.equal(delegated, true);
     assert.equal(result.response, 'Plan soumis.');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a bare capability question returns to Donna without runtime delegation', async () => {
+  const originalFetch = globalThis.fetch;
+  let delegated = false;
+  globalThis.fetch = async (url) => {
+    delegated ||= String(url).includes('/delegate');
+    if (String(url).includes('/delegate')) throw new Error(`Unexpected runtime request: ${url}`);
+    return { ok: true, status: 200, json: async () => ({ status: 'idle', running: false }) };
+  };
+  let mainCalls = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    llm: {
+      async completeWithTools({ tools, messages }) {
+        if (tools.some((tool) => tool.function?.name === 'classify_action_request')) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: 'classify-capability-question',
+              type: 'function',
+              function: { name: 'classify_action_request', arguments: '{"action":false}' },
+            }],
+          };
+        }
+        mainCalls += 1;
+        if (mainCalls === 1) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: 'wrong-delegate',
+              type: 'function',
+              function: { name: 'runtime__delegate', arguments: '{"objective":"tu peux envoyer un mail ?"}' },
+            }],
+          };
+        }
+        const result = JSON.parse(
+          String((messages ?? []).filter((message) => message.role === 'tool').at(-1)?.content ?? '{}'),
+        );
+        assert.equal(result.capabilityQuestion, true);
+        return {
+          content: 'Oui, je peux envoyer un mail si tu me donnes le destinataire, le sujet et le contenu.',
+          message: {
+            role: 'assistant',
+            content: 'Oui, je peux envoyer un mail si tu me donnes le destinataire, le sujet et le contenu.',
+          },
+          tool_calls: null,
+        };
+      },
+    },
+  });
+
+  try {
+    const result = await createAgentGraph().invoke({ input: 'tu peux envoyer un mail ?', session });
+    assert.equal(delegated, false);
+    assert.equal(mainCalls, 2);
+    assert.match(result.response, /Oui, je peux envoyer un mail/);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -949,7 +1034,7 @@ test('forced delegation is cleared after one valid tool call and does not loop',
   }
 });
 
-test('a rejected runtime delegation is terminal and never loops', async () => {
+test('a rejected runtime delegation returns to Donna once without leaking technical details', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => ({
     ok: false,
@@ -964,6 +1049,16 @@ test('a rejected runtime delegation is terminal and never loops', async () => {
     llm: {
       async completeWithTools() {
         calls += 1;
+        if (calls === 2) {
+          return {
+            content: 'Je ne peux pas lancer cette action : aucun agent connecté ne la prend actuellement en charge.',
+            message: {
+              role: 'assistant',
+              content: 'Je ne peux pas lancer cette action : aucun agent connecté ne la prend actuellement en charge.',
+            },
+            tool_calls: [],
+          };
+        }
         return {
           content: null,
           message: { role: 'assistant', content: null },
@@ -979,9 +1074,58 @@ test('a rejected runtime delegation is terminal and never loops', async () => {
 
   try {
     const result = await createAgentGraph().invoke({ input: 'lance ingestion', session });
-    assert.equal(calls, 1);
-    assert.equal(result.response, 'Action non lancée : No orchestrable capability is currently available.');
+    assert.equal(calls, 2);
+    assert.equal(
+      result.response,
+      'Je ne peux pas lancer cette action : aucun agent connecté ne la prend actuellement en charge.',
+    );
+    assert.doesNotMatch(result.response, /ObjectiveNotOrchestrableError|capabilit|runtime__|[0-9a-f]{8}-/i);
     assert.equal(result.terminalToolFailure, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a delegation missing required provider inputs returns to Donna for clarification', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 422,
+    json: async () => ({
+      error: 'Delegation requires input: to, subject, body',
+    }),
+  });
+  let calls = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    llm: {
+      async completeWithTools() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: 'delegate-needs-input',
+              type: 'function',
+              function: { name: 'runtime__delegate', arguments: '{"objective":"envoie un mail"}' },
+            }],
+          };
+        }
+        return {
+          content: 'Oui. À qui dois-je écrire, avec quel objet et quel message ?',
+          message: { role: 'assistant', content: 'Oui. À qui dois-je écrire, avec quel objet et quel message ?' },
+          tool_calls: [],
+        };
+      },
+    },
+  });
+
+  try {
+    const result = await createAgentGraph().invoke({ input: 'envoie un mail', session });
+    assert.equal(calls, 2);
+    assert.equal(result.response, 'Oui. À qui dois-je écrire, avec quel objet et quel message ?');
+    assert.equal(result.terminalToolFailure, false);
   } finally {
     globalThis.fetch = originalFetch;
   }

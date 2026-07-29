@@ -124,9 +124,9 @@ always wins and is replaced in place; commented lines below it stay commented,
 so a key never ends up assigned twice. Prose comments merely mentioning a key
 are not touched.
 
-Two user-owned Compose overrides sit next to the `.env`:
-`docker-compose.override.yml` (workspace stack) and
-`agents.docker-compose.override.yml` (agents stack). Both are seeded once from
+Two user-owned Compose overrides sit under `.wiki/compose/`:
+`.wiki/compose/docker-compose.override.yml` (workspace stack) and
+`.wiki/compose/agents.docker-compose.override.yml` (agents stack). Both are seeded once from
 the packaged `*.example.yml` templates and **never rewritten** — the opposite
 policy from `.wiki/runtime/*.compose.yml`, which is generated state replaced on
 every Compose command. Merge order per stack: packaged file → user override →

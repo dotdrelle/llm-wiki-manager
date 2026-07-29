@@ -4,7 +4,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { checkInternetConnectivity, checkMcpConnections, runChecks, runPreflightChecks, withRuntimePreflight } from './startupCheck.js';
+import { checkAgents, checkInternetConnectivity, checkMcpConnections, runChecks, runPreflightChecks, withRuntimePreflight } from './startupCheck.js';
 
 async function withWorkspace(wikircLines, fn) {
   const root = await mkdtemp(join(tmpdir(), 'wiki-manager-startup-check-'));
@@ -33,6 +33,54 @@ async function withWorkspace(wikircLines, fn) {
 function hasGap(gaps, kind) {
   return gaps.some((gap) => gap.kind === kind);
 }
+
+test('checkAgents reports an enabled profile whose container never appeared', async () => {
+  // `docker compose ps` lists nothing for a service that was never created, so
+  // filtering only on "listed but stopped" reported success while connectors
+  // was absent. An enabled profile is a promise, not an opt-out.
+  const context = {
+    exists: true,
+    args: ['compose', '-p', 'wiki-agents', '--profile', 'connectors'],
+    profiles: ['connectors'],
+    expectedProfileServices: ['connectors'],
+  };
+  const running = JSON.stringify([{ Service: 'cme', State: 'running' }]);
+  const execWithPs = (ps) => async (_command, args) => ({
+    stdout: args.includes('config') ? 'cme\nconnectors\n' : ps,
+  });
+
+  const gap = await checkAgents({ context, exec: execWithPs(running) });
+  assert.equal(gap.kind, 'agents');
+  assert.deepEqual(gap.context.missingServices, ['connectors']);
+  assert.deepEqual(gap.context.profiles, ['connectors']);
+
+  const started = JSON.stringify([
+    { Service: 'cme', State: 'running' },
+    { Service: 'connectors', State: 'running' },
+  ]);
+  assert.equal(await checkAgents({ context, exec: execWithPs(started) }), null);
+});
+
+test('checkAgents ignores a profile the operator did not enable', async () => {
+  const context = { exists: true, args: [], profiles: [], expectedProfileServices: [] };
+  const stdout = JSON.stringify([{ Service: 'cme', State: 'running' }]);
+  const exec = async (_command, args) => ({
+    stdout: args.includes('config') ? 'cme\n' : stdout,
+  });
+  assert.equal(await checkAgents({ context, exec }), null);
+});
+
+test('checkAgents reports an ordinary agent that never created a container', async () => {
+  const context = { exists: true, args: [], profiles: [], expectedProfileServices: [] };
+  const exec = async (_command, args) => ({
+    stdout: args.includes('config')
+      ? 'cme\ndocuments\n'
+      : JSON.stringify([{ Service: 'cme', State: 'running' }]),
+  });
+  const gap = await checkAgents({ context, exec });
+  assert.deepEqual(gap.context.missingServices, ['documents']);
+  assert.deepEqual(gap.context.expectedServices, ['cme', 'documents']);
+});
 
 test('runChecks treats default LLM config without baseUrl as incomplete', async () => {
   await withWorkspace([

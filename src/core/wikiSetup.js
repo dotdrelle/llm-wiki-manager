@@ -6,14 +6,11 @@ import { promisify } from 'node:util';
 import YAML from 'yaml';
 import { checkMissingDockerImages } from './dockerImages.js';
 import { patchWikircProfile } from './wikirc.js';
-import { managerEnvFile, managerMcpEndpointsFile, readEnvFile, resolveAgentsDataDir } from './env.js';
+import { resolveAgentsComposeContext } from './agentsCompose.js';
+import { managerEnvFile, managerMcpEndpointsFile, resolveAgentsDataDir } from './env.js';
 import { createWorkspace, findWorkspace, isValidWorkspaceName, listWorkspaces, managerRoot, workspacesDir } from './workspaces.js';
 
 const execFileAsync = promisify(execFile);
-
-function enabled(value) {
-  return /^(?:1|true|yes|on)$/i.test(String(value ?? '').trim());
-}
 
 export function configuredAgentImages(config, activeProfiles = new Set()) {
   return Object.values(config.services ?? {})
@@ -25,21 +22,12 @@ export function configuredAgentImages(config, activeProfiles = new Set()) {
     .filter(Boolean);
 }
 
-async function missingAgentImages() {
-  let managerEnv = {};
-  try {
-    managerEnv = readEnvFile(managerEnvFile());
-  } catch {
-    // A missing manager .env is valid during first-run setup.
-  }
-  const activeProfiles = new Set();
-  if (enabled(managerEnv.CONNECTORS_ENABLED ?? process.env.CONNECTORS_ENABLED)) {
-    activeProfiles.add('connectors');
-  }
-  const composeFiles = [
-    join(managerRoot(), 'agents.docker-compose.yml'),
-    join(dirname(managerEnvFile()), 'agents.docker-compose.override.yml'),
-  ].filter(existsSync);
+async function missingAgentImages(context = resolveAgentsComposeContext()) {
+  // Same resolution as the preflight and as `wiki-workspace agents up`: an
+  // image behind a profile the operator did not enable must not be reported
+  // missing, and one behind a profile they DID enable must be.
+  const activeProfiles = new Set(context.profiles);
+  const composeFiles = context.composeFiles.filter(existsSync);
   const images = [...new Set(composeFiles.flatMap((filePath) => {
     try {
       const config = YAML.parse(readFileSync(filePath, 'utf8')) ?? {};
@@ -77,13 +65,22 @@ function wrapDockerError(err) {
 }
 
 export async function startAgents(options = {}) {
+  const composeContext = options.composeContext ?? resolveAgentsComposeContext();
   try {
-    const absentImages = await missingAgentImages();
+    const absentImages = options.imagesCheck
+      ? await options.imagesCheck(composeContext)
+      : await missingAgentImages(composeContext);
     if (absentImages.length > 0) options.onImagesMissing?.(absentImages);
-    const { stdout, stderr } = await execFileAsync(join(managerRoot(), 'wiki-workspace'), ['agents', 'up'], {
+    const exec = options.exec ?? execFileAsync;
+    const { stdout, stderr } = await exec(join(managerRoot(), 'wiki-workspace'), ['agents', 'up'], {
       cwd: managerRoot(),
       env: {
         ...process.env,
+        // Compose gives variables already exported by its parent process
+        // precedence over --env-file, including an empty value loaded at boot.
+        // Re-apply the manager's resolved policy here so a token/secret written
+        // later to .env is not shadowed by stale process.env state.
+        ...composeContext.env,
         WIKI_WORKSPACES_DIR: workspacesDir(),
         // cwd is the npm package root (the script and compose files live
         // there), so the manager files MUST be pinned explicitly: without
@@ -102,13 +99,51 @@ export async function startAgents(options = {}) {
       timeout: options.timeout ?? 180_000,
       maxBuffer: options.maxBuffer ?? 1024 * 1024 * 8,
     });
+    // `wiki-workspace agents up` also (re)writes mcp.endpoints.json, so the
+    // endpoints must be re-read here — the caller's in-memory session still
+    // holds the file as it was BEFORE the connectors entry was added, and the
+    // freshly started agent would stay unreachable until the next restart.
+    const verification = await verifyAgentsStarted({
+      context: composeContext,
+      agentsCheck: options.agentsCheck,
+    });
+    if (!verification.ok) throw agentsStartFailure(verification);
     return {
       output: [stdout, stderr].filter(Boolean).join('\n').trim(),
       missingImages: absentImages,
+      profiles: composeContext.profiles,
     };
   } catch (err) {
     throw wrapDockerError(err);
   }
+}
+
+// A start that leaves an enabled service down is a failure. Reporting success
+// and letting the operator discover it through a silent preflight line is what
+// made CONNECTORS_ENABLED=true look like it had been ignored.
+async function verifyAgentsStarted({ context, agentsCheck }) {
+  const check = agentsCheck ?? (await import('./startupCheck.js')).checkAgents;
+  const gap = await check({ context });
+  if (!gap) return { ok: true, profiles: context.profiles };
+  const down = gap.context?.downServices ?? [];
+  const missing = gap.context?.missingServices ?? [];
+  if (down.length === 0 && missing.length === 0) return { ok: true, profiles: context.profiles };
+  return { ok: false, downServices: down, missingServices: missing, profiles: context.profiles };
+}
+
+function agentsStartFailure({ downServices = [], missingServices = [], profiles = [] }) {
+  const parts = [
+    missingServices.length > 0 ? `never started: ${missingServices.join(', ')}` : '',
+    downServices.length > 0 ? `not running: ${downServices.join(', ')}` : '',
+  ].filter(Boolean);
+  const error = new Error(
+    `Agents started, but the expected services are not up (${parts.join('; ')}).`
+    + (profiles.length > 0 ? ` Active profiles: ${profiles.join(', ')}.` : ''),
+  );
+  error.name = 'AgentsNotRunningError';
+  error.downServices = downServices;
+  error.missingServices = missingServices;
+  return error;
 }
 
 export async function stopAgents(options = {}) {

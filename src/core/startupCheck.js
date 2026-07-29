@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { activeCacertPath, cacertEnv } from './cacert.js';
 import { COMPOSE_SERVICES, parseComposePsJson, serviceStates } from './compose.js';
+import { resolveAgentsComposeContext } from './agentsCompose.js';
 import { buildMcpStatus, discoverMcpTools } from './mcp.js';
 import { listWikircProfiles, loadWikircProfile, summarizeWikircConfig } from './wikirc.js';
 import { listWorkspaces, managerRoot, workspacesDir } from './workspaces.js';
@@ -79,22 +80,27 @@ export async function checkInternetConnectivity({
   }
 }
 
-async function checkAgents({ exec = execFileAsync } = {}) {
-  const composeFile = join(managerRoot(), 'agents.docker-compose.yml');
-  if (!existsSync(composeFile)) return null;
+export async function checkAgents({ exec = execFileAsync, context = resolveAgentsComposeContext() } = {}) {
+  if (!context.exists) return null;
   try {
-    const { stdout } = await exec('docker', [
-      'compose',
-      '--project-directory',
-      managerRoot(),
-      '-f',
-      composeFile,
-      '-p',
-      'wiki-agents',
-      'ps',
-      '--format',
-      'json',
-    ], {
+    // `config --services` is Compose's authoritative view after profiles,
+    // overrides and interpolation. Unlike `ps`, it also includes services that
+    // have never created a container, including ordinary (non-profiled)
+    // services and services contributed by the user override.
+    const { stdout: configuredStdout } = await exec(
+      'docker',
+      [...context.args, 'config', '--services'],
+      {
+        cwd: managerRoot(),
+        env: {
+          ...process.env,
+          WIKI_WORKSPACES_DIR: workspacesDir(),
+        },
+        timeout: 30_000,
+        maxBuffer: 1024 * 1024,
+      },
+    );
+    const { stdout } = await exec('docker', [...context.args, 'ps', '--all', '--format', 'json'], {
       cwd: managerRoot(),
       env: {
         ...process.env,
@@ -104,16 +110,38 @@ async function checkAgents({ exec = execFileAsync } = {}) {
       timeout: 5000,
       maxBuffer: 1024 * 1024,
     });
-    const entries = parseComposePsJson(stdout);
-    if (entries.length === 0) return null;
-    const downServices = entries
-      .filter((entry) => {
-        const state = String(entry.State ?? entry.state ?? entry.Status ?? entry.status ?? '').toLowerCase();
-        return !(state.includes('running') || state.includes('up'));
-      })
-      .map((entry) => entry.Service ?? entry.service ?? entry.Name ?? entry.name)
+    const expectedServices = String(configuredStdout ?? '')
+      .split(/\r?\n/)
+      .map((service) => service.trim())
       .filter(Boolean);
-    return downServices.length > 0 ? { kind: 'agents', context: { downServices } } : null;
+    const entries = parseComposePsJson(stdout);
+    const running = new Set();
+    const downServices = [];
+    for (const entry of entries) {
+      const name = entry.Service ?? entry.service ?? entry.Name ?? entry.name;
+      if (!name) continue;
+      const state = String(entry.State ?? entry.state ?? entry.Status ?? entry.status ?? '').toLowerCase();
+      if (state.includes('running') || state.includes('up')) running.add(name);
+      else downServices.push(name);
+    }
+    // A service whose profile the operator enabled but which `ps` does not list
+    // at all is missing, not opted out — reporting only the listed-but-stopped
+    // ones turned "connectors never started" into a silent success.
+    const missingServices = expectedServices.filter(
+      (service) => !running.has(service) && !downServices.includes(service),
+    );
+    if (entries.length === 0 && missingServices.length === 0) return null;
+    if (downServices.length === 0 && missingServices.length === 0) return null;
+    return {
+      kind: 'agents',
+      context: {
+        ...(downServices.length > 0 ? { downServices } : {}),
+        ...(missingServices.length > 0 ? { missingServices } : {}),
+        expectedServices,
+        requestedProfileServices: context.expectedProfileServices,
+        profiles: context.profiles,
+      },
+    };
   } catch (err) {
     if (err?.code === 'ENOENT') {
       return { kind: 'agents', context: { dockerMissing: true } };
@@ -349,16 +377,25 @@ export async function runChecks({
   if (!docker.ok) gaps.push({ kind: 'agents', context: docker.context ?? { dockerUnavailable: true } });
   if (!internet.ok) gaps.push({ kind: 'network', context: internet.context ?? {} });
   if (agents) gaps.push(agents);
+  const missingRequested = (agents?.context?.missingServices ?? []).filter(
+    (service) => (agents?.context?.requestedProfileServices ?? []).includes(service),
+  );
   onCheck({
     kind: 'agents',
     ok: docker.ok && !agents,
     skipped: !docker.ok,
     pending: !docker.ok || Boolean(agents),
+    // A service behind a profile the operator explicitly enabled is not merely
+    // "not started yet": they asked for it. Reporters use this to stay silent
+    // about ordinary boot latency while still surfacing this one.
+    requested: missingRequested.length > 0,
     detail: !docker.ok
       ? 'Waiting for Docker'
-      : agents?.context?.downServices?.length
-        ? `To start: ${agents.context.downServices.join(', ')}`
-        : 'Running',
+      : missingRequested.length > 0
+        ? `Enabled but not running: ${missingRequested.join(', ')}`
+        : agents?.context?.downServices?.length
+          ? `To start: ${agents.context.downServices.join(', ')}`
+          : 'Running',
     context: { ...(agents?.context ?? {}), command: 'wiki-workspace agents up' },
   });
   const workspaceGap = checkWorkspace(workspaces);

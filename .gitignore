@@ -7,6 +7,7 @@ node_modules/
 !.env.example
 data/
 .agents-data/
+.wiki/compose/
 .wiki/runtime/
 .wiki-manager/
 workspaces/*
@@ -23,8 +24,8 @@ workspaces/*
 !agents.docker-compose.yml
 
 # Shipped templates for the user-owned compose overrides. The generated
-# copies (docker-compose.override.yml / agents.docker-compose.override.yml)
-# stay ignored: they are per-deployment operator files.
+# copies under .wiki/compose/ stay ignored: they are per-deployment operator
+# files.
 !docker-compose.override.example.yml
 !agents.docker-compose.override.example.yml
 docker-compose*.local.yml

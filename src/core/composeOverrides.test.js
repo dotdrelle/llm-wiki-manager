@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -34,7 +34,7 @@ test('scaffold seeds both compose overrides once and never rewrites them', () =>
   withStateDir(() => {
     const created = ensureManagerScaffold();
     for (const { target } of COMPOSE_OVERRIDES) {
-      assert.ok(created.includes(target), `expected ${target} to be created`);
+      assert.ok(created.includes(`.wiki/compose/${target}`), `expected ${target} to be created`);
     }
 
     const edited = '# operator edit\nservices:\n  serve:\n    environment:\n      - HTTP_PROXY=http://proxy:3128\n';
@@ -46,6 +46,20 @@ test('scaffold seeds both compose overrides once and never rewrites them', () =>
     for (const { target } of COMPOSE_OVERRIDES) {
       assert.ok(!second.includes(target), `${target} must not be recreated`);
     }
+  });
+});
+
+test('scaffold migrates legacy root overrides into .wiki/compose without rewriting them', () => {
+  withStateDir((root) => {
+    const legacy = join(root, 'docker-compose.override.yml');
+    const content = '# legacy operator edit\nservices: {}\n';
+    writeFileSync(legacy, content, 'utf8');
+
+    const created = ensureManagerScaffold();
+    const migrated = managerComposeOverrideFile('docker-compose.override.yml');
+    assert.equal(readFileSync(migrated, 'utf8'), content);
+    assert.equal(existsSync(legacy), false);
+    assert.ok(created.includes('.wiki/compose/docker-compose.override.yml migrated'));
   });
 });
 
@@ -66,7 +80,7 @@ test('wiki-workspace seeds the overrides once and merges them in both stacks', a
   assert.match(script, /\[\[ -f "\$target" \]\] && return 0/);
   assert.match(script, /ensure_compose_override 'agents\.docker-compose\.override\.example\.yml' 'agents\.docker-compose\.override\.yml'/);
   assert.match(script, /ensure_compose_override 'docker-compose\.override\.example\.yml' 'docker-compose\.override\.yml'/);
-  assert.match(script, /local user_override="\$MANAGER_STATE_DIR\/docker-compose\.override\.yml"/);
+  assert.match(script, /local user_override="\$MANAGER_COMPOSE_DIR\/docker-compose\.override\.yml"/);
   assert.match(
     script,
     /-f "\$ROOT_DIR\/docker-compose\.yml" \$\{override_args\[@\]\+"\$\{override_args\[@\]\}"\} \$\{cacert_args\[@\]\+"\$\{cacert_args\[@\]\}"\}/,

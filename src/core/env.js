@@ -39,18 +39,24 @@ export function managerMcpEndpointsFile() {
   return join(managerStateDir(), 'mcp.endpoints.json');
 }
 
-// User-owned compose overrides, one per stack, next to the manager .env.
-// Deliberately NOT under .wiki/runtime: everything there is generated state
-// that every compose command rewrites (see cacert.js). These two are seeded
-// once and never touched again, so an operator has a supported place to fix a
-// deployment — proxy passthrough, extra mounts, optional agents — instead of
-// editing a generated file and losing the change on the next command.
+// User-owned compose overrides, one per stack. `.wiki/compose` is persistent
+// operator configuration; `.wiki/runtime` is generated state rewritten by
+// compose commands. Keeping those directories separate makes the lifecycle
+// explicit while grouping manager-local files under one `.wiki` tree.
 export const COMPOSE_OVERRIDES = [
   { example: 'docker-compose.override.example.yml', target: 'docker-compose.override.yml' },
   { example: 'agents.docker-compose.override.example.yml', target: 'agents.docker-compose.override.yml' },
 ];
 
+export function managerComposeDir() {
+  return join(managerStateDir(), '.wiki', 'compose');
+}
+
 export function managerComposeOverrideFile(target = 'docker-compose.override.yml') {
+  return join(managerComposeDir(), target);
+}
+
+function legacyManagerComposeOverrideFile(target) {
   return join(managerStateDir(), target);
 }
 
@@ -160,12 +166,23 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
   for (const { example, target } of COMPOSE_OVERRIDES) {
     const examplePath = join(packageRoot, example);
     const targetPath = managerComposeOverrideFile(target);
+    const legacyPath = legacyManagerComposeOverrideFile(target);
+    mkdirSync(dirname(targetPath), { recursive: true });
+    if (!existsSync(targetPath) && existsSync(legacyPath)) {
+      renameSync(legacyPath, targetPath);
+      created.push(`.wiki/compose/${target} migrated`);
+      continue;
+    }
     if (!existsSync(examplePath) || existsSync(targetPath)) continue;
     copyFileSync(examplePath, targetPath);
-    created.push(target);
+    created.push(`.wiki/compose/${target}`);
   }
   if (created.length > 0) {
-    log(`configuration initialized successfully in ${managerStateDir()} — created ${created.join(' and ')} from packaged defaults. Optional credentials can be added later for external services.`);
+    // The list of seeded files and the state directory are implementation
+    // detail the operator has no decision to make about — the return value
+    // still carries them for callers that need to react (a fresh scaffold
+    // forces a runtime restart).
+    log('configuration initialized successfully');
   }
   return created;
 }
@@ -209,12 +226,12 @@ function parseEnvValue(value) {
   return value;
 }
 
-export function loadManagerEnv() {
+export function loadManagerEnv({ override = false } = {}) {
   const filePath = managerEnvFile();
   if (!existsSync(filePath)) return;
   const values = readEnvFile(filePath);
   for (const [key, value] of Object.entries(values)) {
-    if (!(key in process.env)) process.env[key] = value;
+    if (override || !(key in process.env)) process.env[key] = value;
   }
 }
 

@@ -17,6 +17,7 @@ WORKSPACES_DIR="${WIKI_WORKSPACES_DIR:-$DEFAULT_MANAGER_DIR/workspaces}"
 MANAGER_ENV_FILE="${WIKI_MANAGER_ENV_FILE:-$DEFAULT_MANAGER_DIR/.env}"
 MANAGER_ENDPOINTS_FILE="${WIKI_MANAGER_ENDPOINTS_FILE:-$DEFAULT_MANAGER_DIR/mcp.endpoints.json}"
 MANAGER_STATE_DIR="$(cd "$(dirname "$MANAGER_ENV_FILE")" && pwd)"
+MANAGER_COMPOSE_DIR="$MANAGER_STATE_DIR/.wiki/compose"
 MANAGER_RUNTIME_DIR="$MANAGER_STATE_DIR/.wiki/runtime"
 LEGACY_MANAGER_RUNTIME_DIR="$MANAGER_STATE_DIR/.wiki-manager"
 if [[ ! -e "$MANAGER_RUNTIME_DIR" && -d "$LEGACY_MANAGER_RUNTIME_DIR" ]]; then
@@ -120,9 +121,9 @@ Configuration:
   Runtime node: WIKI_MANAGER_NODE_BIN=/path/to/node
   Local CA: --cacert /absolute/path/to/ca.pem (Docker must be able to read this host path)
 
-Compose overrides (next to the manager .env, created once, never regenerated):
-  docker-compose.override.yml         Workspace stack (serve, mcp-http, production-mcp)
-  agents.docker-compose.override.yml  Agents stack (cme, documents, connectors)
+Compose overrides (under .wiki/compose, created once, never regenerated):
+  .wiki/compose/docker-compose.override.yml         Workspace stack
+  .wiki/compose/agents.docker-compose.override.yml  Agents stack
   Use them for proxy passthrough, extra mounts and optional agents.
   Never edit .wiki/runtime/*.compose.yml — that is generated state, rewritten
   on every compose command.
@@ -266,10 +267,10 @@ agents_compose() {
     WORKSPACES_ROOT="$workspaces_root" AGENTS_DATA_DIR="$agents_data_dir" \
       read_lines_into_array cacert_args cacert_compose_args "$agents_compose_file" "agents.cacert.compose.yml"
     # User-owned override: optional external agents, proxy passthrough and
-    # any local fix live in a file the user maintains NEXT TO the .env —
+    # any local fix live in a file the user maintains under .wiki/compose —
     # scaffolded once by ensure_compose_override, never overwritten afterwards.
     local override_args=()
-    local user_override="$MANAGER_STATE_DIR/agents.docker-compose.override.yml"
+    local user_override="$MANAGER_COMPOSE_DIR/agents.docker-compose.override.yml"
     [[ -f "$user_override" ]] && override_args+=(-f "$user_override")
     WORKSPACES_ROOT="$workspaces_root" AGENTS_DATA_DIR="$agents_data_dir" \
       COMPOSE_PROFILES= \
@@ -307,7 +308,7 @@ agents_compose() {
         "${CME_MCP_PORT:-3336}" "${DOCUMENTS_MCP_PORT:-3337}"
       connectors_enabled && printf '  connectors=:%s' "${CONNECTORS_MCP_PORT:-3338}"
       printf '\n'
-      [[ ! -f "$MANAGER_STATE_DIR/agents.docker-compose.override.yml" ]] || printf 'User override: %s\n' "$MANAGER_STATE_DIR/agents.docker-compose.override.yml"
+      [[ ! -f "$MANAGER_COMPOSE_DIR/agents.docker-compose.override.yml" ]] || printf 'User override: %s\n' "$MANAGER_COMPOSE_DIR/agents.docker-compose.override.yml"
       ;;
     down)
       [[ $# -eq 0 ]] || die "agents down does not take arguments"
@@ -534,6 +535,13 @@ if (enabled === 'true') {
       Authorization: 'Bearer ${CONNECTORS_MCP_AUTH_TOKEN}',
     },
   };
+  const connectorEndpoint = config.mcpServers.connectors;
+  connectorEndpoint.requireApproval = [
+    ...new Set([
+      ...(Array.isArray(connectorEndpoint.requireApproval) ? connectorEndpoint.requireApproval : []),
+      'connectors_gmail_modify',
+    ]),
+  ];
   config.chatAccess.servers.connectors ??= {};
   const connectorAccess = config.chatAccess.servers.connectors;
   // One shape for every server: a single `allow` list. The legacy
@@ -545,6 +553,9 @@ if (enabled === 'true') {
       ...(Array.isArray(connectorAccess.allowActions) ? connectorAccess.allowActions : []),
       'connectors_google_status',
       'connectors_google_oauth_start',
+      'connectors_gmail_summary',
+      'connectors_gmail_search',
+      'connectors_gmail_labels',
     ]),
   ];
   delete connectorAccess.allowActions;
@@ -745,10 +756,16 @@ ensure_compose_override() {
   # the generated override and lose the change on the next compose command.
   local example_name="$1"
   local target_name="$2"
-  local target="$MANAGER_STATE_DIR/$target_name"
+  local target="$MANAGER_COMPOSE_DIR/$target_name"
+  local legacy="$MANAGER_STATE_DIR/$target_name"
   [[ -f "$target" ]] && return 0
+  mkdir -p "$MANAGER_COMPOSE_DIR"
+  if [[ -f "$legacy" ]]; then
+    mv "$legacy" "$target"
+    printf 'Migrated user-owned compose override: %s -> %s\n' "$legacy" "$target" >&2
+    return 0
+  fi
   [[ -f "$ROOT_DIR/$example_name" ]] || return 0
-  mkdir -p "$MANAGER_STATE_DIR"
   cp "$ROOT_DIR/$example_name" "$target"
   printf 'Created %s (user-owned compose override, never regenerated)\n' "$target" >&2
 }
@@ -889,11 +906,11 @@ compose_for_workspace() {
   WIKI_MCP_PORT="$mcp_port" \
   PRODUCTION_MCP_PORT="$prod_port" \
     read_lines_into_array cacert_args cacert_compose_args "$ROOT_DIR/docker-compose.yml" "cacert.compose.yml"
-  # Same contract as the agents stack: a single global user-owned override next
-  # to the .env, merged after the packaged file and before the generated CA
+  # Same contract as the agents stack: a single global user-owned override in
+  # .wiki/compose, merged after the packaged file and before the generated CA
   # override so the operator can still be overruled on CA paths only.
   local override_args=()
-  local user_override="$MANAGER_STATE_DIR/docker-compose.override.yml"
+  local user_override="$MANAGER_COMPOSE_DIR/docker-compose.override.yml"
   [[ -f "$user_override" ]] && override_args+=(-f "$user_override")
 
   WIKI_WORKSPACE_PATH="$ws_path" \
@@ -1149,7 +1166,7 @@ config_workspace() {
   WIKI_MCP_PORT="$mcp_port" \
     read_lines_into_array cacert_args cacert_compose_args "$ROOT_DIR/docker-compose.yml" "cacert.compose.yml"
   local override_args=()
-  local user_override="$MANAGER_STATE_DIR/docker-compose.override.yml"
+  local user_override="$MANAGER_COMPOSE_DIR/docker-compose.override.yml"
   [[ -f "$user_override" ]] && override_args+=(-f "$user_override")
 
   WIKI_WORKSPACE_PATH="$target_path" \

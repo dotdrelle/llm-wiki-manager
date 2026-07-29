@@ -3,8 +3,10 @@ import test from 'node:test';
 import {
   buildExecutorOnlyFragment,
   forwardRuntimeApproval,
+  missingRequiredArguments,
   resolveExecutorArguments,
   resolvePreparedDelegationApproval,
+  startupWizardGaps,
 } from './wiki-manager.js';
 
 const COLLECT_CAPABILITY = {
@@ -18,6 +20,18 @@ const COLLECT_CAPABILITY = {
     },
   },
 };
+
+test('startup never opens the setup wizard just because agents are stopped', () => {
+  const workspace = { kind: 'workspace', context: {} };
+  assert.deepEqual(
+    startupWizardGaps([
+      { kind: 'agents', context: { downServices: ['cme', 'documents'] } },
+      workspace,
+    ]),
+    [workspace],
+  );
+  assert.deepEqual(startupWizardGaps([{ kind: 'agents' }]), []);
+});
 
 test('executor-only capabilities receive one manager-authored executable task', () => {
   const fragment = buildExecutorOnlyFragment({
@@ -93,6 +107,27 @@ test('argument extraction stays agnostic and safe when it cannot extract', async
   assert.deepEqual(
     await resolveExecutorArguments({ llm: throwing, objective: 'les 10 derniers mails', capability: COLLECT_CAPABILITY }),
     {},
+  );
+});
+
+test('required executor arguments become a conversational blocker before plan validation', () => {
+  const schema = {
+    type: 'object',
+    required: ['to', 'subject', 'body'],
+    properties: {
+      to: { type: 'string' },
+      subject: { type: 'string' },
+      body: { type: 'string' },
+    },
+  };
+  assert.deepEqual(missingRequiredArguments(schema, {}), ['to', 'subject', 'body']);
+  assert.deepEqual(
+    missingRequiredArguments(schema, { to: 'a@example.test', subject: 'Hello', body: 'Message' }),
+    [],
+  );
+  assert.deepEqual(
+    missingRequiredArguments(schema, { to: [], subject: ' ', body: 'Message' }),
+    ['to', 'subject'],
   );
 });
 

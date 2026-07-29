@@ -731,16 +731,17 @@ capabilityRouting:
 
 #### Compose overrides — optional agents, proxies, local fixes
 
-Two override files sit **next to your `.env`**, one per stack:
+Two override files sit under **`.wiki/compose/`**, one per stack:
 
 | File | Applies to |
 | --- | --- |
-| `docker-compose.override.yml` | workspace stack (`serve`, `mcp-http`, `production-mcp`, `wiki`) |
-| `agents.docker-compose.override.yml` | agents stack (`cme`, `documents`, `connectors`) |
+| `.wiki/compose/docker-compose.override.yml` | workspace stack (`serve`, `mcp-http`, `production-mcp`, `wiki`) |
+| `.wiki/compose/agents.docker-compose.override.yml` | agents stack (`cme`, `documents`, `connectors`) |
 
 Both are created for you on first use, from packaged templates full of
 ready-to-uncomment examples, and are **never rewritten afterwards** — your edits
-survive package updates. Do not confuse them with `.wiki/runtime/*.compose.yml`,
+survive package updates. Existing root-level files are migrated automatically.
+Do not confuse them with `.wiki/runtime/*.compose.yml`,
 which the manager regenerates on every Compose command; editing those is always
 lost.
 

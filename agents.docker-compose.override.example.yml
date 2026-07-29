@@ -1,4 +1,4 @@
-# agents.docker-compose.override.yml — user-owned overrides for the agents stack
+# .wiki/compose/agents.docker-compose.override.yml — user-owned agent overrides
 #
 # Copied here once by wiki-manager when absent, then NEVER touched again:
 # your edits survive every package update. Do not confuse it with

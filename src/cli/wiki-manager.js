@@ -171,6 +171,18 @@ export async function resolveExecutorArguments({ llm, objective, capability, sig
   return {};
 }
 
+export function missingRequiredArguments(schema, args) {
+  const required = Array.isArray(schema?.required) ? schema.required.map(String) : [];
+  const values = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
+  return required.filter((key) => {
+    const value = values[key];
+    if (value === undefined || value === null) return true;
+    if (typeof value === 'string') return value.trim() === '';
+    if (Array.isArray(value)) return value.length === 0;
+    return false;
+  });
+}
+
 function safeParseArgumentObject(text) {
   const cleaned = String(text ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   if (!cleaned) return null;
@@ -1013,6 +1025,13 @@ async function runRuntime(argv, agent) {
         capability: provider.capability,
         signal: session._abortSignal,
       });
+      const missingArguments = missingRequiredArguments(
+        provider.capability?.inputSchema,
+        extractedArguments,
+      );
+      if (missingArguments.length > 0) {
+        throw new Error(`Delegation requires input: ${missingArguments.join(', ')}`);
+      }
       fragment = buildExecutorOnlyFragment({
         objective,
         workspace: session.workspace ?? context.workspace ?? 'workspace',
@@ -1434,12 +1453,17 @@ export async function runCli(argv) {
     // in a random cwd must not litter files.
     const scaffolded = ensureManagerScaffold({ log: (message) => console.log(`[wiki-manager] ${message}`) });
     if (scaffolded.length > 0) loadManagerEnv();
-    const reportCheck = ({ kind, ok, detail, context, skipped, pending }) => {
+    const reportCheck = ({ kind, ok, detail, context, skipped, pending, requested }) => {
       // "waiting" checks (containers not up yet, MCP not connected yet) are the
       // normal state at launch — the shell starts them and reports the real
       // status afterwards, so echoing them here is pure noise. Only what is
       // ready or actually broken is printed.
-      if (!ok && (pending || skipped)) return;
+      //
+      // `pending` alone cannot express this: a service the operator explicitly
+      // asked for (`requested`) is still "pending" right after /start, and that
+      // one MUST be shown — silence there is how a failed start reads as a
+      // success. Boot silence applies to unrequested checks only.
+      if (!ok && (pending || skipped) && !requested) return;
       const labels = { docker: 'Docker', internet: 'Internet', agents: 'Agent containers', workspace: 'Workspaces', containers: 'Workspace containers', mcp: 'MCP' };
       const label = labels[kind] ?? kind;
       const instruction = !ok && context?.command ? ` — command: ${context.command}` : '';
@@ -1452,10 +1476,12 @@ export async function runCli(argv) {
       console.log(`${color}${icon} configuration: ${label} ${state}${suffix}${instruction}\x1b[0m`);
     };
     let preflight = await runPreflightChecks({ onCheck: reportCheck });
-    if (preflight.gaps.length > 0) {
-      await runStartupWizard(preflight.gaps);
-      // The wizard may have created a workspace, started agents or repaired
-      // configuration. Re-read everything before drawing the home screen.
+    const wizardGaps = startupWizardGaps(preflight.gaps);
+    if (wizardGaps.length > 0) {
+      await runStartupWizard(wizardGaps);
+      // The wizard may have created a workspace or repaired configuration.
+      // Agents are deliberately excluded: starting them is an explicit console
+      // action through /start agents or /start all.
       preflight = await runPreflightChecks();
     }
     const dockerReady = preflight.checks.some((check) => check.kind === 'docker' && check.ok);
@@ -1509,4 +1535,11 @@ export async function runCli(argv) {
     const { shutdownOwnedRuntime } = await import('../runtime/lifecycle.js');
     await shutdownOwnedRuntime(runtime, { log: (message) => console.log(`[wiki-manager] ${message}`) });
   }
+}
+
+// Missing/stopped agents are status information, never a reason to interrupt
+// startup with a confirmation screen. The operator owns their lifecycle from
+// the console (`/start agents`, `/start all`, `/stop agents`).
+export function startupWizardGaps(gaps = []) {
+  return gaps.filter((gap) => gap?.kind !== 'agents');
 }

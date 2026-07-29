@@ -1435,13 +1435,20 @@ export async function runCli(argv) {
     const scaffolded = ensureManagerScaffold({ log: (message) => console.log(`[wiki-manager] ${message}`) });
     if (scaffolded.length > 0) loadManagerEnv();
     const reportCheck = ({ kind, ok, detail, context, skipped, pending }) => {
+      // "waiting" checks (containers not up yet, MCP not connected yet) are the
+      // normal state at launch — the shell starts them and reports the real
+      // status afterwards, so echoing them here is pure noise. Only what is
+      // ready or actually broken is printed.
+      if (!ok && (pending || skipped)) return;
       const labels = { docker: 'Docker', internet: 'Internet', agents: 'Agent containers', workspace: 'Workspaces', containers: 'Workspace containers', mcp: 'MCP' };
       const label = labels[kind] ?? kind;
       const instruction = !ok && context?.command ? ` — command: ${context.command}` : '';
-      const suffix = detail ? ` — ${detail}` : ` — ${context?.error ?? context?.dockerError ?? 'waiting'}`;
+      // On success the detail is diagnostic only (the probe URL for Internet);
+      // the label already says what passed.
+      const suffix = ok ? '' : ` — ${detail || context?.error || context?.dockerError || 'waiting'}`;
       const color = ok ? '\x1b[32m' : '\x1b[33m';
-      const state = ok ? 'ready' : pending || skipped ? 'waiting' : 'needs attention';
-      const icon = ok ? '✓' : pending || skipped ? '◐' : '✗';
+      const state = ok ? 'ready' : 'needs attention';
+      const icon = ok ? '✓' : '✗';
       console.log(`${color}${icon} configuration: ${label} ${state}${suffix}${instruction}\x1b[0m`);
     };
     let preflight = await runPreflightChecks({ onCheck: reportCheck });

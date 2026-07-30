@@ -401,7 +401,16 @@ test('replanRuntimeRun requires runtime approval for mutating replanned work', a
 test('runRuntimeAgenticWorkflow replans after terminal activity error', async () => {
   const originalFetch = globalThis.fetch;
   let pollAttempts = 0;
-  globalThis.fetch = async () => {
+  globalThis.fetch = async (_url, init) => {
+    // Count polls, not the one-off MCP session handshake.
+    if (JSON.parse(init.body).method === 'initialize') {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18"}}',
+      };
+    }
     pollAttempts += 1;
     return {
       ok: true,

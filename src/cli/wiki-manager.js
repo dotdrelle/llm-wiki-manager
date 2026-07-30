@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -25,6 +26,7 @@ import { listWorkspaces } from '../core/workspaces.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageJsonPath = resolve(__dirname, '../../package.json');
+const workspaceCliPath = resolve(__dirname, '../../wiki-workspace');
 const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
 const SHELL_COMMANDS = ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'connector', 'wiki', 'skills', 'clear', 'chat', 'agent', 'approve'];
 
@@ -106,7 +108,13 @@ export function buildExecutorOnlyFragment({ objective, workspace, selection }) {
  * then a JSON-text completion, then no arguments — the executor uses its own
  * defaults. It never throws and never invents identifiers.
  */
-export async function resolveExecutorArguments({ llm, objective, capability, signal } = {}) {
+export async function resolveExecutorArguments({
+  llm,
+  objective,
+  capability,
+  workspace,
+  signal,
+} = {}) {
   const schema = capability?.inputSchema;
   const objectiveText = String(objective ?? '').trim();
   if (
@@ -121,10 +129,22 @@ export async function resolveExecutorArguments({ llm, objective, capability, sig
   ) {
     return {};
   }
+  const workspaceName = String(workspace ?? '').trim();
   const system = [
     'Extract structured arguments for a task from the user objective.',
     'Only fill a field when the objective explicitly states or clearly implies its value.',
     'Omit every field that is not stated. Never invent identifiers, queries, filters or counts.',
+    // The objective almost always names the workspace ("export the pages of
+    // workspace acpi"), and the orchestrator already binds it out of band. With
+    // one free-text field in the schema and no field for the workspace, a model
+    // reliably misbinds the two — that is how a workspace name ended up as a
+    // source name and failed the task.
+    ...(workspaceName
+      ? [
+        `The task already runs against workspace "${workspaceName}"; the orchestrator supplies it separately.`,
+        `Never use "${workspaceName}" as the value of any field. If the objective only names the workspace, return {}.`,
+      ]
+      : []),
     'Return the arguments object only.',
   ].join('\n');
   const tool = {
@@ -150,9 +170,9 @@ export async function resolveExecutorArguments({ llm, objective, capability, sig
     });
     const call = (result?.tool_calls ?? []).find((item) => item?.function?.name === 'set_task_arguments');
     const fromCall = call ? safeParseArgumentObject(call.function?.arguments) : null;
-    if (fromCall) return pruneArgumentsToSchema(fromCall, schema);
+    if (fromCall) return pruneArgumentsToSchema(fromCall, schema, workspaceName);
     const fromText = safeParseArgumentObject(result?.content);
-    if (fromText) return pruneArgumentsToSchema(fromText, schema);
+    if (fromText) return pruneArgumentsToSchema(fromText, schema, workspaceName);
   } catch {
     // Fall through to the tool-less path.
   }
@@ -164,11 +184,34 @@ export async function resolveExecutorArguments({ llm, objective, capability, sig
       signal,
     });
     const fromText = safeParseArgumentObject(result?.content);
-    if (fromText) return pruneArgumentsToSchema(fromText, schema);
+    if (fromText) return pruneArgumentsToSchema(fromText, schema, workspaceName);
   } catch {
     // Give up: the executor will use its own defaults.
   }
   return {};
+}
+
+// The system prompt above is advice a model may ignore; this is not. A value
+// that merely echoes the workspace name carries no information the orchestrator
+// does not already hold, so dropping it can only widen the task to the
+// executor's own default — never narrow it to something wrong. (A source
+// genuinely named after its workspace degrades to "process everything", which
+// still includes it.)
+function echoesWorkspace(key, value, workspaceName) {
+  if (!workspaceName || typeof value !== 'string') return false;
+  if (/workspace/i.test(key)) return false;
+  return value.trim().toLowerCase() === String(workspaceName).trim().toLowerCase();
+}
+
+// A field with an `enum` declares a closed vocabulary, so an extracted value
+// outside it is checkably wrong — not a judgement call about meaning. This is
+// the only class of hallucinated identifier the orchestrator can reject
+// without knowing anything about the business domain, which is exactly why
+// agents must publish the vocabulary instead of a bare string.
+function violatesEnum(schemaEntry, value) {
+  const values = schemaEntry?.enum;
+  if (!Array.isArray(values) || values.length === 0) return false;
+  return !values.some((allowed) => allowed === value);
 }
 
 export function missingRequiredArguments(schema, args) {
@@ -194,12 +237,14 @@ function safeParseArgumentObject(text) {
   }
 }
 
-function pruneArgumentsToSchema(value, schema) {
+function pruneArgumentsToSchema(value, schema, workspaceName = '') {
   const allowed = schema.properties ?? {};
   const acceptsExtra = schema.additionalProperties !== false;
   const out = {};
   for (const [key, entry] of Object.entries(value)) {
     if (entry === undefined || entry === null) continue;
+    if (echoesWorkspace(key, entry, workspaceName)) continue;
+    if (violatesEnum(allowed[key], entry)) continue;
     if (Object.hasOwn(allowed, key) || acceptsExtra) out[key] = entry;
   }
   return out;
@@ -258,6 +303,12 @@ export function ensureInteractiveAssistantMessage(session, response, { turnId, w
     origin: 'runtime_turn', turnId, workspace, payload: { content: String(response) },
   }));
   return true;
+}
+
+export function mcpStatusNeedsRefresh(mcpStatus) {
+  return Object.values(mcpStatus ?? {}).some(
+    (endpoint) => endpoint?.url && endpoint.status !== 'connected',
+  );
 }
 
 export async function forwardRuntimeApproval(getWorkspaceContext, request = {}) {
@@ -1023,6 +1074,7 @@ async function runRuntime(argv, agent) {
         llm: session.llm,
         objective,
         capability: provider.capability,
+        workspace: session.workspace ?? context.workspace ?? '',
         signal: session._abortSignal,
       });
       const missingArguments = missingRequiredArguments(
@@ -1255,6 +1307,14 @@ async function runRuntime(argv, agent) {
   async function executeInteractiveTurn(context, body, { signal, turnId } = {}) {
     const input = String(body.input ?? body.prompt ?? '').trim();
     if (!input) throw new Error('Missing input.');
+    // The runtime may start while optional agents are still stopped. `/start
+    // agents` happens in the shell process, so its refreshed MCP snapshot does
+    // not mutate this long-lived runtime context. Re-probe only while at least
+    // one configured endpoint is disconnected; once connected, mcpRequest's
+    // stale-session recovery handles later server restarts cheaply.
+    if (mcpStatusNeedsRefresh(context.session.mcp)) {
+      await refreshMcpRuntimeStatus(context.session);
+    }
     const ephemeral = createInteractiveSession(context, { runtimeUrl: selfRuntimeUrl, turnId, signal });
     // Seed from a freshly reduced COPY of persisted events. Interactive turn
     // events deliberately do not mutate the canonical run projection, so the
@@ -1387,6 +1447,18 @@ function logImageRefreshErrors(imageRefresh) {
 }
 
 export async function runCli(argv) {
+  if (argv.includes('--refresh')) {
+    if (argv.length !== 1) throw new Error('--refresh does not accept other options.');
+    const result = spawnSync(workspaceCliPath, ['refresh'], {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: 'inherit',
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(`Refresh failed with exit code ${result.status ?? 1}.`);
+    return;
+  }
+
   if (argv[0] === 'runtime') {
     const scaffolded = ensureManagerScaffold({ log: (message) => console.log(`[wiki-manager] ${message}`) });
     if (scaffolded.length > 0) loadManagerEnv();
@@ -1506,10 +1578,8 @@ export async function runCli(argv) {
       console.error(`Runtime unavailable: ${runtime.error}`);
     }
     preflight = withRuntimePreflight(preflight, runtime);
-    // The owned-runtime shutdown happens inside the TUI's own exit paths
-    // (see tui.tsx onShellExit): render() resolves at MOUNT, so anything
-    // after this await would run while the shell is still on screen —
-    // 0.12.9 shipped exactly that bug and killed the runtime under the user.
+    // render() resolves at mount; the TUI owns renderer teardown. The shared
+    // runtime deliberately survives shell exit because `serve` may use it.
     await runOpenTuiShell({
       agent,
       packageJson,
@@ -1531,10 +1601,6 @@ export async function runCli(argv) {
     }
   }
   await runShell({ agent, packageJson, runtime });
-  if (runtime?.url) {
-    const { shutdownOwnedRuntime } = await import('../runtime/lifecycle.js');
-    await shutdownOwnedRuntime(runtime, { log: (message) => console.log(`[wiki-manager] ${message}`) });
-  }
 }
 
 // Missing/stopped agents are status information, never a reason to interrupt

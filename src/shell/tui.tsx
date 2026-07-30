@@ -150,30 +150,22 @@ function App(props: {
   const [preflightBusy, setPreflightBusy] = createSignal(false);
   let ctrlCTimer: ReturnType<typeof setTimeout> | null = null;
   let exiting = false;
-  // Single exit path: the owned-runtime shutdown MUST happen here, on the
-  // user's actual exit gesture. render() resolves at MOUNT, so code placed
-  // after `await runOpenTuiShell(...)` runs while the shell is still on
-  // screen — 0.12.9 shipped that and killed the runtime mid-session.
+  // The runtime is shared infrastructure: `llm-wiki serve` can still be using
+  // it after this shell closes. Exiting the UI only destroys the renderer;
+  // explicit lifecycle commands own runtime shutdown.
   const exitShell = () => {
     if (exiting) return;
     exiting = true;
     setExitStatus('Fermeture enclenchée…');
-    // Register the complete shutdown before destroying the renderer: onDestroy
-    // resolves runOpenTuiShell, which must still await this cleanup task.
     const task = Promise.resolve().then(async () => {
       renderer.destroy();
-      console.log('[wiki-manager] fermeture enclenchée — nettoyage en cours…');
-      const messages: string[] = [];
-      try {
-        if (props.runtime?.url) {
-          const { shutdownOwnedRuntime } = await import('../runtime/lifecycle.js');
-          await shutdownOwnedRuntime(props.runtime, { log: (message: string) => { messages.push(message); } });
-        }
-      } catch {
-        // Best effort: never block the exit on runtime cleanup.
-      }
-      for (const message of messages) console.log(`[wiki-manager] ${message}`);
-      console.log('[wiki-manager] fermeture terminée — shell clos proprement.');
+      console.log('[wiki-manager] shell closed; shared runtime left running.');
+      // MCP clients, image-refresh probes, and reconnect timers may still own
+      // event-loop handles. They belong to this shell process, not to the
+      // detached shared runtime. Once the renderer is gone there is no useful
+      // foreground work left, so terminate explicitly instead of leaving the
+      // terminal pending indefinitely.
+      process.exit(0);
     });
     if (props.exitRef) props.exitRef.current = task;
   };

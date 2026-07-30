@@ -432,6 +432,14 @@ export function compactMcpStatus(mcpStatus) {
   return entries
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([name, endpoint]) => {
+      // `configured` covers two very different situations: an endpoint we
+      // never probed (service stopped) and one whose probe failed. Reporting
+      // both as "configured" is what makes a live agent look unconfigured —
+      // surface the failure as its own state, with the cause one command away
+      // (`/mcp status` prints the full toolsError).
+      if (endpoint.status !== 'connected' && endpoint.toolError) {
+        return `✕ ${name}  :${mcpPort(endpoint)}  unreachable (/mcp status)`;
+      }
       const marker = endpoint.status === 'connected'
         ? '●'
         : endpoint.status === 'configured'
@@ -684,6 +692,7 @@ Usage:
 Options:
   -v, --version        Print version
   -h, --help           Print help
+  --refresh            Stop runtime and project containers; remove project images
   --cacert <path>      Trust a local CA; Docker must be able to read this host path
   --once <prompt>      Run one agent turn and exit
   --headless           Run a workspace task non-interactively

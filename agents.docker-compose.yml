@@ -100,6 +100,16 @@ services:
     build:
       context: ../agent-external/agent-connectors
       dockerfile: Dockerfile
+      args:
+        # Without these the ARGs stay unset and the image ships empty
+        # WIKILLM_GOOGLE_OAUTH_* values, so the container ends up with no Google
+        # client at all. `wiki-workspace agents up` exports them from the
+        # connectors repo's .env.build.local before invoking Compose.
+        # Deliberately value-less: Compose then forwards each host variable only
+        # when it is defined. Never write `${VAR:-}` here — an empty
+        # --build-arg pins the ARG to the empty string.
+        WIKILLM_GOOGLE_OAUTH_CLIENT_ID:
+        WIKILLM_GOOGLE_OAUTH_CLIENT_SECRET:
     image: dotdrelle/agent-connectors:latest
     user: "${UID:-1000}:${GID:-1000}"
     ports:

@@ -84,6 +84,7 @@ Usage:
   wiki-workspace [--cacert <path>] <command> ...
   wiki-workspace config <workspace> [path]
   wiki-workspace up <workspace>
+  wiki-workspace refresh
   wiki-workspace wiki <workspace> <command> [args...]
   wiki-workspace list
 
@@ -91,6 +92,7 @@ Commands:
   config <workspace> [path]         Create workspace folder, auto-select ports, run wiki init
   up <workspace> [--open]           Start workspace stack: wiki + production
   list                              List configured workspaces
+  refresh                           Stop runtime/stacks and remove their Compose images
 
   agents up [--pull]                Start all external agents (cme, documents)
   agents down                       Stop all external agents
@@ -260,6 +262,31 @@ agents_compose() {
   local compose_env_args=()
   [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
 
+  # Local-iteration build only: the packaged connectors service carries a
+  # `build:` block pointing at the sibling agent-connectors repo, whose OAuth
+  # credentials live in a gitignored .env.build.local. Compose resolves the
+  # value-less build args from *this* process environment, not from
+  # --env-file, so the variables must be exported here or the image ships with
+  # empty WIKILLM_GOOGLE_OAUTH_* and every Google connector stays unusable.
+  local connectors_build_env="$ROOT_DIR/../agent-external/agent-connectors/.env.build.local"
+  if [[ -f "$connectors_build_env" ]]; then
+    local build_key build_value
+    while IFS='=' read -r build_key build_value; do
+      case "$build_key" in
+        WIKILLM_GOOGLE_OAUTH_CLIENT_ID|WIKILLM_GOOGLE_OAUTH_CLIENT_SECRET) ;;
+        *) continue ;;
+      esac
+      [[ -n "${!build_key:-}" ]] || export "$build_key=$build_value"
+    done < <(grep -v '^[[:space:]]*#' "$connectors_build_env" || true)
+  fi
+
+  require_connectors_build_credentials() {
+    local build_key
+    for build_key in WIKILLM_GOOGLE_OAUTH_CLIENT_ID WIKILLM_GOOGLE_OAUTH_CLIENT_SECRET; do
+      [[ -n "${!build_key:-}" ]] || die "cannot build connectors: $build_key is missing from $connectors_build_env"
+    done
+  }
+
   _agents_dc() {
     local cacert_args=()
     local profile_args=()
@@ -288,6 +315,9 @@ agents_compose() {
       [[ $# -eq 0 ]] || die "agents up accepts only --pull"
       ensure_agent_tokens
       ensure_endpoints_file
+      if connectors_enabled && [[ -f "$ROOT_DIR/../agent-external/agent-connectors/Dockerfile" ]]; then
+        require_connectors_build_credentials
+      fi
       # The .env may have just been created above — recompute the env-file
       # flag so freshly generated tokens reach the containers on first run.
       compose_env_args=()
@@ -313,6 +343,10 @@ agents_compose() {
     down)
       [[ $# -eq 0 ]] || die "agents down does not take arguments"
       _agents_dc down
+      ;;
+    purge)
+      [[ $# -eq 0 ]] || die "agents purge does not take arguments"
+      _agents_dc down --rmi all --remove-orphans
       ;;
     logs)
       local log_args=()
@@ -687,6 +721,19 @@ runtime_command() {
       ;;
     down|stop)
       [[ $# -eq 0 ]] || die "runtime down does not take arguments"
+      token="$(ensure_manager_runtime_token)"
+      if runtime_health_check; then
+        RUNTIME_URL="$(runtime_health_url)/shutdown" RUNTIME_TOKEN="$token" "$node_bin" --input-type=module -e \
+          "const h=process.env.RUNTIME_TOKEN?{Authorization:'Bearer '+process.env.RUNTIME_TOKEN}:{}; const r=await fetch(process.env.RUNTIME_URL,{method:'POST',headers:h}); process.exit(r.ok?0:1);"
+        local wait_count=0
+        while runtime_health_check && (( wait_count < 40 )); do
+          sleep 0.1
+          (( wait_count++ )) || true
+        done
+        rm -f "$pid_file"
+        printf 'agent-runtime stopped\n'
+        return
+      fi
       if ! runtime_pid_running; then
         printf 'agent-runtime is not running from %s\n' "$pid_file"
         rm -f "$pid_file"
@@ -729,6 +776,23 @@ runtime_command() {
       die "unknown runtime command: $subcommand (expected: up, down, status, logs)"
       ;;
   esac
+}
+
+refresh_project() {
+  printf 'Stopping shared runtime...\n'
+  runtime_command down
+
+  local entry workspace
+  for entry in "$WORKSPACES_DIR"/*; do
+    [[ -f "$entry/.env" ]] || continue
+    workspace="$(basename "$entry")"
+    printf 'Removing workspace stack and images: %s\n' "$workspace"
+    compose_for_workspace "$workspace" down --rmi all --remove-orphans
+  done
+
+  printf 'Removing external-agent stack and images...\n'
+  agents_compose purge
+  printf 'Refresh complete. Persistent workspace and agent data were preserved.\n'
 }
 
 ensure_runtime_up() {
@@ -1211,6 +1275,11 @@ main() {
 
   if [[ $# -eq 1 && "$1" == "list" ]]; then
     list_workspaces
+    exit 0
+  fi
+
+  if [[ $# -eq 1 && "$1" == "refresh" ]]; then
+    refresh_project
     exit 0
   fi
 

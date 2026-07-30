@@ -8,6 +8,7 @@ import {
   callMcpTool,
   discoverMcpTools,
   formatMcpToolsForAgent,
+  resetMcpSessionsForTests,
   resetMcpThrottleForTests,
   resolveRetryPolicy,
   resolveToolCallName,
@@ -366,8 +367,9 @@ test('callMcpTool throttles MCP traffic independently per endpoint', async () =>
   const originalFetch = globalThis.fetch;
   const originalWindow = process.env.WIKI_MANAGER_MCP_RATE_LIMIT_WINDOW_MS;
   const starts = [];
-  globalThis.fetch = async () => {
-    starts.push(Date.now());
+  globalThis.fetch = async (_url, init) => {
+    // Only tool traffic is throttled; the one-off session handshake is not.
+    if (JSON.parse(init.body).method === 'tools/call') starts.push(Date.now());
     return {
       ok: true,
       status: 200,
@@ -377,6 +379,7 @@ test('callMcpTool throttles MCP traffic independently per endpoint', async () =>
   };
   process.env.WIKI_MANAGER_MCP_RATE_LIMIT_WINDOW_MS = '30';
   resetMcpThrottleForTests();
+  resetMcpSessionsForTests();
 
   try {
     const status = {
@@ -523,18 +526,24 @@ test('discoverMcpTools downgrades connected endpoint when tool discovery fails',
   }
 });
 
-test('discoverMcpTools initializes SDK servers that report no valid session', async () => {
-  const originalFetch = globalThis.fetch;
-  const methods = [];
-  globalThis.fetch = async (_url, init) => {
+// A stateful server may reject any cold request, and every SDK words that
+// rejection differently ("No valid session" for the Node SDK, "Missing session
+// ID" for the Python one CME runs). The client must never read that prose: it
+// handshakes first, so the rejection is simply never provoked.
+function statefulMcpServer(rejectionMessage, { onMethod } = {}) {
+  return async (_url, init) => {
     const body = JSON.parse(init.body);
-    methods.push(body.method);
-    if (body.method === 'tools/list' && !init.headers['mcp-session-id']) {
+    onMethod?.(body.method, init.headers['mcp-session-id'] ?? null);
+    if (body.method !== 'initialize' && !init.headers['mcp-session-id']) {
       return {
         ok: false,
         status: 400,
         headers: { get: () => null },
-        text: async () => '{"jsonrpc":"2.0","error":{"code":-32000,"message":"No valid session"},"id":null}',
+        text: async () => JSON.stringify({
+          jsonrpc: '2.0',
+          error: { code: -32000, message: rejectionMessage },
+          id: null,
+        }),
       };
     }
     if (body.method === 'initialize') {
@@ -546,35 +555,166 @@ test('discoverMcpTools initializes SDK servers that report no valid session', as
       };
     }
     if (body.method === 'notifications/initialized') {
+      return { ok: true, status: 202, headers: { get: () => null }, text: async () => '' };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => '{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"cme_status"}]}}',
+    };
+  };
+}
+
+for (const rejection of ['No valid session', 'Missing session ID', 'Session not found']) {
+  test(`discoverMcpTools handshakes before the first call — server says "${rejection}"`, async () => {
+    const originalFetch = globalThis.fetch;
+    const methods = [];
+    resetMcpSessionsForTests();
+    globalThis.fetch = statefulMcpServer(rejection, { onMethod: (m) => methods.push(m) });
+
+    try {
+      const status = await discoverMcpTools({
+        cme: {
+          status: 'configured',
+          url: 'http://127.0.0.1:3336/mcp/',
+          headers: { authorization: 'Bearer token' },
+        },
+      });
+
+      assert.equal(status.cme.status, 'connected', status.cme.toolError ?? '');
+      assert.deepEqual(status.cme.tools.map((tool) => tool.name), ['cme_status']);
+      // initialize comes first: the cold rejection is never provoked, so its
+      // wording cannot matter.
+      assert.deepEqual(methods, ['initialize', 'notifications/initialized', 'tools/list']);
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetMcpSessionsForTests();
+    }
+  });
+}
+
+test('discoverMcpTools reuses one handshake across concurrent endpoints', async () => {
+  const originalFetch = globalThis.fetch;
+  const methods = [];
+  resetMcpSessionsForTests();
+  globalThis.fetch = statefulMcpServer('Missing session ID', { onMethod: (m) => methods.push(m) });
+
+  try {
+    const endpoint = {
+      status: 'configured',
+      url: 'http://127.0.0.1:3336/mcp/',
+      headers: { authorization: 'Bearer token' },
+    };
+    await discoverMcpTools({ cme: endpoint });
+    await discoverMcpTools({ cme: { ...endpoint } });
+
+    // Second pass rebuilds the endpoint object from the endpoints file, yet the
+    // session is keyed by transport identity — no second handshake.
+    assert.deepEqual(
+      methods.filter((m) => m === 'initialize').length,
+      1,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetMcpSessionsForTests();
+  }
+});
+
+test('discoverMcpTools accepts a stateless server that issues no session id', async () => {
+  const originalFetch = globalThis.fetch;
+  const methods = [];
+  resetMcpSessionsForTests();
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    methods.push(body.method);
+    if (body.method === 'initialize') {
       return {
         ok: true,
-        status: 202,
+        status: 200,
         headers: { get: () => null },
-        text: async () => '',
+        text: async () => '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18"}}',
       };
     }
     return {
       ok: true,
       status: 200,
       headers: { get: () => null },
-      text: async () => '{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"connectors_google_status"}]}}',
+      text: async () => '{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"documents_convert_to_markdown"}]}}',
     };
   };
 
   try {
     const status = await discoverMcpTools({
-      connectors: {
-        status: 'configured',
-        url: 'http://127.0.0.1:3338/mcp/',
-        headers: { authorization: 'Bearer token' },
-      },
+      documents: { status: 'configured', url: 'http://127.0.0.1:3337/mcp/' },
     });
 
-    assert.equal(status.connectors.status, 'connected');
-    assert.deepEqual(status.connectors.tools.map((tool) => tool.name), ['connectors_google_status']);
-    assert.deepEqual(methods, ['tools/list', 'initialize', 'notifications/initialized', 'tools/list']);
+    assert.equal(status.documents.status, 'connected', status.documents.toolError ?? '');
+    // No session id issued: no notifications/initialized, and no re-handshake.
+    assert.deepEqual(methods, ['initialize', 'tools/list']);
   } finally {
     globalThis.fetch = originalFetch;
+    resetMcpSessionsForTests();
+  }
+});
+
+test('callMcpTool re-negotiates and replays once when the agent drops the session', async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  const sessions = ['stale-session', 'fresh-session'];
+  resetMcpSessionsForTests();
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    requests.push({
+      method: body.method,
+      sessionId: init.headers['mcp-session-id'] ?? null,
+    });
+    if (body.method === 'initialize') {
+      const issued = sessions.shift();
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => name === 'mcp-session-id' ? issued : null },
+        text: async () => '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18"}}',
+      };
+    }
+    if (body.method === 'notifications/initialized') {
+      return { ok: true, status: 202, headers: { get: () => null }, text: async () => '' };
+    }
+    // The agent restarted: the session it issued is gone. The body is
+    // deliberately opaque — recovery keys on the status code alone.
+    if (init.headers['mcp-session-id'] === 'stale-session') {
+      return {
+        ok: false,
+        status: 404,
+        headers: { get: () => null },
+        text: async () => 'Not Found',
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"status: configured"}]}}',
+    };
+  };
+
+  try {
+    const endpoint = { status: 'connected', url: 'http://127.0.0.1:3336/mcp/' };
+    const result = await callMcpTool({ cme: endpoint }, 'cme', 'cme_status', { workspace: 'juno' });
+
+    assert.equal(result.content[0].text, 'status: configured');
+    assert.deepEqual(requests, [
+      { method: 'initialize', sessionId: null },
+      { method: 'notifications/initialized', sessionId: 'stale-session' },
+      { method: 'tools/call', sessionId: 'stale-session' },
+      { method: 'initialize', sessionId: null },
+      { method: 'notifications/initialized', sessionId: 'fresh-session' },
+      { method: 'tools/call', sessionId: 'fresh-session' },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetMcpSessionsForTests();
   }
 });
 
@@ -621,4 +761,25 @@ test('truncateToolResult keeps short results intact and bounds long ones head+ta
   assert.match(bounded, /^START-/);
   assert.match(bounded, /-END$/);
   assert.match(bounded, /caractères tronqués/);
+});
+
+test('formatMcpToolsForAgent names unreachable agents instead of hiding them', () => {
+  const listing = formatMcpToolsForAgent({
+    documents: { status: 'connected', tools: [{ name: 'documents_convert_to_markdown' }] },
+    cme: { status: 'configured', toolError: '400 Bad Request: Missing session ID' },
+  });
+
+  assert.match(listing, /documents__documents_convert_to_markdown/);
+  assert.match(listing, /Unreachable right now: cme \(400 Bad Request: Missing session ID\)/);
+  // The model must not be able to read this as "not configured".
+  assert.match(listing, /never\s+infer that such an agent is unconfigured/);
+});
+
+test('formatMcpToolsForAgent stays silent about endpoints that simply are not running', () => {
+  const listing = formatMcpToolsForAgent({
+    wiki: { status: 'configured', runtime: 'not running' },
+    documents: { status: 'connected', tools: [{ name: 'documents_convert_to_markdown' }] },
+  });
+
+  assert.doesNotMatch(listing, /Unreachable/);
 });

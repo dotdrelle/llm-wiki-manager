@@ -112,3 +112,76 @@ test('agentRegistry marks unavailable boot agents and emits health changes on re
   assert.equal(events[1].payload.health, 'available');
   assert.equal(registry.snapshot()[0].health, 'available');
 });
+
+test('discovery sends the workspace only to agents whose schema declares it', async () => {
+  const seen = {};
+  const registry = createAgentRegistry({
+    callTool: async (_mcp, server, _tool, args) => {
+      seen[server] = args;
+      return { content: [{ type: 'text', text: JSON.stringify(description()) }] };
+    },
+  });
+
+  await registry.discover({
+    workspace: 'acpi',
+    mcp: {
+      // Declares workspace: gets it, and can scope its vocabulary.
+      cme: {
+        status: 'connected',
+        tools: [{
+          name: 'agent_describe',
+          inputSchema: { type: 'object', properties: { workspace: { type: 'string' } }, additionalProperties: false },
+        }],
+      },
+      // Strict schema without workspace: sending it would be REJECTED, the
+      // agent would drop out of the registry, and its capabilities would
+      // silently vanish from objective resolution.
+      production: {
+        status: 'connected',
+        tools: [{
+          name: 'agent_describe',
+          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+        }],
+      },
+      // Open schema: tolerant, so the workspace is worth sending.
+      connectors: {
+        status: 'connected',
+        tools: [{ name: 'agent_describe', inputSchema: { type: 'object', properties: {} } }],
+      },
+      // No schema published at all: assume nothing.
+      legacyish: {
+        status: 'connected',
+        tools: [{ name: 'agent_describe' }],
+      },
+    },
+  });
+
+  assert.deepEqual(seen.cme, { workspace: 'acpi' });
+  assert.deepEqual(seen.production, {});
+  assert.deepEqual(seen.connectors, { workspace: 'acpi' });
+  assert.deepEqual(seen.legacyish, {});
+});
+
+test('discovery sends no workspace argument when no workspace is active', async () => {
+  const seen = [];
+  const registry = createAgentRegistry({
+    callTool: async (_mcp, _server, _tool, args) => {
+      seen.push(args);
+      return { content: [{ type: 'text', text: JSON.stringify(description()) }] };
+    },
+  });
+
+  await registry.discover({
+    mcp: {
+      cme: {
+        status: 'connected',
+        tools: [{
+          name: 'agent_describe',
+          inputSchema: { type: 'object', properties: { workspace: { type: 'string' } } },
+        }],
+      },
+    },
+  });
+
+  assert.deepEqual(seen, [{}]);
+});

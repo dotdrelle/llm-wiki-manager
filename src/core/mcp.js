@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
 
-const WIKI_MANAGER_VERSION = '0.15.29';
+const WIKI_MANAGER_VERSION = '0.15.32';
 
 function envValue(key) {
   const filePath = managerEnvFile();
@@ -263,69 +263,122 @@ async function listMcpTools(endpoint) {
   return payload?.result?.tools ?? [];
 }
 
+// Streamable HTTP sessions are server-memory state that outlives the endpoint
+// objects: buildMcpStatus() rebuilds those from the endpoints file on every
+// refresh, so a session cached on the object itself would be thrown away and
+// re-negotiated on each call. Key the cache by transport identity (URL + the
+// credentials actually presented) so a token rotation or a URL change never
+// reuses a session negotiated under the previous identity.
+// Values are promises, not ids: several tool calls to the same agent can race
+// on a cold endpoint, and one handshake must serve them all instead of opening
+// (and leaking) a session per caller.
+const mcpSessions = new Map();
+
+function sessionKey(endpoint) {
+  return JSON.stringify([
+    endpoint.url,
+    endpoint.token ?? null,
+    Object.entries(endpoint.headers ?? {}).sort(),
+  ]);
+}
+
+// The MCP Streamable HTTP spec makes `initialize` mandatory before any other
+// request, and a stateful server is entitled to reject a cold `tools/list`.
+// Servers word that rejection however their SDK likes — "No valid session"
+// (Node SDK), "Missing session ID" (Python SDK), "Session not found" — so we
+// never parse the prose. We negotiate the session up front and, if the server
+// later revokes it, we re-negotiate on any 400/404 and replay once.
+function openMcpSession(endpoint, key, requestSignal, headersFor) {
+  const pending = negotiateMcpSession(endpoint, requestSignal, headersFor);
+  // Cache the promise immediately so a concurrent caller joins this handshake.
+  // Drop it on failure, otherwise every later call would replay the rejection.
+  mcpSessions.set(key, pending);
+  pending.catch(() => {
+    if (mcpSessions.get(key) === pending) mcpSessions.delete(key);
+  });
+  return pending;
+}
+
+async function negotiateMcpSession(endpoint, requestSignal, headersFor) {
+  const response = await fetch(endpoint.url, {
+    method: 'POST',
+    signal: requestSignal,
+    headers: headersFor(null),
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 0,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'wiki-manager', version: WIKI_MANAGER_VERSION },
+      },
+    }),
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`initialize failed: ${response.status} ${text.slice(0, 160)}`.trim());
+  }
+  // A stateless server completes `initialize` without issuing a session id and
+  // then serves every later request unsessioned. That is valid: remember the
+  // absence so we do not re-handshake before each call.
+  const sessionId = response.headers.get('mcp-session-id') ?? null;
+  if (sessionId) {
+    // Notification, not a request: the server owes no response, and blocking
+    // the caller on it would add a round-trip to every cold start.
+    fetch(endpoint.url, {
+      method: 'POST',
+      headers: headersFor(sessionId),
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} }),
+    }).catch(() => {});
+  }
+  return sessionId;
+}
+
 async function mcpRequest(endpoint, method, params, signal, options = {}) {
   if (!endpoint.url) throw new Error('missing endpoint URL');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 8000);
   const requestSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
+  const key = sessionKey(endpoint);
 
-  const buildHeaders = () => {
+  const headersFor = (sessionId) => {
     const h = {
       accept: 'application/json, text/event-stream',
       'content-type': 'application/json',
       ...(endpoint.headers ?? {}),
     };
     if (endpoint.token) h.authorization = `Bearer ${endpoint.token}`;
-    if (endpoint._sessionId) h['mcp-session-id'] = endpoint._sessionId;
+    if (sessionId) h['mcp-session-id'] = sessionId;
     return h;
   };
 
-  const doRequest = async (m, p) => {
+  const doRequest = async (sessionId) => {
     const response = await fetch(endpoint.url, {
       method: 'POST',
       signal: requestSignal,
-      headers: buildHeaders(),
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: m, params: p }),
+      headers: headersFor(sessionId),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
     });
+    // Some servers rotate the session id mid-stream; always take the latest.
     const sid = response.headers.get('mcp-session-id');
-    if (sid) endpoint._sessionId = sid;
+    if (sid && sid !== sessionId) mcpSessions.set(key, Promise.resolve(sid));
     return response;
   };
 
   try {
-    let response = await doRequest(method, params);
+    const session = mcpSessions.get(key)
+      ?? openMcpSession(endpoint, key, requestSignal, headersFor);
+    let response = await doRequest(await session);
     let text = await response.text();
 
-    if (response.status === 400 && /session(?:\s+ID)?/i.test(text)) {
-      endpoint._sessionId = null;
-      const initResponse = await fetch(endpoint.url, {
-        method: 'POST',
-        signal: requestSignal,
-        headers: buildHeaders(),
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 0,
-          method: 'initialize',
-          params: {
-            protocolVersion: '2025-06-18',
-            capabilities: {},
-            clientInfo: { name: 'wiki-manager', version: WIKI_MANAGER_VERSION },
-          },
-        }),
-      });
-      await initResponse.text();
-      const sessionId = initResponse.headers.get('mcp-session-id');
-      if (!initResponse.ok || !sessionId) {
-        throw new Error(`initialize failed: ${initResponse.status}`);
-      }
-      endpoint._sessionId = sessionId;
-      // Fire-and-forget: complete the handshake without blocking the retry
-      fetch(endpoint.url, {
-        method: 'POST',
-        headers: buildHeaders(),
-        body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} }),
-      }).catch(() => {});
-      response = await doRequest(method, params);
+    // The session is server-memory state: an agent restart drops it, and the
+    // server answers 400 or 404 depending on its SDK. Re-negotiate and replay
+    // once, without inspecting the message.
+    if (response.status === 400 || response.status === 404) {
+      mcpSessions.delete(key);
+      const sessionId = await openMcpSession(endpoint, key, requestSignal, headersFor);
+      response = await doRequest(sessionId);
       text = await response.text();
     }
 
@@ -405,6 +458,10 @@ async function throttleMcpRequestStart(endpoint, signal) {
 export function resetMcpThrottleForTests() {
   mcpThrottleQueues.clear();
   mcpThrottleStarts.clear();
+}
+
+export function resetMcpSessionsForTests() {
+  mcpSessions.clear();
 }
 
 export function formatMcpToolResult(result) {
@@ -618,6 +675,24 @@ export function formatMcpToolsForAgent(mcpStatus, { include } = {}) {
     // Always advertise the qualified call name (server__tool): showing bare
     // tool names here is what teaches the model to emit unqualified calls.
     sections.push(`${name}: ${tools.map((tool) => `${name}__${tool.name}`).join(', ')}`);
+  }
+  // An agent that failed its probe is otherwise invisible here, and the model
+  // fills the silence by inferring the agent was never set up — it then asks
+  // the user for credentials that already exist. Name the agent, name the
+  // transport failure, and state explicitly that this says nothing about its
+  // configuration.
+  const unreachable = Object.entries(mcpStatus ?? {})
+    .filter(([, value]) => value.status !== 'connected' && value.toolError)
+    .map(([name, value]) => `${name} (${compactDescription(value.toolError)})`);
+  if (unreachable.length > 0) {
+    sections.push(
+      '',
+      `Unreachable right now: ${unreachable.join(', ')}.`,
+      'These agents are declared and may well be configured and running — the manager'
+      + ' simply failed to reach them. Report the connection failure as such; never'
+      + ' infer that such an agent is unconfigured, and never ask the user for its'
+      + ' credentials or URL on that basis.',
+    );
   }
   return sections.length > 0 ? sections.join('\n') : 'No connected MCP tools discovered yet.';
 }

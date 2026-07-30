@@ -41,13 +41,20 @@ async function discoverServerAgent(session, serverName, endpoint = {}, { callToo
     return legacyAgent(serverName, endpoint, { health: UNAVAILABLE, lastSeenAt });
   }
 
-  const toolName = findAgentDescribeTool(serverName, endpoint.tools ?? []);
-  if (!toolName) {
+  const tool = findAgentDescribeTool(serverName, endpoint.tools ?? []);
+  if (!tool) {
     return legacyAgent(serverName, endpoint, { health: AVAILABLE, lastSeenAt });
   }
+  const toolName = tool.name;
 
   try {
-    const result = await callTool(session.mcp, serverName, toolName, {}, signal);
+    const result = await callTool(
+      session.mcp,
+      serverName,
+      toolName,
+      describeArguments(tool, session?.workspace),
+      signal,
+    );
     const description = assertContract('agentDescription', parseToolJsonResult(result));
     return {
       serverName,
@@ -108,11 +115,32 @@ function dispatchRegistryEvent(session, type, payload) {
 }
 
 function findAgentDescribeTool(serverName, tools) {
-  const names = tools.map((tool) => String(tool.name ?? '')).filter(Boolean);
-  return names.find((name) => name === 'agent_describe')
-    ?? names.find((name) => name === `${serverName}__agent_describe`)
-    ?? names.find((name) => name.endsWith('__agent_describe'))
+  const named = tools.filter((tool) => String(tool?.name ?? ''));
+  const byName = (predicate) => named.find((tool) => predicate(String(tool.name)));
+  return byName((name) => name === 'agent_describe')
+    ?? byName((name) => name === `${serverName}__agent_describe`)
+    ?? byName((name) => name.endsWith('__agent_describe'))
     ?? null;
+}
+
+// Parts of a contract are workspace-scoped — typically the closed vocabulary of
+// an argument (the sources declared in THIS workspace). Published as a bare
+// string, such a field is unverifiable and a planner fills it with any noun
+// from the objective, so it is worth telling the agent which workspace we are
+// asking about.
+//
+// But the orchestrator must not assume an agent accepts an argument it never
+// declared: an agent whose agent_describe schema is `additionalProperties:
+// false` REJECTS the call, drops out of the registry, and its capabilities
+// silently vanish — the objective then resolves to whatever agent is left.
+// Send the workspace only to agents whose own schema says they can take it.
+function describeArguments(tool, workspace) {
+  if (!workspace) return {};
+  const schema = tool?.inputSchema;
+  if (!schema || typeof schema !== 'object') return {};
+  const declaresWorkspace = Object.hasOwn(schema.properties ?? {}, 'workspace');
+  const acceptsExtra = schema.additionalProperties !== false;
+  return declaresWorkspace || acceptsExtra ? { workspace: String(workspace) } : {};
 }
 
 function parseToolJsonResult(result) {

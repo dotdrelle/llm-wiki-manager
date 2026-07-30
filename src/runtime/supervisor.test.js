@@ -93,7 +93,17 @@ test('pollActivitiesOnce does not repeat an unchanged retry state when retryAt m
 test('pollActivitiesOnce retries transient MCP poll failures', async () => {
   const originalFetch = globalThis.fetch;
   let attempts = 0;
-  globalThis.fetch = async () => {
+  globalThis.fetch = async (_url, init) => {
+    // The session handshake is not the thing under test: answer it, and make
+    // the first *poll* the transient failure.
+    if (JSON.parse(init.body).method === 'initialize') {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18"}}',
+      };
+    }
     attempts += 1;
     if (attempts === 1) {
       return {

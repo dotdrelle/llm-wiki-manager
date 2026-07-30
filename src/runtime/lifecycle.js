@@ -139,36 +139,3 @@ export async function runtimeHealthOrNull(url = runtimeUrlFromEnv(), token = run
     return null;
   }
 }
-
-// Close the runtime attached to the shell when it is idle, including a process
-// reused at startup. Restricting cleanup to `started: true` left ownerless
-// runtimes occupying port 7788 with another manager directory/token.
-// An active run still survives the shell.
-export async function shutdownOwnedRuntime(runtime, { log = (_message) => {}, timeoutMs = 3000 } = {}) {
-  if (!runtime?.url) return { action: 'kept', reason: 'unavailable' };
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Math.max(1, Number(timeoutMs) || 3000));
-  try {
-    const health = await runtimeHealthOrNull(runtime.url, runtime.token, controller.signal);
-    if (!health) return { action: 'kept', reason: 'unreachable' };
-    const activeRuns = Array.isArray(health.activeRuns) ? health.activeRuns : [];
-    if (activeRuns.length > 0) {
-      const labels = activeRuns
-        .map((run) => [run.workspace, run.runId ? String(run.runId).slice(0, 8) : null].filter(Boolean).join('/'))
-        .join(', ');
-      log(`runtime laissé actif : run en cours (${labels}) — il survivra à ce shell ; relance wiki-manager pour le retrouver.`);
-      return { action: 'kept', reason: 'run_active', activeRuns };
-    }
-    await postRuntimeShutdown({ url: runtime.url, token: runtime.token, signal: controller.signal });
-    log('runtime arrêté (aucun run en cours).');
-    return { action: 'shutdown' };
-  } catch (err) {
-    if (controller.signal.aborted) {
-      log('délai de fermeture du runtime dépassé — le shell termine sans attendre davantage.');
-      return { action: 'timeout', reason: 'shutdown_timeout' };
-    }
-    return { action: 'error', reason: err instanceof Error ? err.message : String(err) };
-  } finally {
-    clearTimeout(timeout);
-  }
-}

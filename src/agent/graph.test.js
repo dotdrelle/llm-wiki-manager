@@ -203,8 +203,10 @@ function toolCallingLlm() {
 test('agent graph waits for run-level approval before first MCP action', async () => {
   const originalFetch = globalThis.fetch;
   let fetchCalls = 0;
-  globalThis.fetch = async () => {
-    fetchCalls += 1;
+  globalThis.fetch = async (_url, init) => {
+    // Count tool traffic only: the MCP session handshake is transport
+    // plumbing, not an action the user needs to approve or observe.
+    if (JSON.parse(init.body).method === 'tools/call') fetchCalls += 1;
     return {
       ok: true,
       status: 200,
@@ -488,6 +490,15 @@ test('Donna refuses to delegate connector authentication to an export capability
   globalThis.fetch = async (url, options = {}) => {
     fetchedUrls.push(String(url));
     const body = JSON.parse(String(options.body ?? '{}'));
+    // MCP session handshake: answer it, then assert on the real tool call.
+    if (body.method === 'initialize') {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18"}}',
+      };
+    }
     assert.equal(body.params?.name, 'connectors_google_oauth_start');
     assert.deepEqual(body.params?.arguments, { workspace: 'docs' });
     return {
@@ -1302,8 +1313,10 @@ test('agent graph executes action inputs inside a runtime run instead of asking 
   // returned a canned clarification — "lance l'ingestion" did nothing.
   const originalFetch = globalThis.fetch;
   let fetchCalls = 0;
-  globalThis.fetch = async () => {
-    fetchCalls += 1;
+  globalThis.fetch = async (_url, init) => {
+    // Count tool traffic only: the MCP session handshake is transport
+    // plumbing, not an action the user needs to approve or observe.
+    if (JSON.parse(init.body).method === 'tools/call') fetchCalls += 1;
     return {
       ok: true,
       status: 200,

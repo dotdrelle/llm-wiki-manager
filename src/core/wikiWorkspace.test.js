@@ -28,6 +28,15 @@ test('wiki-workspace checks runtime pid command before killing', async () => {
   assert.match(script, /kill "\$\(cat "\$pid_file"\)"/);
 });
 
+test('project refresh shuts down runtime and removes only compose-owned images', async () => {
+  const script = await readFile(new URL('../../wiki-workspace', import.meta.url), 'utf8');
+
+  assert.match(script, /if \[\[ \$# -eq 1 && "\$1" == "refresh" \]\]; then\n    refresh_project/);
+  assert.match(script, /compose_for_workspace "\$workspace" down --rmi all --remove-orphans/);
+  assert.match(script, /_agents_dc down --rmi all --remove-orphans/);
+  assert.doesNotMatch(script, /docker (?:image )?prune/);
+});
+
 test('wiki-workspace regenerates CA compose overrides instead of retaining removed services', async () => {
   const script = await readFile(new URL('../../wiki-workspace', import.meta.url), 'utf8');
 
@@ -55,6 +64,13 @@ test('wiki-workspace provisions connector secrets and persistent state', async (
   assert.match(script, /config\.chatAccess\.servers\.connectors \?\?=/);
   assert.match(script, /delete config\.mcpServers\.connectors/);
   assert.match(script, /delete config\.chatAccess\.servers\.connectors/);
+});
+
+test('local connector builds require both public Desktop OAuth values', async () => {
+  const script = await readFile(new URL('../../wiki-workspace', import.meta.url), 'utf8');
+
+  assert.match(script, /for build_key in WIKILLM_GOOGLE_OAUTH_CLIENT_ID WIKILLM_GOOGLE_OAUTH_CLIENT_SECRET/);
+  assert.match(script, /require_connectors_build_credentials/);
 });
 
 test('workspace creation keeps mutable manager files outside the installed package', async () => {

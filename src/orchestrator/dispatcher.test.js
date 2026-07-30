@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createDispatcher } from './dispatcher.js';
+import { createDispatcher, normalizeTaskError } from './dispatcher.js';
 
 test('dispatcher returns a retryable logical failure when agent_execute reports workspace_busy', async () => {
   const session = {
@@ -158,4 +158,27 @@ test('dispatcher keeps a null error when a terminal status reports none', async 
 
   assert.equal(result.ok, true);
   assert.equal(result.error, null);
+});
+
+test('normalizeTaskError keeps the agent reason as the message, never the fallback', () => {
+  // Regression: the fallback describes only WHERE the failure was seen
+  // ("agent_execute rejected task"). Letting it win discarded the one
+  // actionable sentence — and left Donna to invent a cause.
+  const error = normalizeTaskError("Error: source 'acpi' not found", {
+    fallbackCode: 'execution_rejected',
+    fallbackMessage: 'agent_execute rejected task',
+  });
+
+  assert.equal(error.code, "Error: source 'acpi' not found");
+  assert.equal(error.message, "Error: source 'acpi' not found");
+});
+
+test('normalizeTaskError falls back only when the agent reports no reason at all', () => {
+  const error = normalizeTaskError('', {
+    fallbackCode: 'execution_rejected',
+    fallbackMessage: 'agent_execute rejected task',
+  });
+
+  assert.equal(error.code, 'execution_rejected');
+  assert.equal(error.message, 'agent_execute rejected task');
 });

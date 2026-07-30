@@ -146,7 +146,8 @@ test('CME setup and source configuration stay outside export orchestration', asy
   const calledTools = [];
   globalThis.fetch = async (_url, options = {}) => {
     const body = JSON.parse(String(options.body ?? '{}'));
-    calledTools.push(body.params?.name);
+    // Record tool calls only — the MCP session handshake is not a tool call.
+    if (body.method === 'tools/call') calledTools.push(body.params?.name);
     return {
       ok: true,
       status: 200,

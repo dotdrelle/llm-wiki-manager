@@ -243,10 +243,15 @@ export function normalizeTaskError(rawError, { fallbackCode = null, fallbackMess
       retryable: transientError(fallbackCode),
     };
   }
+  // The agent gave a real reason. `fallbackMessage` describes only WHERE the
+  // failure was observed ("agent_execute rejected task"), so letting it win
+  // here replaced the one actionable sentence we have with a generic one —
+  // and Donna, left with nothing to explain, invented a cause. The fallback
+  // is a last resort, never an override.
   const code = String(rawError);
   return {
     code,
-    message: String(fallbackMessage ?? code),
+    message: code,
     retryable: transientError(code),
   };
 }

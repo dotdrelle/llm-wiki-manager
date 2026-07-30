@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   buildExecutorOnlyFragment,
   forwardRuntimeApproval,
+  mcpStatusNeedsRefresh,
   missingRequiredArguments,
   resolveExecutorArguments,
   resolvePreparedDelegationApproval,
@@ -31,6 +32,20 @@ test('startup never opens the setup wizard just because agents are stopped', () 
     [workspace],
   );
   assert.deepEqual(startupWizardGaps([{ kind: 'agents' }]), []);
+});
+
+test('interactive runtime refreshes configured MCP endpoints that started late', () => {
+  assert.equal(mcpStatusNeedsRefresh({
+    wiki: { url: 'http://127.0.0.1:3201/mcp', status: 'connected' },
+    cme: { url: 'http://127.0.0.1:3336/mcp/', status: 'configured' },
+  }), true);
+  assert.equal(mcpStatusNeedsRefresh({
+    wiki: { url: 'http://127.0.0.1:3201/mcp', status: 'connected' },
+    cme: { url: 'http://127.0.0.1:3336/mcp/', status: 'connected' },
+  }), false);
+  assert.equal(mcpStatusNeedsRefresh({
+    disabled: { url: null, status: 'missing' },
+  }), false);
 });
 
 test('executor-only capabilities receive one manager-authored executable task', () => {
@@ -190,4 +205,146 @@ test('prepared delegation only approves when autoApprove is explicitly true', ()
     awaitingApproval: false,
     result: { approved: true },
   });
+});
+
+const EXPORT_CAPABILITY = {
+  description: 'Export configured sources to workspace markdown files.',
+  inputSchema: {
+    type: 'object',
+    additionalProperties: true,
+    properties: { source_name: { type: 'string' } },
+  },
+};
+
+test('argument extraction drops a value that only echoes the active workspace', async () => {
+  // Regression: "exporter les pages Confluence du workspace acpi" against a
+  // schema whose single free-text field is source_name. The model binds the
+  // workspace name to it, and the executor fails with "source 'acpi' not
+  // found". The workspace is already bound out of band, so the echo is noise.
+  const llm = {
+    completeWithTools: async () => ({
+      tool_calls: [{
+        function: { name: 'set_task_arguments', arguments: JSON.stringify({ source_name: 'acpi' }) },
+      }],
+    }),
+  };
+
+  assert.deepEqual(
+    await resolveExecutorArguments({
+      llm,
+      objective: 'exporter les pages Confluence du workspace acpi',
+      capability: EXPORT_CAPABILITY,
+      workspace: 'acpi',
+    }),
+    {},
+  );
+});
+
+test('argument extraction keeps a real value that is not the workspace name', async () => {
+  const llm = {
+    completeWithTools: async () => ({
+      tool_calls: [{
+        function: {
+          name: 'set_task_arguments',
+          arguments: JSON.stringify({ source_name: 'EAS_Avant_projet_ACPI' }),
+        },
+      }],
+    }),
+  };
+
+  assert.deepEqual(
+    await resolveExecutorArguments({
+      llm,
+      objective: 'exporter la source EAS_Avant_projet_ACPI',
+      capability: EXPORT_CAPABILITY,
+      workspace: 'acpi',
+    }),
+    { source_name: 'EAS_Avant_projet_ACPI' },
+  );
+});
+
+test('argument extraction tells the model the workspace is already bound', async () => {
+  let seenSystem = '';
+  const llm = {
+    completeWithTools: async ({ system }) => {
+      seenSystem = system;
+      return { tool_calls: [] };
+    },
+  };
+
+  await resolveExecutorArguments({
+    llm,
+    objective: 'exporter les pages du workspace acpi',
+    capability: EXPORT_CAPABILITY,
+    workspace: 'acpi',
+  });
+
+  assert.match(seenSystem, /already runs against workspace "acpi"/);
+});
+
+test('argument extraction rejects a value outside the closed vocabulary', async () => {
+  // Regression: "exporter les pages Confluence du workspace juno" — the
+  // workspace guard removes "juno", so the model reaches for the next noun and
+  // emits "Confluence". Only the agent knows the valid names; once it publishes
+  // them as an enum, the orchestrator can check without guessing at meaning.
+  const capability = {
+    description: 'Export configured sources.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        source_name: { type: 'string', enum: ['EAS_Avant_projet_ACPI'] },
+      },
+    },
+  };
+  const llm = {
+    completeWithTools: async () => ({
+      tool_calls: [{
+        function: { name: 'set_task_arguments', arguments: JSON.stringify({ source_name: 'Confluence' }) },
+      }],
+    }),
+  };
+
+  assert.deepEqual(
+    await resolveExecutorArguments({
+      llm,
+      objective: 'exporter les pages Confluence du workspace juno',
+      capability,
+      workspace: 'juno',
+    }),
+    {},
+  );
+});
+
+test('argument extraction keeps a value the vocabulary allows', async () => {
+  const capability = {
+    description: 'Export configured sources.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        source_name: { type: 'string', enum: ['EAS_Avant_projet_ACPI', 'autre'] },
+      },
+    },
+  };
+  const llm = {
+    completeWithTools: async () => ({
+      tool_calls: [{
+        function: {
+          name: 'set_task_arguments',
+          arguments: JSON.stringify({ source_name: 'EAS_Avant_projet_ACPI' }),
+        },
+      }],
+    }),
+  };
+
+  assert.deepEqual(
+    await resolveExecutorArguments({
+      llm,
+      objective: 'exporter la source EAS_Avant_projet_ACPI',
+      capability,
+      workspace: 'acpi',
+    }),
+    { source_name: 'EAS_Avant_projet_ACPI' },
+  );
 });

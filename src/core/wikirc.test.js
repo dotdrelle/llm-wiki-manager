@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import test from 'node:test';
 import YAML from 'yaml';
 import { loadWikircProfile, normalizeCapabilityRouting, patchWikircProfile } from './wikirc.js';
-import { finalizeCreatedWorkspace, writeVectorConfig } from './wikiSetup.js';
+import {
+  containerReachableUrl,
+  finalizeCreatedWorkspace,
+  writeLlmConfig,
+  writeVectorConfig,
+} from './wikiSetup.js';
 
 test('patchWikircProfile merges keys and preserves existing values', () => {
   const root = mkdtempSync(join(tmpdir(), 'wikirc-patch-'));
@@ -106,7 +111,7 @@ test('writeVectorConfig writes llm-wiki vector and rerank keys', () => {
   ].join('\n'), 'utf8');
 
   writeVectorConfig(root, 'default', {
-    baseUrl: 'http://localhost:7997/v1',
+    baseUrl: 'http://host.docker.internal:7997/v1',
     apiKey: 'vector-key',
     embeddingModel: 'BAAI/bge-m3',
     rerankEnabled: true,
@@ -115,7 +120,7 @@ test('writeVectorConfig writes llm-wiki vector and rerank keys', () => {
 
   const parsed = YAML.parse(readFileSync(join(root, '.wikirc.yaml'), 'utf8'));
   assert.equal(parsed.retrieval.vector.enabled, true);
-  assert.equal(parsed.retrieval.vector.baseUrl, 'http://localhost:7997/v1');
+  assert.equal(parsed.retrieval.vector.baseUrl, 'http://host.docker.internal:7997/v1');
   assert.equal(parsed.retrieval.vector.apiKey, 'vector-key');
   assert.equal(parsed.retrieval.vector.embeddingModel, 'BAAI/bge-m3');
   assert.equal(parsed.retrieval.vector.rerankEnabled, true);
@@ -143,7 +148,7 @@ test('writeVectorConfig removes commented vector placeholders it replaces', () =
   ].join('\n'), 'utf8');
 
   writeVectorConfig(root, 'default', {
-    baseUrl: 'http://localhost:7997/v1',
+    baseUrl: 'http://host.docker.internal:7997/v1',
     apiKey: 'vector-key',
     embeddingModel: 'BAAI/bge-m3',
     rerankEnabled: true,
@@ -154,7 +159,7 @@ test('writeVectorConfig removes commented vector placeholders it replaces', () =
   const parsed = YAML.parse(raw);
   assert.doesNotMatch(raw, /^\s*#\s*baseUrl:/m);
   assert.doesNotMatch(raw, /^\s*#\s*apiKey:/m);
-  assert.equal(parsed.retrieval.vector.baseUrl, 'http://localhost:7997/v1');
+  assert.equal(parsed.retrieval.vector.baseUrl, 'http://host.docker.internal:7997/v1');
   assert.equal(parsed.retrieval.vector.apiKey, 'vector-key');
 });
 
@@ -194,4 +199,53 @@ test('finalizeCreatedWorkspace copies generated wiki token into default wikirc',
     if (previousDir === undefined) delete process.env.WIKI_WORKSPACES_DIR;
     else process.env.WIKI_WORKSPACES_DIR = previousDir;
   }
+});
+
+test('writeLlmConfig writes provider + engine and rewrites loopback hosts for containers', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wikirc-llm-'));
+  writeFileSync(join(root, '.wikirc.yaml'), ['language: en', ''].join('\n'), 'utf8');
+
+  writeLlmConfig(root, 'default', {
+    provider: 'openai-compatible',
+    engine: 'ollama',
+    baseUrl: 'http://localhost:11434/v1',
+    apiKey: 'ollama',
+    model: 'qwen2.5',
+  });
+
+  const parsed = YAML.parse(readFileSync(join(root, '.wikirc.yaml'), 'utf8'));
+  assert.equal(parsed.llm.provider, 'openai-compatible');
+  assert.equal(parsed.llm.engine, 'ollama');
+  // Le wizard tourne sur l'hôte, serve dans Docker : localhost y désigne le
+  // container lui-meme.
+  assert.equal(parsed.llm.baseUrl, 'http://host.docker.internal:11434/v1');
+});
+
+test('writeLlmConfig omits engine behind a gateway and leaves real hostnames alone', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wikirc-llm-gw-'));
+  writeFileSync(join(root, '.wikirc.yaml'), ['language: en', ''].join('\n'), 'utf8');
+
+  writeLlmConfig(root, 'default', {
+    provider: 'ai-gateway',
+    engine: null,
+    baseUrl: 'https://gateway.internal.example/v1',
+    apiKey: 'sk-virtual',
+    model: 'anthropic/claude-sonnet-4-5',
+  });
+
+  const parsed = YAML.parse(readFileSync(join(root, '.wikirc.yaml'), 'utf8'));
+  assert.equal(parsed.llm.provider, 'ai-gateway');
+  assert.equal(parsed.llm.engine, undefined);
+  assert.equal(parsed.llm.baseUrl, 'https://gateway.internal.example/v1');
+});
+
+test('containerReachableUrl only touches loopback hosts', () => {
+  assert.deepEqual(containerReachableUrl('http://127.0.0.1:8000/v1'), {
+    url: 'http://host.docker.internal:8000/v1',
+    rewritten: true,
+    from: '127.0.0.1',
+  });
+  assert.equal(containerReachableUrl('https://api.openai.com/v1').rewritten, false);
+  assert.equal(containerReachableUrl('http://gateway:4000/v1').rewritten, false);
+  assert.equal(containerReachableUrl(undefined).rewritten, false);
 });

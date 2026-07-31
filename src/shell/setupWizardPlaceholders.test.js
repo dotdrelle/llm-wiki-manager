@@ -48,7 +48,7 @@ test('preloading a profile filters placeholders out of every prefilled field', (
   // With the vector URL filtered to null, this is what makes the embeddings
   // step offer the base URL the operator just typed.
   assert.match(source, /const baseUrl = vector\(\)\.baseUrl \|\| llm\(\)\.baseUrl;/);
-  assert.match(source, /baseUrl: old\.baseUrl \|\| llm\(\)\.baseUrl \|\| defaultBaseUrl\(llm\(\)\.provider\)/);
+  assert.match(source, /baseUrl: old\.baseUrl \|\| llm\(\)\.baseUrl \|\| defaultBaseUrl\(llm\(\)\.provider, llm\(\)\.engine\)/);
 });
 
 test('a real configuration is never mistaken for a placeholder', () => {

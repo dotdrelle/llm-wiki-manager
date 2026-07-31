@@ -3,7 +3,15 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { useKeyboard, usePaste } from '@opentui/solid';
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js';
-import { fallbackModels, normalizeProvider } from '../core/modelFetch.js';
+import {
+  defaultBaseUrl,
+  fallbackModels,
+  fetchGatewayCatalog,
+  fetchModels,
+  normalizeEngine,
+  normalizeProvider,
+  requiresBaseUrl,
+} from '../core/modelFetch.js';
 import { checkInternetConnectivity } from '../core/startupCheck.js';
 import {
   createNewWorkspace,
@@ -24,11 +32,40 @@ type Step =
   | { kind: 'menu'; title: string; items: Array<{ label: string; value: string; muted?: boolean }> }
   | { kind: 'confirm'; title: string; message: string; yesLabel: string; noLabel: string }
   | { kind: 'select'; title: string; label: string; options: string[]; note?: string }
-  | { kind: 'text'; title: string; label: string; note?: string; placeholder?: string; prefill?: string; secret?: boolean }
+  | {
+      kind: 'text';
+      title: string;
+      label: string;
+      note?: string;
+      placeholder?: string;
+      prefill?: string;
+      secret?: boolean;
+      /**
+       * Catalogue découvert. Purement indicatif : le champ texte fait foi, ce
+       * qui garde l'étape utilisable quand l'endpoint est injoignable ou quand
+       * le modèle voulu n'y figure pas.
+       */
+      suggestions?: string[];
+    }
   | { kind: 'done' };
 type LogEntry = { icon: string; label: string; detail?: string };
 
-const PROVIDERS = ['OpenAI', 'Anthropic', 'Ollama (local)', 'Other (OpenAI-compatible)'];
+// Deux axes, deux questions. `provider` dit où l'on tape, `engine` dit
+// comment se comporte le serveur en face. Les fusionner était précisément ce
+// qui empêchait de décrire une gateway.
+const PROVIDERS = [
+  'Direct server (OpenAI-compatible)',
+  'AI gateway (LiteLLM, Bifrost, Portkey…)',
+];
+const ENGINE_OPTIONS = [
+  'OpenAI',
+  'Anthropic',
+  'Ollama (local)',
+  'vLLM (local)',
+  'MLX (local)',
+  'Albert',
+  'Other (generic OpenAI-compatible)',
+];
 // The scaffolded .wikirc.yaml ships fake endpoints and secrets so the file
 // documents its own shape (`https://mon-provider.example.com/v1`,
 // `http://infinity.local:7997/v1`, `YOUR_LLM_API_KEY`…). Preloading them into
@@ -43,12 +80,10 @@ function configuredValue(value: unknown) {
 }
 const MAIN_MENU = ['Agents', 'Workspaces', 'LLM configuration', 'Vector search', '---', 'Close'];
 
-function defaultBaseUrl(provider: string) {
-  if (provider === 'ollama') return 'http://localhost:11434';
-  if (provider === 'anthropic') return 'https://api.anthropic.com';
-  if (provider === 'openai') return 'https://api.openai.com';
-  if (provider === 'openai-compatible') return 'http://localhost:8000';
-  return '';
+// Les défauts et la question « faut-il demander une baseUrl ? » vivent dans
+// core/modelFetch.js, source unique partagée avec la découverte.
+function exampleBaseUrl(provider: string, engine: string) {
+  return defaultBaseUrl(provider, engine);
 }
 
 function currentWorkspaceContext(session: any, fallback?: any) {
@@ -239,17 +274,30 @@ export function SetupWizard(props: {
         kind: 'select',
         title: 'LLM configuration',
         label: context?.configError
-          ? `${context.configError} Select a provider after creating or fixing the config:`
-          : `No LLM configured${context?.workspaceName ? ` for ${context.workspaceName}` : ''}. Select a provider:`,
+          ? `${context.configError} Select how requests are routed after creating or fixing the config:`
+          : `No LLM configured${context?.workspaceName ? ` for ${context.workspaceName}` : ''}. How are requests routed?`,
         options: PROVIDERS,
+        note: 'A gateway is external infrastructure you deploy yourself; llm-wiki only reads its model catalog.',
+      };
+    }
+    if (currentRoute === 'llm-engine') {
+      return {
+        kind: 'select',
+        title: 'LLM configuration',
+        label: 'Which server is answering?',
+        options: ENGINE_OPTIONS,
+        note: 'Drives request-shaping workarounds and the `wiki doctor` calibration.',
       };
     }
     if (currentRoute === 'llm-baseurl') {
-      const example = defaultBaseUrl(llm().provider);
+      const isGateway = llm().provider === 'ai-gateway';
+      const example = exampleBaseUrl(llm().provider, llm().engine);
       return {
         kind: 'text',
         title: 'LLM configuration',
-        label: `Base URL${example ? ` (example: ${example})` : ''}`,
+        label: isGateway
+          ? 'Gateway base URL (example: http://gateway:4000/v1)'
+          : `Base URL${example ? ` (example: ${example})` : ''}`,
         prefill: llm().baseUrl || '',
       };
     }
@@ -257,13 +305,15 @@ export function SetupWizard(props: {
       return { kind: 'text', title: 'LLM configuration', label: 'API key (required)', secret: true };
     }
     if (currentRoute === 'llm-model') {
-      const example = fallbackModels(llm().provider)[0] || 'provider-agentic-model';
+      const discovered = catalog()?.chat ?? [];
+      const example = discovered[0] || fallbackModels(llm().engine)[0] || 'provider-agentic-model';
       return {
         kind: 'text',
         title: 'LLM configuration',
         label: `Model (example: ${example})`,
-        note: 'Required: an agentic model with tool/function calling support.',
-        prefill: llm().model || '',
+        note: catalogNote('Required: an agentic model with tool/function calling support.'),
+        prefill: llm().model || example,
+        suggestions: discovered,
       };
     }
     if (currentRoute === 'vector-confirm') {
@@ -274,19 +324,50 @@ export function SetupWizard(props: {
       return { kind: 'text', title: 'Vector search', label: 'Embeddings/rerank base URL', prefill: baseUrl, placeholder: baseUrl };
     }
     if (currentRoute === 'vector-apikey') {
-      const hint = llm().apiKey ? '(leave empty to reuse LLM key)' : undefined;
-      return { kind: 'text', title: 'Vector search', label: 'Vector API key', placeholder: hint, secret: true };
+      // L'héritage n'est proposé que tant que l'URL n'a pas divergé : sinon la
+      // clé du LLM — celle de la gateway, qui ouvre tous les providers —
+      // partirait vers un autre hôte.
+      const diverged = vectorBaseUrlDiverged();
+      const hint = !diverged && llm().apiKey ? '(leave empty to reuse LLM key)' : undefined;
+      return {
+        kind: 'text',
+        title: 'Vector search',
+        label: diverged ? 'Vector API key (required: different host)' : 'Vector API key',
+        placeholder: hint,
+        secret: true,
+      };
     }
     if (currentRoute === 'vector-model') {
-      const defaultEmbedding = vector().embeddingModel || fallbackModels(vector().provider || llm().provider, 'embedding')[0] || '';
-      return { kind: 'text', title: 'Vector search', label: 'Embedding model', prefill: defaultEmbedding };
+      const discovered = catalog()?.embedding ?? [];
+      const defaultEmbedding =
+        vector().embeddingModel ||
+        discovered[0] ||
+        fallbackModels(llm().engine, 'embedding')[0] ||
+        '';
+      return {
+        kind: 'text',
+        title: 'Vector search',
+        label: 'Embedding model',
+        note: catalogNote('Embeddings endpoint model.'),
+        prefill: defaultEmbedding,
+        suggestions: discovered,
+      };
     }
     if (currentRoute === 'vector-rerank') {
       return { kind: 'confirm', title: 'Vector search', message: 'Enable reranking?', yesLabel: 'Enable', noLabel: 'Skip' };
     }
     if (currentRoute === 'vector-rerank-model') {
-      const defaultReranker = vector().rerankerModel || 'BAAI/bge-reranker-v2-m3';
-      return { kind: 'text', title: 'Vector search', label: 'Rerank model', prefill: defaultReranker };
+      const discovered = catalog()?.rerank ?? [];
+      const defaultReranker =
+        vector().rerankerModel || discovered[0] || 'BAAI/bge-reranker-v2-m3';
+      return {
+        kind: 'text',
+        title: 'Vector search',
+        label: 'Rerank model',
+        note: catalogNote('Leave reranking disabled if no rerank model is available.'),
+        prefill: defaultReranker,
+        suggestions: discovered,
+      };
     }
     if (currentRoute === 'unregister-confirm') {
       const workspace = targetWorkspace();
@@ -315,11 +396,92 @@ export function SetupWizard(props: {
     setInput((s as any).prefill ?? '');
     const items = (s as any).items ?? (s as any).options?.map((label: string) => ({ label })) ?? [{ label: 'x' }];
     let preferred = -1;
+    // La question de routage est reposée à chaque passage — c'est plus simple
+    // et plus honnête que de la mémoriser dans un champ dédié. On se contente
+    // de présélectionner ce que le wikirc déclare déjà.
     if (route() === 'llm-provider' && llm().provider) {
-      preferred = PROVIDERS.findIndex((p) => normalizeProvider(p) === normalizeProvider(llm().provider));
+      preferred = PROVIDERS.findIndex(
+        (p) => normalizeProvider(p) === normalizeProvider(llm().provider),
+      );
+    }
+    if (route() === 'llm-engine' && llm().engine) {
+      preferred = ENGINE_OPTIONS.findIndex(
+        (e) => normalizeEngine(e) === normalizeEngine(llm().engine),
+      );
     }
     setSelected(preferred >= 0 ? preferred : firstSelectableIndex(items));
   });
+
+  /**
+   * Catalogue découvert auprès du serveur ou de la gateway. Il ne sert qu'à
+   * préremplir : le champ texte reste la vérité, ce qui garde le wizard
+   * utilisable quand l'endpoint est injoignable ou quand le modèle voulu n'y
+   * figure pas.
+   */
+  const [catalog, setCatalog] = createSignal<any>(null);
+  const [catalogError, setCatalogError] = createSignal<string | null>(null);
+
+  function catalogNote(base: string) {
+    const error = catalogError();
+    if (error) return `${base} (model discovery unavailable: ${error})`;
+    const found = catalog();
+    if (!found) return base;
+    if (!found.typed) {
+      return `${base} (gateway has no /model/info: the three lists are unfiltered)`;
+    }
+    return base;
+  }
+
+  async function discoverModels(target?: {
+    provider?: string;
+    engine?: string;
+    baseUrl?: string;
+    apiKey?: string;
+  }) {
+    setCatalog(null);
+    setCatalogError(null);
+    const source = target ?? llm();
+    const { provider, engine, baseUrl, apiKey } = source as any;
+    if (!baseUrl) return;
+    try {
+      if (normalizeProvider(provider) === 'ai-gateway') {
+        const found = await fetchGatewayCatalog(baseUrl, apiKey);
+        if (!found.ok) {
+          setCatalogError(found.error ?? 'gateway unreachable');
+          return;
+        }
+        setCatalog(found);
+        return;
+      }
+      const chat = await fetchModels(provider, baseUrl, apiKey, { engine });
+      const embedding = await fetchModels(provider, baseUrl, apiKey, {
+        engine,
+        kind: 'embedding',
+      });
+      if (!chat.ok && !embedding.ok) {
+        setCatalogError(chat.error ?? 'server unreachable');
+        return;
+      }
+      // Un serveur direct ne type pas ses modèles : les mêmes entrées
+      // alimentent les trois questions.
+      setCatalog({
+        typed: false,
+        chat: chat.models,
+        embedding: embedding.models,
+        rerank: embedding.models,
+      });
+    } catch (err) {
+      setCatalogError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** Vrai quand l'URL vecteur ne pointe plus le même hôte que le LLM. */
+  function vectorBaseUrlDiverged() {
+    const vectorUrl = vector().baseUrl;
+    const llmUrl = llm().baseUrl;
+    if (!vectorUrl || !llmUrl) return false;
+    return vectorUrl.replace(/\/+$/, '') !== llmUrl.replace(/\/+$/, '');
+  }
 
   function preloadWikirc(context: any) {
     const workspacePath = context?.workspacePath;
@@ -330,6 +492,15 @@ export function SetupWizard(props: {
       if (config?.llm?.provider) {
         setLlm({
           provider: normalizeProvider(config.llm.provider),
+          // Un wikirc pré-0.16 porte le moteur dans `provider`
+          // (`ollama`, `anthropic`, `openai`). Sans cette déduction, l'étape
+          // moteur ne présélectionne rien et propose OpenAI en tête — au
+          // risque d'écraser une configuration qui marchait.
+          engine: config.llm.engine
+            ? normalizeEngine(config.llm.engine)
+            : normalizeProvider(config.llm.provider) === 'ai-gateway'
+              ? null
+              : normalizeEngine(config.llm.provider),
           baseUrl: configuredValue(config.llm.baseUrl),
           apiKey: configuredValue(config.llm.apiKey),
           model: configuredValue(config.llm.model),
@@ -500,14 +671,28 @@ export function SetupWizard(props: {
     }
     if (currentRoute === 'llm-provider') {
       const provider = normalizeProvider(value);
+      setLlm((old: any) => ({
+        ...old,
+        provider,
+        // Derrière une gateway il n'y a pas de moteur : l'endpoint est opaque
+        // et chaque modèle peut en avoir un différent.
+        engine: provider === 'ai-gateway' ? null : old.engine,
+        baseUrl: old.provider === provider ? old.baseUrl : '',
+      }));
+      // La gateway exige toujours une baseUrl, et n'a pas de moteur à choisir.
+      if (provider === 'ai-gateway') return navigate('llm-baseurl');
+      return navigate('llm-engine');
+    }
+    if (currentRoute === 'llm-engine') {
+      const engine = normalizeEngine(value);
       setLlm((old: any) => {
-        const asksForBaseUrl = provider === 'ollama' || provider === 'openai-compatible';
-        const baseUrl = (old.provider === provider && old.baseUrl)
+        const asksForBaseUrl = requiresBaseUrl(old.provider, engine);
+        const baseUrl = (old.engine === engine && old.baseUrl)
           ? old.baseUrl
-          : asksForBaseUrl ? '' : defaultBaseUrl(provider);
-        return { ...old, provider, baseUrl, ...(provider === 'ollama' && !old.apiKey ? { apiKey: 'ollama' } : {}) };
+          : asksForBaseUrl ? '' : defaultBaseUrl(old.provider, engine);
+        return { ...old, engine, baseUrl, ...(engine === 'ollama' && !old.apiKey ? { apiKey: 'ollama' } : {}) };
       });
-      if (provider === 'ollama' || provider === 'openai-compatible') return navigate('llm-baseurl');
+      if (requiresBaseUrl(llm().provider, engine)) return navigate('llm-baseurl');
       return navigate('llm-apikey');
     }
     if (currentRoute === 'unregister-confirm') {
@@ -569,7 +754,7 @@ export function SetupWizard(props: {
       setVector((old: any) => ({
         ...old,
         provider: old.provider || llm().provider,
-        baseUrl: old.baseUrl || llm().baseUrl || defaultBaseUrl(llm().provider),
+        baseUrl: old.baseUrl || llm().baseUrl || defaultBaseUrl(llm().provider, llm().engine),
       }));
       return navigate('vector-baseurl');
     }
@@ -612,24 +797,46 @@ export function SetupWizard(props: {
     if (currentRoute === 'llm-baseurl') {
       if (!value) return setError('Base URL is required.');
       setLlm((old: any) => ({ ...old, baseUrl: value }));
-      if (llm().provider === 'ollama') return navigate('llm-model');
+      // Ollama n'exige pas de clé : on peut découvrir tout de suite.
+      if (llm().engine === 'ollama') {
+        await discoverModels();
+        return navigate('llm-model');
+      }
       return navigate('llm-apikey');
     }
     if (currentRoute === 'llm-apikey') {
       if (!value) return setError('API key is required.');
       setLlm((old: any) => ({ ...old, apiKey: value }));
+      await discoverModels();
       return navigate('llm-model');
     }
     if (currentRoute === 'vector-baseurl') {
       const baseUrl = value || vector().baseUrl || llm().baseUrl;
       if (!baseUrl) return setError('Embeddings/rerank base URL is required.');
-      setVector((old: any) => ({ ...old, provider: llm().provider, baseUrl }));
+      setVector((old: any) => ({
+        ...old,
+        provider: llm().provider,
+        engine: llm().engine,
+        baseUrl,
+      }));
       return navigate('vector-apikey');
     }
     if (currentRoute === 'vector-apikey') {
+      if (vectorBaseUrlDiverged() && !value) {
+        return setError(
+          'API key is required: the vector base URL differs from the LLM one, so the LLM key is not reused.',
+        );
+      }
       const apiKey = value || llm().apiKey || undefined;
       if (!apiKey) return setError('API key is required (or set LLM key first).');
       setVector((old: any) => ({ ...old, apiKey }));
+      // Le catalogue affiché aux étapes embeddings et rerank doit venir de
+      // l'endpoint vecteur, pas du LLM : ce sont deux serveurs distincts dès
+      // que l'URL diverge, et proposer les modèles de chat de l'un pour les
+      // embeddings de l'autre n'a aucun sens.
+      if (vectorBaseUrlDiverged()) {
+        await discoverModels({ ...vector(), apiKey });
+      }
       return navigate('vector-model');
     }
     if (currentRoute === 'llm-model') {
@@ -754,6 +961,31 @@ export function SetupWizard(props: {
     return value || (s.secret ? (s.placeholder ?? '') : '');
   };
   const inputHasValue = () => step().kind === 'text' && input().length > 0;
+
+  /**
+   * Suggestions filtrées par ce qui est tapé.
+   *
+   * Une gateway correctement remplie expose plusieurs centaines de modèles :
+   * une liste brute est inutilisable, et un select classique interdirait de
+   * saisir un modèle absent du catalogue. On garde donc le champ texte comme
+   * seule vérité et on n'affiche qu'un rappel filtré — ce qui règle d'un coup
+   * les trois cas : liste énorme, modèle absent, endpoint injoignable.
+   */
+  const SUGGESTION_ROWS = 4;
+  const filteredSuggestions = createMemo(() => {
+    const current = step() as any;
+    const all: string[] = current?.suggestions ?? [];
+    if (all.length === 0) return { rows: [] as string[], total: 0, matched: 0 };
+    const needle = input().trim().toLowerCase();
+    const matches = needle
+      ? all.filter((item) => item.toLowerCase().includes(needle))
+      : all;
+    return {
+      rows: matches.slice(0, SUGGESTION_ROWS),
+      total: all.length,
+      matched: matches.length,
+    };
+  });
   const lineWidth = () => Math.max(10, dialogWidth() - 10);
   const displayLine1 = () => displayValue().slice(0, lineWidth());
   const displayLine2 = () => displayValue().slice(lineWidth(), lineWidth() * 2);
@@ -838,6 +1070,25 @@ export function SetupWizard(props: {
             </Show>
           </box>
         </box>
+      </Show>
+      <Show when={step().kind === 'text' && filteredSuggestions().total > 0}>
+        <text height={1} fg="#7F8C8D">
+          {filteredSuggestions().matched === 0
+            ? `no match among ${filteredSuggestions().total} discovered model(s) — the typed value is used as-is`
+            : `${filteredSuggestions().matched}/${filteredSuggestions().total} discovered model(s) — type to filter, the typed value wins`}
+        </text>
+        <For each={filteredSuggestions().rows}>
+          {(suggestion) => (
+            <text height={1} fg={suggestion === input().trim() ? '#8BD5CA' : '#9CA3AF'}>
+              {`  ${suggestion === input().trim() ? '*' : '·'} ${suggestion}`}
+            </text>
+          )}
+        </For>
+        <Show when={filteredSuggestions().matched > SUGGESTION_ROWS}>
+          <text height={1} fg="#7F8C8D">
+            {`  … ${filteredSuggestions().matched - SUGGESTION_ROWS} more`}
+          </text>
+        </Show>
       </Show>
       <Show when={step().kind !== 'text'}>
         <For each={currentItems()}>

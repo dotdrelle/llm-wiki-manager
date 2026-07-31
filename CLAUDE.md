@@ -1,6 +1,8 @@
 # Repository Guide
 
-Current coordinated release: **0.14.11**. Keep manager handshakes and the local
+Current coordinated release: **0.15.32** (see `package.json`, the only source
+of truth — this line and the one in the Docker/Security section had drifted to
+0.14.11 and 0.11.4 respectively). Keep manager handshakes and the local
 `llm-wiki` engine version aligned across the coordinated repositories.
 
 ## Purpose
@@ -12,13 +14,11 @@ the `donna` agent shell.
 Keep it a manager. Do not absorb responsibilities from `llm-wiki`,
 `agent-cme`, `agent-wiki-production`, or other external agents.
 
-The multi-repo master plan lives in `plan-directeur-orchestration.md` at the
-wikiLLM workspace root (one level above this repo, not versioned here), with
-its per-commit breakdown in `plan-implementation-detaillee.md` and the backing
-code review in `revue-critique-orchestration.md`. It supersedes
-`plan-directeur-revise.md` and all earlier plans. The "agnostic orchestration
-of Donna" refactor it describes is **fully implemented in this repo** as of
-0.12.0 (corrective release + ordered commits `f1e4090`…`fd744de`):
+Multi-repo context lives in `CLAUDE.md` at the wikiLLM workspace root (one
+level above this repo, not versioned here). The master plans that drove the
+"agnostic orchestration of Donna" refactor were removed once implemented; that
+refactor is **fully implemented in this repo** (corrective release + ordered
+commits `f1e4090`…`fd744de`):
 
 - Donna's core is business-agnostic. It never branches on operations or agent
   names; it only understands capabilities, tasks, dependencies, groups,
@@ -46,8 +46,8 @@ of Donna" refactor it describes is **fully implemented in this repo** as of
   tasks with an `idempotencyKey` go back to `pending` for idempotent
   rescheduling.
 
-0.11.0 was the industrialized single-user baseline; 0.12.0 (this codebase) is
-the agnostic-orchestration release, pending tags. Multi-user support is
+0.11.0 was the industrialized single-user baseline; the agnostic-orchestration
+work landed in the 0.12.0 line. Multi-user support is
 specified in `llm-wiki/docs/industrialisation.md` and planned next; do not
 expose the runtime as a shared write surface before that work lands.
 
@@ -587,8 +587,9 @@ remain the source of truth. Queue state is workspace-scoped.
   and `WIKI_MANAGER_RUNTIME_TOKEN` to connect to the runtime.
 - Prefer `wiki-workspace` over raw `docker compose`.
 - Keep `package.json`, MCP `clientInfo.version`, and external agent
-  `_AGENT_VERSION` values aligned for each coordinated release. Current release
-  line: `0.11.4`. `scripts/check-versions.js` verifies this (wired to `prepack`
+  `_AGENT_VERSION` values aligned for each coordinated release. The release
+  line is whatever `package.json` declares — do not restate it here, it drifts.
+  `scripts/check-versions.js` verifies this (wired to `prepack`
   and `prepublishOnly`; `CHECK_GIT_TAG=1` and `CHECK_DOCKER_IMAGES=1` add
   optional pre-release gates). The root `build-and-push.sh` (outside this
   package) syncs versions across all six service repos before building.

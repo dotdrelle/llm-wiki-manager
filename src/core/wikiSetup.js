@@ -261,11 +261,37 @@ export function writeLanguageConfig(workspacePath, profileName, language) {
   return patchWikircProfile(workspacePath, profileName || 'default', { language });
 }
 
+/**
+ * Le wizard tourne sur l'hôte, les services dans Docker : une baseUrl saisie
+ * en `localhost` répond au wizard et échoue dans le container. On la réécrit
+ * vers `host.docker.internal`, que les services déclarent déjà en
+ * `extra_hosts`. Jamais sur un hostname réel — seulement sur les trois formes
+ * de boucle locale. L'appelant affiche la réécriture : la faire en silence
+ * rend le diagnostic impossible quand elle se trompe.
+ */
+export function containerReachableUrl(baseUrl) {
+  if (!baseUrl) return { url: baseUrl, rewritten: false };
+  try {
+    const parsed = new URL(baseUrl);
+    if (!['localhost', '127.0.0.1', '::1', '[::1]'].includes(parsed.hostname)) {
+      return { url: baseUrl, rewritten: false };
+    }
+    const original = parsed.hostname;
+    parsed.hostname = 'host.docker.internal';
+    return { url: parsed.toString().replace(/\/$/, ''), rewritten: true, from: original };
+  } catch {
+    return { url: baseUrl, rewritten: false };
+  }
+}
+
 export function writeLlmConfig(workspacePath, profileName, config) {
   const patches = {
     llm: {
       provider: config.provider,
-      ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+      // Absent derrière une gateway : l'endpoint est opaque, il n'y a pas un
+      // moteur mais un par modèle.
+      ...(config.engine ? { engine: config.engine } : {}),
+      ...(config.baseUrl ? { baseUrl: containerReachableUrl(config.baseUrl).url } : {}),
       ...(config.apiKey ? { apiKey: config.apiKey } : {}),
       model: config.model,
     },
@@ -278,7 +304,11 @@ export function writeVectorConfig(workspacePath, profileName, config) {
     retrieval: {
       vector: {
         enabled: true,
-        ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+        // baseUrl et apiKey absents = hérités du bloc llm par resolveConfig.
+        // Le wizard ne les transmet que lorsqu'ils divergent réellement, pour
+        // que le wikirc reste lisible et que la clé du LLM ne soit pas
+        // recopiée vers un autre hôte.
+        ...(config.baseUrl ? { baseUrl: containerReachableUrl(config.baseUrl).url } : {}),
         ...(config.apiKey ? { apiKey: config.apiKey } : {}),
         timeoutMs: config.timeoutMs ?? 600_000,
         embeddingModel: config.embeddingModel,

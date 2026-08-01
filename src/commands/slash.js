@@ -3,6 +3,8 @@ import { openExternalUrl } from '../shell/openExternal.js';
 import { classifyCommandFailure, failureHint, rawFailureText } from '../core/commandFailure.js';
 import { join, relative } from 'node:path';
 import { composeServices, listServices, runWikiCli, serviceLogs, serviceNames, serviceStates, startService, stopService } from '../core/compose.js';
+import { agentServiceNames, profileServiceStatus } from '../core/agentsCompose.js';
+import { GOOGLE_GRANTS, GOOGLE_GRANT_LABELS, defaultGoogleGrants } from '../core/googleGrants.js';
 import {
   applyMcpRuntimeStatus,
   buildMcpStatus,
@@ -1058,6 +1060,12 @@ export async function handleSlashCommand(line, context) {
       // falls back to the hardcoded COMPOSE_SERVICES constant instead.
       const service = args[1];
       if (service === 'agents' || service === 'agent') return runAgentCommand(startAgents, 'start');
+      // Un agent nommé appartient à la pile agents (projet Compose distinct),
+      // pas à celle du workspace : le router ici évite un « no such service »
+      // sur un nom que la complétion propose pourtant.
+      if (agentServiceNames().includes(service)) {
+        return runAgentCommand((options) => startAgents({ ...options, services: [service] }), 'start');
+      }
       // "all" used to mean "the workspace services", which left the external
       // agents down and looked like nothing had happened. It now means what an
       // operator reads into it: the whole stack. `/start services` keeps the
@@ -1094,9 +1102,22 @@ export async function handleSlashCommand(line, context) {
     case 'stop': {
       const service = args[1];
       if (service === 'agents') return runAgentCommand(stopAgents, 'stop');
+      if (agentServiceNames().includes(service)) {
+        return runAgentCommand((options) => stopAgents({ ...options, services: [service] }), 'stop');
+      }
+      // Symétrique de `/start all` : « all » désigne toute la pile, agents
+      // compris. Il ne stoppait que les services du workspace et laissait les
+      // agents debout — donc `/start all` puis `/stop all` ne revenait pas à
+      // l'état de départ.
+      const stopsAgents = service === 'all';
+      const stopTarget = service === 'services' ? undefined : service;
       try {
         step(`Services: stopping ${service ?? 'workspace services'}…`);
-        await stopService(context.session, service);
+        await stopService(context.session, stopTarget);
+        if (stopsAgents) {
+          const agentsResult = await runAgentCommand(stopAgents, 'stop');
+          if (agentsResult?.failed) return agentsResult;
+        }
         step('Services: refreshing MCP runtime…');
         await refreshMcpRuntimeStatus(context.session);
         return localizedOperationResult({
@@ -1186,7 +1207,9 @@ export async function handleSlashCommand(line, context) {
       await refreshMcpRuntimeStatus(context.session);
       const connectorMcp = context.session.mcp?.connectors;
       if (!connectorMcp || connectorMcp.status !== 'connected') {
-        return connectorResult('The connectors service is unavailable or disabled.');
+        // Le manager sait exactement pourquoi : ne pas renvoyer un constat
+        // vague que Donna comblerait en inventant.
+        return connectorResult(profileServiceStatus('connectors').message);
       }
       if (subcommand === 'list') {
         if (args[2]) return connectorResult('The connector list request has invalid extra arguments.');
@@ -1198,38 +1221,78 @@ export async function handleSlashCommand(line, context) {
             { workspace: context.session.workspace },
           );
           const payload = parseJsonText(formatMcpToolResult(result));
-          const status = payload?.status === 'configured' ? 'authorized' : 'not authorized';
-          return connectorResult(`google (Gmail read-only): ${status}`);
+          if (payload?.status !== 'configured') {
+            return connectorResult('google (Gmail): not authorized. Run `/connector auth google` to authorize reading and sending.');
+          }
+          // Le libellé annonçait « read-only » quels que soient les droits
+          // réellement accordés — donc il mentait dès qu'on autorisait l'envoi,
+          // et n'aidait pas à comprendre pourquoi l'envoi échouait sinon.
+          const grants = Array.isArray(payload?.grants) ? payload.grants : [];
+          const missing = GOOGLE_GRANTS.filter((grant) => !grants.includes(grant));
+          const held = grants.map((grant) => `${grant} — ${GOOGLE_GRANT_LABELS[grant] ?? 'unknown grant'}`);
+          const lines = [
+            `google (Gmail): authorized for ${grants.join(', ') || 'nothing'}`,
+            ...held.map((line) => `  ✓ ${line}`),
+            ...missing.map((grant) => `  ✗ ${grant} — ${GOOGLE_GRANT_LABELS[grant]}`),
+          ];
+          if (missing.length > 0) {
+            lines.push(`Run \`/connector auth google ${missing.join(' ')}\` to add the missing grant(s); existing ones are kept.`);
+          }
+          return connectorResult(lines.join('\n'));
         } catch (err) {
-          return connectorResult(`google (Gmail read-only): unavailable (${err instanceof Error ? err.message : String(err)})`);
+          return connectorResult(`google (Gmail): unavailable (${err instanceof Error ? err.message : String(err)})`);
         }
       }
       if (subcommand === 'auth') {
         const connector = String(args[2] ?? '').toLowerCase();
         if (!['google', 'gmail'].includes(connector)) {
-          return connectorResult('The requested connector is unsupported. The available connector is google (Gmail read-only).');
+          return connectorResult('The requested connector is unsupported. The available connector is google (Gmail).');
         }
+        // Les droits demandés à Google. L'appel ne les passait pas, et le
+        // serveur retombait sur son défaut `["read"]` : l'agent sait envoyer un
+        // courriel, l'autorisation obtenue ne le permettait pas, et le refus
+        // ressemblait à une fonctionnalité absente. On demande donc lecture ET
+        // envoi par défaut, et les droits restants s'ajoutent à la demande.
+        const requested = args.slice(3).map((value) => String(value).toLowerCase());
+        const unknown = requested.filter((grant) => !GOOGLE_GRANTS.includes(grant));
+        if (unknown.length > 0) {
+          const available = GOOGLE_GRANTS.map((grant) => `${grant} (${GOOGLE_GRANT_LABELS[grant]})`).join('; ');
+          return connectorResult(`Unsupported grant(s): ${unknown.join(', ')}. Available grants: ${available}.`);
+        }
+        // Par défaut, tout ce que l'agent sait faire — y compris `modify`, sans
+        // quoi les actions que Donna propose d'elle-même (« marquer comme lu »,
+        // « archiver ») échouent après coup. C'est la même incohérence que
+        // l'envoi : promettre une action que l'autorisation ne couvre pas.
+        const grants = requested.length > 0 ? [...new Set(requested)] : defaultGoogleGrants();
         try {
           const result = await callMcpTool(
             context.session.mcp,
             'connectors',
             'connectors_google_oauth_start',
-            { workspace: context.session.workspace },
+            { workspace: context.session.workspace, grants },
           );
           const payload = parseJsonText(formatMcpToolResult(result));
           const authorizationUrl = payload?.authorizationUrl;
+          if (payload?.error === 'send_capability_disabled') {
+            return connectorResult(
+              'Sending is disabled in this deployment (CONNECTORS_SEND_ENABLED=false in the manager .env), so the send grant cannot be authorized. Run `/connector auth google read` for read-only access, or enable sending and restart the connectors agent.',
+            );
+          }
           if (payload?.ok !== true || typeof authorizationUrl !== 'string') {
             return connectorResult(`Google authorization could not start (${payload?.error ?? 'missing authorization URL'}).`);
           }
+          // L'autorisation est incrémentale côté Google : redemander avec un
+          // droit de plus ne révoque pas les précédents.
+          const scopeNote = `Requested grants: ${grants.join(', ')}.`;
           if (openExternalUrl(authorizationUrl)) {
-            return connectorResult('Google authorization opened successfully in the user browser.');
+            return connectorResult(`Google authorization opened successfully in the user browser. ${scopeNote}`);
           }
-          return connectorResult(`Google authorization requires the user to open this URL: ${authorizationUrl}`);
+          return connectorResult(`Google authorization requires the user to open this URL: ${authorizationUrl} — ${scopeNote}`);
         } catch (err) {
           return connectorResult(`Google authorization could not start (${err instanceof Error ? err.message : String(err)}).`);
         }
       }
-      return connectorResult('The requested connector action is unsupported. Available actions: list and auth google.');
+      return connectorResult(`The requested connector action is unsupported. Available actions: list, and auth google [${GOOGLE_GRANTS.join('|')}].`);
     }
     case 'cancel': {
       // Alias of /run cancel — people type /cancel when they want out.

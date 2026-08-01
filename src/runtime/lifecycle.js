@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
-import { readdirSync, statSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { activeCacertPath } from '../core/cacert.js';
@@ -93,6 +93,19 @@ export async function ensureRuntime({
   }
 
   const runtimeNode = await assertRuntimeNode();
+  // Le fils écrivait sur `stdio: 'ignore'`. Un runtime qui plantait au
+  // démarrage — port pris, état SQLite illisible, config invalide — ne laissait
+  // donc aucune trace, et le shell n'avait qu'un « did not become healthy » à
+  // afficher. On redirige vers le même `runtime.log` que
+  // `wiki-workspace runtime up`, pour que les deux chemins de démarrage se
+  // diagnostiquent de la même façon.
+  const logPath = runtimeLogPath(stateDir);
+  let logFd = null;
+  try {
+    mkdirSync(resolve(stateDir), { recursive: true });
+    logFd = openSync(logPath, 'a');
+  } catch { /* le log est un confort : ne jamais empêcher le démarrage */ }
+
   const child = spawn(runtimeNode.executable, [
     binPath,
     'runtime',
@@ -104,7 +117,7 @@ export async function ensureRuntime({
     stateDir,
   ], {
     detached: true,
-    stdio: 'ignore',
+    stdio: logFd === null ? 'ignore' : ['ignore', logFd, logFd],
     env: {
       ...process.env,
       ...(auth.token ? { WIKI_MANAGER_RUNTIME_TOKEN: auth.token } : {}),
@@ -112,15 +125,104 @@ export async function ensureRuntime({
     },
   });
   child.unref();
+  if (logFd !== null) closeSync(logFd);
+
+  // Le pid manquait : `wiki-workspace runtime down` répondait « not running »
+  // sur un runtime démarré par le shell, et le processus restait sur le port.
+  writeRuntimePidFile(stateDir, child.pid);
+
+  // Un fils qui meurt aussitôt faisait quand même attendre le délai complet.
+  let exited = null;
+  child.once('exit', (code, signal) => { exited = { code, signal }; });
 
   const deadline = Date.now() + timeoutMs;
   let health = null;
   while (Date.now() < deadline) {
     health = await runtimeHealthOrNull(url, auth.token);
     if (health) return { url, started: true, health, pid: child.pid, token: auth.token, tokenPath: auth.tokenPath, node: runtimeNode };
+    if (exited) break;
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
   }
-  throw new Error(`Runtime did not become healthy at ${url}`);
+  if (exited) removeRuntimePidFile(stateDir);
+  throw new Error(await describeRuntimeFailure({ url, token: auth.token, stateDir, exited, logPath }));
+}
+
+export function runtimeLogPath(stateDir = defaultRuntimeStateDir()) {
+  return join(resolve(stateDir), 'runtime.log');
+}
+
+export function runtimePidPath(stateDir = defaultRuntimeStateDir()) {
+  return join(resolve(stateDir), 'runtime.pid');
+}
+
+function writeRuntimePidFile(stateDir, pid) {
+  if (!pid) return;
+  try {
+    mkdirSync(resolve(stateDir), { recursive: true });
+    writeFileSync(runtimePidPath(stateDir), `${pid}\n`, 'utf8');
+  } catch { /* idem : informatif, jamais bloquant */ }
+}
+
+function removeRuntimePidFile(stateDir) {
+  try { unlinkSync(runtimePidPath(stateDir)); } catch { /* déjà absent */ }
+}
+
+/**
+ * Message d'échec du démarrage du runtime.
+ *
+ * `checkRuntimeHealth` rend `null` sur n'importe quelle réponse non-2xx : un
+ * 401 — jeton lu dans un autre `state-dir` que celui du runtime déjà en place —
+ * était donc rigoureusement indiscernable d'un port fermé. Ici on refait la
+ * requête pour distinguer les deux, et on joint la fin du journal.
+ */
+async function describeRuntimeFailure({ url, token, stateDir, exited, logPath }) {
+  const lines = [`Runtime did not become healthy at ${url}`];
+
+  if (exited) {
+    lines.push(
+      `The runtime process exited immediately (${exited.signal ? `signal ${exited.signal}` : `code ${exited.code}`}).`,
+    );
+  }
+
+  const probe = await probeRuntimeHealth(url, token);
+  if (probe.status === 401 || probe.status === 403) {
+    lines.push(
+      `A runtime IS answering on this port but rejected our token (HTTP ${probe.status}).`,
+      `It was started from another state directory: this one is ${resolve(stateDir)}.`,
+      'Stop it (`wiki-workspace runtime down` from that directory, or kill the process holding the port) or export WIKI_MANAGER_RUNTIME_TOKEN with its token.',
+    );
+  } else if (probe.status) {
+    lines.push(`Health endpoint answered HTTP ${probe.status}.`);
+  } else if (probe.error) {
+    lines.push(`Health endpoint unreachable: ${probe.error}`);
+  }
+
+  const tail = readLogTail(logPath, 12);
+  if (tail) lines.push(`Last lines of ${logPath}:`, tail);
+  else lines.push(`No runtime log at ${logPath}.`);
+
+  return lines.join('\n');
+}
+
+async function probeRuntimeHealth(url, token) {
+  try {
+    const response = await fetch(`${String(url).replace(/\/+$/, '')}/health`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      signal: AbortSignal.timeout(2000),
+    });
+    return { status: response.status, error: null };
+  } catch (err) {
+    return { status: null, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function readLogTail(logPath, count) {
+  try {
+    const lines = readFileSync(logPath, 'utf8').split('\n').filter((line) => line.trim() !== '');
+    return lines.slice(-count).map((line) => `  ${line}`).join('\n') || null;
+  } catch {
+    return null;
+  }
 }
 
 async function waitForRuntimeShutdown(url, token, timeoutMs) {

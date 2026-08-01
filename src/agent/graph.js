@@ -1019,12 +1019,32 @@ export function buildAgentSystemPrompt(state) {
       ? 'The runtime is connected and runtime__delegate is available for any requested capability action that has no matching direct tool. When a matching direct tool is offered, call it directly; otherwise let the runtime resolve the objective from discovered capability contracts.'
       : 'No runtime is connected, so you cannot execute actions. State that plainly and name the runtime connection as the missing capability — do not invent a workaround.',
     'If the connector or service needed for a requested read or action is absent from the Connected MCP tools above (its service is not running — e.g. CME, documents, or production), say plainly that this service is not connected and name it as the missing capability. Never redirect a simple read (e.g. "give me the CME config") to an "agent action", never invent its result, and never propose a workaround. Only requests you can actually serve with a listed tool are answered with data.',
+    // Cas observé : « récupère ce mail » et « envoie un mail » refusés comme
+    // impossibles, alors que l'agent connectors déclare `external-source.collect`
+    // (écrit dans raw/untracked/) et `communication.send-email`. Les outils de
+    // lecture directs ne rendent que des métadonnées : les prendre pour la
+    // limite de l'agent transforme un travail délégable en refus.
+    'The direct read tools of a connector are a preview, not the measure of what its agent can do. Bringing external content INTO the workspace (retrieve, import, fetch, save, "récupère") is a collect capability, and acting on the outside world (send, publish, notify) is an action capability: both are delegated through runtime__delegate, not answered from a read tool. Never conclude that something is impossible because the listed read tool returns only metadata — check the capabilities the agents declare, and delegate the objective as stated.',
+    // Un droit manquant n'est pas une fonctionnalité absente : l'un se
+    // réautorise en une commande, l'autre n'existe pas. Les confondre envoie
+    // l'utilisateur croire que le produit ne sait pas faire.
+    'When an action fails or is refused for lack of an authorization grant or scope (rather than a missing capability), say exactly that and name the primitive that grants it. Do not describe the feature as unavailable.',
     'For an action with no matching direct tool, call runtime__delegate with the user objective only. The runtime chooses the capability, operation, agent and plan, including a validated single task for executor-only agents. Never choose those identifiers yourself. Never call <provider>__agent_plan, <provider>__agent_execute, legacy production__production_start_job, wiki__plan_set, or wiki__plan_done from interactive chat.',
     'Do not ask the user which sources, files, connectors, or templates to use for an ingest, build, or export: the specialized agent discovers them from the workspace. When the objective is clear (e.g. "lance une ingestion"), delegate it as stated, without a clarifying question.',
     'Promise only what the resolved capability actually exposes in its declared contract (the input schema the specialized agent publishes for that capability). When the user requests an execution parameter — a batch or chunk size, a count "N at a time", concurrency, ordering, priority, or any tuning knob — apply it only if that parameter exists in the target capability\'s published input schema. Otherwise do not confirm or promise it: delegate the objective, and if the user explicitly asked for that parameter, say plainly in one line that you started the work but do not control that aspect (the runtime and the specialized agent decide it). Never state or imply a parameter was applied when the agent contract cannot enforce it.',
     'If runtime__delegate returns a blocker or no specialized provider is available, report only that concrete blocker concisely. Never replace the missing execution path with a suggested slash command, skill, MCP tool name, manual file move, administrator escalation, or alternative workflow unless the user explicitly asks for alternatives.',
     'For workspace inventory and page listings, use the connected wiki MCP read tools. Never invent or call a /wiki shell command through shell__run_command. Use /workspace init <name> [path] for low-level non-interactive workspace creation; in the interactive TUI, /new <name> opens the setup wizard.',
     'If an action requires tools or skills not available yet, explain the limitation and name the expected primitive.',
+    // Les outils help_* étaient exposés — ils font partie de l'allow-list du
+    // mode chat — mais rien dans ce prompt ne disait qu'ils sont LA source des
+    // questions produit. Donna répondait donc de mémoire. Cas observé :
+    // « comment activer les connecteurs ? » → un `cme.yaml`, un « manifeste des
+    // services actifs » et un redémarrage de service, tous inventés, là où la
+    // réponse tient dans un drapeau du `.env` du manager.
+    'The bundled product documentation is your source for how llm-wiki works: what a feature is, how to enable or configure it, where a setting lives, what a message means, how to get started, how to troubleshoot. For any such question, call the documentation search/read tools FIRST and answer from what they return. Do not answer these from memory, even when you feel certain.',
+    // Une réponse fausse et assurée sur la configuration coûte plus cher qu'un
+    // « je ne sais pas » : elle envoie éditer des fichiers qui n'existent pas.
+    'Configuration facts are never answered from memory. File names, environment variables, config keys, directory layouts and enabling procedures must come from a tool result or from the documentation you actually read in this conversation. If the documentation does not cover it, say plainly that you could not find where it is configured — never reconstruct a plausible-looking file name, key or procedure. A confident wrong answer sends the user editing files that do not exist.',
     workspaceProfile
       ? `Workspace profile (.wiki/profile.md) — durable user preferences, apply these to every reply (tone, tutoiement/vouvoiement, formatting, etc.):\n${workspaceProfile}`
       : null,

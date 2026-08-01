@@ -4,13 +4,15 @@ import { join } from 'node:path';
 import { useKeyboard, usePaste } from '@opentui/solid';
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js';
 import {
+  DISCOVERY_TIMEOUT_MS,
   defaultBaseUrl,
   fallbackModels,
   fetchGatewayCatalog,
-  fetchModels,
+  fetchServerCatalog,
   normalizeEngine,
   normalizeProvider,
   requiresBaseUrl,
+  transportSummary,
 } from '../core/modelFetch.js';
 import { checkInternetConnectivity } from '../core/startupCheck.js';
 import {
@@ -25,6 +27,7 @@ import {
 } from '../core/wikiSetup.js';
 import { listWorkspaces, workspacesDir } from '../core/workspaces.js';
 import { loadWikircProfile } from '../core/wikirc.js';
+import { wrapText } from './wrapText.js';
 
 type Gap = { kind: 'agents' | 'network' | 'workspace' | 'llm' | 'vector'; context?: Record<string, any> };
 type Mode = 'startup' | 'setup';
@@ -46,6 +49,8 @@ type Step =
        * le modèle voulu n'y figure pas.
        */
       suggestions?: string[];
+      /** Valeur configurée écartée parce qu'absente du catalogue découvert. */
+      stale?: string | null;
     }
   | { kind: 'done' };
 type LogEntry = { icon: string; label: string; detail?: string };
@@ -148,6 +153,35 @@ function stepTitle(step: Step) {
   return step.kind === 'done' ? 'Setup complete' : step.title;
 }
 
+/**
+ * Partie « champ » d'une étape modèle : préremplissage, indication, catalogue.
+ *
+ * Le préremplissage ne reprend que ce qui est *déjà configuré*. Choisir pour
+ * l'opérateur le premier modèle découvert le filtrait aussitôt sur lui-même —
+ * la liste n'affichait plus qu'une entrée sur dix — et proposait une réponse
+ * qui n'avait aucune raison d'être la bonne. Quand rien n'est configuré, le
+ * champ reste vide et c'est l'indication grisée qui montre la forme attendue.
+ */
+function suggestionField(discovered: string[], configured?: string | null, example = '') {
+  // Un modèle absent du catalogue ne doit pas être préremplí : il filtrerait
+  // la liste sur zéro résultat, et l'écran afficherait « No match » devant dix
+  // modèles disponibles. C'est exactement le cas du `BAAI/bge-m3` du scaffold
+  // face à un serveur qui nomme le même modèle autrement.
+  const usable = configured && (discovered.length === 0 || discovered.includes(configured))
+    ? configured
+    : null;
+  return {
+    // Sans catalogue il n'y a pas de liste à masquer : l'exemple redevient un
+    // préremplissage utile plutôt qu'un choix imposé.
+    prefill: usable ?? (discovered.length === 0 ? example : ''),
+    placeholder: discovered.length > 0 ? '↑↓ to browse the list, or type a name' : example,
+    suggestions: discovered,
+    /** Rappel affiché quand la valeur configurée a été écartée. */
+    stale: configured && !usable ? configured : null,
+  };
+}
+
+
 export function SetupWizard(props: {
   mode: Mode;
   session?: any;
@@ -166,6 +200,15 @@ export function SetupWizard(props: {
   const [stepIndex, setStepIndex] = createSignal(0);
   const [selected, setSelected] = createSignal(0);
   const [input, setInput] = createSignal('');
+  /**
+   * Entrée survolée dans la liste des modèles, `-1` quand on tape librement.
+   *
+   * La liste n'était qu'un rappel : impossible d'y naviguer, donc le wizard
+   * préremplissait le premier modèle découvert pour qu'il y ait au moins une
+   * réponse. Ce préremplissage filtrait la liste sur lui-même — on ne voyait
+   * plus qu'un modèle sur dix, et rarement le bon.
+   */
+  const [highlight, setHighlight] = createSignal(-1);
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
 
@@ -182,8 +225,14 @@ export function SetupWizard(props: {
   });
 
   const currentGap = () => startupGaps()[stepIndex()];
-  const dialogWidth = () => Math.max(44, Math.min(72, Math.floor(props.width * 0.72)));
-  const dialogHeight = () => Math.max(22, Math.min(30, Math.floor(props.height * 0.72)));
+  // Le dialogue occupe désormais l'essentiel du terminal. Les libellés, notes
+  // et causes d'erreur sont des phrases, pas des étiquettes : à 72 colonnes et
+  // 30 lignes elles débordaient, alors que la moitié basse du cadre restait
+  // vide.
+  const dialogWidth = () => Math.max(50, Math.min(110, Math.floor(props.width * 0.86)));
+  const dialogHeight = () => Math.max(24, Math.min(40, Math.floor(props.height * 0.86)));
+  /** Largeur utile : bordure (1) + padding (1) de chaque côté. */
+  const textWidth = () => Math.max(20, dialogWidth() - 4);
   const left = () => Math.max(1, Math.floor((props.width - dialogWidth()) / 2));
   const top = () => Math.max(1, Math.floor((props.height - dialogHeight()) / 2));
 
@@ -295,25 +344,38 @@ export function SetupWizard(props: {
       return {
         kind: 'text',
         title: 'LLM configuration',
-        label: isGateway
-          ? 'Gateway base URL (example: http://gateway:4000/v1)'
-          : `Base URL${example ? ` (example: ${example})` : ''}`,
+        label: isGateway ? 'Gateway base URL' : 'Base URL',
+        note: isGateway
+          ? 'Example: http://gateway:4000/v1'
+          : example
+            ? `Example: ${example}`
+            : undefined,
         prefill: llm().baseUrl || '',
       };
     }
     if (currentRoute === 'llm-apikey') {
-      return { kind: 'text', title: 'LLM configuration', label: 'API key (required)', secret: true };
-    }
-    if (currentRoute === 'llm-model') {
-      const discovered = catalog()?.chat ?? [];
-      const example = discovered[0] || fallbackModels(llm().engine)[0] || 'provider-agentic-model';
       return {
         kind: 'text',
         title: 'LLM configuration',
-        label: `Model (example: ${example})`,
-        note: catalogNote('Required: an agentic model with tool/function calling support.'),
-        prefill: llm().model || example,
-        suggestions: discovered,
+        label: 'API key',
+        note: 'Required. The model catalog is read in the background right after.',
+        secret: true,
+      };
+    }
+    if (currentRoute === 'llm-model') {
+      const discovered = catalog()?.chat ?? [];
+      return {
+        kind: 'text',
+        title: 'LLM configuration',
+        // L'exemple vit dans l'indication du champ et dans la liste découverte ;
+        // le répéter dans le libellé en faisait la ligne la plus longue de
+        // l'écran, pour une information déjà visible deux fois.
+        label: 'Chat model',
+        note: 'Required: an agentic model with tool/function calling support.',
+        // Préremplir avec le premier modèle découvert filtrait la liste sur
+        // lui-même : neuf modèles sur dix devenaient invisibles, et la réponse
+        // proposée était arbitraire. Seul un modèle déjà configuré est repris.
+        ...suggestionField(discovered, llm().model, fallbackModels(llm().engine)[0] ?? 'provider-agentic-model'),
       };
     }
     if (currentRoute === 'vector-confirm') {
@@ -339,18 +401,16 @@ export function SetupWizard(props: {
     }
     if (currentRoute === 'vector-model') {
       const discovered = catalog()?.embedding ?? [];
-      const defaultEmbedding =
-        vector().embeddingModel ||
-        discovered[0] ||
-        fallbackModels(llm().engine, 'embedding')[0] ||
-        '';
       return {
         kind: 'text',
         title: 'Vector search',
         label: 'Embedding model',
-        note: catalogNote('Embeddings endpoint model.'),
-        prefill: defaultEmbedding,
-        suggestions: discovered,
+        note: 'Model exposed by the embeddings endpoint.',
+        ...suggestionField(
+          discovered,
+          vector().embeddingModel,
+          fallbackModels(llm().engine, 'embedding')[0] ?? '',
+        ),
       };
     }
     if (currentRoute === 'vector-rerank') {
@@ -358,15 +418,12 @@ export function SetupWizard(props: {
     }
     if (currentRoute === 'vector-rerank-model') {
       const discovered = catalog()?.rerank ?? [];
-      const defaultReranker =
-        vector().rerankerModel || discovered[0] || 'BAAI/bge-reranker-v2-m3';
       return {
         kind: 'text',
         title: 'Vector search',
         label: 'Rerank model',
-        note: catalogNote('Leave reranking disabled if no rerank model is available.'),
-        prefill: defaultReranker,
-        suggestions: discovered,
+        note: 'Leave reranking disabled if no rerank model is available.',
+        ...suggestionField(discovered, vector().rerankerModel, 'BAAI/bge-reranker-v2-m3'),
       };
     }
     if (currentRoute === 'unregister-confirm') {
@@ -394,6 +451,7 @@ export function SetupWizard(props: {
     const s = step();
     setError(null);
     setInput((s as any).prefill ?? '');
+    setHighlight(-1);
     const items = (s as any).items ?? (s as any).options?.map((label: string) => ({ label })) ?? [{ label: 'x' }];
     let preferred = -1;
     // La question de routage est reposée à chaque passage — c'est plus simple
@@ -420,59 +478,172 @@ export function SetupWizard(props: {
    */
   const [catalog, setCatalog] = createSignal<any>(null);
   const [catalogError, setCatalogError] = createSignal<string | null>(null);
+  /** URL interrogée pendant que la découverte est en vol, sinon `null`. */
+  const [discovering, setDiscovering] = createSignal<string | null>(null);
+  /**
+   * Numéro de la découverte en cours.
+   *
+   * La découverte ne bloque plus l'étape suivante : une réponse tardive peut
+   * donc revenir alors que l'opérateur a déjà corrigé l'URL ou la clé et
+   * relancé une découverte. Sans ce compteur, la vieille réponse écraserait la
+   * neuve.
+   */
+  let discoveryRun = 0;
 
-  function catalogNote(base: string) {
-    const error = catalogError();
-    if (error) return `${base} (model discovery unavailable: ${error})`;
-    const found = catalog();
-    if (!found) return base;
-    if (!found.typed) {
-      return `${base} (gateway has no /model/info: the three lists are unfiltered)`;
-    }
-    return base;
-  }
-
-  async function discoverModels(target?: {
+  /**
+   * Lance la découverte **sans l'attendre**.
+   *
+   * C'était la vraie cause du gel : la saisie de la clé partait dans un
+   * `await` muet, et l'écran suivant n'apparaissait qu'une fois le réseau
+   * retombé. Un catalogue n'est pourtant que du préremplissage — le champ
+   * texte fait foi. L'étape s'affiche donc tout de suite, et la liste se
+   * remplit quand elle arrive.
+   */
+  function startDiscovery(target?: {
     provider?: string;
     engine?: string;
     baseUrl?: string;
     apiKey?: string;
   }) {
-    setCatalog(null);
-    setCatalogError(null);
     const source = target ?? llm();
     const { provider, engine, baseUrl, apiKey } = source as any;
+    setCatalog(null);
+    setCatalogError(null);
     if (!baseUrl) return;
-    try {
-      if (normalizeProvider(provider) === 'ai-gateway') {
-        const found = await fetchGatewayCatalog(baseUrl, apiKey);
-        if (!found.ok) {
-          setCatalogError(found.error ?? 'gateway unreachable');
-          return;
-        }
-        setCatalog(found);
-        return;
-      }
-      const chat = await fetchModels(provider, baseUrl, apiKey, { engine });
-      const embedding = await fetchModels(provider, baseUrl, apiKey, {
-        engine,
-        kind: 'embedding',
+    discoveryRun += 1;
+    const run = discoveryRun;
+    setDiscovering(baseUrl);
+
+    const isGateway = normalizeProvider(provider) === 'ai-gateway';
+    // Un serveur direct expose un seul catalogue, non typé : interroger chat
+    // puis embeddings tapait deux fois la même URL avec les mêmes en-têtes,
+    // pour la même réponse — et payait deux fois le délai.
+    const promise = isGateway
+      ? fetchGatewayCatalog(baseUrl, apiKey, {
+          // La liste plate arrive la première et suffit à choisir : elle est
+          // affichée tout de suite, puis remplacée par le catalogue typé
+          // pendant que l'opérateur lit ses options.
+          onPartial: (partial: any) => {
+            if (run === discoveryRun) setCatalog(partial);
+          },
+        })
+      : fetchServerCatalog(provider, baseUrl, apiKey, { engine });
+
+    promise
+      .then((found: any) => {
+        if (run !== discoveryRun) return;
+        if (!found.ok) setCatalogError(found.error ?? 'endpoint unreachable');
+        else setCatalog(found);
+      })
+      .catch((err) => {
+        if (run !== discoveryRun) return;
+        setCatalogError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (run === discoveryRun) setDiscovering(null);
       });
-      if (!chat.ok && !embedding.ok) {
-        setCatalogError(chat.error ?? 'server unreachable');
-        return;
+  }
+
+  function modelCount(found: any) {
+    return new Set([...(found?.chat ?? []), ...(found?.embedding ?? []), ...(found?.rerank ?? [])]).size;
+  }
+
+  /**
+   * Bloc d'état de la découverte, rendu sous le champ de saisie.
+   *
+   * Il occupe la place laissée libre au milieu du dialogue, là où il n'y avait
+   * rien : ce qui est tenté, contre quelle URL, avec quel transport, et ce que
+   * ça a donné.
+   */
+  const discoveryLines = createMemo<Array<{ text: string; fg: string }>>(() => {
+    const width = textWidth();
+    const rows: Array<{ text: string; fg: string }> = [];
+    // L'indentation est appliquée à chaque ligne : `wrapText` normalise les
+    // espaces, un préfixe passé dans le texte serait perdu sur la première.
+    const indent = '  ';
+    const push = (text: string, fg: string, maxLines = 3) => {
+      for (const line of wrapText(text, width - indent.length, maxLines)) {
+        rows.push({ text: `${indent}${line}`, fg });
       }
-      // Un serveur direct ne type pas ses modèles : les mêmes entrées
-      // alimentent les trois questions.
-      setCatalog({
-        typed: false,
-        chat: chat.models,
-        embedding: embedding.models,
-        rerank: embedding.models,
-      });
-    } catch (err) {
-      setCatalogError(err instanceof Error ? err.message : String(err));
+    };
+    const pending = discovering();
+    const partial = catalog();
+    if (pending && partial) {
+      // La liste plate est déjà utilisable ; seul le typage manque encore.
+      rows.push({ text: `✓ ${modelCount(partial)} model(s) available`, fg: '#8BD5CA' });
+      rows.push({ text: '⟳ Refining chat/embedding/rerank types…', fg: '#FBBF24' });
+      return rows;
     }
+    if (pending) {
+      rows.push({ text: '⟳ Reading the model catalog…', fg: '#FBBF24' });
+      push(pending, '#7F8C8D', 2);
+      push(transportSummary(), '#7F8C8D', 2);
+      return rows;
+    }
+    const failure = catalogError();
+    if (failure) {
+      rows.push({ text: '⚠ Model catalog unavailable', fg: '#FBBF24' });
+      push(`Cause: ${failure}`, '#F87171', 3);
+      push(`Transport: ${transportSummary()}`, '#7F8C8D', 2);
+      push('Type the model name below; it is used as-is.', '#7F8C8D', 2);
+      return rows;
+    }
+    const found = partial;
+    if (found) {
+      rows.push({ text: `✓ ${modelCount(found)} model(s) available`, fg: '#8BD5CA' });
+      push(
+        found.typed
+          ? 'Typed catalog: chat, embedding and rerank lists are filtered.'
+          : 'Untyped catalog: the server does not say which model does what, so the three lists are identical.',
+        '#7F8C8D',
+        3,
+      );
+    }
+    const stale = (step() as any).stale;
+    if (stale) {
+      push(`Configured "${stale}" is not in this catalog — pick one below.`, '#FBBF24', 2);
+    }
+    return rows;
+  });
+
+  /** Étapes de découverte : le bloc d'état n'a de sens que là. */
+  const DISCOVERY_ROUTES = new Set(['llm-apikey', 'llm-model', 'vector-model', 'vector-rerank-model']);
+  const showDiscoveryPanel = () => discovering() !== null || DISCOVERY_ROUTES.has(route());
+
+  /**
+   * Position dans la phase courante, affichée en haut à droite.
+   *
+   * La séquence est reconstruite depuis les choix déjà faits, parce qu'elle
+   * est réellement variable : une gateway saute la question du moteur, un
+   * moteur hébergé saute l'URL, Ollama saute la clé. Annoncer un total fixe
+   * serait faux.
+   */
+  function llmFlow() {
+    const provider = llm().provider;
+    const engine = llm().engine;
+    const steps = ['llm-provider'];
+    if (normalizeProvider(provider) !== 'ai-gateway') steps.push('llm-engine');
+    if (requiresBaseUrl(provider, engine)) steps.push('llm-baseurl');
+    if (normalizeProvider(provider) === 'ai-gateway' || normalizeEngine(engine) !== 'ollama') {
+      steps.push('llm-apikey');
+    }
+    steps.push('llm-model');
+    return steps;
+  }
+
+  function vectorFlow() {
+    const steps = ['vector-confirm', 'vector-baseurl', 'vector-apikey', 'vector-model', 'vector-rerank'];
+    if (vector().rerankEnabled) steps.push('vector-rerank-model');
+    return steps;
+  }
+
+  function progressLabel() {
+    const current = route();
+    for (const flow of [llmFlow(), vectorFlow()]) {
+      const index = flow.indexOf(current);
+      if (index >= 0) return `Step ${index + 1} of ${flow.length}`;
+    }
+    return '';
   }
 
   /** Vrai quand l'URL vecteur ne pointe plus le même hôte que le LLM. */
@@ -513,9 +684,13 @@ export function SetupWizard(props: {
           // URL the operator just entered, instead of the scaffold's fake one.
           baseUrl: configuredValue(config.retrieval.vector.baseUrl),
           apiKey: configuredValue(config.retrieval.vector.apiKey),
-          embeddingModel: config.retrieval.vector.embeddingModel,
+          // Les noms de modèles étaient les deux seuls champs à échapper au
+          // filtre : le `BAAI/bge-m3` du scaffold arrivait donc dans le wizard
+          // comme une réponse choisie, et servait de filtre sur un catalogue
+          // qui nomme le même modèle autrement.
+          embeddingModel: configuredValue(config.retrieval.vector.embeddingModel),
           rerankEnabled: config.retrieval.vector.rerankEnabled,
-          rerankerModel: config.retrieval.vector.rerankerModel,
+          rerankerModel: configuredValue(config.retrieval.vector.rerankerModel),
         });
       }
     } catch { /* ignore — new workspace or unreadable profile */ }
@@ -768,6 +943,10 @@ export function SetupWizard(props: {
       if (lang.length < 2) return setError('Please enter a 2-character language code (e.g. fr, en).');
       const context = currentWorkspaceContext(props.session, currentGap()?.context ?? targetWorkspace());
       if (context?.workspacePath) writeLanguageConfig(context.workspacePath, context.profileName ?? 'default', lang);
+      // Sans cette ligne, le récapitulatif continuait d'afficher la langue lue
+      // dans le scaffold au moment de la création du workspace (`en`) au lieu
+      // de celle qui vient d'être saisie et écrite.
+      setLanguage(lang);
       navigate('llm-provider');
       return;
     }
@@ -799,7 +978,7 @@ export function SetupWizard(props: {
       setLlm((old: any) => ({ ...old, baseUrl: value }));
       // Ollama n'exige pas de clé : on peut découvrir tout de suite.
       if (llm().engine === 'ollama') {
-        await discoverModels();
+        startDiscovery({ ...llm(), baseUrl: value });
         return navigate('llm-model');
       }
       return navigate('llm-apikey');
@@ -807,7 +986,9 @@ export function SetupWizard(props: {
     if (currentRoute === 'llm-apikey') {
       if (!value) return setError('API key is required.');
       setLlm((old: any) => ({ ...old, apiKey: value }));
-      await discoverModels();
+      // Pas de `await` : l'étape modèle s'affiche immédiatement et la liste
+      // s'y remplit toute seule.
+      startDiscovery({ ...llm(), apiKey: value });
       return navigate('llm-model');
     }
     if (currentRoute === 'vector-baseurl') {
@@ -835,7 +1016,7 @@ export function SetupWizard(props: {
       // que l'URL diverge, et proposer les modèles de chat de l'un pour les
       // embeddings de l'autre n'a aucun sens.
       if (vectorBaseUrlDiverged()) {
-        await discoverModels({ ...vector(), apiKey });
+        startDiscovery({ ...vector(), apiKey });
       }
       return navigate('vector-model');
     }
@@ -878,6 +1059,8 @@ export function SetupWizard(props: {
   });
 
   useKeyboard((key: any) => {
+    // La découverte ne bloque volontairement rien : on peut taper le nom du
+    // modèle et valider avant même que le catalogue n'arrive.
     if (busy()) return;
     const s = step();
     const keyName = String(key.name ?? '').toLowerCase();
@@ -923,13 +1106,33 @@ export function SetupWizard(props: {
         const closeIdx = pasted.indexOf('\x1b[201~');
         if (closeIdx !== -1) pasted = pasted.slice(0, closeIdx);
         pasted = pasted.split('\r').join('');
-        if (pasted) setInput((value) => value + pasted);
+        if (pasted) { setHighlight(-1); setInput((value) => value + pasted); }
         return;
       }
       // Explicit clipboard paste (Ctrl+V or Cmd+V on macOS)
       if (isPaste) {
         const pasted = readClipboard();
-        if (pasted) setInput((value) => value + pasted);
+        if (pasted) { setHighlight(-1); setInput((value) => value + pasted); }
+        return;
+      }
+
+      // Navigation dans le catalogue. Le champ reste la vérité : les flèches
+      // ne font que survoler, et il faut valider pour écrire dans le champ.
+      const matches = filteredSuggestions().matches;
+      if (matches.length > 0 && (keyName === 'down' || keyName === 'up')) {
+        setHighlight((value) => {
+          if (keyName === 'down') return value + 1 >= matches.length ? -1 : value + 1;
+          return value <= -1 ? matches.length - 1 : value - 1;
+        });
+        return;
+      }
+      const hovered = highlight() >= 0 ? matches[highlight()] : null;
+      // Deux temps voulus : le premier Enter dépose le modèle survolé dans le
+      // champ, le second valide l'étape. On peut donc relire, corriger ou
+      // compléter ce qu'on vient de choisir.
+      if (hovered && (isEnter || keyName === 'tab')) {
+        setInput(hovered);
+        setHighlight(-1);
         return;
       }
       if (isEnter) {
@@ -937,10 +1140,12 @@ export function SetupWizard(props: {
         return;
       }
       if (keyName === 'backspace') {
+        setHighlight(-1);
         setInput((value) => value.slice(0, -1));
         return;
       }
       if (sequence.length >= 1 && !sequence.startsWith('\x1b') && sequence >= ' ') {
+        setHighlight(-1);
         setInput((value) => value + sequence);
       }
     }
@@ -957,8 +1162,10 @@ export function SetupWizard(props: {
   const displayValue = () => {
     const s = step();
     if (s.kind !== 'text') return '';
-    const value = input();
-    return value || (s.secret ? (s.placeholder ?? '') : '');
+    // Le champ vide affiche son indication en grisé, quel que soit le type
+    // d'étape : c'est ce qui permet de ne plus préremplir un modèle arbitraire
+    // tout en montrant à quoi ressemble une réponse valable.
+    return input() || (s.placeholder ?? '');
   };
   const inputHasValue = () => step().kind === 'text' && input().length > 0;
 
@@ -971,17 +1178,30 @@ export function SetupWizard(props: {
    * seule vérité et on n'affiche qu'un rappel filtré — ce qui règle d'un coup
    * les trois cas : liste énorme, modèle absent, endpoint injoignable.
    */
-  const SUGGESTION_ROWS = 4;
+  const SUGGESTION_ROWS = 6;
   const filteredSuggestions = createMemo(() => {
     const current = step() as any;
     const all: string[] = current?.suggestions ?? [];
-    if (all.length === 0) return { rows: [] as string[], total: 0, matched: 0 };
+    if (all.length === 0) {
+      return { matches: [] as string[], rows: [] as string[], offset: 0, total: 0, matched: 0 };
+    }
     const needle = input().trim().toLowerCase();
     const matches = needle
       ? all.filter((item) => item.toLowerCase().includes(needle))
       : all;
+
+    // Fenêtre glissante autour de l'élément survolé : sans elle, seules les
+    // premières entrées étaient atteignables et un catalogue de 200 modèles
+    // restait invisible au delà de la sixième ligne.
+    const cursor = highlight();
+    const offset =
+      cursor < SUGGESTION_ROWS
+        ? 0
+        : Math.min(cursor - SUGGESTION_ROWS + 1, Math.max(0, matches.length - SUGGESTION_ROWS));
     return {
-      rows: matches.slice(0, SUGGESTION_ROWS),
+      matches,
+      rows: matches.slice(offset, offset + SUGGESTION_ROWS),
+      offset,
       total: all.length,
       matched: matches.length,
     };
@@ -994,20 +1214,42 @@ export function SetupWizard(props: {
   const showLine3 = () => displayValue().length > lineWidth() * 2;
   const contextPath = () => targetWorkspace()?.workspacePath ?? (currentGap()?.context?.workspacePath ?? null);
 
-  const contextSummary = createMemo(() => {
-    const parts: string[] = [];
-    const wp = targetWorkspace()?.workspacePath ?? (currentGap()?.context?.workspacePath ?? null);
-    if (wp) parts.push(wp);
-    if (language()) parts.push(`lang:${language()}`);
-    const p = llm().provider;
-    if (p) parts.push(p);
-    if (llm().baseUrl) parts.push(llm().baseUrl);
-    if (llm().apiKey) parts.push('key:***');
-    const model = llm().model;
-    if (model) parts.push(model);
-    if (vector().baseUrl && vector().baseUrl !== llm().baseUrl) parts.push(`vec:${vector().baseUrl}`);
-    if (vector().embeddingModel) parts.push(vector().embeddingModel);
-    return parts.join('  ');
+  /**
+   * Récapitulatif de bas de cadre, en lignes `étiquette  valeur`.
+   *
+   * Il était concaténé en une seule ligne, coupée net dès le deuxième champ :
+   * le chemin du workspace mangeait la place, et l'URL — l'information qu'on
+   * vient justement de saisir — n'apparaissait jamais en entier.
+   */
+  const CONTEXT_LABEL_WIDTH = 11;
+  const contextLines = createMemo(() => {
+    const rows: Array<[string, string]> = [];
+    const workspacePath = targetWorkspace()?.workspacePath ?? currentGap()?.context?.workspacePath ?? null;
+    if (workspacePath) {
+      rows.push(['Workspace', language() ? `${workspacePath}  ·  lang ${language()}` : workspacePath]);
+    }
+    // Trois lignes au plus, et seulement celles de la phase en cours : ce
+    // récapitulatif ne doit jamais pousser le pied de cadre hors de la boîte.
+    if (route().startsWith('vector-')) {
+      const vectorUrl = vector().baseUrl || llm().baseUrl;
+      if (vectorUrl) rows.push(['Vector', vectorUrl]);
+      if (vector().embeddingModel) rows.push(['Embedding', vector().embeddingModel]);
+    } else {
+      const routing = [llm().provider, llm().engine].filter(Boolean).join('  ·  ');
+      if (routing) rows.push(['Routing', routing]);
+      if (llm().baseUrl) {
+        rows.push(['Endpoint', llm().apiKey ? `${llm().baseUrl}  ·  key set` : llm().baseUrl]);
+      }
+    }
+
+    const width = textWidth() - CONTEXT_LABEL_WIDTH;
+    const lines: string[] = [];
+    for (const [label, value] of rows.slice(0, 3)) {
+      wrapText(value, width, 2).forEach((line, index) => {
+        lines.push(`${(index === 0 ? label : '').padEnd(CONTEXT_LABEL_WIDTH)}${line}`);
+      });
+    }
+    return lines;
   });
 
   return (
@@ -1026,17 +1268,34 @@ export function SetupWizard(props: {
       flexDirection="column"
       overflow="hidden"
     >
-      <For each={logs().slice(-4)}>
-        {(entry) => <text height={1} fg={entry.icon === '✓' ? '#8BD5CA' : '#9CA3AF'}>{entry.icon} {entry.label}{entry.detail ? ` - ${entry.detail}` : ''}</text>}
-      </For>
-      <text height={1} fg="#FBBF24">{busy() ? `${stepTitle(step())} - working...` : stepTitle(step())}</text>
+      <Show when={logs().length > 0}>
+        <For each={logs().slice(-3)}>
+          {(entry) => <text height={1} fg={entry.icon === '✓' ? '#8BD5CA' : '#9CA3AF'}>{entry.icon} {entry.label}{entry.detail ? ` - ${entry.detail}` : ''}</text>}
+        </For>
+        <text height={1}>{''}</text>
+      </Show>
+
+      {/* En-tête : phase à gauche, progression dans la phase à droite. */}
+      <box height={1} flexDirection="row">
+        <text fg="#8BD5CA">{stepTitle(step())}</text>
+        <box flexGrow={1} />
+        <text fg="#4B5563">{busy() ? 'working…' : progressLabel()}</text>
+      </box>
+      <text height={1} fg="#2A3441">{'─'.repeat(textWidth())}</text>
       <text height={1}>{''}</text>
+
       <Show when={(step() as any).message || (step() as any).label}>
-        <text height={1} fg="#D6DEE8">{(step() as any).message ?? (step() as any).label}</text>
+        <For each={wrapText((step() as any).message ?? (step() as any).label, textWidth(), 5)}>
+          {(line) => <text height={1} fg="#D6DEE8">{line}</text>}
+        </For>
       </Show>
       <Show when={(step() as any).note}>
-        <text height={1} fg="#9CA3AF">{(step() as any).note}</text>
+        <For each={wrapText((step() as any).note, textWidth(), 4)}>
+          {(line) => <text height={1} fg="#9CA3AF">{line}</text>}
+        </For>
       </Show>
+      <text height={1}>{''}</text>
+
       <Show when={step().kind === 'text'}>
         <box
           height={5}
@@ -1072,21 +1331,37 @@ export function SetupWizard(props: {
         </box>
       </Show>
       <Show when={step().kind === 'text' && filteredSuggestions().total > 0}>
-        <text height={1} fg="#7F8C8D">
-          {filteredSuggestions().matched === 0
-            ? `no match among ${filteredSuggestions().total} discovered model(s) — the typed value is used as-is`
-            : `${filteredSuggestions().matched}/${filteredSuggestions().total} discovered model(s) — type to filter, the typed value wins`}
-        </text>
-        <For each={filteredSuggestions().rows}>
-          {(suggestion) => (
-            <text height={1} fg={suggestion === input().trim() ? '#8BD5CA' : '#9CA3AF'}>
-              {`  ${suggestion === input().trim() ? '*' : '·'} ${suggestion}`}
-            </text>
+        <text height={1}>{''}</text>
+        <For
+          each={wrapText(
+            filteredSuggestions().matched === 0
+              ? `No match among ${filteredSuggestions().total} model(s) — the typed value is used as-is.`
+              : `${filteredSuggestions().matched} of ${filteredSuggestions().total} model(s) — ↑↓ to browse, Enter picks, the typed value wins.`,
+            textWidth(),
+            2,
           )}
+        >
+          {(line) => <text height={1} fg="#7F8C8D">{line}</text>}
         </For>
-        <Show when={filteredSuggestions().matched > SUGGESTION_ROWS}>
+        <For each={filteredSuggestions().rows}>
+          {(suggestion, index) => {
+            const position = () => filteredSuggestions().offset + index();
+            const hovered = () => position() === highlight();
+            const chosen = () => suggestion === input().trim();
+            return (
+              <text
+                height={1}
+                fg={hovered() ? '#111318' : chosen() ? '#8BD5CA' : '#9CA3AF'}
+                bg={hovered() ? '#8BD5CA' : '#111318'}
+              >
+                {`${hovered() ? ' > ' : chosen() ? ' ● ' : ' · '}${suggestion}`.slice(0, textWidth())}
+              </text>
+            );
+          }}
+        </For>
+        <Show when={filteredSuggestions().matched > filteredSuggestions().rows.length}>
           <text height={1} fg="#7F8C8D">
-            {`  … ${filteredSuggestions().matched - SUGGESTION_ROWS} more`}
+            {`   … ${filteredSuggestions().matched - filteredSuggestions().rows.length} more (↑↓ to scroll)`}
           </text>
         </Show>
       </Show>
@@ -1098,25 +1373,50 @@ export function SetupWizard(props: {
               fg={(item as any).muted ? '#4B5563' : index() === selected() ? '#111318' : '#D6DEE8'}
               bg={index() === selected() && !(item as any).muted ? '#8BD5CA' : '#111318'}
             >
-              {(item as any).muted ? '  ---' : `${index() === selected() ? '> ' : '  '}${item.label}`}
+              {(item as any).muted ? '  ───' : `${index() === selected() ? '> ' : '  '}${item.label}`}
             </text>
           )}
         </For>
       </Show>
 
-      <Show when={error()}>
-        {(message) => <text height={6} fg="#F87171">{message()}</text>}
+      {/* État de la découverte : occupe l'espace laissé libre au milieu. */}
+      <Show when={showDiscoveryPanel() && discoveryLines().length > 0}>
+        <text height={1}>{''}</text>
+        <For each={discoveryLines()}>
+          {(row) => <text height={1} fg={row.fg}>{row.text}</text>}
+        </For>
       </Show>
+
+      <Show when={error()}>
+        {(message) => (
+          <>
+            <text height={1}>{''}</text>
+            <For each={wrapText(message(), textWidth(), 5)}>
+              {(line) => <text height={1} fg="#F87171">{line}</text>}
+            </For>
+          </>
+        )}
+      </Show>
+
       <box flexGrow={1} />
-      <Show when={contextSummary()}>
-        <text height={1} fg="#374151">{contextSummary()}</text>
+      <Show when={contextLines().length > 0}>
+        <text height={1} fg="#2A3441">{'─'.repeat(textWidth())}</text>
+        <For each={contextLines()}>
+          {(line) => <text height={1} fg="#4B5563">{line}</text>}
+        </For>
       </Show>
       <text height={1}>{''}</text>
       <box height={1} flexDirection="row">
-        <text fg="#7F8C8D">{step().kind === 'text' ? 'Enter Confirm   Esc Skip' : 'Up/Down   Enter Select   Esc Skip'}</text>
+        <text fg="#7F8C8D">
+          {step().kind !== 'text'
+            ? '↑↓  Move    Enter  Select    Esc  Skip'
+            : filteredSuggestions().matched > 0
+              ? '↑↓  Browse    Enter  Pick / Confirm    Esc  Skip'
+              : 'Enter  Confirm    Esc  Skip'}
+        </text>
         <box flexGrow={1} />
         <Show when={routeHistory().length > 0}>
-          <text fg="#7F8C8D">Ctrl+Z ←</text>
+          <text fg="#7F8C8D">Ctrl+Z  Back</text>
         </Show>
       </box>
     </box>

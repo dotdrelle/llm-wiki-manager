@@ -144,13 +144,14 @@ x-wiki-manager:
       description: "Full workspace service set."
     ui:
       targets: [serve]
-      description: "Alias for serve: workspace web UI."
-    wiki:
-      targets: [mcp-http]
-      description: "Alias for mcp-http: wiki MCP server."
-    mcp:
-      targets: [mcp-http]
-      description: "Alias for mcp-http: wiki MCP server."
+      description: "Chat, wiki browser and Donna's web UI."
+    # Pas d'alias `wiki` ici : ce nom est deja celui d'un service Compose (le
+    # CLI one-shot de `/wiki run`). L'alias le masquait, et `/start wiki`
+    # demarrait mcp-http sans le dire.
+    #
+    # Pas d'alias `mcp` non plus : mcp-http fait partie du socle demarre par
+    # `all` et `services`, personne ne le demarre seul. Il reste adressable
+    # sous son nom Compose.
     production:
       targets: [production-mcp]
-      description: "Alias for production-mcp: production jobs."
+      description: "Ingest, build, export and polish jobs."

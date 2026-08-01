@@ -22,11 +22,22 @@ test('the wizard treats scaffolded config values as unset', { skip: !existsSync(
   // Cross-repo guard: if the scaffold ever ships a different fake endpoint or
   // secret, the wizard would prefill it as a real answer and a skipped step
   // would write it to the operator's config.
+  // `embeddingModel` et `rerankerModel` ont ete ajoutes ici apres coup : ils
+  // etaient les seuls champs du scaffold a porter une valeur d'apparence reelle
+  // (`BAAI/bge-m3`), que le wizard preremplissait donc comme une reponse
+  // choisie — et qui filtrait le catalogue sur zero resultat des que le serveur
+  // nommait le meme modele autrement.
   const placeholders = [
-    ...scaffold.matchAll(/^\s*(baseUrl|apiKey|model):\s*(\S+)\s*$/gm),
+    ...scaffold.matchAll(/^\s*(baseUrl|apiKey|model|embeddingModel|rerankerModel):\s*(\S+)\s*$/gm),
   ].map(([, key, value]) => [key, value]);
 
-  assert.ok(placeholders.length >= 4, 'expected the scaffold to declare endpoints and secrets');
+  assert.ok(placeholders.length >= 6, 'expected the scaffold to declare endpoints, secrets and models');
+  for (const key of ['embeddingModel', 'rerankerModel']) {
+    assert.ok(
+      placeholders.some(([name]) => name === key),
+      `the scaffold must declare ${key} so this guard covers it`,
+    );
+  }
   for (const [key, value] of placeholders) {
     assert.match(value, regex, `scaffolded ${key}=${value} must be recognised as a placeholder`);
   }
@@ -41,6 +52,8 @@ test('preloading a profile filters placeholders out of every prefilled field', (
     'model: configuredValue(config.llm.model)',
     'baseUrl: configuredValue(config.retrieval.vector.baseUrl)',
     'apiKey: configuredValue(config.retrieval.vector.apiKey)',
+    'embeddingModel: configuredValue(config.retrieval.vector.embeddingModel)',
+    'rerankerModel: configuredValue(config.retrieval.vector.rerankerModel)',
   ]) {
     assert.ok(source.includes(field), `preloadWikirc must filter ${field}`);
   }

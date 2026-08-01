@@ -66,11 +66,17 @@ test('wiki-workspace provisions connector secrets and persistent state', async (
   assert.match(script, /delete config\.chatAccess\.servers\.connectors/);
 });
 
-test('local connector builds require both public Desktop OAuth values', async () => {
+test('the manager never builds an image, it only runs published ones', async () => {
   const script = await readFile(new URL('../../wiki-workspace', import.meta.url), 'utf8');
 
-  assert.match(script, /for build_key in WIKILLM_GOOGLE_OAUTH_CLIENT_ID WIKILLM_GOOGLE_OAUTH_CLIENT_SECRET/);
-  assert.match(script, /require_connectors_build_credentials/);
+  // Ce script est livré dans le paquet npm, où le dépôt agent-connectors
+  // n'existe pas : il ne peut ni construire l'image, ni lire le
+  // .env.build.local qui porte l'application OAuth. La construction appartient
+  // à build-and-push.sh. Pour utiliser sa propre application Google,
+  // l'opérateur surcharge GOOGLE_OAUTH_CLIENT_ID / _SECRET dans le .env.
+  assert.doesNotMatch(script, /--build\b/);
+  assert.doesNotMatch(script, /\.env\.build\.local/);
+  assert.doesNotMatch(script, /require_connectors_build_credentials/);
 });
 
 test('workspace creation keeps mutable manager files outside the installed package', async () => {

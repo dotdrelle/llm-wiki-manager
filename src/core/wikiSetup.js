@@ -72,7 +72,7 @@ export async function startAgents(options = {}) {
       : await missingAgentImages(composeContext);
     if (absentImages.length > 0) options.onImagesMissing?.(absentImages);
     const exec = options.exec ?? execFileAsync;
-    const { stdout, stderr } = await exec(join(managerRoot(), 'wiki-workspace'), ['agents', 'up'], {
+    const { stdout, stderr } = await exec(join(managerRoot(), 'wiki-workspace'), ['agents', 'up', ...(options.services ?? [])], {
       cwd: managerRoot(),
       env: {
         ...process.env,
@@ -148,11 +148,20 @@ function agentsStartFailure({ downServices = [], missingServices = [], profiles 
 
 export async function stopAgents(options = {}) {
   try {
-    const { stdout, stderr } = await execFileAsync(join(managerRoot(), 'wiki-workspace'), ['agents', 'down'], {
+    const { stdout, stderr } = await execFileAsync(join(managerRoot(), 'wiki-workspace'), ['agents', 'down', ...(options.services ?? [])], {
       cwd: managerRoot(),
       env: {
         ...process.env,
         WIKI_WORKSPACES_DIR: workspacesDir(),
+        // Même épinglage que startAgents, et pour la même raison : cwd est la
+        // racine du paquet, donc sans ces variables le script résout `.env`
+        // contre $PWD. `connectors_enabled` lisait alors le .env du PAQUET,
+        // concluait que le profil était inactif, et `docker compose down`
+        // partait sans `--profile connectors` — un service à profil inactif est
+        // invisible à Compose, donc le conteneur restait debout. `/stop agents`
+        // annonçait un succès en laissant tourner ce qu'il prétendait arrêter.
+        WIKI_MANAGER_ENV_FILE: managerEnvFile(),
+        WIKI_MANAGER_ENDPOINTS_FILE: managerMcpEndpointsFile(),
         AGENTS_DATA_DIR: resolveAgentsDataDir(),
       },
       timeout: options.timeout ?? 120_000,

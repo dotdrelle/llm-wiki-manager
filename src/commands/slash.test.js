@@ -126,9 +126,43 @@ test('/start completes to the three documented targets', async () => {
   for (const expected of ['all', 'agents', 'services']) {
     assert.ok(matches.includes(expected), `${expected} missing from ${JSON.stringify(matches)}`);
   }
-  assert.match(completionDescription('all', ['/start']), /services AND the external agents/);
-  assert.match(completionDescription('agents', ['/start']), /agents only/);
-  assert.match(completionDescription('services', ['/start']), /workspace services only/);
+  assert.match(completionDescription('all', ['/start']), /services AND external agents/);
+  assert.match(completionDescription('agents', ['/start']), /agents only/i);
+  assert.match(completionDescription('services', ['/start']), /workspace services only/i);
+});
+
+test('/start offers the operator vocabulary, not the Compose service names twice', async () => {
+  const { completionDescription } = await import('../shell/repl.js');
+  const { matches } = completionContext('/start ', {});
+
+  // `all` apparaissait deux fois — mot-clé du shell ET alias Compose — et
+  // chaque alias était doublé du service qu'il désigne : dix entrées pour cinq
+  // actions.
+  assert.equal(new Set(matches).size, matches.length, `duplicates in ${JSON.stringify(matches)}`);
+  for (const raw of ['serve', 'mcp-http', 'production-mcp']) {
+    assert.ok(!matches.includes(raw), `${raw} is already covered by an alias`);
+  }
+  for (const alias of ['ui', 'production']) {
+    assert.ok(matches.includes(alias), `${alias} missing from ${JSON.stringify(matches)}`);
+    assert.notEqual(
+      completionDescription(alias, ['/start']),
+      'Start this Docker Compose service.',
+      `${alias} must explain what it starts`,
+    );
+  }
+  // `wiki` est le service one-shot de `/wiki run` : en faire un alias de
+  // mcp-http le masquait silencieusement.
+  assert.ok(!matches.includes('wiki'), 'wiki must not shadow the one-shot CLI service');
+  // mcp-http fait partie du socle demarre par `all` et `services` : son alias
+  // n'ajoutait qu'une ligne a lire pour un service que personne ne lance seul.
+  assert.ok(!matches.includes('mcp'), 'mcp is covered by services/all');
+  // Les agents du socle ne s'adressent pas un par un, et `mailer` n'existe
+  // meme pas tant qu'il n'est pas decommente dans l'override de l'operateur.
+  for (const agent of ['cme', 'documents', 'mailer']) {
+    assert.ok(!matches.includes(agent), `${agent} is started by "agents", not on its own`);
+  }
+  // Seuls les agents derriere un drapeau de profil se pilotent separement.
+  assert.ok(matches.includes('connectors'), 'connectors is opt-in, so it must be addressable');
 });
 
 test('/workspace delete removes files and clears current session context after confirmation', async () => {

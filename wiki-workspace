@@ -262,30 +262,10 @@ agents_compose() {
   local compose_env_args=()
   [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
 
-  # Local-iteration build only: the packaged connectors service carries a
-  # `build:` block pointing at the sibling agent-connectors repo, whose OAuth
-  # credentials live in a gitignored .env.build.local. Compose resolves the
-  # value-less build args from *this* process environment, not from
-  # --env-file, so the variables must be exported here or the image ships with
-  # empty WIKILLM_GOOGLE_OAUTH_* and every Google connector stays unusable.
-  local connectors_build_env="$ROOT_DIR/../agent-external/agent-connectors/.env.build.local"
-  if [[ -f "$connectors_build_env" ]]; then
-    local build_key build_value
-    while IFS='=' read -r build_key build_value; do
-      case "$build_key" in
-        WIKILLM_GOOGLE_OAUTH_CLIENT_ID|WIKILLM_GOOGLE_OAUTH_CLIENT_SECRET) ;;
-        *) continue ;;
-      esac
-      [[ -n "${!build_key:-}" ]] || export "$build_key=$build_value"
-    done < <(grep -v '^[[:space:]]*#' "$connectors_build_env" || true)
-  fi
-
-  require_connectors_build_credentials() {
-    local build_key
-    for build_key in WIKILLM_GOOGLE_OAUTH_CLIENT_ID WIKILLM_GOOGLE_OAUTH_CLIENT_SECRET; do
-      [[ -n "${!build_key:-}" ]] || die "cannot build connectors: $build_key is missing from $connectors_build_env"
-    done
-  }
+  # Ce script ne construit aucune image. L'application OAuth Google est cuite
+  # dans l'image publiée par build-and-push.sh ; pour en utiliser une autre,
+  # l'opérateur pose GOOGLE_OAUTH_CLIENT_ID / _SECRET dans le .env du manager,
+  # que Compose transmet au conteneur et qui l'emporte sur la valeur embarquée.
 
   _agents_dc() {
     local cacert_args=()
@@ -312,12 +292,11 @@ agents_compose() {
         do_pull=true
         shift
       fi
-      [[ $# -eq 0 ]] || die "agents up accepts only --pull"
+      # Services nommés : démarrer `connectors` seul une fois le profil actif,
+      # sans relancer toute la pile. Sans argument, tout monte comme avant.
+      local only_services=("$@")
       ensure_agent_tokens
       ensure_endpoints_file
-      if connectors_enabled && [[ -f "$ROOT_DIR/../agent-external/agent-connectors/Dockerfile" ]]; then
-        require_connectors_build_credentials
-      fi
       # The .env may have just been created above — recompute the env-file
       # flag so freshly generated tokens reach the containers on first run.
       compose_env_args=()
@@ -330,6 +309,7 @@ agents_compose() {
       if [[ -n "$CACERT_PATH" ]]; then
         up_args+=(--force-recreate)
       fi
+      up_args+=(${only_services[@]+"${only_services[@]}"})
       _agents_dc "${up_args[@]}"
       printf 'Workspaces root: %s\n' "$workspaces_root"
       printf 'Agents data:     %s\n' "$agents_data_dir"
@@ -341,8 +321,15 @@ agents_compose() {
       [[ ! -f "$MANAGER_COMPOSE_DIR/agents.docker-compose.override.yml" ]] || printf 'User override: %s\n' "$MANAGER_COMPOSE_DIR/agents.docker-compose.override.yml"
       ;;
     down)
-      [[ $# -eq 0 ]] || die "agents down does not take arguments"
-      _agents_dc down
+      # `down` sans argument démonte la pile ; avec des services nommés, Compose
+      # n'accepte que `stop` + `rm` — `down <service>` supprime le réseau commun
+      # et couperait les autres agents.
+      if [[ $# -eq 0 ]]; then
+        _agents_dc down
+      else
+        _agents_dc stop "$@"
+        _agents_dc rm -f "$@"
+      fi
       ;;
     purge)
       [[ $# -eq 0 ]] || die "agents purge does not take arguments"
@@ -634,12 +621,65 @@ runtime_pid_command() {
   ps -p "$pid" -o command= 2>/dev/null || ps -p "$pid" -o args= 2>/dev/null || true
 }
 
+runtime_command_looks_like_runtime() {
+  local command="$1"
+  [[ "$command" == *"/bin/wiki-manager.js runtime"* || "$command" == *" bin/wiki-manager.js runtime"* ]]
+}
+
 runtime_pid_matches() {
   local pid command
   pid="$(cat "$(runtime_pid_file)" 2>/dev/null || true)"
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1
   command="$(runtime_pid_command "$pid")"
-  [[ "$command" == *"/bin/wiki-manager.js runtime"* || "$command" == *" bin/wiki-manager.js runtime"* ]]
+  runtime_command_looks_like_runtime "$command"
+}
+
+# Pids qui écoutent sur le port du runtime, quel que soit leur parent.
+#
+# Un runtime démarré par une session de shell précédente survit à la mort de
+# cette session : il ne répond plus à notre jeton (401, donc « injoignable »)
+# et son fichier pid a disparu avec l'ancien répertoire d'état. Sans ce repli,
+# `runtime down` répond « not running » pendant que le port reste occupé, et il
+# ne reste que le `kill` manuel — inacceptable pour qui utilise l'application.
+runtime_port_pids() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | sort -u
+  elif command -v ss >/dev/null 2>&1; then
+    ss -lptnH "sport = :${port}" 2>/dev/null |
+      grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u
+  fi
+}
+
+# Arrête les runtimes orphelins tenant le port. Ne tue QUE des processus dont
+# la ligne de commande est celle d'un `wiki-manager runtime` : un port occupé
+# par autre chose est signalé, jamais tué.
+runtime_kill_orphans() {
+  local port="$1"
+  local pid command stopped=0 waited
+  while read -r pid; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    [[ "$pid" == "$$" ]] && continue
+    command="$(runtime_pid_command "$pid")"
+    if ! runtime_command_looks_like_runtime "$command"; then
+      printf 'port %s is held by pid %s, which is not a wiki-manager runtime — leaving it alone\n' "$port" "$pid" >&2
+      printf 'command: %s\n' "$command" >&2
+      continue
+    fi
+    printf 'Stopping orphan agent-runtime (pid %s)\n' "$pid"
+    kill "$pid" 2>/dev/null || true
+    waited=0
+    while kill -0 "$pid" 2>/dev/null && (( waited < 50 )); do
+      sleep 0.1
+      (( waited++ )) || true
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      printf 'pid %s did not stop, sending SIGKILL\n' "$pid" >&2
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+    stopped=1
+  done < <(runtime_port_pids "$port")
+  (( stopped == 1 ))
 }
 
 runtime_port() {
@@ -704,6 +744,14 @@ runtime_command() {
       if runtime_pid_running; then
         printf 'Waiting for agent-runtime process (pid %s)...\n' "$(cat "$pid_file")"
       else
+        # Le port peut être tenu par un runtime d'une session précédente, qui
+        # répond 401 à notre jeton : la sonde de santé le croit absent, et le
+        # démarrage se solderait par un EADDRINUSE incompréhensible. On le
+        # remplace, puisque `runtime up` veut précisément un runtime ici.
+        if [[ -n "$(runtime_port_pids "$port")" ]]; then
+          printf 'Port %s is already held by an unreachable agent-runtime.\n' "$port"
+          runtime_kill_orphans "$port" || true
+        fi
         WIKI_WORKSPACES_DIR="$WORKSPACES_DIR" \
         WIKI_MANAGER_ENV_FILE="$MANAGER_ENV_FILE" \
         WIKI_MANAGER_STATE_DIR="$MANAGER_RUNTIME_DIR" \
@@ -730,12 +778,24 @@ runtime_command() {
           sleep 0.1
           (( wait_count++ )) || true
         done
+        # Un arrêt propre refusé laissait le port occupé sans le dire.
+        if runtime_health_check; then
+          printf 'agent-runtime ignored the shutdown request; stopping the process\n' >&2
+          runtime_kill_orphans "$port" || true
+        fi
         rm -f "$pid_file"
         printf 'agent-runtime stopped\n'
         return
       fi
       if ! runtime_pid_running; then
-        printf 'agent-runtime is not running from %s\n' "$pid_file"
+        # Ni sain, ni référencé par un pid : reste le port. C'est le cas d'un
+        # orphelin, qu'on ne peut pas demander à l'utilisateur de tuer.
+        if runtime_kill_orphans "$port"; then
+          rm -f "$pid_file"
+          printf 'agent-runtime stopped\n'
+          return
+        fi
+        printf 'agent-runtime is not running (no healthy endpoint, no pid in %s, nothing listening on port %s)\n' "$pid_file" "$port"
         rm -f "$pid_file"
         return
       fi
@@ -757,6 +817,16 @@ runtime_command() {
         printf 'agent-runtime process running (pid %s), health check failed\n' "$(cat "$pid_file")"
         exit 1
       else
+        local orphan_pids
+        orphan_pids="$(runtime_port_pids "$port")"
+        if [[ -n "$orphan_pids" ]]; then
+          # Le symptôme perçu comme « ça ne démarre pas » : quelqu'un tient le
+          # port et répond 401 à notre jeton, donc les sondes le voient absent.
+          printf 'agent-runtime is not reachable with this token, but pid(s) %s hold port %s\n' \
+            "$(printf '%s' "$orphan_pids" | tr '\n' ' ')" "$port"
+          printf 'run `%s runtime down` to stop it\n' "$(basename "$0")"
+          exit 1
+        fi
         printf 'agent-runtime is not running\n'
         exit 1
       fi
@@ -792,6 +862,19 @@ refresh_project() {
 
   printf 'Removing external-agent stack and images...\n'
   agents_compose purge
+
+  # `refresh` promet un état propre : le vérifier plutôt que l'affirmer. Un
+  # port encore tenu ici signifie qu'il l'est par un processus étranger, que
+  # `runtime down` refuse de tuer à raison — mais le taire ferait échouer le
+  # prochain démarrage sans que personne ne fasse le lien.
+  local leftover
+  leftover="$(runtime_port_pids "$(runtime_port)")"
+  if [[ -n "$leftover" ]]; then
+    printf 'Refresh incomplete: port %s is still held by pid(s) %s.\n' \
+      "$(runtime_port)" "$(printf '%s' "$leftover" | tr '\n' ' ')" >&2
+    printf 'It is not a wiki-manager runtime, so it was left running. Free the port, or set WIKI_MANAGER_RUNTIME_PORT to another one.\n' >&2
+    return 1
+  fi
   printf 'Refresh complete. Persistent workspace and agent data were preserved.\n'
 }
 

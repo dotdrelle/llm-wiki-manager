@@ -19,11 +19,29 @@ test('workspace compose does not start a per-workspace agent runtime', async () 
   );
 });
 
+test('shipped compose files never carry a build context', async () => {
+  // Ces deux fichiers partent dans le paquet npm, où les dépôts frères
+  // (`../agent-external/…`) n'existent pas : un `build:` y rend toute commande
+  // Compose irrésolvable chez l'utilisateur. Les images sont construites et
+  // publiées par build-and-push.sh, jamais par le manager.
+  for (const file of ['../../docker-compose.yml', '../../agents.docker-compose.yml']) {
+    const compose = YAML.parse(await readFile(new URL(file, import.meta.url), 'utf8'));
+    for (const [name, service] of Object.entries(compose.services ?? {})) {
+      assert.equal(service.build, undefined, `${file} ${name}: shipped files must reference an image, never build it`);
+      assert.ok(service.image, `${file} ${name}: must declare an image`);
+    }
+  }
+});
+
 test('no compose service relies on a bare environment passthrough', async () => {
   // `- VAR` makes Compose print `The "VAR" variable is not set. Defaulting to a
   // blank string.` for every key the operator left as a commented placeholder —
   // CONNECTORS_MCP_PORT once connectors were enabled. That warning reached the
   // ShellUI looking like a failure. Every entry must carry its own default.
+  //
+  // Une valeur vide est ici sans danger : l'application OAuth embarquée dans
+  // l'image du connecteur est lue depuis un fichier, plus depuis un ENV que la
+  // chaîne vide écraserait.
   for (const file of ['../../docker-compose.yml', '../../agents.docker-compose.yml']) {
     const compose = YAML.parse(await readFile(new URL(file, import.meta.url), 'utf8'));
     for (const [name, service] of Object.entries(compose.services ?? {})) {

@@ -149,18 +149,159 @@ function headersFor(provider, engine, apiKey) {
   return { Authorization: `Bearer ${apiKey}` };
 }
 
+/**
+ * Type d'un modèle, quand la réponse le porte.
+ *
+ * `/v1/models` d'OpenAI ne type rien (`object: "model"` partout) — d'où le
+ * repli non typé. Mais plusieurs serveurs OpenAI-compatibles ajoutent un
+ * champ : Albert annonce `text-generation`, `text-embeddings-inference` ou
+ * `text-classification` (son reranker), LiteLLM porte `model_info.mode`. Les
+ * ignorer forçait le wizard à proposer les modèles de chat pour l'étape
+ * embeddings — sur Albert, aucune suggestion ne pouvait correspondre.
+ *
+ * Un indice non reconnu (`automatic-speech-recognition`) rend `null` : le
+ * modèle est simplement absent des trois listes.
+ */
+export function classifyModelEntry(item) {
+  const hints = [
+    item?.model_info?.mode,
+    item?.mode,
+    item?.type,
+    item?.task,
+    item?.object,
+    ...(Array.isArray(item?.capabilities) ? item.capabilities : []),
+  ]
+    .filter((value) => typeof value === 'string')
+    .map((value) => value.toLowerCase());
+
+  for (const hint of hints) {
+    if (hint.includes('embed')) return 'embedding';
+    // Albert expose son reranker en `text-classification`.
+    if (hint.includes('rerank') || hint.includes('classification')) return 'rerank';
+    if (hint.includes('chat') || hint.includes('generation') || hint.includes('completion')) {
+      return 'chat';
+    }
+  }
+  return null;
+}
+
+function itemsOf(provider, engine, payload) {
+  return normalizeProvider(provider) === 'openai-compatible' && normalizeEngine(engine) === 'ollama'
+    ? payload?.models
+    : payload?.data;
+}
+
+function sortedUnique(values) {
+  return [...new Set(values)].sort((a, b) => a.localeCompare(b));
+}
+
 function parseModelNames(provider, engine, payload) {
-  const items =
-    normalizeProvider(provider) === 'openai-compatible' &&
-    normalizeEngine(engine) === 'ollama'
-      ? payload?.models
-      : payload?.data;
+  const items = itemsOf(provider, engine, payload);
   if (!Array.isArray(items)) return [];
-  return items
-    .map((item) => item?.id ?? item?.name ?? item?.model)
-    .filter(Boolean)
-    .map(String)
-    .sort((a, b) => a.localeCompare(b));
+  return sortedUnique(
+    items.map((item) => item?.id ?? item?.name ?? item?.model).filter(Boolean).map(String),
+  );
+}
+
+/**
+ * Délai de découverte du wizard.
+ *
+ * Un `/v1/models` qui répond le fait en quelques dizaines de millisecondes :
+ * ce délai n'est jamais payé par un endpoint sain, il ne borne que les pannes
+ * silencieuses (proxy qui avale la connexion, port filtré). Il peut donc
+ * rester confortable — la découverte est lancée en tâche de fond, aucune
+ * étape du wizard ne l'attend.
+ */
+export const DISCOVERY_TIMEOUT_MS = 8000;
+
+/** Codes TLS qui désignent une CA privée ou un proxy qui intercepte. */
+const TLS_ERROR_CODES = new Set([
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'CERT_HAS_EXPIRED',
+  'CERT_UNTRUSTED',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+]);
+
+function hostOf(url) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+function httpStatusHint(status, url) {
+  if (status === 401) return `HTTP 401 — API key rejected by ${hostOf(url)}`;
+  if (status === 403) {
+    return `HTTP 403 — key accepted but access to the model catalog is denied`;
+  }
+  if (status === 404) return `HTTP 404 — no model catalog exposed at ${url}`;
+  if (status === 407) {
+    return `HTTP 407 — the HTTP proxy requires authentication (check HTTPS_PROXY credentials)`;
+  }
+  if (status >= 500) return `HTTP ${status} — the server failed to answer ${url}`;
+  return `HTTP ${status} on ${url}`;
+}
+
+/**
+ * Message actionnable pour un échec réseau.
+ *
+ * Le message brut de `fetch` ("fetch failed") ne dit rien : la cause utile est
+ * dans `err.cause.code`. On la traduit en une phrase qui nomme la manœuvre —
+ * proxy, CA privée, port fermé, DNS — parce que c'est exactement ce que
+ * l'opérateur doit corriger, et qu'il ne le devinera pas depuis le wizard.
+ */
+export function describeFetchError(err, { url, timeoutMs } = {}) {
+  if (!err) return 'unknown error';
+  if (err.name === 'AbortError' || err.name === 'TimeoutError') {
+    // Le délai en millisecondes est un détail d'implémentation : ce qui aide
+    // l'opérateur, c'est l'hôte qui n'a pas répondu et les causes probables.
+    return `${hostOf(url)} did not answer in time — server unreachable, or blocked by a proxy or firewall`;
+  }
+  const code = err?.cause?.code ?? err?.code ?? null;
+  if (code && TLS_ERROR_CODES.has(code)) {
+    return `TLS certificate rejected (${code}) — private CA or intercepting proxy; relaunch with wiki-manager --cacert <file.pem>`;
+  }
+  if (code === 'ECONNREFUSED') {
+    return `connection refused (ECONNREFUSED) by ${hostOf(url)} — nothing is listening on this host/port`;
+  }
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+    return `host not found (${code}): ${hostOf(url)} — check the URL, DNS, or that the proxy resolves it`;
+  }
+  if (code === 'ETIMEDOUT') {
+    return `connection timed out (ETIMEDOUT) to ${hostOf(url)} — usually a firewall dropping the packets`;
+  }
+  if (code === 'ECONNRESET' || code === 'EPROTO') {
+    return `connection reset (${code}) by ${hostOf(url)} — often a proxy intercepting TLS, or http:// used on an https:// endpoint`;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return code ? `${message} (${code})` : message;
+}
+
+/**
+ * État du transport local, affiché à côté d'une erreur de découverte.
+ *
+ * Un proxy déclaré mais non activé (`NODE_USE_ENV_PROXY` absent) est la panne
+ * la plus fréquente en entreprise, et elle est invisible sans ce rappel.
+ */
+export function transportSummary(env = process.env) {
+  const proxy = env.HTTPS_PROXY ?? env.HTTP_PROXY ?? null;
+  const parts = [];
+  if (proxy) {
+    parts.push(
+      env.NODE_USE_ENV_PROXY === '1'
+        ? `proxy ${proxy}`
+        : `proxy ${proxy} (NODE_USE_ENV_PROXY not set: it is NOT used)`,
+    );
+  } else {
+    parts.push('direct connection (no HTTP(S)_PROXY)');
+  }
+  const cacert = env.WIKI_MANAGER_CACERT_PATH ?? env.NODE_EXTRA_CA_CERTS ?? null;
+  parts.push(cacert ? `CA ${cacert}` : 'CA system trust store');
+  return parts.join(' · ');
 }
 
 async function getJson(url, headers, timeoutMs) {
@@ -168,8 +309,11 @@ async function getJson(url, headers, timeoutMs) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, { headers, signal: controller.signal });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) throw new Error(httpStatusHint(response.status, url));
     return await response.json();
+  } catch (err) {
+    if (err instanceof Error && /^HTTP \d/.test(err.message)) throw err;
+    throw new Error(describeFetchError(err, { url, timeoutMs }));
   } finally {
     clearTimeout(timer);
   }
@@ -194,7 +338,7 @@ export async function fetchModels(provider, baseUrl, apiKey, options = {}) {
     };
   }
 
-  const timeoutMs = options.timeoutMs ?? 10000;
+  const timeoutMs = options.timeoutMs ?? DISCOVERY_TIMEOUT_MS;
   try {
     const needsKey = !(routing === 'openai-compatible' && normalizedEngine === 'ollama');
     if (needsKey && !apiKey) {
@@ -207,7 +351,12 @@ export async function fetchModels(provider, baseUrl, apiKey, options = {}) {
     );
     const models = parseModelNames(provider, normalizedEngine, payload);
     if (models.length === 0) throw new Error('No models returned');
-    return { ok: true, models, source: 'remote' };
+    // `raw` rend les entrées brutes, seules porteuses des indices de type que
+    // `fetchServerCatalog` exploite. Absentes par défaut : la forme historique
+    // de ce retour est {ok, models, source}.
+    return options.raw
+      ? { ok: true, models, source: 'remote', items: itemsOf(provider, normalizedEngine, payload) ?? [] }
+      : { ok: true, models, source: 'remote' };
   } catch (err) {
     return {
       ok: false,
@@ -231,10 +380,45 @@ export async function fetchModels(provider, baseUrl, apiKey, options = {}) {
  *      dire à l'utilisateur.
  *   3. Injoignable : listes vides, `error` renseignée. Le wizard garde sa
  *      saisie libre, qui fait foi de toute façon.
+ *
+ * Les deux appels partent **en parallèle**, et le résultat est livré en deux
+ * temps : `options.onPartial` reçoit la liste plate de `/v1/models` dès
+ * qu'elle arrive — c'est la requête rapide, et elle suffit à choisir un
+ * modèle — pendant que `/model/info`, plus lourd côté gateway, continue.
+ * La promesse résout ensuite avec le catalogue typé s'il aboutit. L'opérateur
+ * a donc une liste utilisable immédiatement, qui se raffine sous ses yeux.
  */
 export async function fetchGatewayCatalog(baseUrl, apiKey, options = {}) {
-  const timeoutMs = options.timeoutMs ?? 10000;
+  const timeoutMs = options.timeoutMs ?? DISCOVERY_TIMEOUT_MS;
   const headers = { Authorization: `Bearer ${apiKey}` };
+  const onPartial = typeof options.onPartial === 'function' ? options.onPartial : null;
+
+  const flatPromise = fetchModels('ai-gateway', baseUrl, apiKey, { timeoutMs });
+  // Sans ce no-op, un rejet arrivant avant son `await` remonterait en
+  // unhandledRejection quand le chemin typé réussit.
+  flatPromise.catch(() => {});
+
+  const flatResult = (flat, error) => ({
+    ok: true,
+    typed: false,
+    source: 'models',
+    chat: flat.models,
+    embedding: flat.models,
+    rerank: flat.models,
+    // Conservée pour l'affichage : elle explique pourquoi les listes ne sont
+    // pas filtrées.
+    ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
+  });
+
+  let settled = false;
+  if (onPartial) {
+    flatPromise
+      .then((flat) => {
+        if (settled || !flat.ok) return;
+        onPartial(flatResult(flat));
+      })
+      .catch(() => {});
+  }
 
   try {
     const payload = await getJson(`${rootOf(baseUrl)}/model/info`, headers, timeoutMs);
@@ -251,9 +435,11 @@ export async function fetchGatewayCatalog(baseUrl, apiKey, options = {}) {
     for (const key of Object.keys(typed)) {
       typed[key] = [...new Set(typed[key])].sort((a, b) => a.localeCompare(b));
     }
+    settled = true;
     return { ok: true, typed: true, source: 'model-info', ...typed };
   } catch (modelInfoError) {
-    const flat = await fetchModels('ai-gateway', baseUrl, apiKey, { timeoutMs });
+    const flat = await flatPromise;
+    settled = true;
     if (!flat.ok) {
       return {
         ok: false,
@@ -265,19 +451,47 @@ export async function fetchGatewayCatalog(baseUrl, apiKey, options = {}) {
         error: flat.error,
       };
     }
-    return {
-      ok: true,
-      typed: false,
-      source: 'models',
-      chat: flat.models,
-      embedding: flat.models,
-      rerank: flat.models,
-      // Conservée pour l'affichage : elle explique pourquoi les listes ne sont
-      // pas filtrées.
-      error:
-        modelInfoError instanceof Error ? modelInfoError.message : String(modelInfoError),
-    };
+    return flatResult(flat, modelInfoError);
   }
+}
+
+/**
+ * Catalogue d'un serveur unique, typé quand le serveur le permet.
+ *
+ * Même forme de retour que `fetchGatewayCatalog`, pour que le wizard n'ait
+ * qu'un seul objet à afficher. Un seul appel : chat et embeddings partagent
+ * l'endpoint, les interroger séparément revenait à poser deux fois la même
+ * question.
+ */
+export async function fetchServerCatalog(provider, baseUrl, apiKey, options = {}) {
+  const engine = options.engine ?? provider;
+  const timeoutMs = options.timeoutMs ?? DISCOVERY_TIMEOUT_MS;
+  const flat = await fetchModels(provider, baseUrl, apiKey, { engine, timeoutMs, raw: true });
+  if (!flat.ok) {
+    return { ok: false, typed: false, source: 'unreachable', chat: [], embedding: [], rerank: [], error: flat.error };
+  }
+
+  const typed = { chat: [], embedding: [], rerank: [] };
+  for (const item of flat.items ?? []) {
+    const name = item?.id ?? item?.name ?? item?.model;
+    const kind = classifyModelEntry(item);
+    if (name && kind) typed[kind].push(String(name));
+  }
+  // Typage partiel accepté : un serveur peut n'annoncer que ses embeddings.
+  // Les listes vides retombent sur la liste complète plutôt que de rester
+  // vides — mieux vaut trop proposer que rien.
+  const classified = typed.chat.length + typed.embedding.length + typed.rerank.length;
+  if (classified === 0) {
+    return { ok: true, typed: false, source: 'models', chat: flat.models, embedding: flat.models, rerank: flat.models };
+  }
+  return {
+    ok: true,
+    typed: true,
+    source: 'models',
+    chat: typed.chat.length ? sortedUnique(typed.chat) : flat.models,
+    embedding: typed.embedding.length ? sortedUnique(typed.embedding) : flat.models,
+    rerank: typed.rerank.length ? sortedUnique(typed.rerank) : flat.models,
+  };
 }
 
 export function fallbackModels(engine, kind) {

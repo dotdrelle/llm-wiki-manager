@@ -19,11 +19,17 @@ const execFileAsync = promisify(execFile);
 export const COMPOSE_SERVICES = ['serve', 'mcp-http', 'production-mcp'];
 const SERVICE_DESCRIPTION_LABEL = 'wiki-manager.description';
 
+// Deux alias seulement, pour les deux services qu'un opérateur pilote vraiment
+// à part. `mcp-http` n'en a plus : il fait partie du socle démarré par `all` et
+// `services`, et son alias `mcp` ajoutait une ligne à lire pour un service que
+// personne ne démarre seul. Il reste adressable sous son nom Compose.
+//
+// Pas d'alias `wiki` non plus : c'est déjà le nom du service Compose one-shot
+// derrière `/wiki run`. En faire un alias de `mcp-http` le masquait, et
+// `/start wiki` démarrait silencieusement un autre service que celui nommé.
 const DEFAULT_SERVICE_ALIASES = {
   all: COMPOSE_SERVICES,
   ui: ['serve'],
-  wiki: ['mcp-http'],
-  mcp: ['mcp-http'],
   production: ['production-mcp'],
 };
 
@@ -90,6 +96,22 @@ function serviceDescriptions() {
 
 export function serviceNames() {
   return [...new Set([...COMPOSE_SERVICES, ...Object.keys(serviceAliases())])].sort();
+}
+
+/**
+ * Noms proposés à la complétion de `/start`, `/stop` et `/logs`.
+ *
+ * La liste complète mélangeait les alias et les services Compose qu'ils
+ * désignent — `mcp` et `mcp-http`, `ui` et `serve`, `production` et
+ * `production-mcp` — et affichait `all` deux fois, une fois comme mot-clé du
+ * shell et une fois comme alias Compose. Dix entrées pour cinq actions
+ * réelles. On ne propose donc que le vocabulaire destiné à l'opérateur ; les
+ * noms Compose bruts restent acceptés si on les tape.
+ */
+export function serviceChoices() {
+  const aliases = Object.keys(serviceAliases());
+  // `all` est ajouté par l'appelant, en tête : c'est le choix par défaut.
+  return aliases.filter((name) => name !== 'all').sort();
 }
 
 export function serviceDescription(name) {

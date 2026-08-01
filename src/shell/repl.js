@@ -9,12 +9,13 @@ import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
 import { buildAgentSystemPrompt, formatLlmUnavailableMessage, isOrchestrationBypassTool } from '../agent/graph.js';
 import { handleSlashCommand, rawCommandAgentPrompt } from '../commands/slash.js';
-import { serviceDescription, serviceNames as composeServiceNames } from '../core/compose.js';
+import { serviceChoices as composeServiceChoices, serviceDescription } from '../core/compose.js';
 import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { syncActivitiesToPlan } from '../core/plan.js';
 import { buildLlmTools, callMcpTool, formatMcpToolResult, parseToolCallName, resolveToolCallName } from '../core/mcp.js';
 import { runBoundedToolLoop } from '../core/toolLoop.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
+import { togglableAgentNames } from '../core/agentsCompose.js';
 import { listSkills } from '../core/skills.js';
 import { listWikircProfiles } from '../core/wikirc.js';
 import { listWorkspaces } from '../core/workspaces.js';
@@ -78,7 +79,7 @@ const COMMAND_COMPLETION_DESCRIPTIONS = {
   '/stop': 'Stop one service or the workspace service set.',
   '/logs': 'Show recent logs for a service.',
   '/mcp': 'Inspect or call workspace MCP servers.',
-  '/connector': 'List connectors or authorize one — /connector auth <connector>.',
+  '/connector': 'List connectors, or authorize one with all its rights — /connector auth google.',
   '/wiki': 'Run llm-wiki commands for the active workspace.',
   '/skills': 'List workspace skills.',
   '/upload': 'Upload a document — /upload <path>',
@@ -256,8 +257,19 @@ function wikircProfileNames(session) {
     : [];
 }
 
-function serviceNames() {
-  return composeServiceNames();
+function serviceChoices() {
+  return composeServiceChoices();
+}
+
+/**
+ * Agents proposés un par un, en plus du raccourci `agents`.
+ *
+ * Seulement ceux derrière un drapeau de profil. Lister tous les agents avait
+ * rallongé la liste de quatre entrées, dont `mailer` qui n'existe même pas tant
+ * que l'opérateur ne l'a pas décommenté dans son override.
+ */
+function togglableAgents() {
+  return togglableAgentNames();
 }
 
 function skillNames(session) {
@@ -282,6 +294,11 @@ function completionValuesFor(parts, inputBuffer, session) {
   if (command === '/mcp' && parts[1] === 'call' && tokenIndex === 3) return mcpToolNames(session, parts[2]);
   if (command === '/connector' && tokenIndex === 1) return ['auth', 'list'];
   if (command === '/connector' && previousToken === 'auth') return ['google'];
+  // Pas de complétion des droits après le connecteur. `/connector auth google`
+  // demande déjà tout ce que l'agent sait faire, en une autorisation : proposer
+  // une liste laissait croire qu'il fallait choisir, et transformait une
+  // commande à taper d'un trait en menu à trois entrées. Les droits restent
+  // saisissables un par un pour restreindre, et le libellé de /connector le dit.
   if (command === '/upload' && tokenIndex === 1) return ['convert'];
   if (command === '/upload' && parts[1] === 'convert' && tokenIndex === 2) return ['pending'];
   if (command === '/uploads' && tokenIndex === 1) return ['clean', 'list'];
@@ -301,9 +318,11 @@ function completionValuesFor(parts, inputBuffer, session) {
   if (command === '/wiki' && tokenIndex === 1) return ['run'];
   if (command === '/skills' && tokenIndex === 1) return ['edit', 'list', 'run', 'show'];
   if (command === '/skills' && ['edit', 'run', 'show'].includes(previousToken ?? '')) return skillNames(session);
-  if (command === '/start' && tokenIndex === 1) return ['all', 'agents', 'services', ...serviceNames()];
-  if (command === '/stop' && tokenIndex === 1) return ['agents', ...serviceNames()];
-  if (command === '/logs' && tokenIndex === 1) return serviceNames();
+  // Vocabulaire de l'opérateur uniquement : `serviceChoices()` écarte les noms
+  // Compose bruts que les alias désignent déjà. Ils restent tapables.
+  if (command === '/start' && tokenIndex === 1) return ['all', 'agents', 'services', ...serviceChoices(), ...togglableAgents()];
+  if (command === '/stop' && tokenIndex === 1) return ['all', 'agents', 'services', ...serviceChoices(), ...togglableAgents()];
+  if (command === '/logs' && tokenIndex === 1) return ['all', ...serviceChoices()];
   return [];
 }
 
@@ -533,12 +552,19 @@ export function completionDescription(value, parts) {
   if (subcommand) return subcommand;
   if (command === '/use') return 'Load this workspace.';
   if (command === '/start') {
-    if (value === 'all') return 'Start the workspace services AND the external agents.';
-    if (value === 'agents' || value === 'agent') return 'Start the external agents only.';
-    if (value === 'services') return 'Start the workspace services only.';
+    if (value === 'all') return 'Everything: workspace services AND external agents.';
+    if (value === 'agents' || value === 'agent') return 'External agents only (CME, documents, connectors…).';
+    if (value === 'services') return 'Workspace services only, without the external agents.';
+    if (togglableAgents().includes(value)) return `Start only the ${value} agent, leaving the other agents as they are.`;
     return serviceDescription(value) ?? 'Start this Docker Compose service.';
   }
-  if (command === '/stop') return serviceDescription(value) ?? 'Stop this Docker Compose service.';
+  if (command === '/stop') {
+    if (value === 'all') return 'Everything: workspace services AND external agents.';
+    if (value === 'agents' || value === 'agent') return 'External agents only.';
+    if (value === 'services') return 'Workspace services only.';
+    if (togglableAgents().includes(value)) return `Stop only the ${value} agent, leaving the other agents running.`;
+    return serviceDescription(value) ?? 'Stop this Docker Compose service.';
+  }
   if (command === '/logs') return serviceDescription(value) ?? 'Show logs for this Docker Compose service.';
   if (command === '/workspace') {
     if (parts[1] === 'delete' && value === '--confirm') return 'Confirm workspace deletion.';

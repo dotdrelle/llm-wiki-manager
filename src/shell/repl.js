@@ -169,11 +169,34 @@ export function conversationKey(session) {
   return session.workspace || GLOBAL_CONVERSATION_KEY;
 }
 
+/**
+ * Horodate un message au moment où il entre dans la conversation.
+ *
+ * Posé sur le `push` du tableau plutôt qu'aux trente-deux endroits qui créent
+ * un message : un seul de ces endroits oublié, et la ligne perdrait son heure
+ * sans que rien ne le signale. Un message qui porte déjà `at` — rejoué depuis
+ * l'historique, par exemple — garde le sien.
+ */
+function stampConversation(messages) {
+  if (messages.__stamped) return messages;
+  Object.defineProperty(messages, '__stamped', { value: true });
+  const push = messages.push.bind(messages);
+  Object.defineProperty(messages, 'push', {
+    value: (...entries) =>
+      push(...entries.map((entry) =>
+        entry && typeof entry === 'object' && entry.at === undefined
+          ? Object.assign(entry, { at: Date.now() })
+          : entry,
+      )),
+  });
+  return messages;
+}
+
 export function conversationMessages(session) {
   const key = conversationKey(session);
   session.conversations ??= { [GLOBAL_CONVERSATION_KEY]: [] };
   session.conversations[key] ??= [];
-  return session.conversations[key];
+  return stampConversation(session.conversations[key]);
 }
 
 // Ordered from verifiable to hopeful. Mirrors tui.tsx's clipboardCommands():

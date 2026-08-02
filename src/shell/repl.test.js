@@ -31,26 +31,48 @@ test('ShellUI inserts StyledText as a child instead of stringifying it through c
   assert.match(source, /<text[^>]*>\{styledSegments\(line\.segments\)\}<\/text>/);
 });
 
-test('ShellUI renders the user header full-width before constraining only its body', async () => {
+test('every message line carries its speaker gutter, and no full-width rule', async () => {
   const source = await readFile(new URL('./LeftPane.tsx', import.meta.url), 'utf8');
-  const headerBranch = source.indexOf("line.copyContent !== undefined ? (");
-  const userBodyBranch = source.indexOf("line.role === 'user' && line.userBubbleWidth ? (", headerBranch);
-  assert.ok(headerBranch >= 0 && userBodyBranch > headerBranch);
-  assert.match(source, /const userBubbleWidth = message\.role === 'user'/);
-  assert.match(source, /Math\.floor\(columns \* 0\.6\)/);
-  assert.doesNotMatch(source, /Math\.floor\(columns \* 0\.5\)/);
-  assert.match(source.slice(userBodyBranch), /width=\{line\.userBubbleWidth\}/);
-  assert.match(source.slice(userBodyBranch), /justifyContent="flex-start"/);
-  assert.doesNotMatch(source.slice(userBodyBranch, source.indexOf(') : line.status ?', userBodyBranch)), /#12263A/);
-  assert.doesNotMatch(source, /messageHeaderSegments\(message\.role, contentColumns\)/);
-  assert.match(source, /messageHeaderSegments\(message\.role, columns\)/);
+  // Le filet pleine largeur ouvrait chaque message : l'élément le plus encré de
+  // l'écran, répété à chaque tour, et qui séparait au lieu de grouper. La
+  // gouttière dit la même chose — à qui est le tour, où le bloc commence et où
+  // il finit — pour un caractère par ligne.
+  assert.match(source, /const GUTTER = '▌ ';/);
+  assert.match(source, /function withGutter\(/);
+  assert.match(source, /renderedBody\.map\(\(line\) => withGutter\(line, message\.role\)\)/);
+  assert.doesNotMatch(source, /'─'\.repeat\(rightLength\)/);
+
+  // La bulle alignée à droite repliait les messages utilisateur à 60 % de la
+  // largeur : phrases coupées en plein milieu, et deux colonnes de lecture
+  // selon le locuteur.
+  assert.doesNotMatch(source, /userBubbleWidth\s*=/);
+  assert.doesNotMatch(source, /Math\.floor\(columns \* 0\.6\)/);
+  assert.match(source, /const contentColumns = Math\.max\(12, columns - GUTTER\.length\)/);
 });
 
-test('ShellUI exposes copy without a reply or redo action', async () => {
+test('the header carries the clock and the copy action, pushed to the right edge', async () => {
   const source = await readFile(new URL('./LeftPane.tsx', import.meta.url), 'utf8');
-  assert.match(source, /const COPY_BTN = ' \[ copy \]';/);
+  assert.match(source, /const COPY_BTN = '  copy';/);
+  assert.match(source, /messageHeaderSegments\(message\.role, columns, message\.at\)/);
+  // Le remplissage pousse `copy` au bord droit au lieu de le coller au libellé.
+  assert.match(source, /const pad = Math\.max\(1, columns - used - COPY_BTN\.length\)/);
   assert.doesNotMatch(source, /\[\s*(?:reply|redo)\s*\]/i);
   assert.doesNotMatch(source, /onRedo|redoContent|redoIndex|REDO_BTN/);
+});
+
+test('a message is stamped once, when it enters the conversation', async () => {
+  const { conversationMessages } = await import('./repl.js');
+  const session = { workspace: null };
+  const messages = conversationMessages(session);
+  // Posé sur le `push` du tableau : trente-deux endroits créent un message, et
+  // un seul oublié perdrait son heure sans que rien ne le signale.
+  messages.push({ role: 'user', content: 'bonjour' });
+  assert.ok(Number.isFinite(messages[0].at));
+  // Un message qui porte déjà son heure garde la sienne.
+  messages.push({ role: 'donna', content: 'rejoué', at: 42 });
+  assert.equal(messages[1].at, 42);
+  // Et le tableau n'est instrumenté qu'une fois.
+  assert.equal(conversationMessages(session), messages);
 });
 
 test('redo translates the local thread index into a runtime conversation index', async () => {
@@ -559,7 +581,10 @@ test('/agent <question> submits one runtime request and remains in chat mode', a
     assert.equal(session.chatMode, true);
     assert.equal(result.oneShotAgent, true);
     assert.equal(result.runtimeOutcome.kind, 'accepted');
-    assert.deepEqual(conversationMessages(session), [{ role: 'user', content: 'lance ingestion', _pending: true }]);
+    assert.deepEqual(
+      conversationMessages(session).map(({ at, ...rest }) => rest),
+      [{ role: 'user', content: 'lance ingestion', _pending: true }],
+    );
   } finally {
     restore();
   }
@@ -658,10 +683,14 @@ test('agent mode without runtime records a visible error instead of falling back
   const message = recordRuntimeUnavailableAgentInput(session, 'salut', { error: 'port 7788 already in use' });
 
   assert.equal(message, '⚠ Runtime indisponible : port 7788 already in use — /agent désactivé, /chat reste possible');
-  assert.deepEqual(conversationMessages(session), [
-    { role: 'user', content: 'salut' },
-    { role: 'command', content: message },
-  ]);
+  // `at` est posé à l'insertion : on compare le reste.
+  assert.deepEqual(
+    conversationMessages(session).map(({ at, ...rest }) => rest),
+    [
+      { role: 'user', content: 'salut' },
+      { role: 'command', content: message },
+    ],
+  );
 });
 
 test('runtime status exposes the disconnected reason', () => {

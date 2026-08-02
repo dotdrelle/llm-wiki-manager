@@ -139,18 +139,50 @@ function WelcomeHelpPanels(props: { width: number }) {
   );
 }
 
-const COPY_BTN = ' [ copy ]';
+const COPY_BTN = '  copy';
 
-function messageHeaderSegments(role: string, columns: number): Segment[] {
-  const label = `[${roleLabel(role)}]`;
-  const left = '── ';
-  const actionsLength = COPY_BTN.length;
-  const rightLength = Math.max(2, columns - left.length - label.length - 1 - actionsLength);
+/**
+ * Barre de gouttière, préfixée à chaque ligne d'un message.
+ *
+ * Remplace le filet horizontal pleine largeur qui ouvrait chaque message.
+ * Celui-ci était l'élément le plus encré de l'écran, répété à chaque tour, et
+ * il séparait là où il fallait grouper : rien n'indiquait où un bloc finissait,
+ * seulement où le suivant commençait. Une barre colorée porte la même
+ * information — à qui est le tour, où le bloc commence ET où il s'arrête — pour
+ * un caractère par ligne au lieu de toute la largeur.
+ */
+const GUTTER = '▌ ';
+
+function clockLabel(at?: number): string {
+  if (!Number.isFinite(at)) return '';
+  const date = new Date(at as number);
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * En-tête d'un message : gouttière, locuteur, heure, et `copy` à droite.
+ *
+ * Le bouton de copie était collé au libellé, précédé d'un filet de soixante-dix
+ * tirets. Poussé au bord droit et dégrisé, il reste atteignable sans peser sur
+ * la ligne. L'heure était reléguée dans une colonne latérale, détachée de ce
+ * qu'elle datait ; elle coûte cinq caractères ici et devient lisible.
+ */
+function messageHeaderSegments(role: string, columns: number, at?: number): Segment[] {
+  const time = clockLabel(at);
+  const label = roleLabel(role);
+  const used = GUTTER.length + label.length + (time ? time.length + 2 : 0);
+  const pad = Math.max(1, columns - used - COPY_BTN.length);
   return [
-    { text: left, color: '#4B5563' },
+    { text: GUTTER, color: roleColor(role) },
     { text: label, color: roleColor(role) },
-    { text: ' ' + '─'.repeat(rightLength), color: '#4B5563' },
+    ...(time ? [{ text: `  ${time}`, color: '#4B5563' }] : []),
+    { text: ' '.repeat(pad), color: '#4B5563' },
   ];
+}
+
+/** Préfixe la gouttière à une ligne de corps de message. */
+function withGutter(line: RenderedLine, role: string): RenderedLine {
+  return { ...line, segments: [{ text: GUTTER, color: roleColor(role) }, ...line.segments] };
 }
 
 // Split "  /cmd [<arg>...]  description" into two segments.
@@ -413,21 +445,24 @@ function headerGroupKey(role: string) {
   return isDonnaRole(role) ? 'donna' : roleLabel(role);
 }
 
-function conversationLines(messages: Array<{ role: string; content: string }>, columns: number): RenderedLine[] {
+function conversationLines(messages: Array<{ role: string; content: string; at?: number }>, columns: number): RenderedLine[] {
   return messages.flatMap((message, index) => {
     const raw = String(message.content || '');
     const previous = index > 0 ? messages[index - 1] : null;
     const showHeader = !previous || headerGroupKey(previous.role) !== headerGroupKey(message.role);
+    // Plus de ligne vide sous l'en-tête : le filet et son rembourrage
+    // coûtaient deux lignes par message, en plus de la ligne de séparation.
+    // La gouttière rattache visuellement l'en-tête à son corps, la respiration
+    // entre tours suffit.
     const headerLines: RenderedLine[] = showHeader
-      ? [
-          {
-            segments: messageHeaderSegments(message.role, columns),
-            copyContent: raw,
-          },
-          { segments: [{ text: ' ', color: '#D6DEE8' }] },
-        ]
+      ? [{ segments: messageHeaderSegments(message.role, columns, message.at), copyContent: raw }]
       : [];
-    const contentColumns = message.role === 'user' ? Math.max(12, Math.floor(columns * 0.6) - 2) : columns;
+    // Les messages utilisateur étaient repliés à 60 % de la largeur pour tenir
+    // dans une bulle alignée à droite. Cela coupait les phrases en plein milieu
+    // et faisait repartir l'œil de deux colonnes différentes selon le locuteur.
+    // La couleur de gouttière distingue les tours ; la colonne de lecture reste
+    // unique. On retire aussi la largeur de la gouttière du texte disponible.
+    const contentColumns = Math.max(12, columns - GUTTER.length);
     if (isStatusOutput(message)) {
       const statusLines: RenderedLine[] = [
         ...headerLines,
@@ -454,15 +489,9 @@ function conversationLines(messages: Array<{ role: string; content: string }>, c
       lines.push({ text: line, isCode: inFence });
     }
     const renderedBody = renderMarkdownLines(lines, message.role, contentColumns);
-    const userBubbleWidth = message.role === 'user'
-      ? Math.min(
-          Math.max(1, ...renderedBody.map((line) => line.segments.reduce((sum, segment) => sum + segment.text.length, 0))) + 2,
-          Math.max(12, Math.floor(columns * 0.6)),
-        )
-      : undefined;
     const bodyLines: RenderedLine[] = [
       ...headerLines,
-      ...renderedBody.map((line) => ({ ...line, userBubbleWidth })),
+      ...renderedBody.map((line) => withGutter(line, message.role)),
       { segments: [{ text: ' ', color: '#D6DEE8' }] },
     ];
     return bodyLines.map((line) => ({ ...line, role: message.role }));
@@ -470,7 +499,7 @@ function conversationLines(messages: Array<{ role: string; content: string }>, c
 }
 
 export function ConversationView(props: {
-  messages: Array<{ role: string; content: string }>;
+  messages: Array<{ role: string; content: string; at?: number }>;
   rows: number;
   columns: number;
   scroll: number;
@@ -535,21 +564,6 @@ export function ConversationView(props: {
                 {(seg: Segment) => <text width={seg.width} fg={seg.color} bg={seg.bg}>{seg.text}</text>}
               </For>
               <text fg="#4B5563" content={COPY_BTN} onMouseUp={() => props.onCopy?.(line.copyContent!)} />
-            </box>
-          ) : line.role === 'user' && line.userBubbleWidth ? (
-            <box height={1} flexDirection="row" overflow="hidden">
-              <box flexGrow={1} />
-              <box
-                width={line.userBubbleWidth}
-                height={1}
-                flexDirection="row"
-                flexShrink={1}
-                justifyContent="flex-start"
-                paddingX={1}
-                overflow="hidden"
-              >
-                <text>{styledSegments(line.segments)}</text>
-              </box>
             </box>
           ) : line.status ? (
             <box height={1} flexDirection="row" gap={2} overflow="hidden">
@@ -786,7 +800,7 @@ export function LeftPane(props: {
   statusLine: string;
   hintLine?: string | null;
   showWelcome: boolean;
-  messages: Array<{ role: string; content: string }>;
+  messages: Array<{ role: string; content: string; at?: number }>;
   prompt: string;
   input: string;
   busy: boolean;

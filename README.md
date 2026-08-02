@@ -556,6 +556,48 @@ including under `"*"`. Multi-step work belongs to `/agent`.
 An `allowActions` key written by an older manager is folded into `allow` on
 read and removed on the next `agents up`.
 
+### Adding a connector from the served chat UI
+
+`mcp.endpoints.json` stays hand-editable, but the Connectors panel of
+`llm-wiki serve` can now write it. Connecting a card there upserts the endpoint
+through the runtime (`POST /mcp/endpoints`), and the runtime immediately
+re-reads the file and rediscovers tools and agents — no restart, and the new
+tools are usable in the same breath by `/chat`, `/agent` and any subsequent
+plan.
+
+Because a server absent from `chatAccess` gets **zero** tools in `/chat`, the
+upsert writes `"allow": "*"` for it. That is the deliberate difference between
+a connector declared by hand — where you choose the tool list — and one added
+from the UI, where the person adding it is the person who will use it. Narrow
+it afterwards by editing the file.
+
+Three origins are distinguished, and the UI labels each card:
+
+| origin | shown as | who owns it |
+| --- | --- | --- |
+| `wiki`, `production`, `llm-wiki`, `wiki-production` | `internal` | the workspace stack. Fields read-only, no delete — the runtime rejects any change to these names |
+| declared in `mcp.endpoints.json` by hand or by `agents up` | `global config` | the operator. CME, Documents, Mailer, Connectors, Exa… |
+| added from the UI | `added here` | carries `"managedBy": "serve-ui"` in the file |
+
+Removing a `global config` connector is a workspace-wide act — it leaves every
+chat, agent and future plan — so the UI says so before confirming. The
+container and its data are untouched; only the wiring is removed. The name is
+also pushed into `disabledMcpServers`, which the scaffold honours, so a
+connector you removed on purpose is not silently restored by the next
+`agents up` merging the packaged example back in.
+
+Renaming is atomic: the UI sends `previousName`, and the endpoint, its
+`Authorization` header and its `chatAccess` entry move together under the new
+key. A rename onto an existing name, or from a name that is not there, is
+rejected rather than half-applied.
+
+`POST /mcp/endpoints` returns **409 while a plan is running** — connector
+wiring must not change under a run that already resolved its agents. The chat
+UI treats that as what it is: the MCP handshake succeeded, so the card stays
+connected and usable in this browser, badged `local only` with
+"runtime synchronization pending", and the write is retried on the next
+reconnect. A busy runtime never presents itself as a broken connector.
+
 MCP `tools/call` requests retry transient HTTP/MCP failures before the run fails.
 They also share a per-endpoint outbound control budget (45 RPM by default,
 configurable with `WIKI_MANAGER_MCP_REQUESTS_PER_MINUTE`). This budget is

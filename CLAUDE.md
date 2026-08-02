@@ -459,6 +459,38 @@ which profile is active — see `llm-wiki/CLAUDE.md`'s Agent Runtime Integration
 section for how serve re-derives its own config instead of trusting the raw
 payload.
 
+**UI-managed MCP endpoints** (`src/core/mcpEndpoints.js`, runtime route
+`GET|POST /mcp/endpoints`): the served Connectors panel writes
+`mcp.endpoints.json` through the runtime. Invariants, all enforced there rather
+than in the caller:
+
+- `PROTECTED_SERVERS` (`wiki`, `production`, `llm-wiki`, `wiki-production`)
+  cannot be upserted or deleted — they are workspace stack, not connectors.
+- An upsert writes `chatAccess.servers[name] = { allow: '*' }`. A server absent
+  from `chatAccess` gets **zero** tools in `/chat` (`chatAllowedTools`), so
+  skipping this would make a freshly added connector work in `/agent` and
+  silently do nothing in `/chat`.
+- A delete pushes the name into `disabledMcpServers`, which
+  `ensureManagerScaffold`'s additive merge honours — otherwise the next
+  `agents up` would restore from the packaged example a connector the user
+  removed on purpose.
+- Rename goes through `previousName` and is atomic: endpoint, headers and
+  `chatAccess` entry move together, a missing source or an occupied target is
+  refused rather than half-applied. Deletion identity is the persisted name,
+  never the displayed one.
+- `POST` is **409 while a run is active** (`listActiveRuns`), like
+  `POST /config/use`: connector wiring must not change under a run that already
+  resolved its agents. Callers must not read that as a broken connector —
+  `llm-wiki`'s panel keeps the card connected and retries later.
+
+After any write, `refreshAllMcpContexts()` (wiki-manager.js) replays
+`refreshMcpRuntimeStatus` + `discoverAgentsOnce` on every live context.
+`buildMcpStatus` re-reads the file each time, so chat tools, agent tools and
+plan capabilities all pick the change up without a restart.
+`agentRegistry.discover` unregisters agents whose server has disappeared,
+emitting `agent.unregistered` — a deleted connector must not stay resolvable as
+a capability.
+
 MCP `tools/call` retries transient HTTP/MCP failures. Configure globally with
 `WIKI_MANAGER_MCP_RETRY_MAX_ATTEMPTS` and `WIKI_MANAGER_MCP_RETRY_BACKOFF_MS`,
 or per endpoint (`retry`) and per tool (`toolRetries`) in `mcp.endpoints.json`.

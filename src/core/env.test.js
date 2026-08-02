@@ -102,6 +102,20 @@ test('scaffold never overwrites an existing chatAccess, including explicit null'
   });
 });
 
+test('scaffold does not restore a packaged MCP explicitly removed in the UI', () => {
+  withTempManagerDir((dir) => {
+    const endpointsFile = join(dir, 'mcp.endpoints.json');
+    writeFileSync(endpointsFile, JSON.stringify({
+      mcpServers: {},
+      disabledMcpServers: ['cme'],
+    }, null, 2));
+    ensureManagerScaffold();
+    const after = JSON.parse(readFileSync(endpointsFile, 'utf8'));
+    assert.equal(after.mcpServers.cme, undefined);
+    assert.ok(after.mcpServers.documents);
+  });
+});
+
 test('scaffold leaves an invalid endpoints file strictly alone', () => {
   withTempManagerDir((dir) => {
     const endpointsFile = join(dir, 'mcp.endpoints.json');

@@ -15,9 +15,21 @@ export function createAgentRegistry({
   return {
     async discover(session, { signal = null } = {}) {
       const discovered = [];
-      for (const [serverName, endpoint] of Object.entries(session?.mcp ?? {})) {
+      const endpoints = Object.entries(session?.mcp ?? {});
+      const activeServers = new Set(endpoints.map(([serverName]) => serverName));
+      for (const [serverName, endpoint] of endpoints) {
         const agent = await discoverServerAgent(session, serverName, endpoint, { callTool, signal, now });
         discovered.push(registerAgent(session, agent, { agentsByInstance, instanceByServer }));
+      }
+      for (const [serverName, instanceId] of instanceByServer) {
+        if (activeServers.has(serverName)) continue;
+        const previous = agentsByInstance.get(instanceId);
+        instanceByServer.delete(serverName);
+        agentsByInstance.delete(instanceId);
+        if (previous) dispatchRegistryEvent(session, 'agent.unregistered', {
+          agentInstanceId: instanceId,
+          serverName,
+        });
       }
       session.agentRegistry = this;
       session.agentRegistrySnapshot = this.snapshot();

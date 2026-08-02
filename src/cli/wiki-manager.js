@@ -14,6 +14,7 @@ import { refreshRunningContainers } from '../core/wikiSetup.js';
 import { applySessionWikircProfile } from '../core/sessionConfig.js';
 import { listWikircProfiles } from '../core/wikirc.js';
 import { callMcpTool, formatMcpToolResult, readChatAccessConfig } from '../core/mcp.js';
+import { deleteManagedMcpEndpoint, listManagedMcpEndpoints, upsertManagedMcpEndpoint } from '../core/mcpEndpoints.js';
 import { extractActivity, parseJsonText, sessionActivities, terminalFailures } from '../core/activity.js';
 import { syncActivitiesToPlan, formatPlanStatus } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../core/agentEvents.js';
@@ -740,6 +741,14 @@ async function runRuntime(argv, agent) {
   let serverHandle = null;
   const contexts = new Map();
 
+  async function refreshAllMcpContexts() {
+    const resolved = await Promise.all([...new Set(contexts.values())].map((value) => Promise.resolve(value)));
+    await Promise.all(resolved.map(async (context) => {
+      await refreshMcpRuntimeStatus(context.session);
+      await discoverAgentsOnce(context.session);
+    }));
+  }
+
   async function getWorkspaceContext(workspaceName = null) {
     const requestedWorkspace = workspaceName ? String(workspaceName).trim() : null;
     const key = requestedWorkspace ?? '__default__';
@@ -1415,6 +1424,17 @@ async function runRuntime(argv, agent) {
         summary,
         config,
       };
+    },
+    listMcpEndpoints: async () => ({ endpoints: listManagedMcpEndpoints() }),
+    upsertMcpEndpoint: async (_context, body) => {
+      const endpoint = upsertManagedMcpEndpoint(body);
+      await refreshAllMcpContexts();
+      return { ok: true, endpoint };
+    },
+    deleteMcpEndpoint: async (_context, body) => {
+      const endpoint = deleteManagedMcpEndpoint(body.name);
+      await refreshAllMcpContexts();
+      return { ok: true, endpoint };
     },
     token: auth.token,
   });

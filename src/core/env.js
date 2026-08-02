@@ -121,9 +121,10 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
           const missing = Object.keys(example).filter((key) => !(key in current));
           const currentServers = current.mcpServers;
           const exampleServers = example.mcpServers;
+          const disabledServers = new Set(Array.isArray(current.disabledMcpServers) ? current.disabledMcpServers.map(String) : []);
           const missingServers = currentServers && typeof currentServers === 'object' && !Array.isArray(currentServers)
             && exampleServers && typeof exampleServers === 'object' && !Array.isArray(exampleServers)
-            ? Object.keys(exampleServers).filter((key) => !(key in currentServers))
+            ? Object.keys(exampleServers).filter((key) => !(key in currentServers) && !disabledServers.has(key))
             : [];
           if (missing.length > 0) {
             for (const key of missing) current[key] = example[key];

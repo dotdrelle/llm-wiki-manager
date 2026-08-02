@@ -233,6 +233,22 @@ External agents are workspace-agnostic — the active `/use <workspace>` is
 injected automatically on every call. `WIKI_MANAGER_ENDPOINTS_FILE` overrides the
 default `./mcp.endpoints.json` path.
 
+The file is also written by the Connectors panel of `llm-wiki serve`, through
+the runtime's `POST /mcp/endpoints`. Two keys belong to that path:
+
+| key | meaning |
+| --- | --- |
+| `mcpServers.<name>.managedBy: "serve-ui"` | this entry was added from the UI, which labels it `added here`. Absent ⇒ operator-owned, labelled `global config` |
+| `disabledMcpServers: []` | names removed on purpose. The scaffold's additive merge skips them, so `agents up` does not restore a connector you deleted |
+
+A UI upsert also writes `chatAccess.servers.<name> = { "allow": "*" }` — without
+it the server would be invisible to `/chat` (see the `chatAccess` section of the
+README). Hand-declared servers keep whatever `allow` list you wrote.
+`wiki`, `production`, `llm-wiki` and `wiki-production` are refused by that route:
+they belong to the workspace stack, not to the connectors file. Writes are
+rejected with **409 while a plan is running** — the served UI keeps the
+connector usable locally and retries on the next reconnect.
+
 Start the shared agents once for all workspaces:
 
 ```bash

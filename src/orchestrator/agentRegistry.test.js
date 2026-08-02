@@ -85,6 +85,26 @@ test('agentRegistry records legacy visible agents when no contract tool exists',
   assert.equal(agent.health, 'available');
 });
 
+test('agentRegistry removes a server that disappeared during MCP refresh', async () => {
+  const events = [];
+  const session = {
+    mcp: {
+      cme: { status: 'connected', tools: [{ name: 'cme_status' }] },
+      exa: { status: 'connected', tools: [{ name: 'web_search_exa' }] },
+    },
+    _onAgentEvent: (event) => events.push(event),
+  };
+  const registry = createAgentRegistry({ callTool: async () => assert.fail('no contract tool expected') });
+  await registry.discover(session);
+  assert.deepEqual(registry.snapshot().map((agent) => agent.serverName), ['cme', 'exa']);
+
+  delete session.mcp.cme;
+  await registry.discover(session);
+
+  assert.deepEqual(registry.snapshot().map((agent) => agent.serverName), ['exa']);
+  assert.ok(events.some((event) => event.type === 'agent.unregistered' && event.payload.serverName === 'cme'));
+});
+
 test('agentRegistry marks unavailable boot agents and emits health changes on re-scan', async () => {
   const events = [];
   let health = 'unavailable';

@@ -24,6 +24,9 @@ export function startRuntimeServer({
   approve,
   configProfiles,
   useConfigProfile,
+  listMcpEndpoints,
+  upsertMcpEndpoint,
+  deleteMcpEndpoint,
   listActiveRuns = null,
   exitOnShutdown = process.env.WIKI_MANAGER_RUNTIME_CHILD === '1',
 } = {}) {
@@ -227,6 +230,31 @@ export function startRuntimeServer({
           return;
         }
         const result = await useConfigProfile(context, profile);
+        sendJson(response, 200, result);
+        return;
+      }
+      if (request.method === 'GET' && url.pathname === '/mcp/endpoints') {
+        const workspace = workspaceFromUrl(url);
+        const context = await resolveContext({ workspace });
+        const result = await listMcpEndpoints?.(context);
+        sendJson(response, 200, result ?? { endpoints: [] });
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/mcp/endpoints') {
+        const activeRuns = typeof listActiveRuns === 'function' ? listActiveRuns() : [];
+        if (activeRuns.length > 0) {
+          sendJson(response, 409, { error: 'MCP connectors cannot be changed while a plan is running.' });
+          return;
+        }
+        const { body, context } = await resolveBodyContext(request, url);
+        const action = String(body.action ?? 'upsert').trim().toLowerCase();
+        const result = action === 'delete'
+          ? await deleteMcpEndpoint?.(context, body)
+          : await upsertMcpEndpoint?.(context, body);
+        if (!result) {
+          sendJson(response, 501, { error: 'MCP endpoint management is not supported.' });
+          return;
+        }
         sendJson(response, 200, result);
         return;
       }

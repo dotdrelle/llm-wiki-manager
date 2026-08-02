@@ -345,6 +345,54 @@ test('/use loads only workspaces and /config use switches wikirc profiles', asyn
   }
 });
 
+test('/use keeps a loaded wikirc when MCP discovery fails', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wiki-manager-use-mcp-error-'));
+  const registryRoot = join(root, 'registry');
+  const workspacePath = join(root, 'workspace');
+  const registryPath = join(registryRoot, 'demo');
+  mkdirSync(registryPath, { recursive: true });
+  mkdirSync(workspacePath, { recursive: true });
+  mkdirSync(join(root, 'mcp.endpoints.json'));
+  writeFileSync(join(root, '.env'), '', 'utf8');
+  writeFileSync(join(registryPath, '.env'), [
+    'WORKSPACE_NAME=demo',
+    `WIKI_WORKSPACE_PATH=${workspacePath}`,
+    '',
+  ].join('\n'), 'utf8');
+  writeFileSync(join(workspacePath, '.wikirc.yaml'), [
+    'language: fr',
+    'llm:',
+    '  provider: openai-compatible',
+    '  engine: openai',
+    '  model: test-model',
+    '  apiKey: test-key',
+    '',
+  ].join('\n'), 'utf8');
+
+  const previousDir = process.env.WIKI_WORKSPACES_DIR;
+  const previousEnvFile = process.env.WIKI_MANAGER_ENV_FILE;
+  process.env.WIKI_WORKSPACES_DIR = registryRoot;
+  process.env.WIKI_MANAGER_ENV_FILE = join(root, '.env');
+  try {
+    const session = {};
+    const result = await handleSlashCommand('/use demo', {
+      packageJson: { version: 'test' },
+      session,
+    });
+
+    assert.equal(session.wikirc?.profile, 'default');
+    assert.equal(session.wikircConfig?.llm?.model, 'test-model');
+    assert.match(result.output ?? '', /profile: default/);
+    assert.match(result.output ?? '', /MCP discovery failed:.*EISDIR/s);
+    assert.doesNotMatch(result.output ?? '', /Wikirc not loaded/);
+  } finally {
+    if (previousDir === undefined) delete process.env.WIKI_WORKSPACES_DIR;
+    else process.env.WIKI_WORKSPACES_DIR = previousDir;
+    if (previousEnvFile === undefined) delete process.env.WIKI_MANAGER_ENV_FILE;
+    else process.env.WIKI_MANAGER_ENV_FILE = previousEnvFile;
+  }
+});
+
 test('/queue cancel refuses runtime-managed items instead of fake-cancelling locally', async () => {
   // syncRuntimeState replaces session.jobQueue with the runtime queue and tags
   // origin:'runtime' — a local cancel would be reverted by the next SSE sync,

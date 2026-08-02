@@ -338,7 +338,7 @@ function workspaceStatsColumns(stats, session) {
   };
 }
 
-function workspaceLoadedText(workspace, summary, session) {
+function workspaceLoadedText(workspace, summary, session, mcpError = null) {
   const profiles = listWikircProfiles(workspace.workspacePath);
   const profileLines = profiles.length > 0
     ? profiles.map((profile) => {
@@ -374,6 +374,7 @@ function workspaceLoadedText(workspace, summary, session) {
     '',
     `llm: ${session.llm ? 'configured' : 'missing config'}`,
     `mcp: ${Object.values(session.mcp ?? {}).filter((value) => value.status === 'connected').length} connected`,
+    ...(mcpError ? ['', `MCP discovery failed: ${mcpError}`] : []),
   ].join('\n');
 }
 
@@ -941,9 +942,17 @@ export async function handleSlashCommand(line, context) {
       context.session.workspaceEnv = workspace.env;
       context.session.workspaceEnvFile = workspace.envFile;
       context.session.systemPrompt = loadWorkspaceSystemPrompt(workspace.workspacePath);
+      let summary;
       try {
         step(`Workspace: loading ${workspace.name} config…`);
-        const { summary } = applySessionWikircProfile(context.session, 'default');
+        ({ summary } = applySessionWikircProfile(context.session, 'default'));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          output: workspaceLoadedWithoutConfigText(workspace, message),
+        };
+      }
+      try {
         step(`Workspace: discovering ${workspace.name} MCP tools…`);
         await refreshMcpRuntimeStatus(context.session);
         return {
@@ -952,7 +961,7 @@ export async function handleSlashCommand(line, context) {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return {
-          output: workspaceLoadedWithoutConfigText(workspace, message),
+          output: workspaceLoadedText(workspace, summary, context.session, message),
         };
       }
     }

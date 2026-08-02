@@ -88,6 +88,13 @@ test('workspace creation keeps mutable manager files outside the installed packa
   assert.match(source, /WIKI_MANAGER_ENDPOINTS_FILE: managerMcpEndpointsFile\(\)/);
 });
 
+test('wiki-workspace rejects an MCP endpoints directory instead of copying into it', async () => {
+  const script = await readFile(new URL('../../wiki-workspace', import.meta.url), 'utf8');
+
+  assert.match(script, /\[\[ -e "\$MANAGER_ENDPOINTS_FILE" && ! -f "\$MANAGER_ENDPOINTS_FILE" \]\]/);
+  assert.match(script, /MCP endpoints path is not a file/);
+});
+
 test('container refresh pulls and renews only services that are already running', async () => {
   const script = await readFile(new URL('../../wiki-workspace', import.meta.url), 'utf8');
 

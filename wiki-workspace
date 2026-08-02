@@ -534,7 +534,11 @@ ensure_endpoints_file() {
   # Without mcp.endpoints.json the shell never connects to the agents it
   # just started (and `agents status` refuses to run). Seed it from the
   # packaged example; the \${VAR} placeholders resolve against the .env.
+  if [[ -e "$MANAGER_ENDPOINTS_FILE" && ! -f "$MANAGER_ENDPOINTS_FILE" ]]; then
+    die "MCP endpoints path is not a file: $MANAGER_ENDPOINTS_FILE"
+  fi
   if [[ ! -f "$MANAGER_ENDPOINTS_FILE" && -f "$ROOT_DIR/mcp.endpoints.example.json" ]]; then
+    mkdir -p "$(dirname "$MANAGER_ENDPOINTS_FILE")"
     cp "$ROOT_DIR/mcp.endpoints.example.json" "$MANAGER_ENDPOINTS_FILE"
     printf 'Created %s from packaged example\n' "$MANAGER_ENDPOINTS_FILE"
   fi
@@ -918,6 +922,9 @@ ensure_compose_override() {
 }
 
 ensure_manager_endpoints_file() {
+  if [[ -e "$MANAGER_ENDPOINTS_FILE" && ! -f "$MANAGER_ENDPOINTS_FILE" ]]; then
+    die "MCP endpoints path is not a file: $MANAGER_ENDPOINTS_FILE"
+  fi
   if [[ ! -f "$MANAGER_ENDPOINTS_FILE" && -f "$ROOT_DIR/mcp.endpoints.example.json" ]]; then
     mkdir -p "$(dirname "$MANAGER_ENDPOINTS_FILE")"
     cp "$ROOT_DIR/mcp.endpoints.example.json" "$MANAGER_ENDPOINTS_FILE"

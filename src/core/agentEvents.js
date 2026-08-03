@@ -556,6 +556,7 @@ function applyEvent(state, event) {
         status: 'queued',
         createdAt: event.payload?.createdAt ?? event.ts,
         updatedAt: event.ts,
+        ...(event.payload?.capabilityPlan !== undefined ? { capabilityPlan: event.payload.capabilityPlan } : {}),
       });
       return;
     case 'control_started':

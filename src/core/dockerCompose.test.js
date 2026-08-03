@@ -19,6 +19,14 @@ test('workspace compose does not start a per-workspace agent runtime', async () 
   );
 });
 
+test('workspace production agent enables restore by default', async () => {
+  const raw = await readFile(new URL('../../docker-compose.yml', import.meta.url), 'utf8');
+  const compose = YAML.parse(raw);
+  const allowed = compose.services['production-mcp'].environment
+    .find((entry) => String(entry).startsWith('PRODUCTION_ALLOWED_STEPS='));
+  assert.match(String(allowed), /(?:^|,)restore(?:,|})/);
+});
+
 test('shipped compose files never carry a build context', async () => {
   // Ces deux fichiers partent dans le paquet npm, où les dépôts frères
   // (`../agent-external/…`) n'existent pas : un `build:` y rend toute commande

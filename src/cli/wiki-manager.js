@@ -1231,9 +1231,11 @@ async function runRuntime(argv, agent) {
             ),
             requireApprovalForMutations: body.capabilityPlan.requireApproval !== false,
           },
-          ...(Array.isArray(body.capabilityPlan.inputs) && body.capabilityPlan.inputs.length > 0
-            ? { arguments: { inputs: body.capabilityPlan.inputs } }
-            : {}),
+          ...(body.capabilityPlan.arguments && typeof body.capabilityPlan.arguments === 'object'
+            ? { arguments: body.capabilityPlan.arguments }
+            : Array.isArray(body.capabilityPlan.inputs) && body.capabilityPlan.inputs.length > 0
+              ? { arguments: { inputs: body.capabilityPlan.inputs } }
+              : {}),
         })));
         if (!Array.isArray(fragment?.tasks) || fragment.tasks.length === 0) {
           dispatchAgentEvent(session, createAgentEvent('assistant_message', {

@@ -53,7 +53,7 @@ export async function execute(task, assignment, {
       session.mcp,
       serverName,
       executeTool,
-      executeRequest(task, session),
+      executeRequest(task, session, runId),
       signal,
     ));
     if (accepted?.accepted === false || accepted?.ok === false) {
@@ -157,9 +157,11 @@ export async function execute(task, assignment, {
   }
 }
 
-function executeRequest(task, session) {
+function executeRequest(task, session, runId) {
   return {
     taskId: String(task.id ?? task.step),
+    ...(runId ? { runId: String(runId) } : {}),
+    ...(task.requiredCapability ? { capability: String(task.requiredCapability) } : {}),
     idempotencyKey: task.idempotencyKey ?? undefined,
     operation: task.operation,
     workspace: workspaceRequest(session),

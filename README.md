@@ -771,6 +771,11 @@ capabilityRouting:
     allowedAgents: [connectors]
 ```
 
+The production agent also advertises `workspace.restore` for Git-backed
+rollback. It is workspace-scoped and remains subject to the normal runtime
+approval and lock checks; it can be pinned in the same way when several agents
+provide that capability.
+
 #### Compose overrides — optional agents, proxies, local fixes
 
 Two override files sit under **`.wiki/compose/`**, one per stack:

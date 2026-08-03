@@ -33,6 +33,39 @@ test('dispatcher returns a retryable logical failure when agent_execute reports 
   assert.equal(result.error.retryable, true);
 });
 
+test('dispatcher forwards the orchestration run and required capability to agent_execute', async () => {
+  let executeArgs;
+  const session = {
+    workspace: 'test',
+    mcp: {
+      production: {
+        tools: [{ name: 'agent_execute' }, { name: 'agent_status' }, { name: 'agent_cancel' }],
+      },
+    },
+    activities: {},
+  };
+  const dispatcher = createDispatcher({
+    session,
+    pollIntervalMs: 1,
+    callTool: async (_mcp, _server, tool, args) => {
+      if (tool === 'agent_execute') {
+        executeArgs = args;
+        return { accepted: true, jobId: 'job-build', status: 'queued' };
+      }
+      return { jobId: 'job-build', status: 'succeeded', terminal: true, result: { status: 'succeeded' } };
+    },
+  });
+
+  await dispatcher.execute(
+    { id: 'build-a', requiredCapability: 'document.build', operation: 'build', arguments: {} },
+    { serverName: 'production', agentInstanceId: 'production-main' },
+    { runId: 'run-donna-1', attempt: { attemptId: 'build-a:attempt-1', locks: [], release() {} } },
+  );
+
+  assert.equal(executeArgs.runId, 'run-donna-1');
+  assert.equal(executeArgs.capability, 'document.build');
+});
+
 test('dispatcher completes when an executor-only agent reports succeeded', async () => {
   const session = {
     workspace: 'test',

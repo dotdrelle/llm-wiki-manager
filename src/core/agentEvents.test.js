@@ -364,6 +364,38 @@ test('reduceAgentEvents: control queue is event sourced and follows run status',
   assert.equal(projection.controlQueue[1].status, 'cancelled');
 });
 
+test('reduceAgentEvents: control_enqueued preserves a structured capabilityPlan across replay', () => {
+  const capabilityPlan = {
+    capability: 'workspace.restore',
+    operation: 'restore',
+    arguments: { run: 'abc123' },
+    requireApproval: true,
+  };
+  const projection = reduceAgentEvents([
+    createAgentEvent('control_enqueued', {
+      origin: 'runtime',
+      workspace: 'docs',
+      payload: {
+        id: 'control-restore',
+        workspace: 'docs',
+        input: 'restore',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        capabilityPlan,
+      },
+    }),
+    createAgentEvent('control_started', {
+      origin: 'runtime',
+      runId: 'run-control-restore',
+      workspace: 'docs',
+      payload: { id: 'control-restore', runId: 'run-control-restore' },
+    }),
+  ]);
+
+  const item = projection.controlQueue.find((entry) => entry.id === 'control-restore');
+  assert.deepEqual(item.capabilityPlan, capabilityPlan);
+  assert.equal(item.status, 'running');
+});
+
 test('reduceAgentEvents: activity-owned plan is used when no orchestrator plan exists', () => {
   const projection = reduceAgentEvents([
     createAgentEvent('activity_upserted', {

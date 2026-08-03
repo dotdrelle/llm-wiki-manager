@@ -283,6 +283,27 @@ export function startRuntimeServer({
           }
           validateContractInDev('runRequest', { ...body, input });
           if (context.running) {
+            // A structured capability plan must never degrade into a free-text
+            // control message: its exact arguments and approval policy would
+            // otherwise be discarded by the control lane. It can still be
+            // queued as a future run when the caller explicitly opts in via
+            // intent: 'enqueue' — the control queue carries capabilityPlan
+            // through untouched (see enqueueControlRequest/
+            // startNextControlRequest) instead of collapsing it to text.
+            if (body.capabilityPlan) {
+              if (body.intent === 'enqueue') {
+                const item = enqueueControlRequest(context, input, { capabilityPlan: body.capabilityPlan });
+                void startNextControlRequest(context);
+                sendJson(response, 202, {
+                  accepted: true,
+                  item,
+                  ...controlStatus(context, store),
+                });
+                return;
+              }
+              sendJson(response, 409, { error: 'run_active' });
+              return;
+            }
             // Blind enqueueing made every message typed during a run
             // invisible until the run ended (serve UI symptom: "no result
             // until the job finished or was stopped"). Classify instead:
@@ -630,6 +651,7 @@ export function startRuntimeServer({
     startRuntimeRun(context, {
       input: item.input,
       workspace: item.workspace ?? context.workspace ?? null,
+      ...(item.capabilityPlan !== undefined ? { capabilityPlan: item.capabilityPlan } : {}),
     }, { controlItemId: item.id });
     return true;
   }
@@ -843,7 +865,7 @@ async function handleControlMessage(context, store, input, { intent = null, star
     : controlMessage(context?.session, 'converse_while_idle'));
 }
 
-function enqueueControlRequest(context, input) {
+function enqueueControlRequest(context, input, { capabilityPlan } = {}) {
   const now = new Date().toISOString();
   const item = {
     id: `control-${randomUUID()}`,
@@ -853,6 +875,7 @@ function enqueueControlRequest(context, input) {
     status: 'queued',
     createdAt: now,
     updatedAt: now,
+    ...(capabilityPlan !== undefined ? { capabilityPlan } : {}),
   };
   dispatchAgentEvent(context.session, createAgentEvent('control_enqueued', {
     origin: 'runtime',

@@ -124,7 +124,7 @@ services:
       - WORKSPACE_NAME=${WORKSPACE_NAME:-workspace}
       - WIKI_WORKSPACE_PATH=/workspace
       - WIKI_CONFIG_PATH=${WIKI_CONFIG_PATH:-}
-      - PRODUCTION_ALLOWED_STEPS=${PRODUCTION_ALLOWED_STEPS:-doctor,ingest,ingest_plan,ingest_apply,build,export,polish,pipeline}
+      - PRODUCTION_ALLOWED_STEPS=${PRODUCTION_ALLOWED_STEPS:-doctor,ingest,ingest_plan,ingest_apply,build,export,polish,restore,pipeline}
       - PRODUCTION_REQUIRE_CONFIRMATION=${PRODUCTION_REQUIRE_CONFIRMATION:-false}
       # Parallelism levers — effective concurrency ≈ recommendedConcurrency.
       # Intermediate defaults (4/8). Low profile 2/4, high profile 8/16.

@@ -347,6 +347,119 @@ test('runtime server accepts only one active run', async (t) => {
   }
 });
 
+test('runtime server rejects a structured capability plan while a run is active', async (t) => {
+  let releaseRun;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'idle' }),
+        listEvents: () => [],
+      },
+      session: {},
+      run: async () => new Promise((resolve) => { releaseRun = resolve; }),
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const url = `http://127.0.0.1:${handle.port}/run`;
+    const first = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: 'active build' }),
+    });
+    assert.equal(first.status, 202);
+
+    const restore = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        input: 'restore',
+        capabilityPlan: {
+          capability: 'workspace.restore',
+          operation: 'restore',
+          arguments: { run: 'abc123' },
+          requireApproval: true,
+        },
+      }),
+    });
+    assert.equal(restore.status, 409);
+    assert.deepEqual(await restore.json(), { error: 'run_active' });
+  } finally {
+    releaseRun?.();
+    await handle.close();
+  }
+});
+
+test('runtime server queues a structured capability plan when intent is enqueue', async (t) => {
+  let releaseRun;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'idle' }),
+        listEvents: () => [],
+      },
+      session: {},
+      run: async () => new Promise((resolve) => { releaseRun = resolve; }),
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const url = `http://127.0.0.1:${handle.port}/run`;
+    const first = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: 'active build' }),
+    });
+    assert.equal(first.status, 202);
+
+    const capabilityPlan = {
+      capability: 'workspace.restore',
+      operation: 'restore',
+      arguments: { run: 'abc123' },
+      requireApproval: true,
+    };
+    const restore = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: 'restore', intent: 'enqueue', capabilityPlan }),
+    });
+    assert.equal(restore.status, 202);
+    const restoreBody = await restore.json();
+    assert.equal(restoreBody.accepted, true);
+    assert.deepEqual(restoreBody.item.capabilityPlan, capabilityPlan);
+    assert.equal(restoreBody.item.status, 'queued');
+
+    const status = await fetch(`http://127.0.0.1:${handle.port}/control`);
+    const statusBody = await status.json();
+    const queued = statusBody.controlQueue.find((item) => item.id === restoreBody.item.id);
+    assert.ok(queued, 'queued item should be visible in control status');
+    assert.deepEqual(queued.capabilityPlan, capabilityPlan);
+  } finally {
+    releaseRun?.();
+    await handle.close();
+  }
+});
+
 test('runtime server returns the accepted run id and passes it to the runner', async (t) => {
   let receivedBody = null;
   let handle;

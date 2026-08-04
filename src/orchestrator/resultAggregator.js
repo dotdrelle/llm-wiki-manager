@@ -5,6 +5,7 @@ import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { resolve as resolveCapability } from './capabilityResolver.js';
 import { integrate } from './planIntegrator.js';
 import { validateFragment } from './planValidator.js';
+import { isSuccessful } from './taskStatuses.js';
 
 export function createResultAggregator({
   session = null,
@@ -188,7 +189,7 @@ function rejectExpansion({ session, runId, taskId, store, errors }) {
 
 function resultOk(result) {
   const status = String(result?.status ?? result?.result?.status ?? '').toLowerCase();
-  return result?.ok === true || ['succeeded', 'success', 'done', 'complete', 'completed'].includes(status);
+  return result?.ok === true || isSuccessful(status);
 }
 
 function cancelled(result) {

@@ -547,3 +547,47 @@ test('run_error cancels pending plan steps and active activities (no ghosts at r
   assert.equal(activity.status, 'cancelled');
   assert.equal(activity.terminal, true);
 });
+
+/*
+ La cascade de statuts se terminait par `else step.status = 'done'` : un statut
+ non énuméré était projeté en succès. Le runner marquait une tâche `skipped`
+ faute de dépendance, la projection la déclarait faite, et le résumé comptait
+ une réussite qui n'avait jamais eu lieu — le pire des défauts, celui qui
+ transforme une inconnue en bonne nouvelle.
+*/
+test('reduceAgentEvents: un statut de plan inconnu ne devient pas un succès', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('plan_set', { origin: 'tool', payload: { steps: ['Ingest a', 'Ingest b'] } }),
+    createAgentEvent('plan_step_updated', {
+      origin: 'runtime',
+      payload: { step: 1, status: 'skipped', reason: 'dependency_failed:convert' },
+    }),
+    createAgentEvent('plan_step_updated', {
+      origin: 'runtime',
+      payload: { step: 2, status: 'brouette' },
+    }),
+  ]);
+
+  assert.equal(projection.plan[0].status, 'skipped');
+  assert.equal(projection.plan[0].error?.code, 'dependency_failed');
+  assert.match(projection.plan[0].error.message, /convert/);
+  // Un statut incompréhensible laisse l'étape où elle était et se signale :
+  // on ne sait pas ce qui s'est passé, le dire vaut mieux que d'inventer.
+  assert.equal(projection.plan[1].status, 'pending');
+  assert.equal(projection.logs.some((line) => /unknown status "brouette"/.test(line)), true);
+});
+
+test('reduceAgentEvents: les alias de statut tombent sur le canonique', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('plan_set', { origin: 'tool', payload: { steps: ['A', 'B', 'C'] } }),
+    createAgentEvent('plan_step_updated', { origin: 'runtime', payload: { step: 1, status: 'succeeded' } }),
+    createAgentEvent('plan_step_updated', { origin: 'runtime', payload: { step: 2, status: 'error' } }),
+    // Contrat historique : un événement de fin sans statut vaut « terminé ».
+    createAgentEvent('plan_step_updated', { origin: 'runtime', payload: { step: 3 } }),
+  ]);
+
+  assert.equal(projection.plan[0].status, 'done');
+  assert.equal(projection.plan[1].status, 'failed');
+  assert.equal(projection.plan[2].status, 'done');
+  assert.equal(projection.logs.some((line) => /unknown status/.test(line)), false);
+});

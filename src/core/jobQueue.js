@@ -1,3 +1,12 @@
+/**
+ * @statuses-vocabulary
+ *
+ * JOB queue statuses. A queued job has its own lifecycle, independent of
+ * the task that may have enqueued it.
+ *
+ * Declared here rather than in a central exception list so the waiver
+ * travels with the code it excuses (see orchestrator/taskStatuses.test.js).
+ */
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { extractActivity, parseJsonText, sessionActivities } from './activity.js';

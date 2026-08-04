@@ -1,3 +1,13 @@
+/**
+ * @statuses-vocabulary
+ *
+ * JSON schema enumeration exposed to models. A schema declares what it
+ * accepts, including values the orchestrator no longer produces.
+ *
+ * Declared here rather than in a central exception list so the waiver
+ * travels with the code it excuses (see orchestrator/taskStatuses.test.js).
+ */
+import { isTerminal } from '../orchestrator/taskStatuses.js';
 import { join } from 'node:path';
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 import {
@@ -640,7 +650,7 @@ function rememberProductionProgress(session, payload, label) {
     jobId: jobId ?? session.productionActivity?.jobId ?? null,
     status,
     label: label ?? `Production: ${status}`,
-    terminal: ['done', 'failed', 'cancelled'].includes(String(status)),
+    terminal: isTerminal(status),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -803,6 +813,35 @@ async function handleRuntimeControlTool(session, tool, args = {}) {
       }
       if (connectorConfig) {
         return `Delegation rejected: ${connectorConfig.serverName} advertises no setup or authentication tool. Do not call an unrelated data tool and do not delegate to export. Explain conversationally that authentication must be completed outside MCP, using only configuration instructions already available in the current context.`;
+      }
+      /*
+       Un run ne passe pas par le réseau pour se déléguer à lui-même.
+
+       Donna délègue DEPUIS l'intérieur du run conversationnel qui vient d'être
+       marqué actif. Passer par POST /delegate revenait à demander au runtime
+       l'autorisation de démarrer un run alors qu'un run tourne déjà — le sien —
+       et l'endpoint répondait 409, à juste titre de son point de vue. Le run
+       refusait sa propre délégation.
+
+       Déléguer n'est pas démarrer un second run : c'est faire passer celui-ci
+       de la décision à l'exécution. Quand ce chemin interne existe (agent
+       exécuté dans le processus du runtime), on l'emprunte : même `runId`,
+       aucun run concurrent, aucun 409. Le chemin HTTP reste pour les appelants
+       réellement extérieurs — le Shell, un client tiers —, et c'est là que le
+       409 garde tout son sens.
+      */
+      if (typeof session?._delegateWithinRun === 'function') {
+        try {
+          const inRun = await session._delegateWithinRun(objective);
+          return JSON.stringify({
+            delegated: true,
+            runId: inRun.runId,
+            summary: inRun.summary ?? null,
+            message: `Action lancée (${String(inRun.runId).slice(0, 8)}) après validation du plan réel : ${inRun.summary?.tasks ?? 0} tâche(s), ${inRun.summary?.agent ?? 'agent résolu'}. Exécution en cours.`,
+          });
+        } catch (err) {
+          return `Délégation refusée : ${err instanceof Error ? err.message : String(err)}`;
+        }
       }
       const result = await postRuntimeDelegate(objective, { url, workspace });
       return result?.runId

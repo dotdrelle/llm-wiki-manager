@@ -4,6 +4,7 @@ import { applyPlanPatch, normalizePlanPatch, normalizePlanRevision, rebasePlanPa
 import { formatRuntimeLogPayload } from './runtimeLog.js';
 import { projectWorkflow } from './workflow.js';
 import { validateContractInDev } from '../contracts/schemas.js';
+import { isTerminal, isSuccessful, isUnknownStatus, normalizeTaskStatus } from '../orchestrator/taskStatuses.js';
 
 const SESSION_PROJECTION_EVENTS = new Set([
   'run_started',
@@ -343,7 +344,13 @@ function applyEvent(state, event) {
       state.planRevision = normalizePlanRevision(event.payload?.planRevision ?? state.planRevision + 1);
       return;
     case 'plan_step_updated':
-      updatePlanStep(state.plan, event.payload ?? {});
+      {
+        // L'anomalie remonte par la valeur de retour plutôt que par une
+        // référence au state : `updatePlanStep` reste une fonction sur un
+        // plan, et le journal reste la responsabilité de l'appelant.
+        const anomaly = updatePlanStep(state.plan, event.payload ?? {});
+        if (anomaly) state.logs.push(anomaly);
+      }
       return;
     case 'control_message_received':
       state.logs.push(`Control message: ${String(event.payload?.input ?? '')}`);
@@ -725,7 +732,7 @@ function markCoveredApprovalsApproved(approvals, grant, ts) {
 
 function cancelPendingPlanSteps(plan) {
   for (const step of plan ?? []) {
-    if (!['done', 'failed', 'cancelled'].includes(String(step.status ?? ''))) step.status = 'cancelled';
+    if (!isTerminal(step.status)) step.status = 'cancelled';
   }
 }
 
@@ -852,24 +859,51 @@ function normalizePlanTask(raw, index, { owner = 'orchestrator', ownerActivityKe
 }
 
 function updatePlanStep(plan, payload) {
-  if (!plan) return;
+  let anomaly = null;
+  if (!plan) return anomaly;
   const requestedTaskId = payload.taskId ?? payload.id ?? payload.targetTaskId;
   const step = requestedTaskId != null
     ? plan.find((item) => String(item.id ?? item.step) === String(requestedTaskId))
     : plan.find((item) => item.step === Number(payload.step));
-  if (!step) return;
-  if (payload.status === 'failed') step.status = 'failed';
-  else if (payload.status === 'running') step.status = 'running';
-  else if (payload.status === 'pending') step.status = 'pending';
-  else if (payload.status === 'pending_approval') step.status = 'pending_approval';
-  else if (payload.status === 'waiting_approval') step.status = 'waiting_approval';
-  else if (payload.status === 'cancelled') step.status = 'cancelled';
-  else step.status = 'done';
+  if (!step) return anomaly;
+  /*
+   Un statut inconnu ne vaut pas « réussi ».
+
+   La cascade se terminait par `else step.status = 'done'` : tout statut non
+   énuméré — `skipped`, par exemple — était projeté en succès. Le runner
+   marquait bien une tâche ignorée, la projection la déclarait faite, et le
+   résumé de run comptait une réussite qui n'a jamais eu lieu. Le défaut le
+   plus dangereux est celui qui transforme une inconnue en bonne nouvelle.
+
+   Trois cas, et un seul mène à `done` :
+
+   - un statut reconnu par le vocabulaire commun est repris tel quel, alias
+     compris (`succeeded` → `done`, `error` → `failed`) ;
+   - l'ABSENCE de statut garde le contrat historique — un événement de fin
+     sans précision signifie « terminé » ;
+   - un statut présent mais incompréhensible laisse l'étape dans l'état où
+     elle était, et signale une anomalie de projection. On ne sait pas ce qui
+     s'est passé : le dire est plus utile que d'inventer une réponse.
+  */
+  const canonical = normalizeTaskStatus(payload.status);
+  if (canonical) {
+    step.status = canonical;
+  } else if (isUnknownStatus(payload.status)) {
+    anomaly = `projection: unknown status "${String(payload.status)}" for plan step ${String(requestedTaskId ?? payload.step ?? '?')} — kept "${String(step.status ?? 'pending')}"`;
+  } else {
+    step.status = 'done';
+  }
+  // Le motif d'un abandon est la seule chose qui le rende actionnable :
+  // « ignorée » sans « parce que » n'apprend rien à qui relance.
+  if (step.status === 'skipped' && payload.reason && !step.error) {
+    step.error = { code: 'dependency_failed', message: String(payload.reason) };
+  }
   if (payload.activityKey) step.activityKey = payload.activityKey;
   if (Array.isArray(payload.outputRefs)) step.outputRefs = payload.outputRefs.map(cloneRef);
   if (payload.result) step.result = cloneJson(payload.result);
   if (payload.retryState) step.retryState = cloneJson(payload.retryState);
   if (payload.retryAssignment) step.retryAssignment = cloneJson(payload.retryAssignment);
+  return anomaly;
 }
 
 function formatPlanErrors(errors) {

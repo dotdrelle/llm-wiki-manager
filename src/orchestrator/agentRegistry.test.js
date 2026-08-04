@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAgentRegistry } from './agentRegistry.js';
+import { createAgentRegistry, markPersistedAgentsStale } from './agentRegistry.js';
+import { createCapabilityRegistry } from './capabilityRegistry.js';
 
 function description({ agentInstanceId = 'production-main', health = 'available', contractVersion = '1' } = {}) {
   return {
@@ -204,4 +205,78 @@ test('discovery sends no workspace argument when no workspace is active', async 
   });
 
   assert.deepEqual(seen, [{}]);
+});
+
+/*
+ Cas observé le 2026-08-04 : après redémarrage du runtime, `cme-main` était
+ toujours présenté `available` alors que son endpoint n'existait plus. La
+ relecture du journal restitue la santé qu'un agent avait AU MOMENT où
+ l'événement a été écrit — la persistance dit ce qui a existé, pas ce qui
+ répond maintenant.
+*/
+test('un agent restauré depuis le journal n’est pas déclaré disponible', () => {
+  const session = {
+    agents: [
+      { agentInstanceId: 'cme-main', serverName: 'cme', health: 'available', description: { contractVersion: '1', capabilities: [{ id: 'external-source.export', version: '1' }] } },
+      { agentInstanceId: 'production-main', serverName: 'production', health: 'available', description: { contractVersion: '1', capabilities: [{ id: 'knowledge.update', version: '1' }] } },
+    ],
+  };
+
+  markPersistedAgentsStale(session);
+
+  for (const agent of session.agents) {
+    assert.equal(agent.health, 'unknown');
+    assert.equal(agent.stale, true);
+    // Ce qu'on savait avant l'arrêt reste lisible, sans jamais servir au routage.
+    assert.equal(agent.healthBeforeRestart, 'available');
+  }
+  // Et surtout : plus aucun fournisseur sélectionnable tant que le scan n'a pas
+  // confirmé. C'est la seule chose qui empêche une tâche de partir vers un
+  // agent absent.
+  const registry = createCapabilityRegistry({ agents: session.agents });
+  assert.deepEqual(registry.providersFor('external-source.export'), []);
+  assert.deepEqual(registry.providersFor('knowledge.update'), []);
+});
+
+test('markPersistedAgentsStale invalide aussi l’instantané routable', () => {
+  /*
+   J'avais d'abord épargné `agentRegistrySnapshot`, au motif qu'il pouvait
+   porter un scan vivant. Inversion : à l'hydratation aucun scan n'a eu lieu,
+   l'ordre étant hydrate → invalidate → discover. L'épargner laissait
+   `cme-main` routable avec son endpoint éteint — constaté à chaud.
+  */
+  const session = {
+    agents: [{ agentInstanceId: 'cme-main', health: 'available' }],
+    agentRegistrySnapshot: [{ agentInstanceId: 'cme-main', health: 'available' }],
+  };
+
+  markPersistedAgentsStale(session);
+
+  assert.equal(session.agents[0].health, 'unknown');
+  assert.equal(session.agentRegistrySnapshot[0].health, 'unknown');
+});
+
+test('un agent redevient sélectionnable après un agent_describe réussi', async () => {
+  const session = {
+    workspace: 'juno',
+    agentEvents: [],
+    agents: [{ agentInstanceId: 'production-main', serverName: 'production', health: 'available', description: { contractVersion: '1', capabilities: [{ id: 'knowledge.update', version: '1' }] } }],
+    mcp: {
+      production: { status: 'connected', tools: [{ name: 'agent_describe' }] },
+    },
+  };
+  markPersistedAgentsStale(session);
+  assert.deepEqual(createCapabilityRegistry({ agents: session.agents }).providersFor('knowledge.update'), []);
+
+  const registry = createAgentRegistry({
+    callTool: async () => ({ content: [{ type: 'text', text: JSON.stringify(description()) }] }),
+  });
+  await registry.discover(session);
+
+  // La reconnexion suffit : aucune intervention, aucun redémarrage.
+  assert.equal(session.agentRegistrySnapshot[0].health, 'available');
+  assert.equal(
+    createCapabilityRegistry({ agents: session.agentRegistrySnapshot }).providersFor('knowledge.update').length,
+    1,
+  );
 });

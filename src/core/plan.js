@@ -1,3 +1,4 @@
+import { isUnsuccessfulTerminal } from '../orchestrator/taskStatuses.js';
 export function ensurePlanFromActivity(session, activity) {
   if (!activity) return;
   const actKey = activity.key ?? null;
@@ -57,7 +58,7 @@ export function syncActivitiesToPlan(plan, activities) {
   const contractTaskPlan = isContractTaskPlan(plan);
   for (const activity of activities ?? []) {
     const terminal = Boolean(activity.terminal);
-    const failed = ['failed', 'error', 'cancelled', 'canceled'].includes(String(activity.status).toLowerCase());
+    const failed = isUnsuccessfulTerminal(activity.status);
     const actKey = activity.key ?? activity.id ?? activity.jobId ?? null;
     const structuredMatch = findMatchingPlanStepByStructure(plan, activity);
     const matched = structuredMatch ?? findMatchingPlanStep(plan, activity);
@@ -244,7 +245,7 @@ export function attachActivityToExistingPlan(plan, activity) {
   if (!matched) return;
   matched.activityKey = actKey;
   if (!matched.ownerActivityKey) matched.ownerActivityKey = actKey;
-  const failed = ['failed', 'error', 'cancelled', 'canceled'].includes(String(activity.status).toLowerCase());
+  const failed = isUnsuccessfulTerminal(activity.status);
   if (activity.terminal) {
     matched.status = failed ? 'failed' : 'done';
     return;

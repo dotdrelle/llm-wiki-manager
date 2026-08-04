@@ -3,9 +3,9 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { formatMcpToolResult, callMcpTool as defaultCallMcpTool } from '../core/mcp.js';
 import { createCapabilityRegistry } from '../orchestrator/capabilityRegistry.js';
 import { accept as acceptResult } from '../orchestrator/resultAggregator.js';
+import { isSuccessful, isTerminal } from '../orchestrator/taskStatuses.js';
 
 const ACTIVE_TASK_STATUSES = new Set(['running', 'queued', 'starting', 'assigned']);
-const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled', 'canceled', 'completed', 'complete', 'success', 'succeeded']);
 
 export async function recoverActiveRuns({
   store,
@@ -169,9 +169,6 @@ function latestAssignment(assignments, attemptId) {
   return [...assignments].sort((a, b) => String(b.assignedAt ?? b.attemptId).localeCompare(String(a.assignedAt ?? a.attemptId)))[0] ?? null;
 }
 
-function isTerminal(status) {
-  return TERMINAL_STATUSES.has(String(status ?? '').toLowerCase());
-}
 
 function capabilityResolvable(session, capability) {
   const registry = session.capabilityRegistry
@@ -195,7 +192,7 @@ function parseToolPayload(result) {
 function taskResultFromStatus(task, assignment, jobId, statusPayload, attempt) {
   const result = statusPayload?.result ?? {};
   const status = String(result.status ?? statusPayload?.status ?? '').toLowerCase();
-  const ok = ['succeeded', 'success', 'done', 'complete', 'completed'].includes(status);
+  const ok = isSuccessful(status);
   return {
     ok,
     taskId: task.id,

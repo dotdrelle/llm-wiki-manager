@@ -1,11 +1,11 @@
 import { locksForTask } from './lockManager.js';
 import { approvalCovered } from './approvalPolicy.js';
-
-const DONE_STATUSES = new Set(['done', 'completed', 'complete', 'success', 'succeeded']);
-const TERMINAL_STATUSES = new Set([...DONE_STATUSES, 'failed', 'cancelled', 'canceled', 'skipped']);
-// A task in one of these statuses hasn't run yet but could become ready —
-// shared with runner.js's scheduler-stall check so the two can't drift apart.
-export const PENDING_STATUSES = new Set(['pending', 'pending_approval', 'waiting_approval']);
+import { isPending, isSuccessful, isTerminal, isUnsuccessfulTerminal } from './taskStatuses.js';
+// Une tâche dans un de ces statuts n'a pas encore tourné mais peut le devenir.
+// Réexporté depuis le vocabulaire commun : l'ordonnanceur et le contrôle de
+// blocage du runner doivent tester la même chose, et un ensemble local ici
+// était précisément le moyen de les faire diverger.
+export { isPending } from './taskStatuses.js';
 
 export function readyTasks(dag, {
   registry = null,
@@ -15,13 +15,13 @@ export function readyTasks(dag, {
   activeTaskIds = [],
 } = {}) {
   const tasks = normalizeTasks(dag);
-  const done = new Set(tasks.filter((task) => DONE_STATUSES.has(statusOf(task))).map(taskId));
+  const done = new Set(tasks.filter((task) => isSuccessful(statusOf(task))).map(taskId));
   const active = new Set([...activeTaskIds].map(String));
   return tasks
     .filter((task) => {
       const status = statusOf(task);
       return status === 'pending'
-        || (PENDING_STATUSES.has(status)
+        || (isPending(status)
           && approvalCovered(task, approvals, {
             runId: task?.runId ?? dag?.runId ?? null,
             workspaceId: dag?.workspace ?? null,
@@ -40,9 +40,9 @@ export function readyTasks(dag, {
 
 export function tasksAwaitingApproval(dag, { approvals = [] } = {}) {
   const tasks = normalizeTasks(dag);
-  const done = new Set(tasks.filter((task) => DONE_STATUSES.has(statusOf(task))).map(taskId));
+  const done = new Set(tasks.filter((task) => isSuccessful(statusOf(task))).map(taskId));
   return tasks
-    .filter((task) => PENDING_STATUSES.has(statusOf(task)))
+    .filter((task) => isPending(statusOf(task)))
     .filter((task) => task?.requiresApproval === true)
     .filter((task) => !approvalCovered(task, approvals, {
       runId: task?.runId ?? dag?.runId ?? null,
@@ -64,12 +64,52 @@ function dependenciesDone(task, done) {
   return dependsOn(task).every((dep) => done.has(String(dep)));
 }
 
+/*
+ Une barrière de groupe attend que le groupe soit FINI, pas qu'il soit parfait.
+
+ Elle exigeait que chaque membre soit `done`. Un seul échec la fermait donc
+ définitivement : sur une ingestion de dix fichiers dont neuf réussissent, la
+ suite du plan n'était jamais débloquée et le run restait `running` pour
+ toujours. Un incident sur un document devenait une panne totale — le coût
+ était sans rapport avec le dégât.
+
+ La barrière s'ouvre donc quand tout le groupe est TERMINAL. Ce que valait
+ réellement la garantie « tout est done » est préservé ailleurs, et plus
+ finement : une tâche qui dépend explicitement d'une tâche en échec reste
+ bloquée par `dependenciesDone`, et le planificateur la marque `skipped`
+ (cf. blockedByFailedDependency). On distingue ainsi « la suite ne peut pas se
+ faire » de « la suite peut se faire sur ce qui a réussi ».
+*/
 function groupBarrierSatisfied(task, tasks) {
   const groupId = task?.dependsOnGroup;
   if (groupId == null || groupId === '') return true;
   const groupTasks = tasks.filter((candidate) => taskGroupId(candidate) === String(groupId));
   if (groupTasks.length === 0) return false;
-  return groupTasks.every((candidate) => DONE_STATUSES.has(statusOf(candidate)));
+  return groupTasks.every((candidate) => isTerminal(statusOf(candidate)));
+}
+
+/**
+ * Tâches en attente qui ne deviendront JAMAIS exécutables, parce qu'une de
+ * leurs dépendances directes est terminale sans avoir réussi.
+ *
+ * Sans cette liste, le planificateur ne pouvait que constater « plus aucune
+ * tâche prête » et déclarer le plan bloqué — ce qui déclenchait une
+ * replanification, donc un run qui ne se termine pas. Les nommer permet de les
+ * marquer `skipped` avec leur motif, de finaliser le run sur un résultat
+ * partiel, et de dire à l'utilisateur ce qui n'a pas été fait et pourquoi.
+ */
+export function blockedByFailedDependency(dag) {
+  const tasks = normalizeTasks(dag);
+  const statusById = new Map(tasks.map((task) => [taskId(task), statusOf(task)]));
+  return tasks
+    .filter((task) => isPending(statusOf(task)))
+    .map((task) => {
+      const culprits = dependsOn(task)
+        .map(String)
+        .filter((dependency) => isUnsuccessfulTerminal(statusById.get(dependency) ?? ''));
+      return culprits.length > 0 ? { task, dependencies: culprits } : null;
+    })
+    .filter(Boolean);
 }
 
 function agentSane(task, registry) {
@@ -135,5 +175,5 @@ function taskId(task) {
 }
 
 export function isTerminalTask(task) {
-  return TERMINAL_STATUSES.has(statusOf(task));
+  return isTerminal(statusOf(task));
 }

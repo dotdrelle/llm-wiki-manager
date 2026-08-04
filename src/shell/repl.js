@@ -1,3 +1,4 @@
+import { isTerminal } from '../orchestrator/taskStatuses.js';
 import { createInterface } from 'node:readline';
 import { emitKeypressEvents } from 'node:readline';
 import { Transform } from 'node:stream';
@@ -1006,7 +1007,7 @@ function productionActivityFromPayload(payload) {
     jobId: jobId ?? null,
     status,
     label: detail ? `Production: ${detail}` : `Production: ${status}`,
-    terminal: ['done', 'failed', 'cancelled'].includes(String(status)),
+    terminal: isTerminal(status),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -1027,7 +1028,7 @@ export function applyRuntimeStateToShellSession(session, state) {
   const displayState = sanitizeRuntimeStateForDisplay(state);
   const terminalStateDismissed = session._dismissedTerminalRunId
     && state.runId === session._dismissedTerminalRunId
-    && ['done', 'error', 'failed', 'cancelled'].includes(String(displayState.status ?? '').toLowerCase());
+    && isTerminal(displayState.status);
   session._lastRuntimeRunId = state.runId ?? session._lastRuntimeRunId ?? null;
   session.agentProjection = {
     conversation: Array.isArray(displayState.conversation) ? displayState.conversation.map((message) => ({ ...message })) : [],
@@ -1324,9 +1325,7 @@ async function runAgentTurn(input, {
   session.packageJson = session.packageJson ?? {};
   if (
     session._lastRuntimeRunId
-    && ['done', 'error', 'failed', 'cancelled'].includes(
-      String(session.agentProjection?.status ?? '').toLowerCase(),
-    )
+    && isTerminal(session.agentProjection?.status)
   ) {
     session._dismissedTerminalRunId = session._lastRuntimeRunId;
   }

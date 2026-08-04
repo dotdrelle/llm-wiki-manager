@@ -1,3 +1,13 @@
+/**
+ * @statuses-vocabulary
+ *
+ * CONTROL QUEUE item statuses, which include `expired`. A control request
+ * is not a task and does not share its lifecycle.
+ *
+ * Declared here rather than in a central exception list so the waiver
+ * travels with the code it excuses (see orchestrator/taskStatuses.test.js).
+ */
+import { isTerminal } from '../orchestrator/taskStatuses.js';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { openExternalUrl } from '../shell/openExternal.js';
 import { classifyCommandFailure, failureHint, rawFailureText } from '../core/commandFailure.js';
@@ -850,7 +860,7 @@ function formatRuntimeRunStatus(state) {
     ? state.controlQueue.filter((item) => item.status === 'queued').length
     : 0;
   const tasks = Array.isArray(state?.workflow?.nodes)
-    ? state.workflow.nodes.filter((node) => node.type === 'task' && !['done', 'failed', 'cancelled'].includes(String(node.status))).length
+    ? state.workflow.nodes.filter((node) => node.type === 'task' && !isTerminal(node.status)).length
     : 0;
   return `runtime: ${status}${runId} · queued=${queued} · activeTasks=${tasks}`;
 }

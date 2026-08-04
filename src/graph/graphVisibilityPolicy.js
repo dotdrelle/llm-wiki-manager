@@ -1,6 +1,6 @@
+import { isFailed, isCancelled } from '../orchestrator/taskStatuses.js';
 const ALWAYS_VISIBLE = new Set(['run', 'task_group', 'barrier', 'approval']);
 const ACTIVE = new Set(['running', 'queued', 'pending_approval', 'waiting_approval']);
-const ERROR = new Set(['failed', 'error', 'cancelled']);
 
 export function applyGraphVisibility(graph, { maxNodes = 18 } = {}) {
   const nodes = graph.nodes ?? [];
@@ -35,6 +35,6 @@ function mustShow(node) {
   const status = String(node.status ?? '').toLowerCase();
   return ALWAYS_VISIBLE.has(node.type)
     || ACTIVE.has(status)
-    || ERROR.has(status)
+    || isFailed(status) || isCancelled(status)
     || node.type === 'plan_expansion';
 }

@@ -1,3 +1,12 @@
+/**
+ * @statuses-vocabulary
+ *
+ * RUN lifecycle statuses, not task statuses: a run can be `interrupted`,
+ * a task never is.
+ *
+ * Declared here rather than in a central exception list so the waiver
+ * travels with the code it excuses (see orchestrator/taskStatuses.test.js).
+ */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -6,6 +15,8 @@ import { defaultRuntimeStateDir } from '../core/env.js';
 import { projectQueue } from '../core/jobQueue.js';
 import { projectWorkflow } from '../core/workflow.js';
 import { createCapabilityRegistry } from '../orchestrator/capabilityRegistry.js';
+import { isSuccessful } from '../orchestrator/taskStatuses.js';
+import { markPersistedAgentsStale } from '../orchestrator/agentRegistry.js';
 
 export { defaultRuntimeStateDir };
 
@@ -1121,7 +1132,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
 
   function attemptStatusForResult(status, eventType) {
     const normalized = String(status ?? '').toLowerCase();
-    if (['succeeded', 'success', 'done', 'complete', 'completed'].includes(normalized)) return 'done';
+    if (isSuccessful(normalized)) return 'done';
     if (['cancelled', 'canceled'].includes(normalized)) return 'cancelled';
     if (eventType === 'task.failed') return 'failed';
     return normalized || 'finished';
@@ -1265,6 +1276,10 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   function hydrateSession(session, { workspace = null } = {}) {
     const projection = replayEvents(session, { workspace });
     applyAgentProjectionToSession(session, projection);
+    // Le journal restitue les agents avec la santé qu'ils avaient à l'écriture
+    // de l'événement. Les reprendre tels quels les faisait réapparaître
+    // « disponibles » après un redémarrage, endpoint éteint compris.
+    markPersistedAgentsStale(session);
     session.jobQueue = listQueue({ workspace });
     return projection;
   }

@@ -1,4 +1,5 @@
 import { validateContractInDev } from '../contracts/schemas.js';
+import { isTerminal, isUnsuccessfulTerminal } from '../orchestrator/taskStatuses.js';
 
 export function parseJsonText(text) {
   try {
@@ -13,7 +14,7 @@ function basename(value) {
 }
 
 function terminalStatus(status) {
-  return ['done', 'failed', 'cancelled', 'canceled', 'complete', 'completed', 'success', 'succeeded', 'error'].includes(String(status ?? '').toLowerCase());
+  return isTerminal(status);
 }
 
 export function activityKey(activity) {
@@ -251,7 +252,7 @@ export function newNonTerminalActivities(snapshotBefore, session) {
 
 export function terminalFailures(activities) {
   return activities.filter(
-    (a) => a.terminal && ['failed', 'error', 'cancelled', 'canceled'].includes(String(a.status).toLowerCase()),
+    (a) => a.terminal && isUnsuccessfulTerminal(a.status),
   );
 }
 

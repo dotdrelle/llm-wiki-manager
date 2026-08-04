@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { ensurePlanProjection, evaluateRuntimeRun, finishRuntimeRun, materializeTaskInputs, replanRuntimeRun, runRuntimeAgenticWorkflow, runRuntimeParallelPlan, shouldUseParallelScheduler } from './runner.js';
+import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../core/agentEvents.js';
+import { tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
+import { isTerminal } from '../orchestrator/taskStatuses.js';
+import { readyPlanTasks } from '../core/planPatch.js';
+import { skipImpossibleTasks, structuredPlanEvaluation, ensurePlanProjection, evaluateRuntimeRun, finishRuntimeRun, materializeTaskInputs, replanRuntimeRun, runRuntimeAgenticWorkflow, runRuntimeParallelPlan, shouldUseParallelScheduler } from './runner.js';
 
 test('ensurePlanProjection re-projects when the chained plan changes shape (step 2)', () => {
   const session = { agentEvents: [], agentProjection: null };
@@ -821,7 +824,17 @@ test('runRuntimeParallelPlan fails cleanly when scheduler budget is exceeded', a
   assert.equal(session.headlessPlan[0].status, 'cancelled');
 });
 
-test('runRuntimeParallelPlan does not wait for approval behind a failed dependency', async () => {
+/*
+ Ce test gardait l'ancien comportement : la tâche bloquée derrière un échec
+ laissait le run « stalled ». Ne pas attendre d'approbation était déjà acquis,
+ mais s'arrêter là déclenchait une replanification et laissait le run vivant.
+
+ Cas observé le 2026-08-04 (workspace juno) : dix fichiers à ingérer, neuf
+ réussis, un en échec sur du JSON malformé — le run n'est jamais retombé.
+ Une tâche qui ne deviendra jamais exécutable est donc marquée `skipped` avec
+ le nom de la dépendance fautive, et le run se termine sur un résultat partiel.
+*/
+test('runRuntimeParallelPlan skips work stuck behind a failed dependency instead of stalling', async () => {
   const session = {
     workspace: 'demo-workspace',
     mcp: { tools: {} },
@@ -844,11 +857,17 @@ test('runRuntimeParallelPlan does not wait for approval behind a failed dependen
     { runId: 'run-failed-dependency', timeoutMs: 1000, maxTurns: 1 },
   );
 
-  assert.equal(result.ok, false);
-  assert.equal(result.stalled, true);
-  assert.equal(result.reason, 'no_ready_plan_task');
+  // Plus de blocage : le run retombe au lieu de rester actif indéfiniment.
+  assert.notEqual(result.stalled, true);
+  assert.equal(session.headlessPlan[1].status, 'skipped');
+  assert.equal(session.headlessPlan[1].error?.code, 'dependency_failed');
+  // Le motif nomme la dépendance fautive : sans lui, l'utilisateur voit une
+  // tâche disparaître sans savoir pourquoi.
+  assert.match(session.headlessPlan[1].error.message, /\ba\b/);
   assert.equal(session.agentEvents.some((event) => event.type === 'assistant_message'
     && /Approbation requise/.test(event.payload?.content ?? '')), false);
+  assert.equal(session.agentEvents.some((event) => event.type === 'plan_step_updated'
+    && event.payload?.status === 'skipped'), true);
 });
 
 test('runRuntimeParallelPlan retries a retryable task on a fallback agent', async () => {
@@ -1082,4 +1101,132 @@ test('runtime runs are seeded with the chat that preceded them', async () => {
   const clipped = conversationSeed(noisy, 'autre demande');
   assert.equal(clipped.length, 1);
   assert.equal(clipped[0].content.length, 2000);
+});
+
+test('skipImpossibleTasks propage un échec jusqu’au point fixe', () => {
+  /*
+   Marquer les seules tâches directement bloquées laissait un résidu : A en
+   échec rend B impossible, mais C dépend de B et serait resté en attente
+   d'une tâche désormais terminale sans succès. La propagation doit descendre
+   toute la chaîne en une fois.
+  */
+  const session = { workspace: 'demo-workspace', agentEvents: [] };
+  const steps = [
+    { id: 'a', step: 1, status: 'failed' },
+    { id: 'b', step: 2, status: 'pending', dependsOn: ['a'] },
+    { id: 'c', step: 3, status: 'pending', dependsOn: ['b'] },
+    { id: 'independent', step: 4, status: 'pending', dependsOn: [] },
+  ];
+  // Le plan passe par la projection, comme en production : chaque dépêche
+  // remplace session.headlessPlan, et c'est précisément ce qui rendait une
+  // référence capturée orpheline.
+  dispatchAgentEvent(session, createAgentEvent('plan_set', { origin: 'tool', payload: { steps } }));
+
+  const skipped = skipImpossibleTasks(session, 'run-fixpoint');
+
+  assert.equal(skipped, 2);
+  assert.equal(session.headlessPlan[1].status, 'skipped');
+  assert.equal(session.headlessPlan[2].status, 'skipped');
+  // La branche indépendante n'est pas touchée : c'est tout l'objet du
+  // correctif, laisser finir ce qui peut finir.
+  assert.equal(session.headlessPlan[3].status, 'pending');
+  assert.equal(session.agentEvents.filter((event) => event.payload?.status === 'skipped').length, 2);
+});
+
+test('skipImpossibleTasks s’arrête au lieu de tourner sans rien changer', () => {
+  // Sans garde-fou, une incohérence de statut se paierait en boucle infinie,
+  // c'est-à-dire en run figé — exactement ce que l'on répare.
+  const session = { workspace: 'demo-workspace', agentEvents: [] };
+  dispatchAgentEvent(session, createAgentEvent('plan_set', {
+    origin: 'tool',
+    payload: {
+      steps: [
+        { id: 'a', step: 1, status: 'failed' },
+        { id: 'b', step: 2, status: 'skipped', dependsOn: ['a'] },
+      ],
+    },
+  }));
+  const eventsBefore = session.agentEvents.length;
+
+  assert.equal(skipImpossibleTasks(session, 'run-guard', { maxPasses: 3 }), 0);
+  assert.equal(session.agentEvents.length, eventsBefore);
+});
+
+test('structuredPlanEvaluation compte séparément, sans fraction trompeuse', () => {
+  const task = (id, status) => ({
+    id, status, label: `Task ${id}`, requiredCapability: 'knowledge.update', operation: 'ingest',
+  });
+
+  const allDone = structuredPlanEvaluation([task('a', 'done'), task('b', 'succeeded')]);
+  assert.equal(allDone.ok, true);
+
+  const partial = structuredPlanEvaluation([
+    task('a', 'done'), task('b', 'failed'), task('c', 'skipped'),
+  ]);
+  assert.equal(partial.ok, false);
+  // Trois compteurs qui s'additionnent, pas un « 1/3 » dont le dénominateur
+  // mêlerait tâches métier et étapes techniques.
+  assert.match(partial.reason, /1 réussie\(s\)/);
+  assert.match(partial.reason, /1 en échec/);
+  assert.match(partial.reason, /1 ignorée\(s\)/);
+  assert.doesNotMatch(partial.reason, /\d+\/\d+/);
+
+  // Uniquement des ignorées : jamais un succès.
+  const onlySkipped = structuredPlanEvaluation([task('a', 'skipped')]);
+  assert.equal(onlySkipped.ok, false);
+
+  // Succès + ignorée sans échec : toujours pas un succès.
+  const doneAndSkipped = structuredPlanEvaluation([task('a', 'done'), task('b', 'skipped')]);
+  assert.equal(doneAndSkipped.ok, false);
+
+  // Statut actif ou inconnu : incomplet, jamais réussi.
+  for (const status of ['running', 'brouette']) {
+    const pending = structuredPlanEvaluation([task('a', 'done'), task('b', status)]);
+    assert.equal(pending.ok, false, status);
+    assert.match(pending.reason, /non terminée/);
+  }
+});
+
+test('une tâche ignorée est terminale pour la reprise et pour les approbations', () => {
+  /*
+   Vérifications transversales sur le nouveau statut : il ne suffit pas que
+   l'ordonnanceur le comprenne. S'il n'est pas terminal pour la reprise, le
+   redémarrage réattache un run fantôme ; s'il n'est pas terminal pour la
+   politique d'approbation, on demande un accord pour une tâche qui ne sera
+   jamais exécutée.
+  */
+  const skippedTask = {
+    id: 'ingest-b',
+    status: 'skipped',
+    requiresApproval: true,
+    requiredCapability: 'knowledge.update',
+    operation: 'ingest_apply',
+  };
+
+  assert.equal(isTerminal(skippedTask.status), true);
+  assert.deepEqual(tasksAwaitingApproval([skippedTask], { approvals: [] }), []);
+  assert.deepEqual(readyPlanTasks([skippedTask]).map((task) => task.id), []);
+});
+
+test('rejouer les événements redonne exactement les mêmes statuts', () => {
+  // La projection est reconstruite au démarrage à partir du journal : si le
+  // rejeu ne rendait pas le même état, une tâche ignorée pourrait réapparaître
+  // en attente et relancer un travail déjà abandonné.
+  const events = [
+    createAgentEvent('plan_set', { origin: 'tool', payload: { steps: ['A', 'B'] } }),
+    createAgentEvent('plan_step_updated', { origin: 'runtime', payload: { step: 1, status: 'failed' } }),
+    createAgentEvent('plan_step_updated', {
+      origin: 'runtime',
+      payload: { step: 2, status: 'skipped', reason: 'dependency_failed:A' },
+    }),
+  ];
+
+  const first = reduceAgentEvents(events);
+  const replayed = reduceAgentEvents(events);
+
+  assert.deepEqual(
+    replayed.plan.map((step) => step.status),
+    first.plan.map((step) => step.status),
+  );
+  assert.deepEqual(replayed.plan.map((step) => step.status), ['failed', 'skipped']);
 });

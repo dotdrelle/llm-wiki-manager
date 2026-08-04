@@ -2,8 +2,8 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { readyPlanTasks } from '../core/planPatch.js';
 import { applyApprovalCoverage } from './approvalPolicy.js';
 import { isValidatedFragment, validateFragment } from './planValidator.js';
+import { isTerminal } from './taskStatuses.js';
 
-const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled', 'canceled', 'error', 'complete', 'completed', 'success']);
 
 export function integrate(runId, fragment, {
   registry,
@@ -218,11 +218,11 @@ function mergePlan(currentPlan, newTasks, { insertBeforeTasks, insertAfterTasks 
 
 function firstTerminalMutation(current, beforeIds, afterIds) {
   for (const id of beforeIds) {
-    if (isTerminal(current.get(id))) return id;
+    if (taskIsTerminal(current.get(id))) return id;
   }
   for (const id of afterIds) {
     const dependents = [...current.values()].filter((task) => (task.dependsOn ?? []).includes(id));
-    const terminal = dependents.find(isTerminal);
+    const terminal = dependents.find(taskIsTerminal);
     if (terminal) return terminal.id;
   }
   return null;
@@ -251,8 +251,8 @@ function currentRevision(session) {
   return Number.isInteger(session?.planRevision) && session.planRevision >= 0 ? session.planRevision : 0;
 }
 
-function isTerminal(task) {
-  return TERMINAL_STATUSES.has(String(task?.status ?? '').toLowerCase());
+function taskIsTerminal(task) {
+  return isTerminal(task?.status);
 }
 
 function stringifyList(value) {

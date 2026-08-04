@@ -3,6 +3,11 @@ import { createAgentEvent, dispatchAgentEvent } from './agentEvents.js';
 import { activitySnapshot, newNonTerminalActivities } from './activity.js';
 import { formatCompletedActivities, formatPlanStatus } from './plan.js';
 import { formatReadyTaskPrompt, nextReadyPlanTask, readyPlanTasks, sanitizePlanForExecution } from './planPatch.js';
+import { isActive, isPending, normalizeTaskStatus } from '../orchestrator/taskStatuses.js';
+
+// Les deux formes d'attente d'un accord humain. Distinguées de `pending` :
+// approuver ne les rend pas prêtes de la même manière.
+const isPendingApproval = (status) => ['pending_approval', 'waiting_approval'].includes(normalizeTaskStatus(status));
 
 export function abortError(message = 'Agent run cancelled.') {
   const err = new Error(message);
@@ -111,19 +116,40 @@ export async function runAgenticLoop(agent, session, initialInput, {
     // integrated agent_plan fragment. Prose stays prose.
     sanitizeSessionPlan(session, { runId });
 
+    /*
+     Une décision prise arrête la conversation.
+
+     Dès qu'un fragment structuré est intégré pendant ce tour — Donna vient de
+     déléguer —, la boucle conversationnelle n'a plus rien à décider : le plan
+     existe, validé par l'agent qui l'exécutera. Elle rendait pourtant la main
+     au modèle, parce que le seul critère de bascule était « au moins deux
+     tâches PRÊTES » et qu'un plan intégralement en attente d'approbation n'en
+     compte aucune. Le modèle repartait donc, l'évaluateur jugeait le plan
+     incomplet, le replanificateur relançait une délégation : cinq tâches,
+     puis dix, puis quinze, à l'identique.
+
+     L'attente d'approbation et l'exécution appartiennent au planificateur
+     parallèle, qui sait faire les deux. On lui rend la main tout de suite.
+    */
+    if (parallelHandoff && session._structuredPlanIntegrated) {
+      session._structuredPlanIntegrated = false;
+      return { ok: true, handoff: true };
+    }
+
     const newPending = newNonTerminalActivities(snapshot, session);
     if (newPending.length === 0) {
-      // pending_approval is unfinished work too (a request_approval patch op
-      // sets it) — it must not be treated as "nothing left to do" just
-      // because no step is literally 'pending' anymore.
-      const pending = (session.headlessPlan ?? []).filter((step) => step.status === 'pending' || step.status === 'pending_approval');
+      // Toute attente est du travail inachevé — approbation comprise. La liste
+      // énumérait `pending` et `pending_approval` mais oubliait
+      // `waiting_approval`, que produit justement l'intégration d'un fragment
+      // délégué : un plan entier en attente se lisait « plus rien à faire ».
+      const pending = (session.headlessPlan ?? []).filter((step) => isPending(step.status));
       const pendingSteps = readyPlanTasks(session.headlessPlan);
       if (pending.length === 0) {
         onComplete?.();
         return { ok: true };
       }
       if (pendingSteps.length === 0) {
-        const reason = pending.every((step) => step.status === 'pending_approval') ? 'awaiting_approval' : 'no_ready_plan_task';
+        const reason = pending.every((step) => isPendingApproval(step.status)) ? 'awaiting_approval' : 'no_ready_plan_task';
         onPendingSteps?.({ pendingSteps: pending, blocked: true });
         return { ok: false, stalled: true, reason };
       }
@@ -150,7 +176,7 @@ export async function runAgenticLoop(agent, session, initialInput, {
     const summary = formatCompletedActivities(completed);
     onActivitiesCompleted?.({ completed, summary });
     const unfinished = (session.headlessPlan ?? []).some((step) =>
-      ['pending', 'pending_approval', 'running', 'starting', 'queued'].includes(String(step.status ?? '').toLowerCase()));
+      isPending(step.status) || isActive(step.status));
     if (deterministicTerminalSummary && !unfinished) {
       return { ok: true, completed, summary, deterministicSummary: true };
     }

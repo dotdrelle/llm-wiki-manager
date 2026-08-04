@@ -1,8 +1,8 @@
 import { calculateWeightedProgress } from './progressCalculator.js';
 import { deduplicateActivities } from './activityDeduplicator.js';
 import { initialSynthesisFromState } from './runSynthesis.js';
+import { isSuccessful } from '../orchestrator/taskStatuses.js';
 
-const DONE = new Set(['done', 'complete', 'completed', 'success', 'succeeded']);
 const ACTIVE = new Set(['running', 'starting', 'queued']);
 
 export function aggregateActivity(state = {}, events = []) {
@@ -67,7 +67,7 @@ function groupLabel(task) {
 
 function groupLine(group, activities) {
   const total = group.tasks.length;
-  const done = group.tasks.filter((task) => DONE.has(statusOf(task))).length;
+  const done = group.tasks.filter((task) => isSuccessful(statusOf(task))).length;
   const running = group.tasks.filter((task) => ACTIVE.has(statusOf(task)));
   const failed = group.tasks.find((task) => statusOf(task) === 'failed');
   const waitingApproval = group.tasks.some((task) => ['pending_approval', 'waiting_approval'].includes(statusOf(task)));
@@ -76,7 +76,7 @@ function groupLine(group, activities) {
   // the whole group as "validation 0%" while a worker visibly runs at 35%.
   const activePair = group.tasks
     .map((task) => ({ task, activity: activityForTask(task, activities) }))
-    .find(({ activity }) => activity && !activity.terminal && !DONE.has(statusOf(activity)));
+    .find(({ activity }) => activity && !activity.terminal && !isSuccessful(statusOf(activity)));
   const activeTask = activePair?.task ?? running[0] ?? null;
   const activeActivity = activePair?.activity
     ?? running.map((task) => activityForTask(task, activities)).find(Boolean);

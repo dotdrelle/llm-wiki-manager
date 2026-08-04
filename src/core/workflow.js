@@ -1,8 +1,17 @@
+/**
+ * @statuses-vocabulary
+ *
+ * DISPLAY normalization for the execution graph, with `added_during_run`,
+ * which exists only as a rendering hint.
+ *
+ * Declared here rather than in a central exception list so the waiver
+ * travels with the code it excuses (see orchestrator/taskStatuses.test.js).
+ */
 import { aggregateActivity } from '../activity/activityAggregator.js';
 import { calculateWeightedProgress } from '../activity/progressCalculator.js';
 import { aggregateGraph } from '../graph/graphAggregator.js';
+import { isTerminal } from '../orchestrator/taskStatuses.js';
 
-const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled', 'canceled', 'error', 'complete', 'completed', 'success']);
 const RUNNING_STATUSES = new Set(['running', 'starting', 'queued', 'waiting', 'pending_approval']);
 
 // Canonical workflow projection for 0.9.6.
@@ -278,7 +287,7 @@ function isActiveStatus(status) {
 }
 
 function isTerminalStatus(status) {
-  return TERMINAL_STATUSES.has(normalizeStatus(status));
+  return isTerminal(status);
 }
 
 function findCurrentNode(nodes) {

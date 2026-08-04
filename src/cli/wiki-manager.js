@@ -1,3 +1,12 @@
+/**
+ * @statuses-vocabulary
+ *
+ * JOB statuses as reported by headless polling, mapped to a process exit
+ * code — a different contract from the orchestrator's task vocabulary.
+ *
+ * Declared here rather than in a central exception list so the waiver
+ * travels with the code it excuses (see orchestrator/taskStatuses.test.js).
+ */
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -317,17 +326,7 @@ export async function forwardRuntimeApproval(getWorkspaceContext, request = {}) 
   return context.approvalManager?.approve(request) ?? { approved: false };
 }
 
-export function resolvePreparedDelegationApproval({
-  autoApprove = false,
-  approvalManager = null,
-  runId,
-} = {}) {
-  if (autoApprove !== true || typeof approvalManager?.approve !== 'function') {
-    return { approved: false, awaitingApproval: true };
-  }
-  const result = approvalManager.approve({ scope: 'run', runId });
-  return { approved: true, awaitingApproval: false, result };
-}
+export { resolvePreparedDelegationApproval } from '../runtime/delegation.js';
 
 function timestampForFile() {
   return new Date().toISOString().replace(/[:.]/g, '-');
@@ -1168,39 +1167,33 @@ async function runRuntime(argv, agent) {
         : undefined;
       supervisor?.setRunSignal(signal);
       session._onStep = (message) => emitRuntimeLog(session, message);
-      if (body.preparedDelegation?.fragment) {
-        const { integrate } = await import('../orchestrator/planIntegrator.js');
-        const prepared = body.preparedDelegation;
-        const integrated = integrate(runId, prepared.fragment, {
+      session._delegateWithinRun = async (objective) => {
+        const { delegateWithinRun } = await import('../runtime/delegation.js');
+        return delegateWithinRun(session, objective, {
+          prepare: ({ objective: goal }) => prepareDelegation(context, { objective: goal }),
           registry: capabilityRegistryForSession(session),
-          session,
           store,
-          workspace: session.workspace ?? null,
-          enforceApprovalCoverage: true,
+          approvalManager: context.approvalManager,
+          autoApprove: body.autoApprove === true,
         });
-        if (!integrated.ok) {
-          throw new Error(`Delegated plan integration failed: ${(integrated.errors ?? []).map((error) => error.message ?? error.code ?? String(error)).join('; ')}`);
-        }
-        emitRuntimeLog(session, `delegation: ${prepared.fragment.tasks.length} validated task(s) integrated from ${prepared.provider.serverName}.agent_plan (${prepared.capability}/${prepared.operation})`);
+      };
+      if (body.preparedDelegation?.fragment) {
+        const { integratePreparedDelegation } = await import('../runtime/delegation.js');
+        const prepared = body.preparedDelegation;
         // Real approval gate (opt-out): a directly-delegated run only skips the
         // human approval step when the caller explicitly opts in via
         // `autoApprove` (e.g. headless/CI, or a future "trust this run" toggle).
-        // By default the run WAITS: integrate() above created the per-task
-        // approval requests, and the scheduler's approvalCovered() filter blocks
-        // the mutating tasks until a run-scope grant arrives (/approve or
-        // "valide tout"). This keeps a visible pending_approval window instead of
-        // resolving it programmatically ~30ms after launch, which no polled UI
-        // could ever render.
-        const approval = resolvePreparedDelegationApproval({
-          autoApprove: body.autoApprove,
-          approvalManager: context.approvalManager,
+        // By default the run WAITS, so the pending_approval window stays
+        // visible instead of being resolved ~30ms after launch.
+        integratePreparedDelegation({
+          session,
+          store,
           runId,
+          prepared,
+          registry: capabilityRegistryForSession(session),
+          approvalManager: context.approvalManager,
+          autoApprove: body.autoApprove === true,
         });
-        if (approval.approved) {
-          emitRuntimeLog(session, `approval: run ${runId} auto-approved (autoApprove opt-in)`);
-        } else {
-          emitRuntimeLog(session, `approval: run ${runId} awaiting explicit approval before mutations (/approve or « valide tout »)`);
-        }
         body._planReady?.resolve?.({ runId, planRevision: session.agentProjection?.planRevision ?? 0 });
       }
       // Deterministic capability run (/ingest): ask the capable agent for its

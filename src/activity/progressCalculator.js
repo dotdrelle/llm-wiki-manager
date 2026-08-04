@@ -1,5 +1,4 @@
-const TERMINAL_DONE = new Set(['done', 'complete', 'completed', 'success', 'succeeded']);
-const TERMINAL_ANY = new Set([...TERMINAL_DONE, 'failed', 'cancelled', 'canceled', 'error']);
+import { isSuccessful, isTerminal } from '../orchestrator/taskStatuses.js';
 
 export function calculateWeightedProgress(tasks = [], activities = []) {
   const items = Array.isArray(tasks) ? tasks : [];
@@ -10,10 +9,10 @@ export function calculateWeightedProgress(tasks = [], activities = []) {
   for (const task of items) {
     const weight = taskWeight(task);
     const status = normalizeStatus(task.status);
-    if (TERMINAL_DONE.has(status)) {
+    if (isSuccessful(status)) {
       completedWeight += weight;
       done += 1;
-    } else if (!TERMINAL_ANY.has(status)) {
+    } else if (!isTerminal(status)) {
       completedWeight += weight * taskProgressRatio(task, activities);
     }
   }

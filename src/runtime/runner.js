@@ -8,7 +8,8 @@ import { createAttemptManager } from '../orchestrator/attemptManager.js';
 import { createBudgetManager, BudgetExceededError } from '../orchestrator/budgetManager.js';
 import { createDispatcher } from '../orchestrator/dispatcher.js';
 import { approvalRequestForTask } from '../orchestrator/approvalPolicy.js';
-import { PENDING_STATUSES, tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
+import { blockedByFailedDependency, tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
+import { isFailed, isPending, isSkipped, isSuccessful, isTerminal, isUnknownStatus } from '../orchestrator/taskStatuses.js';
 import { assertValidatedFragment } from '../orchestrator/planValidator.js';
 import { createResultAggregator } from '../orchestrator/resultAggregator.js';
 import { describePlanConcurrency, drainActive, startReadyTasks } from '../orchestrator/scheduler.js';
@@ -298,7 +299,7 @@ async function announceRunOutcome(session, { runId, ok, signal = null } = {}) {
   let firstError = null;
   for (const step of plan) {
     const status = String(step?.status ?? '').toLowerCase();
-    if (['failed', 'error', 'stalled'].includes(status)) {
+    if (isFailed(status)) {
       failed += 1;
       firstError ??= String(
         step?.error?.message ?? step?.error?.code ?? step?.error
@@ -306,7 +307,7 @@ async function announceRunOutcome(session, { runId, ok, signal = null } = {}) {
       ).trim() || null;
     } else if (['cancelled', 'canceled'].includes(status)) {
       cancelled += 1;
-    } else if (['done', 'complete', 'completed', 'success', 'succeeded'].includes(status)) {
+    } else if (isSuccessful(status)) {
       completed += 1;
     }
   }
@@ -594,8 +595,25 @@ export async function runRuntimeParallelPlan(agent, session, input, {
           }));
           return { ok: false, stalled: true, reason: 'awaiting_approval', completed: sessionActivities(session), failures };
         }
+        /*
+         Une dépendance en échec n'est pas un blocage : c'est une réponse.
+
+         On arrivait ici avec des tâches en attente dont une dépendance avait
+         échoué, et on déclarait le plan bloqué — ce qui déclenchait une
+         replanification et laissait le run vivant indéfiniment. Ces tâches ne
+         deviendront jamais exécutables : les marquer `skipped` avec le nom de
+         la dépendance fautive fait avancer la boucle, laisse les branches
+         indépendantes finir, et termine le run sur un résultat partiel
+         explicite au lieu d'une panne muette.
+        */
+        const skippedCount = skipImpossibleTasks(session, runId);
+        if (skippedCount > 0) {
+          // La boucle reprend : d'autres tâches peuvent être devenues prêtes,
+          // notamment derrière une barrière de groupe désormais terminale.
+          continue;
+        }
         // Any genuine approval-only block returned above. Remaining tasks are
-        // unschedulable for another reason (most commonly a failed dependency).
+        // unschedulable for another reason.
         const reason = 'no_ready_plan_task';
         emitRuntimeLog(session, `scheduler: stalled (${reason})`);
         return { ok: false, stalled: true, reason, completed: sessionActivities(session), failures };
@@ -651,6 +669,56 @@ export async function runRuntimeParallelPlan(agent, session, input, {
     if (previousPlanUpdate) session._onPlanUpdate = previousPlanUpdate;
     else delete session._onPlanUpdate;
   }
+}
+
+/*
+ Propagation d'un échec jusqu'au point fixe.
+
+ Marquer les seules tâches directement bloquées ne suffisait pas : `A failed`
+ rendait `B` impossible, mais `C` — qui dépend de `B` — restait en attente
+ d'une tâche désormais `skipped`, donc terminale sans succès. Il fallait un
+ second passage pour l'atteindre, un troisième pour la suivante, et la boucle
+ du planificateur ne les aurait découvertes qu'au prix d'un aller-retour par
+ tour. On itère donc ici jusqu'à ce que plus rien ne change.
+
+ Le garde-fou n'est pas décoratif : si une passe ne produit aucune transition
+ effective — une tâche déjà `skipped` que l'on retrouverait bloquée, par
+ exemple —, on s'arrête. Sans lui, une incohérence de statut se paierait en
+ boucle infinie, c'est-à-dire en run figé : exactement ce qu'on répare.
+*/
+export function skipImpossibleTasks(session, runId, { maxPasses = 50 } = {}) {
+  let total = 0;
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    // Le plan est relu à chaque passe, jamais capturé : `dispatchAgentEvent`
+    // reprojette la session et REMPLACE `headlessPlan` par un nouveau tableau.
+    // Une référence prise avant la première dépêche deviendrait orpheline, et
+    // les passes suivantes muteraient un plan que plus personne ne lit.
+    const plan = session.headlessPlan ?? [];
+    const blocked = blockedByFailedDependency(plan);
+    if (blocked.length === 0) break;
+    let changed = 0;
+    for (const { task, dependencies } of blocked) {
+      const skippedId = String(task.id ?? task.taskId ?? task.step ?? '');
+      const step = plan.find((candidate) => String(candidate?.id ?? candidate?.step ?? '') === skippedId);
+      // Déjà terminale : la repasser en `skipped` ne changerait rien et
+      // ferait tourner la boucle pour rien.
+      if (!step || isSkipped(step.status) || isTerminal(step.status)) continue;
+      const because = dependencies.join(', ');
+      step.status = 'skipped';
+      step.error = { code: 'dependency_failed', message: `Dependency failed: ${because}` };
+      changed += 1;
+      dispatchAgentEvent(session, createAgentEvent('plan_step_updated', {
+        origin: 'runtime',
+        runId,
+        taskId: skippedId,
+        payload: { taskId: skippedId, status: 'skipped', reason: `dependency_failed:${because}` },
+      }));
+      emitRuntimeLog(session, `scheduler: skipping ${skippedId} (dependency failed: ${because})`);
+    }
+    total += changed;
+    if (changed === 0) break;
+  }
+  return total;
 }
 
 export function materializeTaskInputs(task, plan = []) {
@@ -712,7 +780,7 @@ function abortCancelledActiveTasks(session, active) {
 }
 
 function pendingSchedulerStatus(status) {
-  return PENDING_STATUSES.has(String(status ?? ''));
+  return isPending(status);
 }
 
 // Scope the evaluator/replanner's view of "completed" activities to the
@@ -1031,31 +1099,77 @@ export async function evaluateRuntimeRun(session, input, {
   }
 }
 
-function structuredPlanEvaluation(plan) {
+export function structuredPlanEvaluation(plan) {
   if (!Array.isArray(plan) || plan.length === 0) return null;
   // Only provider TaskGraph tasks are authoritative. Legacy conversational
   // plans contain prose/tool labels and still use the compatibility evaluator.
   if (!plan.every((step) => step?.requiredCapability && step?.operation)) return null;
-  const statuses = plan.map((step) => String(step?.status ?? '').toLowerCase());
-  const failed = plan.filter((step) => ['failed', 'error', 'cancelled', 'canceled', 'stalled'].includes(String(step?.status ?? '').toLowerCase()));
-  const incomplete = plan.filter((step) => !['done', 'complete', 'completed', 'success', 'succeeded'].includes(String(step?.status ?? '').toLowerCase()));
-  if (failed.length > 0) {
+  /*
+   Compteurs séparés, jamais de fraction.
+
+   « 9/10 » suppose un dénominateur qui veut dire quelque chose. Le plan mêle
+   des tâches métier (un fichier ingéré) et des étapes techniques (une
+   barrière, une agrégation) : la même fraction aurait dit tantôt « 9 fichiers
+   sur 10 », tantôt « 9 étapes sur 10 », sans que le lecteur puisse savoir
+   laquelle. Trois compteurs qui s'additionnent se vérifient d'un coup d'œil et
+   ne mentent sur rien.
+
+   Et l'inverse compte autant : le message ne listait que les échecs, si bien
+   qu'un run où l'essentiel du travail avait abouti se lisait comme une panne.
+  */
+  const done = plan.filter((step) => isSuccessful(step?.status));
+  const failed = plan.filter((step) => isFailed(step?.status) || isCancelledStatus(step?.status));
+  const skipped = plan.filter((step) => isSkipped(step?.status));
+  const unfinished = plan.filter((step) => !isTerminal(step?.status));
+  const label = (step) => step.label ?? step.description ?? step.id ?? step.step;
+  /*
+   Les compteurs sont rendus tels quels, en plus de la phrase.
+
+   Une phrase est faite pour être lue, pas analysée : tout consommateur qui
+   voudrait savoir « combien ont réussi » devrait la découper, donc dépendre de
+   sa formulation — et casser à la première reformulation. Les nombres sont la
+   donnée, la phrase n'en est qu'un rendu.
+  */
+  const counts = {
+    total: plan.length,
+    done: done.length,
+    failed: failed.length,
+    skipped: skipped.length,
+    unfinished: unfinished.length,
+  };
+  const summary = [
+    `${done.length} réussie(s)`,
+    failed.length > 0 ? `${failed.length} en échec` : null,
+    skipped.length > 0 ? `${skipped.length} ignorée(s) faute de dépendance` : null,
+    unfinished.length > 0 ? `${unfinished.length} non terminée(s)` : null,
+  ].filter(Boolean).join(', ');
+
+  if (failed.length > 0 || skipped.length > 0) {
     return {
       ok: false,
-      reason: `${failed.length} tâche(s) du plan ont échoué : ${failed.map((step) => step.label ?? step.description ?? step.id ?? step.step).join(', ')}.`,
+      counts,
+      reason: [
+        `${summary}.`,
+        failed.length > 0 ? `Échecs : ${failed.map(label).join(', ')}.` : null,
+        skipped.length > 0 ? `Ignorées : ${skipped.map(label).join(', ')}.` : null,
+      ].filter(Boolean).join(' '),
       suggestedAction: null,
     };
   }
-  if (incomplete.length > 0) {
+  // Un statut actif ou inconnu ne peut jamais valoir un succès : le plan n'est
+  // pas fini, on le dit, on ne le suppose pas terminé.
+  if (unfinished.length > 0) {
     return {
       ok: false,
-      reason: `${incomplete.length} tâche(s) du plan ne sont pas terminées.`,
+      counts,
+      reason: `${summary}. Le plan n'est pas terminé.`,
       suggestedAction: null,
     };
   }
   return {
-    ok: statuses.length > 0,
-    reason: `${statuses.length} tâche(s) du plan terminées avec succès.`,
+    ok: plan.length > 0,
+    counts,
+    reason: `${plan.length} tâche(s) du plan terminées avec succès.`,
     suggestedAction: null,
   };
 }

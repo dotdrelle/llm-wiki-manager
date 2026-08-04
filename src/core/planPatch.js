@@ -1,4 +1,5 @@
 import { validateContractInDev } from '../contracts/schemas.js';
+import { isUnsuccessfulTerminal } from '../orchestrator/taskStatuses.js';
 
 const PATCH_OPS = new Set([
   'add_task',
@@ -164,7 +165,7 @@ export function sanitizePlanForExecution(plan) {
   const done = new Set(tasks.filter((task) => task.status === 'done').map(taskId));
   const terminalBlocked = new Set(
     tasks
-      .filter((task) => ['failed', 'cancelled', 'canceled'].includes(String(task.status).toLowerCase()))
+      .filter((task) => isUnsuccessfulTerminal(task.status))
       .map(taskId),
   );
   const hasReady = pending.some((task) => task.dependsOn.every((dep) => done.has(String(dep))));

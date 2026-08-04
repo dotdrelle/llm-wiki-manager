@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { conversationEventSequences, createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { openRuntimeStore } from './store.js';
+import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
 
 function runtimeStateDir() {
   return join(mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-')), '.wiki', 'runtime');
@@ -1105,4 +1106,53 @@ test('deleteEventsAfter removes bookkeeping only for runs entirely produced by t
   assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM task_assignments').get().n, 1);
   assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM task_attempts').get().n, 1);
   store.close();
+});
+
+test('un agent restauré par hydrateSession n’est plus routable tant qu’aucun scan n’a réussi', () => {
+  /*
+   Validation à chaud du 2026-08-04 : après redémarrage, `cme-main` restait
+   `available` et `external-source.export` gardait un fournisseur, alors que
+   l'endpoint CME était arrêté. Le test précédent construisait `session.agents`
+   à la main et ratait donc le vrai chemin — celui où l'état vient du journal.
+
+   On hydrate ici depuis de véritables événements persistés, comme au
+   démarrage : hydrate → invalidate → discover, sans scan entre les deux
+   premiers.
+  */
+  const store = openRuntimeStore({ stateDir: mkdtempSync(join(tmpdir(), 'wiki-manager-agent-staleness-')) });
+  const writer = { agentEvents: [], workspace: 'juno' };
+  dispatchAgentEvent(writer, createAgentEvent('agent.registered', {
+    origin: 'runtime',
+    workspace: 'juno',
+    payload: {
+      agent: {
+        agentInstanceId: 'cme-main',
+        serverName: 'cme',
+        health: 'available',
+        description: {
+          agentType: 'cme',
+          contractVersion: '1',
+          agentInstanceId: 'cme-main',
+          capabilities: [{ id: 'external-source.export', version: '1' }],
+        },
+      },
+    },
+  }));
+  for (const event of writer.agentEvents) store.persistEvent(event);
+
+  // Redémarrage : une session neuve, aucun scan encore effectué.
+  const rebooted = { agentEvents: [], workspace: 'juno' };
+  store.hydrateSession(rebooted, { workspace: 'juno' });
+
+  const restored = [...(rebooted.agents ?? []), ...(rebooted.agentRegistrySnapshot ?? [])];
+  assert.ok(restored.length > 0, 'the agent must be restored, only not trusted');
+  for (const agent of restored) {
+    assert.equal(agent.health, 'unknown');
+    assert.equal(agent.stale, true);
+  }
+  // Le seul point qui compte vraiment : plus aucun fournisseur sélectionnable.
+  assert.deepEqual(
+    capabilityRegistryForSession(rebooted).providersFor('external-source.export'),
+    [],
+  );
 });

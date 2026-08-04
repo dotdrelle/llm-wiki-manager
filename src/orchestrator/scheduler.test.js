@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { createBudgetManager } from './budgetManager.js';
-import { readyTasks, tasksAwaitingApproval } from './dependencyResolver.js';
+import { blockedByFailedDependency, readyTasks, tasksAwaitingApproval } from './dependencyResolver.js';
 import { createLockManager } from './lockManager.js';
 import {
   describePlanConcurrency,
@@ -244,3 +244,64 @@ function task(id, overrides = {}) {
     ...overrides,
   };
 }
+
+/*
+ Cas observé le 2026-08-04 (workspace juno) : une ingestion de dix fichiers,
+ neuf réussis, le dixième en échec sur du JSON malformé. La barrière de groupe
+ exigeait que TOUS les membres soient `done` : elle ne s'est jamais ouverte, le
+ planificateur n'a plus trouvé de tâche prête, et le run est resté `running`
+ indéfiniment. Un incident sur un document devenait une panne totale.
+*/
+test('une barrière de groupe s’ouvre sur un groupe terminal, pas parfait', () => {
+  const plan = [
+    { id: 'f1', groupId: 'ingest', status: 'done', requiredCapability: 'knowledge.ingest' },
+    { id: 'f2', groupId: 'ingest', status: 'failed', requiredCapability: 'knowledge.ingest' },
+    { id: 'index', dependsOnGroup: 'ingest', status: 'pending', requiredCapability: 'knowledge.index' },
+  ];
+
+  const ready = readyTasks(plan).map((task) => task.id);
+
+  // La suite du plan peut se faire sur ce qui a réussi.
+  assert.deepEqual(ready, ['index']);
+});
+
+test('une barrière reste fermée tant que le groupe n’est pas terminal', () => {
+  const plan = [
+    { id: 'f1', groupId: 'ingest', status: 'done', requiredCapability: 'knowledge.ingest' },
+    { id: 'f2', groupId: 'ingest', status: 'running', requiredCapability: 'knowledge.ingest' },
+    { id: 'index', dependsOnGroup: 'ingest', status: 'pending', requiredCapability: 'knowledge.index' },
+  ];
+
+  assert.deepEqual(readyTasks(plan).map((task) => task.id), []);
+});
+
+test('une dépendance en échec nomme les tâches à ignorer plutôt que de bloquer', () => {
+  const plan = [
+    { id: 'convert', status: 'failed', requiredCapability: 'documents.convert' },
+    { id: 'ingest', dependsOn: ['convert'], status: 'pending', requiredCapability: 'knowledge.ingest' },
+    { id: 'other', status: 'pending', requiredCapability: 'knowledge.ingest' },
+  ];
+
+  const blocked = blockedByFailedDependency(plan);
+
+  // Seule la tâche qui en dépend est concernée : la branche indépendante
+  // continue, c'est tout l'objet du correctif.
+  assert.equal(blocked.length, 1);
+  assert.equal(blocked[0].task.id, 'ingest');
+  assert.deepEqual(blocked[0].dependencies, ['convert']);
+  assert.deepEqual(readyTasks(plan).map((task) => task.id), ['other']);
+});
+
+test('une tâche ignorée ne rebloque pas ses propres descendants', () => {
+  const plan = [
+    { id: 'convert', status: 'failed', requiredCapability: 'documents.convert' },
+    { id: 'ingest', dependsOn: ['convert'], status: 'skipped', requiredCapability: 'knowledge.ingest' },
+    { id: 'publish', dependsOn: ['ingest'], status: 'pending', requiredCapability: 'knowledge.publish' },
+  ];
+
+  // `skipped` est terminal et non réussi : le descendant est à son tour
+  // signalé, ce qui fait descendre la propagation jusqu'au bout du plan au
+  // lieu de laisser un résidu en attente éternelle.
+  const blocked = blockedByFailedDependency(plan);
+  assert.deepEqual(blocked.map((entry) => entry.task.id), ['publish']);
+});

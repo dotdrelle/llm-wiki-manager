@@ -2,8 +2,8 @@ import { normalizeActivity, parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { emitRuntimeLog, pollActivitiesOnce } from '../runtime/supervisor.js';
+import { isSuccessful, isTerminal } from './taskStatuses.js';
 
-const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled', 'canceled', 'complete', 'completed', 'success', 'succeeded', 'error']);
 
 export function createDispatcher({
   session = null,
@@ -205,7 +205,7 @@ function dispatchTaskActivity(session, task, assignment, jobId, statusTool, runI
 function taskResultFromStatus(task, assignment, jobId, statusPayload, attempt = null) {
   const result = statusPayload?.result ?? {};
   const resultStatus = String(result.status ?? statusPayload?.status ?? '').toLowerCase();
-  const ok = ['succeeded', 'success', 'done', 'complete', 'completed'].includes(resultStatus);
+  const ok = isSuccessful(resultStatus);
   return {
     ok,
     taskId: String(task.id ?? task.step),
@@ -332,9 +332,6 @@ function taskLogPayload(event, task, assignment, {
   };
 }
 
-function isTerminal(status) {
-  return TERMINAL_STATUSES.has(String(status ?? '').toLowerCase());
-}
 
 function delay(ms, signal) {
   return new Promise((resolve, reject) => {

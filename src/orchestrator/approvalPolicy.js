@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { isTerminal } from './taskStatuses.js';
 
 export const APPROVAL_DEFAULT_CLASS = 'default';
 
 const GRANTED_STATUSES = new Set(['approved', 'granted']);
-const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled', 'canceled', 'error', 'complete', 'completed', 'success']);
 
 export function approvalClassForTask(task) {
   return String(task?.approvalClass ?? task?.mutationClass ?? APPROVAL_DEFAULT_CLASS);
@@ -74,7 +74,7 @@ export function applyApprovalCoverage(tasks = [], {
 } = {}) {
   const requested = [];
   for (const task of tasks) {
-    if (task?.requiresApproval !== true || TERMINAL_STATUSES.has(String(task.status ?? '').toLowerCase())) continue;
+    if (task?.requiresApproval !== true || isTerminal(task.status)) continue;
     const covered = approvalCovered(task, approvals, { runId, workspaceId, planRevision });
     if (!covered) {
       task.status = 'waiting_approval';

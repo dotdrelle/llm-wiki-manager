@@ -167,6 +167,11 @@ test('recoveryManager fails unresolvable-capability tasks and interrupts the run
   // A registry that DOES know capabilities, but not the task's one: the plan
   // came from a hallucinated capability (the 0.12.1 incident) — re-attaching
   // it would recreate a forever-waiting queue on every boot.
+  store.hydrateSession(session, { workspace: 'docs' });
+  // Le registre vivant se pose APRÈS l'hydratation : c'est l'ordre réel
+  // (hydrate → invalidate → discover). Le poser avant faisait passer un
+  // instantané frais pour une restauration, et masquait le fait que les agents
+  // persistés doivent être invalidés.
   session.agentRegistrySnapshot = [{
     agentInstanceId: 'production-main',
     serverName: 'production',
@@ -177,7 +182,6 @@ test('recoveryManager fails unresolvable-capability tasks and interrupts the run
       capabilities: [{ id: 'knowledge.pipeline', version: '1' }],
     },
   }];
-  store.hydrateSession(session, { workspace: 'docs' });
   const statusCalls = [];
 
   try {

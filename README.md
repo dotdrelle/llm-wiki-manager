@@ -210,7 +210,7 @@ Slash primitives (shell):
 
 ```text
 /wiki                # inspect the wiki
-/skills              # bundled examples: pipeline, diagnose, status, wiki-sync
+/skills              # bundled examples: pipeline, wiki-sync, wiki-build, deliver, diagnose, status
 /skills run pipeline # run the shipped end-to-end example
 ```
 
@@ -273,7 +273,7 @@ just reopens the web page.)*
 The scaffold ships **ready-to-use examples**. In the shell, explore them:
 
 ```text
-/skills              list the bundled examples (diagnose, pipeline, status, wiki-sync…)
+/skills              list the bundled examples (pipeline, wiki-sync, wiki-build, deliver, diagnose, status…)
 /skills show <name>  see what an example does
 /skills run <name>   run it to see the result
 ```
@@ -329,8 +329,12 @@ At each step, either you **ask for it in plain language**, or you **run the skil
    rendering.
    → *"Export and polish the deliverables"*
 
-> 💡 Even simpler: `/skills run wiki-sync` chains export + ingestion, and
-> `/skills run pipeline` runs the whole chain end to end.
+> 💡 Even simpler: `/skills run wiki-sync` chains export + ingestion,
+> `/skills run wiki-build` regenerates the deliverables, `/skills run deliver`
+> publishes them (add `polish` to refine the rendering), and
+> `/skills run pipeline` runs the whole chain end to end. The three step skills
+> take an optional argument — a source name, or a template with or without its
+> `.md` extension.
 
 ### Entry point B — from a simple PDF (the fastest)
 
@@ -555,6 +559,14 @@ including under `"*"`. Multi-step work belongs to `/agent`.
 
 An `allowActions` key written by an older manager is folded into `allow` on
 read and removed on the next `agents up`.
+
+`chatAccess` is not how workspace context reaches chat. The workspace profile
+(`.wiki/profile.md`) is read from disk and injected into the system prompt of
+both modes, so durable preferences — tone, formatting, notification recipient —
+shape every reply without a tool call and without an allow-list entry. Adding
+`profile_read` here would help no existing install anyway: the scaffold's
+additive merge only fills missing top-level keys and never edits an allow-list
+you already have.
 
 ### Adding a connector from the served chat UI
 
@@ -843,6 +855,38 @@ wiki-workspace wiki my-project ingest
 wiki-workspace wiki my-project build --plan
 wiki-workspace wiki my-project build
 ```
+
+### Resetting a workspace
+
+```bash
+wiki-workspace wiki my-project down            # the services must be stopped
+wiki-workspace wiki my-project reset --dry-run # what would go, what stays
+wiki-workspace wiki my-project reset
+```
+
+`reset` empties a workspace while keeping the **method**: `.wikirc*` (provider,
+model, retrieval, per-profile variants), `templates/` and `build-context/` —
+plus `.env`, which holds the workspace's ports and MCP tokens and without which
+nothing could be restarted.
+Everything the workspace produced, cached or logged goes — `wiki/`,
+`deliverables/`, `raw/untracked/`, `raw/ingested/`, `.wiki/` (vector index,
+cache, logs, tmp, build state, skills, profile, system prompt), `CLAUDE.md`,
+`.gitignore` — then `wiki init` puts the empty structure back.
+
+Three things worth knowing:
+
+- `.git/` is kept when present, so the state from before the reset stays
+  reachable through `wiki restore`. It is the only undo there is.
+- The command refuses to run while workspace services are up: a container
+  writing into the bind mount would recreate part of what was erased and leave
+  files owned by another UID behind.
+- It stops there. Nothing is re-synced and nothing is rebuilt — refilling the
+  workspace is a decision, not a side effect of emptying it.
+
+It is available **only** here: there is no `wiki reset` CLI subcommand, no
+production job type, no MCP tool and no skill for it. Nothing Donna can call
+may erase a workspace. Confirmation is interactive (retype the workspace name)
+unless you pass `--yes`.
 
 ## Services
 

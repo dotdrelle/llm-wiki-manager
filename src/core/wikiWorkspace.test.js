@@ -135,3 +135,37 @@ test('wiki-workspace reaches its usage text with no arguments', async () => {
   assert.match(result.stdout, /^Usage:/);
   assert.equal(result.status, 2);
 });
+
+// `reset` deletes everything workspace_reset_keep rejects, and its very next
+// statement is `run_wiki … init`, which opens with need_workspace_env. If
+// `.env` ever falls out of the keep list, reset erases the workspace and then
+// dies before re-scaffolding it — and recovering with `config` mints new ports
+// and MCP tokens, invalidating every reference to the old ones. Exercise the
+// real function rather than asserting on the source text.
+test('workspace_reset_keep protects the workspace registration and method', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const scriptPath = new URL('../../wiki-workspace', import.meta.url).pathname;
+  const script = await readFile(new URL('../../wiki-workspace', import.meta.url), 'utf8');
+  const start = script.indexOf('workspace_reset_keep() {');
+  assert.notEqual(start, -1, 'workspace_reset_keep must exist');
+  const body = script.slice(start, script.indexOf('\n}', start) + 2);
+
+  const ask = (name) =>
+    spawnSync('bash', ['-c', `${body}\nworkspace_reset_keep "$1"`, '_', name]).status === 0;
+
+  for (const kept of ['.env', '.env.local', '.wikirc.yaml', '.wikirc.yaml.prod', 'templates', 'build-context', '.git']) {
+    assert.equal(ask(kept), true, `${kept} must survive a reset`);
+  }
+  for (const removed of ['wiki', 'deliverables', 'raw', '.wiki', 'CLAUDE.md', '.gitignore', '.environment']) {
+    assert.equal(ask(removed), false, `${removed} must be reset`);
+  }
+});
+
+test('reset re-scaffolds through run_wiki, which requires the workspace env', async () => {
+  const script = await readFile(new URL('../../wiki-workspace', import.meta.url), 'utf8');
+
+  // The coupling the keep list depends on: if either half moves, revisit it.
+  assert.match(script, /run_wiki\(\) \{\n  local workspace="\$1"\n  shift\n  need_workspace_env "\$workspace"/);
+  assert.match(script, /run_wiki "\$workspace" init/);
+  assert.match(script, /workspace_env_file\(\) \{\n  local workspace="\$1"\n  printf '%s\/%s\/\.env\\n'/);
+});

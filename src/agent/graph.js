@@ -18,18 +18,17 @@ import {
   resolveToolCallName,
   truncateToolResult,
 } from '../core/mcp.js';
-import { formatSkillsForAgent, readOptionalText } from '../core/skills.js';
+import { formatSkillsForAgent } from '../core/skills.js';
 import { handleSlashCommand } from '../commands/slash.js';
 import { extractActivity, formatActivitySummary, parseJsonText, sessionActivities } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
-import { updateWorkspaceProfilePreference } from '../core/profile.js';
+import { loadWorkspaceProfile, updateWorkspaceProfilePreference } from '../core/profile.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
 import { fetchRuntimeState, postRuntimeApprove, postRuntimeCancel, postRuntimeControl, postRuntimeDelegate, postRuntimeKill } from '../runtime/client.js';
 
 const MAX_TOOL_ITERATIONS = 80;
 const MAX_SPINNER_ARG_LENGTH = 96;
-const MAX_PROFILE_CHARS = 4000;
 
 // Pseudo-servers handled directly by the tool executor (not present in
 // session.mcp). Listed so unqualified names like "plan_set" resolve the same
@@ -1002,11 +1001,7 @@ function slugStepId(description, index) {
 // relying on the model proactively calling wiki__profile_read — profile
 // content (tutoiement, formatting preferences, etc.) is meant to shape every
 // reply, not just ones where the model happens to think to check it.
-function loadWorkspaceProfile(workspacePath) {
-  if (!workspacePath) return null;
-  const content = readOptionalText(join(workspacePath, '.wiki', 'profile.md'));
-  return content ? content.slice(0, MAX_PROFILE_CHARS) : null;
-}
+// Loader shared with chat mode — see core/profile.js.
 
 export function buildAgentSystemPrompt(state) {
   const workspace = state.session.workspace ?? 'no workspace selected';

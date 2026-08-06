@@ -483,6 +483,18 @@ than in the caller:
   resolved its agents. Callers must not read that as a broken connector —
   `llm-wiki`'s panel keeps the card connected and retries later.
 
+**Workspace profile injection.** `.wiki/profile.md` is loaded from disk into the
+system prompt of **both** shell modes through the single loader
+`loadWorkspaceProfile` (`src/core/profile.js`), used by `buildAgentSystemPrompt`
+and `buildDirectChatSystemPrompt`; `llm-wiki serve` does the same in its own chat
+route. Do not replace this with a `profile_read` entry in `chatAccess`: the
+additive scaffold merge only fills **missing top-level keys**, so a new tool
+inside an existing allow-list never reaches an install that already has an
+`mcp.endpoints.json` — and durable preferences must shape every reply, not only
+the turns where the model thinks to fetch them. The loader returns `null` for a
+missing, empty or unreadable profile and never throws; a missing profile must
+degrade the reply, not break it. `profile_update` stays out of chat: it mutates.
+
 After any write, `refreshAllMcpContexts()` (wiki-manager.js) replays
 `refreshMcpRuntimeStatus` + `discoverAgentsOnce` on every live context.
 `buildMcpStatus` re-reads the file each time, so chat tools, agent tools and
@@ -647,6 +659,38 @@ remain the source of truth. Queue state is workspace-scoped.
 - MCP tokens must not be logged, printed, or serialized in session dumps.
 - Clipboard handling should use `execFileSync` with argv arrays.
 
+## Workspace reset
+
+`wiki-workspace wiki <workspace> reset` (`reset_workspace` in the `wiki-workspace`
+script) empties a workspace and keeps the method: `.wikirc*`, `templates/`,
+`build-context/`, `.git/` when present — and `.env`. The keep list lives in one
+place, `workspace_reset_keep`; everything else under the workspace root is
+removed, then `wiki init` restores the empty structure (it never overwrites an
+existing file, which is what makes the kept entries survive).
+
+`.env` is on that list for a stronger reason than method. It carries the
+workspace's registration — ports, MCP auth tokens, `WIKI_WORKSPACE_PATH` — and
+`run_wiki` opens with `need_workspace_env`. Dropping it from the keep list makes
+the `wiki init` line of `reset_workspace` `die` under `set -euo pipefail`, right
+after the deletion loop: the workspace ends up erased *and* never re-scaffolded.
+Recovering with `wiki-workspace config` then mints new ports and tokens,
+invalidating whatever referenced the old ones (`mcp.endpoints.json` first).
+
+Invariants, in order of importance:
+
+- **It exists only in this CLI.** No `wiki reset` subcommand in llm-wiki, no
+  `reset` job type in the production agent's step allowlist, no MCP tool, no
+  scaffold skill. Nothing Donna can call may erase a workspace, and adding an
+  agent-reachable path to it would undo that.
+- **It never chains.** No sync, no build, no ingest afterwards. Erasing and
+  refilling are two decisions, and only the first one was asked for.
+- **It refuses while services run** (`ps --status running --services`): a
+  container writing into the bind mount recreates part of what was erased and
+  leaves files owned by another UID.
+- The scaffold's `raw/untracked/demo-project-brief.md` is deleted after the
+  re-init. Reappearing in an existing project it would not read as a sample but
+  as a pending source, and the next ingest would file it into the wiki.
+
 ## Commands And Validation
 
 Common commands:
@@ -655,6 +699,7 @@ Common commands:
 wiki-workspace config <workspace> [path]
 wiki-workspace up <workspace>
 wiki-workspace wiki <workspace> doctor
+wiki-workspace wiki <workspace> reset [--dry-run] [--yes]
 wiki-workspace agents status
 wiki-workspace --cacert /absolute/path/to/ca.pem up <workspace>
 wiki-workspace --cacert /absolute/path/to/ca.pem agents up

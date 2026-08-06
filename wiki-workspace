@@ -117,11 +117,33 @@ Commands:
   wiki <workspace> down             Stop all services for this workspace
   wiki <workspace> logs [args...]   Follow workspace service logs (tail 100 by default)
   wiki <workspace> serve [--open]   Start the web UI in foreground (--open launches browser)
+  wiki <workspace> reset [--dry-run] [--yes]
+                                    Empty the workspace, keeping .wikirc*, templates/ and
+                                    build-context/. Requires the services to be stopped.
   wiki <workspace> doctor           Run wiki doctor
   wiki <workspace> ingest           Run wiki ingest
   wiki <workspace> build            Run wiki build
   wiki <workspace> export           Run wiki export
-  wiki <workspace> run <args...>    Run arbitrary wiki CLI args
+  wiki <workspace> run <args...>    Run arbitrary wiki CLI args (see below)
+
+wiki CLI commands reachable through `wiki <workspace> run`:
+  history [--file <path>] [--limit <n>] [--json]
+                                    List workspace history commits (Git, workspace-local)
+  restore --run <sha> [--dry-run]   Revert every file changed by a run commit
+  restore --file <path> --to <sha> [--dry-run]
+                                    Restore one versioned file to a revision
+  query "<question>"                Answer from the wiki and its cited source notes
+  index                             Create or update the local vector index
+  refresh                           Regenerate only the stale deliverables
+  lint                              Static checks: dead links, orphans, stale deliverables
+  add-skill <source>                Install a workspace method (directory, .zip, HTTPS .zip)
+  config                            Show the effective .wikirc.yaml
+  group-concepts                    Regroup wiki concepts
+  doctor, ingest, build, export     Also available directly: wiki <workspace> <command>
+
+  History is versioned for wiki/, templates/, build-context/, deliverables/,
+  raw/ingested/ and .wiki/build-state.json only. A restore adds a commit rather
+  than rewriting history, and --dry-run previews it without writing.
 
 Configuration:
   workspaces/<workspace>/.env
@@ -1177,6 +1199,117 @@ run_wiki() {
   compose_for_workspace "$workspace" run --rm wiki "$@"
 }
 
+# What `wiki <workspace> reset` keeps: the METHOD. `.wikirc*` (provider, model,
+# retrieval, per-profile variants), `templates/` and `build-context/` describe
+# how this workspace produces; everything else is what it has produced, cached
+# or logged. `.git/` is kept too — the history from before the reset stays
+# reachable through `wiki restore`, which is the only cheap undo there is.
+#
+# `.env` is kept for a harder reason than method: it IS the workspace's
+# registration — ports, MCP auth tokens, WIKI_WORKSPACE_PATH. Deleting it makes
+# the very next line of reset_workspace (`run_wiki … init`, which starts with
+# need_workspace_env) die under `set -euo pipefail`, leaving the workspace
+# emptied and never re-scaffolded. And recovering it with `config` mints new
+# ports and tokens, silently invalidating every reference to the old ones
+# (mcp.endpoints.json among them). Nothing here may drop it.
+workspace_reset_keep() {
+  case "$1" in
+    .|..|.git) return 0 ;;
+    .env|.env.*) return 0 ;;
+    .wikirc*) return 0 ;;
+    templates|build-context) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Destructive, and deliberately reachable ONLY from this CLI: no `wiki reset`
+# subcommand, no production job type, no MCP tool, no skill. Nothing Donna can
+# call may erase a workspace.
+#
+# It also stops after re-scaffolding. Chaining a sync or a build here would be
+# convenient exactly once and wrong every other time: refilling the workspace
+# is the user's decision, not a side effect of emptying it.
+reset_workspace() {
+  local workspace="$1"
+  shift
+  local assume_yes=0 dry_run=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes|-y) assume_yes=1 ;;
+      --dry-run) dry_run=1 ;;
+      *) die "reset accepts only --yes and --dry-run (got: $1)" ;;
+    esac
+    shift
+  done
+
+  need_workspace_env "$workspace"
+  local ws_path
+  ws_path="$(normalize_path "$(workspace_value "$workspace" WIKI_WORKSPACE_PATH)")"
+  [[ -d "$ws_path" ]] || die "workspace directory not found: $ws_path"
+
+  # A container still writing into the bind mount would recreate part of what
+  # we just erased, and leave files owned by another UID behind.
+  local running_services=()
+  read_lines_into_array running_services compose_for_workspace "$workspace" ps --status running --services
+  if [[ ${#running_services[@]} -gt 0 ]]; then
+    die "workspace services are still running (${running_services[*]}) — stop them first: wiki-workspace wiki $workspace down"
+  fi
+
+  local entry name
+  local removed=() kept=()
+  for entry in "$ws_path"/* "$ws_path"/.*; do
+    [[ -e "$entry" ]] || continue
+    name="$(basename "$entry")"
+    if workspace_reset_keep "$name"; then
+      [[ "$name" == "." || "$name" == ".." ]] || kept+=("$name")
+      continue
+    fi
+    removed+=("$name")
+  done
+
+  printf 'Workspace: %s (%s)\n' "$workspace" "$ws_path"
+  printf 'Keep:   %s\n' "${kept[*]:-(nothing)}"
+  printf 'Reset:  %s\n' "${removed[*]:-(nothing)}"
+
+  if [[ ${#removed[@]} -eq 0 ]]; then
+    printf 'Nothing to reset.\n'
+    return
+  fi
+
+  if [[ $dry_run -eq 1 ]]; then
+    printf 'Dry run: nothing was deleted. Re-run without --dry-run to apply.\n'
+    return
+  fi
+
+  if [[ $assume_yes -eq 0 ]]; then
+    [[ -t 0 ]] || die "reset needs a terminal to confirm — pass --yes for a non-interactive run"
+    printf 'This deletes the wiki, the deliverables and the sources. Type the workspace name to confirm (%s): ' "$workspace"
+    local answer=''
+    IFS= read -r answer || true
+    [[ "$answer" == "$workspace" ]] || die "reset aborted"
+  fi
+
+  for name in "${removed[@]}"; do
+    rm -rf -- "${ws_path:?}/$name" \
+      || die "could not remove $ws_path/$name — check file ownership (containers run as the node user), then retry"
+  done
+
+  # Puts the structure back: empty raw/wiki/deliverables trees, .wiki/skills,
+  # system-prompt, an empty profile, CLAUDE.md, .gitignore, and a fresh history
+  # baseline. `wiki init` never overwrites an existing file, so the kept
+  # `.wikirc*`, templates/ and build-context/ come through untouched.
+  run_wiki "$workspace" init
+
+  # The scaffold ships a demo brief in raw/untracked/. Reappearing here it would
+  # not read as a sample but as a pending source, and the next ingest would file
+  # it into the wiki as if the user had provided it.
+  rm -f -- "$ws_path/raw/untracked/demo-project-brief.md"
+
+  printf 'Reset done: %s\n' "$workspace"
+  printf 'Kept: %s\n' "${kept[*]:-(nothing)}"
+  printf 'Nothing was rebuilt. Bring the sources back when you decide to (e.g. /wiki-sync), then build.\n'
+}
+
 open_app_mode() {
   local url="$1"
   case "$(uname -s)" in
@@ -1486,6 +1619,9 @@ main() {
       fi
 
       compose_for_workspace "$workspace" up serve
+      ;;
+    reset)
+      reset_workspace "$workspace" "$@"
       ;;
     doctor|ingest|build|export)
       run_wiki "$workspace" "$command" "$@"

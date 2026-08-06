@@ -1,5 +1,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { readOptionalText } from './skills.js';
+
+export const MAX_PROFILE_CHARS = 4000;
 
 const DEFAULT_PROFILE = `# Workspace Profile
 
@@ -20,6 +23,22 @@ Keep this file concise. Do not store secrets, tokens, passwords, API keys, or te
 
 function profilePathForWorkspace(workspacePath) {
   return join(workspacePath, '.wiki', 'profile.md');
+}
+
+// Durable per-workspace user preferences, injected into the system prompt of
+// BOTH shell modes. Agent mode used to own this loader; chat mode had nothing,
+// so the same workspace answered with a different tone depending on the mode,
+// and a skill running in chat could not know who it was talking to. `serve`
+// already injects the profile the same way (llm-wiki chatRoutes), so this keeps
+// the three surfaces aligned. Injection is deliberately preferred over exposing
+// `profile_read` through `chatAccess`: no allow-list entry to migrate on
+// existing installs, and no tool round-trip for a file we can always read.
+// Returns null when there is no workspace or no readable profile — never throws,
+// since a missing profile must not degrade a reply.
+export function loadWorkspaceProfile(workspacePath) {
+  if (!workspacePath) return null;
+  const content = readOptionalText(profilePathForWorkspace(workspacePath));
+  return content ? content.slice(0, MAX_PROFILE_CHARS) : null;
 }
 
 function formatPreference(preference) {

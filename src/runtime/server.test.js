@@ -1816,8 +1816,9 @@ test('redo truncation drops the aftermath of one question and refuses during a r
     const ok = await post({ index: 0 });
     assert.equal(ok.status, 200);
     assert.deepEqual(await ok.json(), { truncated: true, index: 0, removedEvents: 1 });
-    // Keeps the question (sequence 1) and drops everything recorded after it.
-    assert.deepEqual(deleted, { sequence: 1, workspace: 'demo' });
+    // Drops the question (sequence 1) along with everything after it: the
+    // caller resubmits it, so keeping it here showed the same message twice.
+    assert.deepEqual(deleted, { sequence: 0, workspace: 'demo' });
     // getState prefers the in-memory projection, so the deleted answers would
     // survive in RAM without this rehydration.
     assert.equal(hydrated, true);

@@ -469,10 +469,16 @@ export function startRuntimeServer({
         });
         return;
       }
-      // Redo: keep the conversation entry at `index` (the question) and drop
-      // everything the runtime recorded after it. The conversation is derived
-      // from the event log, so a UI-side deletion alone would be undone by the
-      // next /state merge — the truncation has to happen here.
+      // Redo: drop the conversation entry at `index` (the question) AND
+      // everything recorded after it. The conversation is derived from the
+      // event log, so a UI-side deletion alone would be undone by the next
+      // /state merge — the truncation has to happen here.
+      //
+      // The question goes too because every caller of this route immediately
+      // resubmits it. Keeping it server-side meant the resubmission appended a
+      // second copy, and the next /state merge brought the first one back into
+      // a UI that had just removed it — the question ended up displayed twice
+      // in both the served chat and the shell.
       if (request.method === 'POST' && url.pathname === '/conversation/truncate') {
         const { body, workspace, context } = await resolveBodyContext(request, url);
         if (context?.running) {
@@ -500,7 +506,11 @@ export function startRuntimeServer({
           sendJson(response, 400, { truncated: false, reason: 'index_out_of_range' });
           return;
         }
-        const removedEvents = store.deleteEventsAfter(boundary, { workspace: resolvedWorkspace });
+        // `boundary` is the sequence of the question's own event; deleting
+        // strictly after `boundary - 1` removes it along with its answers.
+        // Sequences are integers and strictly increasing, so this cannot catch
+        // an unrelated event between the two values.
+        const removedEvents = store.deleteEventsAfter(boundary - 1, { workspace: resolvedWorkspace });
         // getState prefers the in-memory projection over the event log, so the
         // deleted answers would survive in RAM without this rehydration.
         if (context?.session) {

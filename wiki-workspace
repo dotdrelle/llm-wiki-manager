@@ -70,13 +70,19 @@ parse_global_options() {
     export REQUESTS_CA_BUNDLE="$CACERT_PATH"
     export CURL_CA_BUNDLE="$CACERT_PATH"
   fi
-  set -- "${parsed[@]}"
+  # `${arr[@]}` on an EMPTY array is an unbound-variable error under `set -u`
+  # in bash <= 4.3 — which includes the /bin/bash 3.2 macOS still ships. Every
+  # optional array in this script therefore goes through the `${arr[@]+…}`
+  # guard (see compose_env_args, override_args, only_services…); these two were
+  # missed, so any invocation without a global option died on this line before
+  # reaching its subcommand.
+  set -- ${parsed[@]+"${parsed[@]}"}
   PARSED_ARGS=("$@")
 }
 
 PARSED_ARGS=()
 parse_global_options "$@"
-set -- "${PARSED_ARGS[@]}"
+set -- ${PARSED_ARGS[@]+"${PARSED_ARGS[@]}"}
 
 usage() {
   cat <<'EOF'
@@ -338,7 +344,7 @@ agents_compose() {
     logs)
       local log_args=()
       read_lines_into_array log_args logs_args "$@"
-      _agents_dc logs "${log_args[@]}"
+      _agents_dc logs ${log_args[@]+"${log_args[@]}"}
       ;;
     pull)
       [[ $# -eq 0 ]] || die "agents pull does not take arguments"
@@ -1452,7 +1458,7 @@ main() {
     logs)
       local log_args=()
       read_lines_into_array log_args logs_args "$@"
-      compose_for_workspace "$workspace" logs "${log_args[@]}" serve mcp-http production-mcp
+      compose_for_workspace "$workspace" logs ${log_args[@]+"${log_args[@]}"} serve mcp-http production-mcp
       ;;
     serve)
       local open_browser=0

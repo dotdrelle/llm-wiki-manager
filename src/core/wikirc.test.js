@@ -163,7 +163,7 @@ test('writeVectorConfig removes commented vector placeholders it replaces', () =
   assert.equal(parsed.retrieval.vector.apiKey, 'vector-key');
 });
 
-test('finalizeCreatedWorkspace copies generated wiki token into default wikirc', () => {
+test('finalizeCreatedWorkspace copies generated wiki token into default wikirc', async () => {
   const root = mkdtempSync(join(tmpdir(), 'wikirc-workspace-token-'));
   const registryRoot = join(root, 'registry');
   const registryPath = join(registryRoot, 'demo');
@@ -190,7 +190,7 @@ test('finalizeCreatedWorkspace copies generated wiki token into default wikirc',
   const previousDir = process.env.WIKI_WORKSPACES_DIR;
   process.env.WIKI_WORKSPACES_DIR = registryRoot;
   try {
-    const workspace = finalizeCreatedWorkspace('demo');
+    const { workspace } = await finalizeCreatedWorkspace('demo');
     const parsed = YAML.parse(readFileSync(join(workspacePath, '.wikirc.yaml'), 'utf8'));
 
     assert.equal(workspace.name, 'demo');
@@ -248,4 +248,123 @@ test('containerReachableUrl only touches loopback hosts', () => {
   assert.equal(containerReachableUrl('https://api.openai.com/v1').rewritten, false);
   assert.equal(containerReachableUrl('http://gateway:4000/v1').rewritten, false);
   assert.equal(containerReachableUrl(undefined).rewritten, false);
+});
+
+// /new used to leave the operator re-entering the same endpoint, key and model
+// they had just proven working in the workspace next door.
+test('finalizeCreatedWorkspace seeds a new workspace from the one in use', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wikirc-inherit-'));
+  const registryRoot = join(root, 'registry');
+  const agentsData = join(root, '.agents-data');
+  const token = 'b'.repeat(64);
+
+  const makeWorkspace = (name, wikirc) => {
+    const registryPath = join(registryRoot, name);
+    const workspacePath = join(root, name);
+    mkdirSync(registryPath, { recursive: true });
+    mkdirSync(workspacePath, { recursive: true });
+    writeFileSync(join(registryPath, '.env'), [
+      `WORKSPACE_NAME=${name}`,
+      `WIKI_WORKSPACE_PATH=${workspacePath}`,
+      `WIKI_MCP_AUTH_TOKEN=${token}`,
+      '',
+    ].join('\n'), 'utf8');
+    writeFileSync(join(workspacePath, '.wikirc.yaml'), wikirc, 'utf8');
+    return workspacePath;
+  };
+
+  makeWorkspace('acpi', [
+    'language: en',
+    'llm:',
+    '  provider: ai-gateway',
+    '  engine: generic',
+    '  baseUrl: https://itsdonna.events/v1',
+    '  model: deepseek-v4-pro',
+    '  apiKey: sk-real-gateway-key',
+    'mcp:',
+    '  accessKey: ' + 'c'.repeat(64),
+    '',
+  ].join('\n'));
+
+  // Exactly what the scaffold writes: placeholders everywhere.
+  const targetPath = makeWorkspace('nouveau', [
+    'language: en',
+    'llm:',
+    '  provider: openai-compatible',
+    '  engine: generic',
+    '  baseUrl: https://mon-provider.example.com/v1',
+    '  model: YOUR_MODEL_NAME',
+    '  apiKey: YOUR_LLM_API_KEY',
+    'mcp:',
+    '  # accessKey: your-secret-key',
+    '',
+  ].join('\n'));
+
+  mkdirSync(join(agentsData, 'cme', 'acpi', 'cme'), { recursive: true });
+  writeFileSync(join(agentsData, 'cme', 'acpi', 'cme', 'app_data.json'), '{"pat":"x"}', 'utf8');
+
+  const previousDir = process.env.WIKI_WORKSPACES_DIR;
+  const previousData = process.env.AGENTS_DATA_DIR;
+  process.env.WIKI_WORKSPACES_DIR = registryRoot;
+  process.env.AGENTS_DATA_DIR = agentsData;
+  try {
+    const { inherited } = await finalizeCreatedWorkspace('nouveau', { inheritFrom: 'acpi' });
+    const parsed = YAML.parse(readFileSync(join(targetPath, '.wikirc.yaml'), 'utf8'));
+
+    assert.equal(parsed.llm.baseUrl, 'https://itsdonna.events/v1');
+    assert.equal(parsed.llm.model, 'deepseek-v4-pro');
+    assert.equal(parsed.llm.apiKey, 'sk-real-gateway-key');
+    assert.equal(parsed.llm.provider, 'ai-gateway');
+    // The workspace keeps ITS own MCP credential, written just before.
+    assert.equal(parsed.mcp.accessKey, token);
+    assert.ok(inherited.includes('llm.baseUrl'));
+    assert.ok(inherited.includes('cme.app_data.json'));
+    assert.equal(
+      readFileSync(join(agentsData, 'cme', 'nouveau', 'cme', 'app_data.json'), 'utf8'),
+      '{"pat":"x"}',
+    );
+  } finally {
+    if (previousDir === undefined) delete process.env.WIKI_WORKSPACES_DIR;
+    else process.env.WIKI_WORKSPACES_DIR = previousDir;
+    if (previousData === undefined) delete process.env.AGENTS_DATA_DIR;
+    else process.env.AGENTS_DATA_DIR = previousData;
+  }
+});
+
+test('finalizeCreatedWorkspace without a source keeps scaffold defaults', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wikirc-noinherit-'));
+  const registryRoot = join(root, 'registry');
+  const registryPath = join(registryRoot, 'solo');
+  const workspacePath = join(root, 'solo');
+  const token = 'd'.repeat(64);
+  mkdirSync(registryPath, { recursive: true });
+  mkdirSync(workspacePath, { recursive: true });
+  writeFileSync(join(registryPath, '.env'), [
+    'WORKSPACE_NAME=solo',
+    `WIKI_WORKSPACE_PATH=${workspacePath}`,
+    `WIKI_MCP_AUTH_TOKEN=${token}`,
+    '',
+  ].join('\n'), 'utf8');
+  writeFileSync(join(workspacePath, '.wikirc.yaml'), [
+    'language: en',
+    'llm:',
+    '  baseUrl: https://mon-provider.example.com/v1',
+    'mcp:',
+    '  # accessKey: your-secret-key',
+    '',
+  ].join('\n'), 'utf8');
+
+  const previousDir = process.env.WIKI_WORKSPACES_DIR;
+  process.env.WIKI_WORKSPACES_DIR = registryRoot;
+  try {
+    const { inherited } = await finalizeCreatedWorkspace('solo');
+    const parsed = YAML.parse(readFileSync(join(workspacePath, '.wikirc.yaml'), 'utf8'));
+
+    assert.deepEqual(inherited, []);
+    assert.equal(parsed.llm.baseUrl, 'https://mon-provider.example.com/v1');
+    assert.equal(parsed.mcp.accessKey, token);
+  } finally {
+    if (previousDir === undefined) delete process.env.WIKI_WORKSPACES_DIR;
+    else process.env.WIKI_WORKSPACES_DIR = previousDir;
+  }
 });

@@ -12,6 +12,13 @@
 //
 // `executeCall` may throw to abort the whole loop (e.g. an AbortError on
 // cancel); anything it returns is treated as the tool result for that call.
+/**
+ * @param onTextDelta appelé au fil de la génération. Une itération qui finit
+ *   par des appels d'outils ne produit pas de réponse lisible : ses fragments
+ *   sont donc rejetés a posteriori via `onTextReset`, pour ne pas afficher un
+ *   raisonnement intermédiaire que le tour suivant remplacera.
+ * @param onTextReset appelé quand les fragments déjà émis sont à jeter.
+ */
 export async function runBoundedToolLoop({
   llm,
   system,
@@ -21,19 +28,37 @@ export async function runBoundedToolLoop({
   maxIterations = 4,
   signal,
   onStep,
+  onTextDelta,
+  onTextReset,
 } = {}) {
   const cap = Math.max(1, Math.floor(maxIterations) || 1);
   const convo = [...(messages ?? [])];
+  // `streamWithTools` accumule les appels d'outils exactement comme
+  // `completeWithTools` et renvoie la même forme : le seul écart est qu'il
+  // livre le texte au fil de l'eau. Sans lui, la réponse finale n'apparaissait
+  // qu'une fois complète — le tour paraissait figé pendant toute sa durée.
+  const canStream = typeof onTextDelta === 'function' && typeof llm?.streamWithTools === 'function';
   for (let i = 0; i < cap; i += 1) {
     onStep?.(i + 1, cap);
-    const result = await llm.completeWithTools({
-      system,
-      tools,
-      messages: convo,
-      toolChoice: 'auto',
-      signal,
-    });
+    let streamedText = false;
+    const result = canStream
+      ? await llm.streamWithTools({
+          system,
+          tools,
+          messages: convo,
+          toolChoice: 'auto',
+          onTextDelta: (delta) => { streamedText = true; onTextDelta(delta); },
+          signal,
+        })
+      : await llm.completeWithTools({
+          system,
+          tools,
+          messages: convo,
+          toolChoice: 'auto',
+          signal,
+        });
     const calls = result?.tool_calls ?? [];
+    if (calls.length > 0 && streamedText) onTextReset?.();
     if (calls.length === 0) {
       return {
         content: result?.content ?? result?.message?.content ?? '',

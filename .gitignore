@@ -5,6 +5,11 @@ node_modules/
 .env
 .env.*
 !.env.example
+
+# Workspace LLM configuration: carries llm.apiKey and mcp.accessKey. Covered
+# by the *.yaml rule below too, but stated explicitly — that rule is about
+# operator files, not about secrets.
+.wikirc*
 data/
 .agents-data/
 .wiki/compose/
@@ -41,3 +46,6 @@ docker-compose*.local.yml
 # Build provenance written by scripts/check-versions.js (prepack) — must be
 # tracked and packed so a global install can display <version>+<sha>.
 !src/core/buildInfo.json
+
+# Artefacts FUSE : fichier remplacé alors qu'un processus le tenait ouvert.
+.fuse_hidden*

@@ -5,7 +5,8 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import YAML from 'yaml';
 import { checkMissingDockerImages } from './dockerImages.js';
-import { patchWikircProfile } from './wikirc.js';
+import { loadWikircProfile, patchWikircProfile } from './wikirc.js';
+import { buildInheritedWikircPatch, copyCmeCredentials } from './workspaceInherit.js';
 import { resolveAgentsComposeContext } from './agentsCompose.js';
 import { managerEnvFile, managerMcpEndpointsFile, resolveAgentsDataDir } from './env.js';
 import { createWorkspace, findWorkspace, isValidWorkspaceName, listWorkspaces, managerRoot, workspacesDir } from './workspaces.js';
@@ -208,20 +209,62 @@ export async function refreshRunningContainers(options = {}) {
   return { skipped: false, refreshed, errors };
 }
 
-export async function createNewWorkspace(name, targetPath) {
+export async function createNewWorkspace(name, targetPath, options = {}) {
   try {
     const output = await createWorkspace(name, targetPath, { timeout: 600_000 });
-    const workspace = finalizeCreatedWorkspace(name);
-    return { output, workspace };
+    const { workspace, inherited } = await finalizeCreatedWorkspace(name, options);
+    return { output, workspace, inherited };
   } catch (err) {
     throw wrapDockerError(err);
   }
 }
 
-export function finalizeCreatedWorkspace(name) {
+/**
+ * @param options.inheritFrom name of the workspace to copy LLM config and CME
+ *   credentials from — normally the session's current workspace. Omitted, or
+ *   unknown, means "scaffold defaults only", the previous behaviour.
+ */
+export async function finalizeCreatedWorkspace(name, options = {}) {
   const workspace = findWorkspace(name);
-  if (workspace) initializeWorkspaceWikirc(workspace);
-  return workspace;
+  if (!workspace) return { workspace: null, inherited: [] };
+  // Order matters: the access key is this workspace's own credential and must
+  // land before anything else touches the file.
+  initializeWorkspaceWikirc(workspace);
+  const inherited = await inheritWorkspaceSetup(workspace, options.inheritFrom ?? null);
+  return { workspace, inherited };
+}
+
+/**
+ * Carry an existing workspace's proven setup over to a new one. Best effort by
+ * design: a workspace that exists and works must never fail to be created
+ * because the workspace next door has an unreadable config.
+ */
+export async function inheritWorkspaceSetup(workspace, sourceName) {
+  if (!workspace?.workspacePath || !sourceName || sourceName === workspace.name) return [];
+  const source = findWorkspace(sourceName);
+  if (!source?.workspacePath) return [];
+
+  const inherited = [];
+  try {
+    const { config: sourceConfig } = loadWikircProfile(source.workspacePath, 'default');
+    const { config: targetConfig } = loadWikircProfile(workspace.workspacePath, 'default');
+    const { patch, inherited: keys } = buildInheritedWikircPatch(sourceConfig, targetConfig);
+    if (keys.length > 0) {
+      patchWikircProfile(workspace.workspacePath, 'default', patch);
+      inherited.push(...keys);
+    }
+  } catch {
+    // Unreadable or absent profile on either side — nothing to inherit.
+  }
+
+  try {
+    const copied = await copyCmeCredentials(resolveAgentsDataDir(), source.name, workspace.name);
+    if (copied) inherited.push('cme.app_data.json');
+  } catch {
+    // Credentials are a convenience, not a prerequisite.
+  }
+
+  return inherited;
 }
 
 export function initializeWorkspaceWikirc(workspace) {

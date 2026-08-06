@@ -76,6 +76,34 @@ test('interactive turns publish a fallback assistant message exactly once', () =
   assert.equal(published[0].payload.content, 'Réponse concise.');
 });
 
+test('a turn that produces nothing still ends with an assistant message', () => {
+  // C'est la condition de fin que serve attend : la bulle « Request received ·
+  // Donna is preparing… » n'est retirée qu'à l'arrivée d'un message assistant
+  // non vide. Sans message, le point d'attente tournait indéfiniment, sans
+  // erreur nulle part et sans autre issue qu'un rechargement de page.
+  const published = [];
+  const session = { agentEvents: [], _onAgentEvent: (event) => published.push(event) };
+
+  assert.equal(ensureInteractiveAssistantMessage(session, '', { turnId: 'turn-1', workspace: 'demo' }), true);
+
+  assert.equal(published.length, 1);
+  assert.equal(published[0].type, 'assistant_message');
+  assert.match(published[0].payload.content, /No answer was produced/);
+  // Le message doit dire quoi faire, pas seulement constater.
+  assert.match(published[0].payload.content, /\/agent/);
+});
+
+test('a turn whose loop already answered does not answer twice', () => {
+  const published = [];
+  const session = {
+    agentEvents: [{ type: 'assistant_message' }],
+    _onAgentEvent: (event) => published.push(event),
+  };
+
+  assert.equal(ensureInteractiveAssistantMessage(session, '', { turnId: 'turn-1' }), false);
+  assert.equal(published.length, 0);
+});
+
 test('runtime state rebuilds interactive conversation from persisted events', () => {
   const user = {
     ...createAgentEvent('user_message', { origin: 'runtime_turn', turnId: 'turn-1', workspace: 'demo', payload: { content: 'Bonjour' } }),

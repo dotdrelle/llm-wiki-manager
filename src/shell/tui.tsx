@@ -381,7 +381,11 @@ function App(props: {
             input={state.input()}
             busy={state.busy()}
             chatMode={state.chatMode()}
-            chatFocused={!state.activeEditor()}
+            // The composer must lose focus for EVERY modal, not just the file
+            // editor. While the setup wizard was open the input stayed focused
+            // underneath it, so answering a wizard question also typed into the
+            // chat box at the bottom of the window.
+            chatFocused={!state.activeEditor() && screen() === 'main'}
             setInput={state.setInput}
             submit={submit}
             conversationRows={conversationRows()}
@@ -433,17 +437,33 @@ function App(props: {
             onSave={state.saveEditor}
             onCancel={state.closeEditor}
           />
+          {/*
+            Opaque backdrop, same treatment WizardApp gives the standalone
+            wizard. Without it the dialog floated over a live two-pane layout:
+            the panes showed through around its border and the whole thing read
+            as one garbled screen rather than as a modal.
+          */}
           {screen() === 'setup' ? (
-            <SetupWizard
-              mode="setup"
-              session={state.session}
+            <box
+              position="absolute"
+              left={0}
+              top={0}
               width={dimensions().width}
               height={dimensions().height}
-              initialRoute="workspace-name"
-              closeOnDone
-              onComplete={closeSetup}
-              onClose={closeSetup}
-            />
+              zIndex={39}
+              backgroundColor="#0B0D12"
+            >
+              <SetupWizard
+                mode="setup"
+                session={state.session}
+                width={dimensions().width}
+                height={dimensions().height}
+                initialRoute="workspace-name"
+                closeOnDone
+                onComplete={closeSetup}
+                onClose={closeSetup}
+              />
+            </box>
           ) : null}
         </box>
       }

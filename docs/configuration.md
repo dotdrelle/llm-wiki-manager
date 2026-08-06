@@ -270,9 +270,47 @@ servers. No LLM configuration.
 | `WIKI_SERVE_PORT` | port for the wiki web UI / browser chat (`serve`) |
 | `WIKI_MCP_PORT` | port for the llm-wiki MCP endpoint (`mcp-http`) |
 | `PRODUCTION_MCP_PORT` | port for the production-job MCP endpoint (`production-mcp`) |
-| `PRODUCTION_REQUIRE_CONFIRMATION` | guard requiring confirmation before production jobs run |
+| `PRODUCTION_REQUIRE_CONFIRMATION` | second, tool-level guard on production jobs — see below |
 | `WIKI_MCP_AUTH_TOKEN` | Bearer guarding the llm-wiki MCP endpoint (alias of `mcp.accessKey`) |
 | `PRODUCTION_MCP_AUTH_TOKEN` | Bearer guarding the production-job MCP endpoint |
+
+### `PRODUCTION_REQUIRE_CONFIRMATION` — why the manager sets it to `false`
+
+The production agent defaults it to `true`, and its own README and
+`.env.example` say so. The manager deliberately ships `false`
+(`docker-compose.yml`). This is not an oversight.
+
+At `true`, `production_start_job` refuses a mutating job unless the caller
+passes `confirm=true`. That was the barrier back when the agent could be driven
+directly. Under Donna, mutating tasks already wait for a run-scope approval —
+the amber banner in the Shell, the Approve button in `serve`. Leaving the
+tool-level guard on adds a **second** prompt for the same decision, which
+teaches operators to confirm without reading.
+
+Set it to `true` only if you drive `agent-wiki-production` **outside** Donna's
+orchestration, where no approval gate exists to protect you.
+
+### Document handoff: `DOCUMENT_INPUT_DIR`, `DOCUMENT_UPLOADS_DIR`, `DOCUMENT_OUTPUT_DIR`
+
+Uploading a document goes through two containers, which is why three variables
+exist and why each container declares a different pair. `input` is the handoff
+point: `serve` writes there, the `documents` agent reads from there.
+
+| Variable | Declared by | Read by | Holds |
+| --- | --- | --- | --- |
+| `DOCUMENT_INPUT_DIR` (`/documents/input`) | `serve` **and** `documents` | both | the uploaded files themselves, one subfolder per workspace |
+| `DOCUMENT_UPLOADS_DIR` (`/documents/uploads`) | `serve` only | `serve` only | `<workspace>.jsonl`, the manifest of what was uploaded — bookkeeping, not content |
+| `DOCUMENT_OUTPUT_DIR` (`/documents/output`) | `documents` only | the agent only | converted Markdown, when no workspace is targeted; with a workspace it writes to `raw/untracked/` instead |
+| `DOCUMENT_MAX_UPLOAD_BYTES` (50 MB) | both | both, plus the manager | per-file ceiling, enforced on each side independently |
+
+`DOCUMENT_UPLOADS_DIR` being absent from `agents.docker-compose.yml` is
+therefore correct: the agent has no manifest to keep. Likewise
+`DOCUMENT_OUTPUT_DIR` is absent from the workspace compose file — `serve` never
+writes conversion output.
+
+Both compose files mount the same host directories
+(`${AGENTS_DATA_DIR}/documents/...`), so the two containers see the same files.
+Change `AGENTS_DATA_DIR` and both follow.
 
 Create and start a workspace:
 

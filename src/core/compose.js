@@ -321,6 +321,38 @@ export async function serviceStates(session) {
   return states;
 }
 
+/**
+ * Names of OTHER registered workspaces that still have containers running.
+ *
+ * The external agents (cme, documents, connectors, mailer) are a single
+ * stack shared by every workspace — one Compose project, one set of
+ * containers. `/stop all` took them down unconditionally, so stopping one
+ * workspace silently cut the agents out from under all the others.
+ *
+ * Best effort by design: a workspace whose Compose project cannot be queried
+ * (registry entry pointing at a path that no longer exists, docker refusing)
+ * is reported as NOT running. Erring the other way would make the agents
+ * impossible to stop as soon as one stale registry entry existed.
+ */
+export async function otherWorkspacesRunning(session, workspaces = []) {
+  const current = session?.workspace ?? null;
+  const others = workspaces.filter((workspace) => workspace?.name && workspace.name !== current);
+  const results = await Promise.all(others.map(async (workspace) => {
+    try {
+      const states = await serviceStates({
+        workspace: workspace.name,
+        workspacePath: workspace.workspacePath,
+        workspaceEnvFile: workspace.envFile,
+        workspaceEnv: workspace.env,
+      });
+      return Object.values(states).some((state) => state.running) ? workspace.name : null;
+    } catch {
+      return null;
+    }
+  }));
+  return results.filter(Boolean);
+}
+
 export async function missingServiceImages(service) {
   const aliases = serviceAliases();
   const targets = service ? (aliases[service] ?? [service]) : COMPOSE_SERVICES;

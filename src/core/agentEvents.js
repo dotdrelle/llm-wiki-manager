@@ -268,6 +268,9 @@ function applyEvent(state, event) {
     case 'assistant_delta':
       appendAssistantDelta(state, String(event.payload?.delta ?? ''));
       return;
+    case 'assistant_delta_reset':
+      discardStreamingAssistantMessage(state);
+      return;
     case 'tool_call_started':
       state.chain.push({
         type: 'tool',
@@ -664,6 +667,26 @@ function appendAssistantDelta(state, delta) {
   } else {
     state.conversation.push({ role: 'assistant', content: delta, streaming: true });
   }
+}
+
+/*
+ Jeter une réponse en cours d'écriture, sans retirer son entrée.
+
+ Une itération de la boucle d'outils peut produire du texte puis décider
+ d'appeler un outil : ce texte est un raisonnement intermédiaire que le tour
+ suivant remplace, il ne doit pas rester à l'écran.
+
+ L'entrée est vidée, jamais dépilée. La réconciliation de `serve`
+ (`chatHtml.ts`) suppose une conversation en ajout seul — « le serveur ne mute
+ que la dernière entrée, tout ce qui précède est acquis » — et n'indexe la
+ boucle que sur la longueur croissante. Un `pop` la ferait passer sous le
+ nombre de références déjà rendues : l'élément DOM en trop resterait affiché
+ avec le texte qu'on voulait justement effacer, et tous les messages suivants
+ se décaleraient d'un cran.
+*/
+function discardStreamingAssistantMessage(state) {
+  const last = state.conversation.at(-1);
+  if (last?.role === 'assistant' && last.streaming) last.content = '';
 }
 
 function finalizeAssistantMessage(state, content) {

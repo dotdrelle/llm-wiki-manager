@@ -86,3 +86,98 @@ test('propagates an abort thrown by executeCall', async () => {
     /aborted/,
   );
 });
+
+// Le tour paraissait figé pendant toute sa durée : la réponse n'apparaissait
+// qu'une fois complète, parce que la boucle n'appelait que completeWithTools.
+test('streams the answer when the caller asks for deltas', async () => {
+  const deltas = [];
+  const llm = {
+    async completeWithTools() { throw new Error('streamWithTools devait être préféré'); },
+    async streamWithTools({ onTextDelta }) {
+      onTextDelta('Le wiki ');
+      onTextDelta('contient 12 pages.');
+      return { content: 'Le wiki contient 12 pages.', tool_calls: [] };
+    },
+  };
+
+  const out = await runBoundedToolLoop({
+    llm,
+    tools: [],
+    executeCall: async () => 'unused',
+    onTextDelta: (delta) => deltas.push(delta),
+  });
+
+  assert.deepEqual(deltas, ['Le wiki ', 'contient 12 pages.']);
+  assert.equal(out.content, 'Le wiki contient 12 pages.');
+});
+
+test('keeps the non-streaming path when no delta callback is given', async () => {
+  let streamed = false;
+  const llm = {
+    async completeWithTools() { return { content: 'plain', tool_calls: [] }; },
+    async streamWithTools() { streamed = true; return { content: 'streamed', tool_calls: [] }; },
+  };
+
+  const out = await runBoundedToolLoop({ llm, tools: [], executeCall: async () => 'unused' });
+
+  assert.equal(streamed, false, 'sans onTextDelta, rien ne doit changer');
+  assert.equal(out.content, 'plain');
+});
+
+test('discards text emitted by an iteration that ends in tool calls', async () => {
+  // Un modèle peut écrire un raisonnement puis décider d'appeler un outil. Ce
+  // texte est remplacé par le tour suivant : le laisser afficherait des
+  // paragraphes qui disparaissent, pire que pas de streaming du tout.
+  let round = 0;
+  const deltas = [];
+  let resets = 0;
+  const llm = {
+    async streamWithTools({ onTextDelta }) {
+      round += 1;
+      if (round === 1) {
+        onTextDelta('Je vais regarder…');
+        const calls = [toolCall('c1', 'wiki__wiki_list_pages')];
+        return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+      }
+      onTextDelta('12 pages.');
+      return { content: '12 pages.', tool_calls: [] };
+    },
+  };
+
+  const out = await runBoundedToolLoop({
+    llm,
+    tools: [],
+    executeCall: async () => 'ok',
+    onTextDelta: (delta) => deltas.push(delta),
+    onTextReset: () => { resets += 1; },
+  });
+
+  assert.deepEqual(deltas, ['Je vais regarder…', '12 pages.']);
+  assert.equal(resets, 1, 'le texte intermédiaire doit être annulé, une fois');
+  assert.equal(out.content, '12 pages.');
+});
+
+test('never asks to discard text that was never emitted', async () => {
+  let resets = 0;
+  let round = 0;
+  const llm = {
+    async streamWithTools() {
+      round += 1;
+      if (round === 1) {
+        const calls = [toolCall('c1', 'wiki__wiki_list_pages')];
+        return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+      }
+      return { content: 'fini', tool_calls: [] };
+    },
+  };
+
+  await runBoundedToolLoop({
+    llm,
+    tools: [],
+    executeCall: async () => 'ok',
+    onTextDelta: () => {},
+    onTextReset: () => { resets += 1; },
+  });
+
+  assert.equal(resets, 0);
+});

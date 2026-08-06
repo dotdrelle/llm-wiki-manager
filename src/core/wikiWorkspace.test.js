@@ -105,3 +105,33 @@ test('container refresh pulls and renews only services that are already running'
   assert.match(script, /refresh_running_services 'No running external agent containers to refresh' 'Refreshed running agents: %s' _agents_dc/);
   assert.match(script, /refresh_running_services "No running workspace containers to refresh: \$workspace" "Refreshed running workspace containers: \$workspace \(%s\)" compose_for_workspace "\$workspace"/);
 });
+
+// `${arr[@]}` on an empty array is an unbound-variable error under `set -u` in
+// bash <= 4.3, and macOS still ships /bin/bash 3.2. `parse_global_options`
+// tripped on it, so `wiki-workspace` with no global option died before reaching
+// any subcommand.
+//
+// The execution check below cannot catch a regression on a CI running bash 5,
+// where an empty array is legal — hence the source assertion that every
+// optional array keeps the `${arr[@]+"${arr[@]}"}` guard. Both are needed.
+test('optional arrays keep the empty-array guard required by bash 3.2', async () => {
+  const script = await readFile(new URL('../../wiki-workspace', import.meta.url), 'utf8');
+
+  for (const name of ['parsed', 'PARSED_ARGS', 'log_args']) {
+    const unguarded = new RegExp(String.raw`(?<!\+)"\$\{${name}\[@\]\}"`);
+    assert.doesNotMatch(script, unguarded, `${name}[@] must use the \${name[@]+"..."} guard`);
+  }
+  assert.match(script, /set -- \$\{parsed\[@\]\+"\$\{parsed\[@\]\}"\}/);
+  assert.match(script, /set -- \$\{PARSED_ARGS\[@\]\+"\$\{PARSED_ARGS\[@\]\}"\}/);
+});
+
+test('wiki-workspace reaches its usage text with no arguments', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const scriptPath = new URL('../../wiki-workspace', import.meta.url).pathname;
+
+  const result = spawnSync('bash', [scriptPath], { encoding: 'utf8' });
+
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /unbound variable/);
+  assert.match(result.stdout, /^Usage:/);
+  assert.equal(result.status, 2);
+});

@@ -591,3 +591,35 @@ test('reduceAgentEvents: les alias de statut tombent sur le canonique', () => {
   assert.equal(projection.plan[2].status, 'done');
   assert.equal(projection.logs.some((line) => /unknown status/.test(line)), false);
 });
+
+// La bulle « Request received · Donna is preparing… » n'est retirée côté serve
+// que lorsqu'un message assistant NON VIDE arrive. Un tour sans réponse ne
+// publiait rien : le point d'attente tournait jusqu'au rechargement de la page.
+test('a discarded stream is emptied, never popped', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('user_message', { origin: 'user', payload: { content: 'question' } }),
+    createAgentEvent('assistant_delta', { origin: 'runtime', payload: { delta: 'Je vais regarder…' } }),
+    createAgentEvent('assistant_delta_reset', { origin: 'runtime', payload: {} }),
+  ]);
+
+  // La réconciliation de serve suppose une conversation en ajout seul : dépiler
+  // la ferait passer sous le nombre d'éléments déjà rendus, laissant à l'écran
+  // le texte qu'on voulait effacer et décalant tous les messages suivants.
+  assert.equal(projection.conversation.length, 2);
+  assert.deepEqual(projection.conversation[1], { role: 'assistant', content: '', streaming: true });
+});
+
+test('a stream resumed after a discard carries only the final text', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('user_message', { origin: 'user', payload: { content: 'question' } }),
+    createAgentEvent('assistant_delta', { origin: 'runtime', payload: { delta: 'Je vais regarder…' } }),
+    createAgentEvent('assistant_delta_reset', { origin: 'runtime', payload: {} }),
+    createAgentEvent('assistant_delta', { origin: 'runtime', payload: { delta: '12 ' } }),
+    createAgentEvent('assistant_delta', { origin: 'runtime', payload: { delta: 'pages.' } }),
+    createAgentEvent('assistant_message', { origin: 'runtime', payload: { content: '12 pages.' } }),
+  ]);
+
+  assert.equal(projection.conversation.length, 2);
+  assert.equal(projection.conversation[1].content, '12 pages.');
+  assert.equal(projection.conversation[1].streaming, undefined, 'le message doit être figé');
+});

@@ -82,8 +82,32 @@ test('"all" means the same thing to start and to stop', () => {
   // `/start all` démarrait les agents, `/stop all` ne les arrêtait pas : la
   // séquence start/stop ne revenait donc pas à l'état de départ.
   assert.match(slash, /const startsAgents = service === 'all';/);
-  assert.match(slash, /const stopsAgents = service === 'all';/);
-  assert.match(slash, /if \(stopsAgents\) \{\s*\n\s*const agentsResult = await runAgentCommand\(stopAgents, 'stop'\);/);
+  assert.match(slash, /const stopsAgents = service === 'all' \|\| stopsEverything;/);
+});
+
+test('stopping one workspace never takes the shared agents from another', () => {
+  const slash = readFileSync(fileURLToPath(new URL('../commands/slash.js', import.meta.url)), 'utf8');
+  // Les agents externes sont UNE pile partagée. `/stop all` les arrêtait sans
+  // condition : couper un workspace coupait tous les autres, qui ne voyaient
+  // qu'une panne.
+  assert.match(slash, /await otherWorkspacesRunning\(context\.session, listWorkspaces\(\)\)/);
+  assert.match(slash, /if \(busy\.length > 0\) \{/);
+  // Le renoncement doit se dire : un saut silencieux ressemble exactement au
+  // bug d'origine.
+  assert.match(slash, /agents left running for \$\{busy\.join\(', '\)\}/);
+  assert.match(slash, /use \/stop everything to stop them anyway/);
+  // `everything` court-circuite la garde, et c'est son seul intérêt.
+  assert.match(slash, /const busy = stopsEverything\s*\n\s*\? \[\]/);
+});
+
+test('the everything escape hatch is discoverable', () => {
+  const slash = readFileSync(fileURLToPath(new URL('../commands/slash.js', import.meta.url)), 'utf8');
+  const repl = readFileSync(fileURLToPath(new URL('../shell/repl.js', import.meta.url)), 'utf8');
+  // Une porte de sortie qui n'apparaît ni dans l'aide ni dans la complétion
+  // n'existe pas pour l'opérateur qui en a besoin.
+  assert.match(slash, /\/stop \[all\|everything\|service\|agents\]/);
+  assert.match(repl, /command === '\/stop' && tokenIndex === 1\) return \['all', 'everything'/);
+  assert.match(repl, /if \(value === 'everything'\)/);
 });
 
 test('the addressable agents are read from the compose file, never hard-coded', async () => {

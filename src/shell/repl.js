@@ -345,7 +345,7 @@ function completionValuesFor(parts, inputBuffer, session) {
   // Vocabulaire de l'opérateur uniquement : `serviceChoices()` écarte les noms
   // Compose bruts que les alias désignent déjà. Ils restent tapables.
   if (command === '/start' && tokenIndex === 1) return ['all', 'agents', 'services', ...serviceChoices(), ...togglableAgents()];
-  if (command === '/stop' && tokenIndex === 1) return ['all', 'agents', 'services', ...serviceChoices(), ...togglableAgents()];
+  if (command === '/stop' && tokenIndex === 1) return ['all', 'everything', 'agents', 'services', ...serviceChoices(), ...togglableAgents()];
   if (command === '/logs' && tokenIndex === 1) return ['all', ...serviceChoices()];
   return [];
 }
@@ -583,7 +583,8 @@ export function completionDescription(value, parts) {
     return serviceDescription(value) ?? 'Start this Docker Compose service.';
   }
   if (command === '/stop') {
-    if (value === 'all') return 'Everything: workspace services AND external agents.';
+    if (value === 'all') return 'This workspace, agents included — unless another workspace still needs them.';
+    if (value === 'everything') return 'This workspace AND the shared agents, even if other workspaces are using them.';
     if (value === 'agents' || value === 'agent') return 'External agents only.';
     if (value === 'services') return 'Workspace services only.';
     if (togglableAgents().includes(value)) return `Stop only the ${value} agent, leaving the other agents running.`;
@@ -1471,7 +1472,7 @@ async function runAgentTurn(input, {
 // unitary actions only — it never plans or delegates, which is why the
 // orchestration tools are filtered out upstream. maxToolIterations caps the
 // loop.
-async function runChatToolLoop({ input, session, history, donnaMessage, onUpdate, onStep, allowedTools, openWikiPages, contextMessages = [] }) {
+async function runChatToolLoop({ input, session, history, donnaMessage, onUpdate, onStep, onTextDelta, onTextReset, allowedTools, openWikiPages, contextMessages = [] }) {
   const allowed = new Set(allowedTools.map((item) => item.function.name));
   // /chat only supplies the policy; the loop mechanic lives in runBoundedToolLoop.
   // executeCall enforces the allow-list and turns each call into a text result;
@@ -1503,6 +1504,8 @@ async function runChatToolLoop({ input, session, history, donnaMessage, onUpdate
     maxIterations: Math.min(8, Number(session?.chatAccess?.maxToolIterations) || 4),
     signal: session._abortSignal,
     onStep: (i, cap) => onStep?.(`Chat: consulting… [${i}/${cap}]`),
+    onTextDelta,
+    onTextReset,
   });
   donnaMessage.content = capped
     ? 'Je n’ai pas pu conclure dans la limite d’itérations du mode chat. Passe en /agent si besoin.'
@@ -1574,7 +1577,15 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
 // implementation of chat access; it just returns the final text instead of
 // driving a live repl bubble. The caller must have seeded session.chatAccess
 // (and session.mcp) so chatAllowedTools can resolve the allow-listed tools.
-export async function runHeadlessChatTurn(session, input, { history = [], onStep, openWikiPages, openWikiPage } = {}) {
+/**
+ * @param onTextDelta fragments de la réponse au fil de la génération. Fourni
+ *   par le tour runtime, qui les publie en `assistant_delta` : le réducteur
+ *   fait grandir la dernière entrée de conversation, et les deux interfaces
+ *   affichent la réponse en train de s'écrire au lieu d'un point d'attente.
+ * @param onTextReset fragments à jeter (itération qui s'est terminée par des
+ *   appels d'outils plutôt que par une réponse).
+ */
+export async function runHeadlessChatTurn(session, input, { history = [], onStep, onTextDelta, onTextReset, openWikiPages, openWikiPage } = {}) {
   const donnaMessage = { role: 'donna', content: '' };
   const allowedTools = chatAllowedTools(session);
   // Keep the singular option as a compatibility input for older serve builds.
@@ -1590,7 +1601,7 @@ export async function runHeadlessChatTurn(session, input, { history = [], onStep
   ];
   const canUseTools = allowedTools.length > 0 && typeof session.llm?.completeWithTools === 'function';
   if (canUseTools) {
-    await runChatToolLoop({ input, session, history, donnaMessage, onStep, allowedTools, openWikiPages: selectedPages, contextMessages });
+    await runChatToolLoop({ input, session, history, donnaMessage, onStep, onTextDelta, onTextReset, allowedTools, openWikiPages: selectedPages, contextMessages });
     return donnaMessage.content;
   }
   if (typeof session.llm?.stream === 'function') {
@@ -1601,7 +1612,7 @@ export async function runHeadlessChatTurn(session, input, { history = [], onStep
       signal: session._abortSignal,
     })) {
       const clean = stripDsmlArtifacts(delta);
-      if (clean) content += clean;
+      if (clean) { content += clean; onTextDelta?.(clean); }
     }
     return stripDsmlArtifacts(content).trimEnd() || formatLlmUnavailableMessage('flux vide');
   }

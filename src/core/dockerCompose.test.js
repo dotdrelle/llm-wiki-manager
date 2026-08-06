@@ -150,3 +150,35 @@ test('missing-image checks ignore agents behind inactive Compose profiles', () =
     ['example/cme:latest', 'example/connectors:latest'],
   );
 });
+
+// Trois variables DOCUMENT_* pour deux conteneurs, chacun n'en déclarant que
+// deux : la question « à quoi ça sert » revient à chaque lecture. Ce test fige
+// le partage pour que la doc reste vraie.
+test('the document handoff keeps input shared and the rest separate', async () => {
+  const workspace = YAML.parse(await readFile(new URL('../../docker-compose.yml', import.meta.url), 'utf8'));
+  const agents = YAML.parse(await readFile(new URL('../../agents.docker-compose.yml', import.meta.url), 'utf8'));
+  const envOf = (service) => Object.fromEntries(
+    (service.environment ?? []).map((entry) => String(entry).split('=', 2)),
+  );
+
+  const serve = envOf(workspace.services.serve);
+  const documents = envOf(agents.services.documents);
+
+  // `input` est le point de passage : serve y écrit, l'agent y lit.
+  assert.equal(serve.DOCUMENT_INPUT_DIR, '/documents/input');
+  assert.equal(documents.DOCUMENT_INPUT_DIR, '/documents/input');
+  assert.ok(workspace.services.serve.volumes.some((v) => String(v).endsWith(':/documents/input')));
+  assert.ok(agents.services.documents.volumes.some((v) => String(v).endsWith(':/documents/input')));
+
+  // Le manifeste des téléversements n'appartient qu'à serve ; la sortie de
+  // conversion n'appartient qu'à l'agent. Déclarer l'un chez l'autre laisserait
+  // croire à un partage qui n'existe pas.
+  assert.equal(serve.DOCUMENT_UPLOADS_DIR, '/documents/uploads');
+  assert.equal(documents.DOCUMENT_UPLOADS_DIR, undefined);
+  assert.equal(documents.DOCUMENT_OUTPUT_DIR, '/documents/output');
+  assert.equal(serve.DOCUMENT_OUTPUT_DIR, undefined);
+
+  // Le plafond est vérifié des deux côtés, donc déclaré des deux côtés.
+  assert.ok(serve.DOCUMENT_MAX_UPLOAD_BYTES);
+  assert.ok(documents.DOCUMENT_MAX_UPLOAD_BYTES);
+});

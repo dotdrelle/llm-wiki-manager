@@ -12,7 +12,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { openExternalUrl } from '../shell/openExternal.js';
 import { classifyCommandFailure, failureHint, rawFailureText } from '../core/commandFailure.js';
 import { join, relative } from 'node:path';
-import { composeServices, listServices, runWikiCli, serviceLogs, serviceNames, serviceStates, startService, stopService } from '../core/compose.js';
+import { composeServices, listServices, otherWorkspacesRunning, runWikiCli, serviceLogs, serviceNames, serviceStates, startService, stopService } from '../core/compose.js';
 import { agentServiceNames, profileServiceStatus } from '../core/agentsCompose.js';
 import { GOOGLE_GRANTS, GOOGLE_GRANT_LABELS, defaultGoogleGrants } from '../core/googleGrants.js';
 import {
@@ -568,12 +568,23 @@ async function createWorkspaceCommand(context, workspaceName, targetPath) {
   try {
     context.onStep?.(`Workspace: creating ${workspaceName}…`);
     const output = await createWorkspace(workspaceName, targetPath, { timeout: 600_000 });
-    finalizeCreatedWorkspace(workspaceName);
+    // Seed the new workspace from the one in use: the LLM endpoint, key and
+    // model are almost always the same, and re-entering them by hand was the
+    // first thing to do after every /new.
+    const { inherited } = await finalizeCreatedWorkspace(workspaceName, {
+      inheritFrom: context.session?.workspace ?? null,
+    });
     return {
       output: [
         output,
         '',
         `Workspace created: ${workspaceName}`,
+        // State what was carried over. Inheriting silently would make a wrong
+        // endpoint look like a scaffold default and send the operator hunting
+        // in the wrong file.
+        inherited.length > 0
+          ? `Inherited from ${context.session.workspace}: ${inherited.join(', ')}`
+          : null,
         `Use /use ${workspaceName} to load it.`,
       ].filter(Boolean).join('\n'),
     };
@@ -725,7 +736,7 @@ ${helpPair('/use <workspace>', 'Use workspace', '/status', 'Session status')}
 ${helpPair('/config list', 'Config profiles', '/config use <n>', 'Use config')}
 ${helpPair('/config edit <n>', 'Edit config', '/workspace delete <n>', 'Delete workspace')}
 ${helpPair('/services', 'Services', '/start [all|agents|services]', 'all = services + agents')}
-${helpPair('/stop [all|service|agents]', 'Stop service(s)', '/logs <service>', 'Service logs')}
+${helpPair('/stop [all|everything|service|agents]', 'Stop service(s)', '/logs <service>', 'Service logs')}
 ${helpPair('/skills', 'List skills', '/skills show <n>', 'Show skill')}
 ${helpPair('/skills run <n>', 'Run skill guide', '/skills edit <n>', 'Edit skill')}
 ${helpPair('/mcp status', 'MCP status', '/mcp endpoints', 'MCP endpoints')}
@@ -1128,14 +1139,31 @@ export async function handleSlashCommand(line, context) {
       // compris. Il ne stoppait que les services du workspace et laissait les
       // agents debout — donc `/start all` puis `/stop all` ne revenait pas à
       // l'état de départ.
-      const stopsAgents = service === 'all';
-      const stopTarget = service === 'services' ? undefined : service;
+      //
+      // Cette symétrie ne tient que tant qu'un seul workspace tourne. Les
+      // agents externes sont UNE pile partagée : les arrêter depuis un
+      // workspace coupait les autres, qui n'avaient rien demandé et ne
+      // voyaient qu'une panne. « all » reste donc « toute ma pile », et les
+      // agents ne tombent que s'ils ne servent plus personne. `/stop
+      // everything` garde la coupure franche, explicitement demandée.
+      const stopsEverything = service === 'everything';
+      const stopsAgents = service === 'all' || stopsEverything;
+      const stopTarget = service === 'services' || stopsEverything ? undefined : service;
       try {
-        step(`Services: stopping ${service ?? 'workspace services'}…`);
+        step(`Services: stopping ${stopsEverything ? 'all workspaces and agents' : (service ?? 'workspace services')}…`);
         await stopService(context.session, stopTarget);
         if (stopsAgents) {
-          const agentsResult = await runAgentCommand(stopAgents, 'stop');
-          if (agentsResult?.failed) return agentsResult;
+          const busy = stopsEverything
+            ? []
+            : await otherWorkspacesRunning(context.session, listWorkspaces());
+          if (busy.length > 0) {
+            // Say who is holding them, and how to override. A silent skip
+            // would look exactly like the bug we just fixed.
+            step(`Services: agents left running for ${busy.join(', ')} — use /stop everything to stop them anyway.`);
+          } else {
+            const agentsResult = await runAgentCommand(stopAgents, 'stop');
+            if (agentsResult?.failed) return agentsResult;
+          }
         }
         step('Services: refreshing MCP runtime…');
         await refreshMcpRuntimeStatus(context.session);

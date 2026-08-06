@@ -306,11 +306,28 @@ export function createInteractiveSession(context, { runtimeUrl, turnId, signal =
   return session;
 }
 
+/*
+ Un tour interactif se termine TOUJOURS par un assistant_message.
+
+ C'est la condition de fin que les deux interfaces attendent : côté `serve`, la
+ bulle « Request received · Donna is preparing… » n'est retirée que lorsqu'un
+ message assistant non vide arrive. La garde `!content` renvoyait donc `false`
+ en silence quand le tour ne produisait rien — modèle qui répond vide, boucle
+ d'outils qui s'arrête sans conclure — et le point d'attente tournait
+ indéfiniment, sans erreur nulle part.
+
+ Une réponse vide est un résultat, pas une raison de ne rien dire.
+*/
 export function ensureInteractiveAssistantMessage(session, response, { turnId, workspace } = {}) {
+  if (session.agentEvents.some((event) => event.type === 'assistant_message')) return false;
   const content = String(response ?? '').trim();
-  if (!content || session.agentEvents.some((event) => event.type === 'assistant_message')) return false;
   dispatchAgentEvent(session, createAgentEvent('assistant_message', {
-    origin: 'runtime_turn', turnId, workspace, payload: { content: String(response) },
+    origin: 'runtime_turn',
+    turnId,
+    workspace,
+    payload: {
+      content: content || 'No answer was produced for this turn. The model returned nothing — try rephrasing, or switch to /agent if the request needs an action.',
+    },
   }));
   return true;
 }
@@ -1365,6 +1382,22 @@ async function runRuntime(argv, agent) {
       response = await runHeadlessChatTurn(ephemeral, input, {
         history,
         onStep: ephemeral._onStep,
+        // Fragments de réponse publiés au fil de l'eau. Le réducteur les
+        // agrège dans la dernière entrée de conversation (`assistant_delta`),
+        // que `assistant_message` vient ensuite figer : les deux interfaces
+        // voient la réponse s'écrire, au lieu d'attendre le tour complet.
+        onTextDelta: (delta) => dispatchAgentEvent(ephemeral, createAgentEvent('assistant_delta', {
+          origin: 'runtime_turn',
+          turnId,
+          workspace: context.workspace ?? null,
+          payload: { delta },
+        })),
+        onTextReset: () => dispatchAgentEvent(ephemeral, createAgentEvent('assistant_delta_reset', {
+          origin: 'runtime_turn',
+          turnId,
+          workspace: context.workspace ?? null,
+          payload: {},
+        })),
         // UI context from `wiki serve`: up to five selected wiki or raw
         // documents. Only paths are prompted; Donna reads through tools.
         openWikiPages: body.context?.openWikiPages ?? body.context?.openWikiPage,

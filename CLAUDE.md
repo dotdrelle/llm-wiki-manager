@@ -1,9 +1,10 @@
 # Repository Guide
 
-Current coordinated release: **0.15.32** (see `package.json`, the only source
-of truth — this line and the one in the Docker/Security section had drifted to
-0.14.11 and 0.11.4 respectively). Keep manager handshakes and the local
-`llm-wiki` engine version aligned across the coordinated repositories.
+Current coordinated release: **0.15.44** (see `package.json`, the only source
+of truth — this line keeps drifting, so trust the file, not the prose). Keep
+manager handshakes and the local `llm-wiki` engine version aligned across the
+coordinated repositories; `npm run check-versions` covers the fifteen places a
+version appears, skipping any sibling repository that is not checked out.
 
 ## Purpose
 
@@ -230,8 +231,50 @@ errors as `Error [<server>.<tool>]: <message>`.
 ## Skills And Donna Help
 
 Workspace skills come from the active workspace manifest and `.wiki/skills/`.
-`/skills run <name>` injects the skill body into the agent as workflow
-instructions.
+They are **executable**: `/skills run <name>` and `/<name>` both post the
+invocation to the runtime, which compiles the body and starts the resulting
+runs. Nothing injects a skill body into a local prompt any more — the only
+exception is `wiki-manager --headless --no-runtime`, kept for the legacy
+direct-MCP path.
+
+`core/skillCompiler.js` turns a body into 1..12 **business intentions**. The
+split is deterministic — numbered lists, bullets, or a paragraph opening on a
+strong connector (`Puis`, `Then`, `Ensuite`, `if available`…) — and the LLM is
+only consulted when the deterministic pass finds the text ambiguous, bounded by
+an 8s timeout with a JSON-text retry, degrading to a single intention. This
+means **the markdown shape of a skill body decides how many runs it produces**:
+rewriting "Then ingest…" as "After the export, ingest…" silently collapses two
+runs into one. `pipeline` must stay a single objective — fragmenting it would
+strip the production capability of its own DAG and concurrency.
+
+One objective becomes one control item, one run, one `resolveObjective` call.
+Items of the same skill share a `chainId` and a `chainSequence`; a step runs
+only once every predecessor is terminal, and a required predecessor that fails
+or is cancelled marks the rest `skipped` with a `skipReason`. Skill items never
+carry a `capabilityPlan` — a structured enqueue still does, untouched.
+
+Parameters are appended as a `User parameters:` block to **every** objective of
+the chain, after validation. Not before the split: `/wiki-sync ESPACE` would
+otherwise hand `source` to the ingest step and leave the export step, the one
+that consumes it, exporting everything. Legacy `{param}` placeholders are still
+substituted when a body contains them.
+
+`RESERVED_SLASH_COMMANDS` (`core/skillInvocation.js`) lists the names where a
+built-in wins: `/status` stays the built-in status command, and the scaffold
+skill of the same name is reachable only through `/skills run status`, which
+carries `skillName` and sets `allowReserved`. The browser keeps its own copy of
+that list in `llm-wiki/src/chat/chatHtml.ts` — keep them identical.
+
+`/run cancel` is chain-scoped: it stops the current run and skips the rest of
+*that* chain, leaving unrelated queued items alone, and does nothing to the
+chain when the cancelled step was `optional`. `/run kill` stays workspace-wide
+and purges everything. `/queue cancel <id>` targets one runtime item and only
+propagates to later steps of its own chain.
+
+The chain is a **projection**, never stored state: `core/skillChainView.js`
+derives it from the control queue and publishes it as `skillChains` on the
+agent projection, which both the Shell queue panel and the serve Activity panel
+render.
 
 For onboarding/discovery questions ("what is this app", chat vs agent mode,
 getting started, troubleshooting), Donna answers from the `help_list`/
@@ -720,6 +763,7 @@ Also exercise relevant paths:
 printf '/use <workspace>\n/config status\n/workspaces\n/exit\n' | node ./bin/wiki-manager.js
 node ./bin/wiki-manager.js --headless --workspace __missing__ --prompt test
 wiki-manager --headless --workspace <workspace> --skill pipeline --timeout 3600 --max-turns 20
+wiki-manager --headless --workspace <workspace> --skill "deliver rapport polish" --auto-approve
 wiki-workspace runtime up
 wiki-workspace runtime status
 wiki-manager runtime [--host 127.0.0.1] [--port 7788] [--state-dir .wiki/runtime]
@@ -728,9 +772,17 @@ wiki-manager runtime [--host 127.0.0.1] [--port 7788] [--state-dir .wiki/runtime
 /approve item <itemId>
 ```
 
-Headless `--skill` uses the agentic loop: run a turn, wait for active MCP
-activities, then re-invoke with completed activity summary until the skill is
-done or limits are reached.
+Headless `--skill` goes through the **same runtime resolver** as the Shell and
+serve, so a multi-capability skill produces the same chain everywhere. Its value
+carries the arguments inline (`--skill "deliver rapport polish"`); `--prompt` is
+ignored on that path and says so. The wait is chain-scoped, not run-scoped —
+`waitForRuntimeChain` follows every step of the `chainId` and exits non-zero if
+any of them failed, so `wiki-sync` cannot report success when only the export
+finished. A chain blocked on approval returns immediately with an explicit
+message unless `--auto-approve` is passed, which grants one run-scoped approval
+per plan revision. `--no-runtime` keeps the legacy agentic loop: run a turn,
+wait for active MCP activities, then re-invoke until the skill is done or limits
+are reached.
 
 `wiki-manager runtime` starts the HTTP/SSE runtime server. When launched by
 `ensureRuntime` (shell path), the token is resolved before spawning and injected

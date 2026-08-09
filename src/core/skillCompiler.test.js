@@ -74,3 +74,18 @@ test('a parameter named after a routing field does not fail validation', async (
   assert.equal(objectives.length, 1);
   assert.match(objectives[0].text, /agent: production/);
 });
+
+test('LLM fallback sees authored prose and parameters are appended exactly once', async () => {
+  let fallbackBody = null;
+  const objectives = await compileSkillObjectives(
+    { body: 'Please export the source. Please build the result. Please send the report.' },
+    { source: 'SPACE' },
+    { llmFallback: async ({ body }) => {
+      fallbackBody = body;
+      return [{ text: body }];
+    } },
+  );
+  assert.doesNotMatch(fallbackBody, /User parameters:/);
+  assert.equal(objectives[0].text.match(/User parameters:/g)?.length, 1);
+  assert.equal(objectives[0].text.match(/source: SPACE/g)?.length, 1);
+});

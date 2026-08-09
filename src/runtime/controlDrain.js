@@ -40,6 +40,10 @@ export function applySkipPropagation(queue, skipItem = null) {
     const blocker = predecessors.find((candidate) => candidate.optional !== true && candidate.continueOnFailure !== true && ['failed', 'cancelled', 'skipped'].includes(candidate.status));
     if (!blocker) continue;
     skipItem?.(item, blocker.status === 'cancelled' ? 'chain_cancelled' : 'required_predecessor_failed');
+    // Event dispatch replaces the projected queue instead of mutating this
+    // snapshot. Mirror the transition locally so later siblings in this same
+    // pass can observe the cascade (failed -> skipped -> skipped).
+    item.status = 'skipped';
     changed += 1;
   }
   return changed;

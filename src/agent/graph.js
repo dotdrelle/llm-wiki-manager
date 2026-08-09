@@ -927,7 +927,7 @@ export function connectorConfigurationTarget(session, objective) {
   // `connect` used to match the noun "connector" as a substring. Production
   // skills mention an optional messaging connector, so that broad match could
   // misclassify a business run as connector setup and reject delegation.
-  if (!/(?:configur|\bconnect(?:ed|ing)?\b|authent|oauth|setup|sign[ -]?in|\bpat\b|api[ _-]?token|credential|identifiant|mot de passe|password)/i.test(text)) return null;
+  if (!/(?:configur|\bconnect(?:ed|ing|ion|ions)?\b|authent|oauth|setup|sign[ -]?in|\bpat\b|api[ _-]?token|credential|identifiant|mot de passe|password)/i.test(text)) return null;
   for (const [serverName, server] of Object.entries(session?.mcp ?? {})) {
     if (server?.status !== 'connected' || !Array.isArray(server.tools) || server.tools.length === 0) continue;
     const genericAliasParts = new Set([

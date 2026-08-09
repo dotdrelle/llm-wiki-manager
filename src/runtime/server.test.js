@@ -1523,6 +1523,77 @@ test('POST /run compiles a workspace skill into a sequential runtime chain', asy
   }
 });
 
+test('POST /run does not unlock a reserved skill with a mismatched skillName', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'runtime-reserved-skill-'));
+  mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
+  writeFileSync(join(root, '.wiki', 'skills', 'status.md'), '---\nname: status\nparams: []\n---\nRun the workspace status skill.');
+  const session = { workspace: 'acme', workspacePath: root, controlQueue: [] };
+  const context = { workspace: 'acme', session, running: false, currentAbortController: null };
+  let received = null;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1', port: 0,
+      store: { dbPath: ':memory:', getState: () => ({ status: 'idle', plan: [], queue: [], approvals: [] }), listEvents: () => [] },
+      getContext: async () => context,
+      run: async (_context, body) => { received = body; },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw err;
+  }
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/run?workspace=acme`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: '/status', skillName: 'anything' }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 202);
+    assert.notEqual(body.kind, 'skill_chain');
+    assert.equal(session.controlQueue.length, 0);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(received.input, '/status');
+  } finally {
+    context.currentAbortController?.abort();
+    await handle.close();
+  }
+});
+
+test('legacy placeholders consume only their own parameter', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'runtime-partial-placeholder-'));
+  mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
+  writeFileSync(join(root, '.wiki', 'skills', 'partial.md'), '---\nname: partial\nparams:\n  - a\n  - b\n---\nUse {a}.\n\nThen process the remaining input.');
+  const session = { workspace: 'acme', workspacePath: root, controlQueue: [] };
+  const context = { workspace: 'acme', session, running: false, currentAbortController: null };
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1', port: 0,
+      store: { dbPath: ':memory:', getState: () => ({ status: 'idle', plan: [], queue: [], approvals: [] }), listEvents: () => [] },
+      getContext: async () => context,
+      run: async () => new Promise(() => {}),
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw err;
+  }
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/run?workspace=acme`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: '/partial alpha beta' }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 202);
+    assert.deepEqual(body.deprecatedPlaceholders, ['a']);
+    assert.equal(session.controlQueue.length, 2);
+    for (const item of session.controlQueue) assert.match(item.input, /User parameters:\nb: beta/);
+    assert.match(session.controlQueue[0].input, /Use alpha\./);
+  } finally {
+    context.currentAbortController?.abort();
+    await handle.close();
+  }
+});
+
 test('POST /control cancel_item returns a readable non-error for a non-queued item', async (t) => {
   const session = { workspace: 'acme', controlQueue: [{ id: 'done-item', status: 'done', input: 'done' }] };
   let handle;

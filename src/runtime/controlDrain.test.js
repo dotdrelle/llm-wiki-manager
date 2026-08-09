@@ -23,3 +23,16 @@ test('failed required predecessors skip remaining items but preserve another cha
   assert.deepEqual(skipped, ['a2']);
   assert.equal(queue[2].status, 'queued');
 });
+
+test('one propagation pass skips every required descendant in a long chain', () => {
+  const queue = [
+    { id: 'a1', chainId: 'a', chainSequence: 0, status: 'failed' },
+    { id: 'a2', chainId: 'a', chainSequence: 1, status: 'queued' },
+    { id: 'a3', chainId: 'a', chainSequence: 2, status: 'queued' },
+    { id: 'a4', chainId: 'a', chainSequence: 3, status: 'queued' },
+  ];
+  const skipped = [];
+  assert.equal(applySkipPropagation(queue, (item) => skipped.push(item.id)), 3);
+  assert.deepEqual(skipped, ['a2', 'a3', 'a4']);
+  assert.deepEqual(queue.map((item) => item.status), ['failed', 'skipped', 'skipped', 'skipped']);
+});

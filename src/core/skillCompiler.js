@@ -11,14 +11,16 @@ export async function compileSkillObjectives(skill, args = {}, { llmFallback = n
   // `source: ESPACE` to the ingest step and leave the export step, the one that
   // actually needs it, exporting everything. The compiler cannot know which
   // step consumes which parameter, so every objective carries them.
-  const annotated = interpolateNaturalArguments(body, args);
   const deterministic = deterministicObjectives(body);
   if (!deterministic.ambiguous) {
     return withNaturalArguments(validateCompiledObjectives(deterministic.objectives), args);
   }
   if (typeof llmFallback === 'function') {
     try {
-      const compiled = normalizeFallback(await llmFallback({ skill, body: annotated, args, maxObjectives: MAX_OBJECTIVES }));
+      // Parameters do not influence workflow boundaries. Give the fallback the
+      // authored body only, then append parameters exactly once to every
+      // validated objective below.
+      const compiled = normalizeFallback(await llmFallback({ skill, body, args, maxObjectives: MAX_OBJECTIVES }));
       return withNaturalArguments(validateCompiledObjectives(compiled), args);
     } catch { /* preserve the safe mono-intention fallback */ }
   }
@@ -87,10 +89,6 @@ function naturalArgumentBlock(args) {
     .map(([name, value]) => `${name}: ${value}`)
     .join('\n');
   return suffix ? `\n\nUser parameters:\n${suffix}` : '';
-}
-
-function interpolateNaturalArguments(body, args) {
-  return `${String(body ?? '').trim()}${naturalArgumentBlock(args)}`;
 }
 
 // Applied after validation: a parameter named `agent` or `tool` would otherwise

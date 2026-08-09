@@ -301,9 +301,13 @@ export function startRuntimeServer({
             return;
           }
           validateContractInDev('runRequest', { ...body, input });
-          const skillMatch = body.skillName
-            ? matchSkillInvocation(context.session, input, { allowReserved: true })
-            : matchSkillInvocation(context.session, input);
+          const explicitSkillName = String(body.skillName ?? '').trim().toLowerCase();
+          const invokedSkillName = /^\/([A-Za-z0-9_-]+)/.exec(input)?.[1]?.toLowerCase() ?? '';
+          const skillMatch = matchSkillInvocation(context.session, input, {
+            // Reserved names are unlocked only by a matching structured skill
+            // invocation, never by an unrelated truthy marker in the body.
+            allowReserved: Boolean(explicitSkillName && explicitSkillName === invokedSkillName),
+          });
           if (skillMatch) {
             try {
               const result = await enqueueSkillInvocation(context, skillMatch);
@@ -717,9 +721,12 @@ export function startRuntimeServer({
   async function enqueueSkillInvocation(context, match) {
     const args = parseSkillArguments(match.skill, match.rawArgs);
     const legacy = applyLegacySkillPlaceholders(match.skill.body, args);
+    const naturalArgs = Object.fromEntries(
+      Object.entries(args).filter(([name]) => !legacy.deprecatedPlaceholders.includes(name)),
+    );
     const objectives = await compileSkillObjectives(
       { ...match.skill, body: legacy.body },
-      legacy.deprecatedPlaceholders.length ? {} : args,
+      naturalArgs,
       { llmFallback: createSkillCompilerFallback(context.session?.llm, { timeoutMs: 8_000 }) },
     );
     const chainId = `chain-${randomUUID()}`;

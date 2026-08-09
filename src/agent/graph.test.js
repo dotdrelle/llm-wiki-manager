@@ -49,6 +49,19 @@ test('an optional messaging connector notification is not connector setup', () =
   assert.equal(target, null);
 });
 
+test('a connection problem still routes to connector configuration', () => {
+  const target = connectorConfigurationTarget({
+    agentProjection: { conversation: [] },
+    mcp: {
+      acme: {
+        status: 'connected',
+        tools: [{ name: 'acme_auth', description: 'Authenticate ACME credentials.' }],
+      },
+    },
+  }, 'There is a connection problem reaching ACME; check the credentials.');
+  assert.deepEqual(target, { serverName: 'acme', setupTool: 'acme_auth' });
+});
+
 test('Donna cannot answer an explicit action with manual instructions instead of delegating', async () => {
   const originalFetch = globalThis.fetch;
   let delegated = false;

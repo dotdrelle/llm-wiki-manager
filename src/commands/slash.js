@@ -721,9 +721,10 @@ Options:
   --once <prompt>      Run one agent turn and exit
   --headless           Run a workspace task non-interactively
   --workspace <name>   Initial workspace (interactive or --headless)
-  --skill <name>       Skill to run in --headless (implies --wait)
+  --skill "<name> [args]"  Skill invocation for --headless (implies --wait)
   --prompt <text>      Task or extra instruction for --headless
   --log-file <path>    Optional headless log path
+  --auto-approve       Approve validated headless run revisions automatically
   --wait               Wait for active jobs to complete after agent turn (--prompt only)
   --no-wait            Disable agentic loop for --skill (single turn)
   --timeout <seconds>  Per-wave job wait timeout in seconds (default: 3600)
@@ -1431,7 +1432,17 @@ export async function handleSlashCommand(line, context) {
         // would silently revert the item to waiting (fake cancel).
         const localItem = (context.session.jobQueue ?? []).find((item) => String(item.id) === String(id));
         if (localItem?.origin === 'runtime' || (!localItem && runtimeManagedItemId(context, id))) {
-          return { output: 'Item géré par le runtime — utilisez /run kill (global) ou /run cancel au lieu de /queue cancel.' };
+          if (!context.runtime?.url) return { output: 'Item géré par le runtime — reconnectez le runtime pour l’annuler, ou utilisez /run cancel ou /run kill.' };
+          try {
+            const result = await postRuntimeControl('cancel_item', {
+              url: context.runtime.url,
+              workspace: context.session.workspace ?? null,
+              id,
+            });
+            return { output: result.cancelled ? `Cancelled runtime queue item ${id}.` : `Runtime queue item ${id} was not cancelled.` };
+          } catch (err) {
+            return { output: `Runtime queue cancellation failed: ${err instanceof Error ? err.message : String(err)}` };
+          }
         }
         const result = await cancelQueueItem(context.session, id);
         return { output: result.message };

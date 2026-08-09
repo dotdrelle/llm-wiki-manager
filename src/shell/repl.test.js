@@ -654,6 +654,28 @@ test('/status remains an immediate deterministic display without Donna', async (
   assert.match(conversationMessages(session).at(-1)?.content ?? '', /Workspace · -/);
 });
 
+test('built-in /status keeps priority while /skills run status explicitly reaches runtime', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'shell-status-skill-'));
+  mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
+  writeFileSync(join(root, '.wiki', 'skills', 'status.md'), '---\nname: status\nparams: []\n---\nInspect services.');
+  const session = createSession();
+  session.workspace = 'docs';
+  session.workspacePath = root;
+  const requests = [];
+  const restore = stubFetch(async (url, options = {}) => {
+    requests.push({ path: pathOf(url), body: options.body ? JSON.parse(options.body) : null });
+    return jsonResponse(202, { accepted: true, kind: 'skill_chain', objectives: 1 });
+  });
+  try {
+    await runLine('/status', { agent: null, packageJson: { version: 'test' }, session, runtime: { url: 'http://runtime.test' } });
+    assert.equal(requests.length, 0, 'built-in status must stay local');
+    await runLine('/skills run status', { agent: null, packageJson: { version: 'test' }, session, runtime: { url: 'http://runtime.test' } });
+    assert.equal(requests[0].path, '/run');
+    assert.equal(requests[0].body.skillName, 'status');
+    assert.equal(requests[0].body.input, '/status');
+  } finally { restore(); }
+});
+
 test('runLine does not update workspace profile before Donna handles the request', async () => {
   const workspacePath = mkdtempSync(join(tmpdir(), 'donna-profile-shell-'));
   mkdirSync(join(workspacePath, '.wiki'), { recursive: true });

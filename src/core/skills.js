@@ -4,7 +4,7 @@ import { basename, join } from 'node:path';
 const SKILL_NAME_RE = /^[a-zA-Z0-9_-]{1,80}$/;
 const DEFAULT_UI_SKILL_DIR = '.wiki/skills';
 
-function parseFrontmatter(raw) {
+export function parseFrontmatter(raw) {
   const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!match) return { meta: {}, body: raw.trim() };
   const meta = {};

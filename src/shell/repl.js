@@ -19,6 +19,7 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { togglableAgentNames } from '../core/agentsCompose.js';
 import { loadWorkspaceProfile } from '../core/profile.js';
 import { listSkills } from '../core/skills.js';
+import { matchSkillInvocation } from '../core/skillInvocation.js';
 import { listWikircProfiles } from '../core/wikirc.js';
 import { listWorkspaces } from '../core/workspaces.js';
 import { fetchRuntimeState, postRuntimeApprove, postRuntimeCancel, postRuntimeControl, postRuntimeRun, postRuntimeShutdown, postRuntimeTurn, streamRuntimeEvents } from '../runtime/client.js';
@@ -1660,6 +1661,33 @@ export async function runLine(line, { agent, packageJson, session, onUpdate, onS
     return { exit: false };
   }
 
+  const explicitSkill = /^\/skills\s+run\s+([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/i.exec(trimmed);
+  const directSkill = matchSkillInvocation(session, trimmed);
+  const runtimeSkillInput = explicitSkill
+    ? `/${explicitSkill[1]}${explicitSkill[2] ? ` ${explicitSkill[2]}` : ''}`
+    : (directSkill ? trimmed : null);
+  if (runtimeSkillInput && runtime?.url) {
+    let outcome;
+    try {
+      const result = await postRuntimeRun(runtimeSkillInput, {
+        url: runtime.url,
+        workspace: session.workspace ?? null,
+        ...(explicitSkill ? { skillName: explicitSkill[1] } : {}),
+      });
+      outcome = { kind: result?.kind === 'skill_chain' ? 'queued' : 'accepted', result };
+    } catch (err) {
+      outcome = { kind: 'error', message: err instanceof Error ? err.message : String(err) };
+    }
+    applyRuntimeOutcome(session, outcome, (msg) => onStep?.(msg));
+    onUpdate?.();
+    return { exit: false, runtimeOutcome: outcome, skill: true };
+  }
+  if (runtimeSkillInput) {
+    conversationMessages(session).push({ role: 'command', content: 'Executable skills require the runtime. Start or reconnect it, then retry.' });
+    onUpdate?.();
+    return { exit: false, skill: true };
+  }
+
   const oneShotAgentInput = /^\/agent\s+(.+)$/s.exec(trimmed)?.[1]?.trim();
   if (oneShotAgentInput) {
     if (!runtime?.url) {
@@ -1732,6 +1760,7 @@ export async function runLine(line, { agent, packageJson, session, onUpdate, onS
   if (agentResult.aborted) return { exit: false, aborted: true };
   return { exit: false };
 }
+
 
 async function runPipeShell({ agent, packageJson, session }) {
   const rl = createInterface({ input, output, prompt: promptFor(session) });

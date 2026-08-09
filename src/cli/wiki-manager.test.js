@@ -8,7 +8,22 @@ import {
   resolveExecutorArguments,
   resolvePreparedDelegationApproval,
   startupWizardGaps,
+  waitForRuntimeChain,
 } from './wiki-manager.js';
+
+const CHAIN_SESSION = { runtime: { url: 'http://127.0.0.1:7788' }, workspace: 'demo' };
+
+function chainClient(states, { onApprove } = {}) {
+  let call = 0;
+  return {
+    fetchRuntimeState: async () => states[Math.min(call++, states.length - 1)],
+    postRuntimeApprove: async (args) => { onApprove?.(args); return { approved: true }; },
+  };
+}
+
+function chainItem(sequence, status, extra = {}) {
+  return { id: `control-${sequence}`, chainId: 'chain-1', chainSequence: sequence, status, ...extra };
+}
 
 const COLLECT_CAPABILITY = {
   description: 'Collect content from an external connector source.',
@@ -346,5 +361,79 @@ test('argument extraction keeps a value the vocabulary allows', async () => {
       workspace: 'acpi',
     }),
     { source_name: 'EAS_Avant_projet_ACPI' },
+  );
+});
+
+test('headless waits for every run of a skill chain, not just the first', async () => {
+  // wiki-sync compiles into two sequential runs: returning as soon as the
+  // export finishes would report success before the ingest had started.
+  const client = chainClient([
+    { controlQueue: [chainItem(0, 'running', { runId: 'run-a' }), chainItem(1, 'queued')] },
+    { controlQueue: [chainItem(0, 'done'), chainItem(1, 'running', { runId: 'run-b' })] },
+    { controlQueue: [chainItem(0, 'done'), chainItem(1, 'done')] },
+  ]);
+  const log = [];
+  const result = await waitForRuntimeChain(CHAIN_SESSION, log, {
+    chainId: 'chain-1', timeoutMs: 5000, pollMs: 1, client,
+  });
+  assert.equal(result.exitCode, 0);
+  assert.ok(log.some((line) => line.startsWith('chain-step 2/2: running')), 'second step must be observed');
+  assert.ok(log.some((line) => line.includes('2 step(s), 0 failed, 0 skipped')));
+});
+
+test('a failed chain step propagates a non-zero exit code and reports the skip', async () => {
+  const client = chainClient([
+    { controlQueue: [chainItem(0, 'running', { runId: 'run-a' }), chainItem(1, 'queued')] },
+    {
+      controlQueue: [
+        chainItem(0, 'failed'),
+        chainItem(1, 'skipped', { skipReason: 'required_predecessor_failed' }),
+      ],
+    },
+  ]);
+  const log = [];
+  const result = await waitForRuntimeChain(CHAIN_SESSION, log, {
+    chainId: 'chain-1', timeoutMs: 5000, pollMs: 1, client,
+  });
+  assert.equal(result.exitCode, 1);
+  assert.ok(log.some((line) => line.includes('required_predecessor_failed')));
+});
+
+test('a chain blocked on approval returns instead of hanging until the timeout', async () => {
+  const blocked = {
+    controlQueue: [chainItem(0, 'running', { runId: 'run-a' })],
+    approvals: [{ status: 'pending_approval', runId: 'run-a' }],
+  };
+  const log = [];
+  const result = await waitForRuntimeChain(CHAIN_SESSION, log, {
+    chainId: 'chain-1', timeoutMs: 5000, pollMs: 1, client: chainClient([blocked]),
+  });
+  assert.equal(result.exitCode, 0);
+  assert.ok(log.some((line) => line.includes('--auto-approve')));
+});
+
+test('--auto-approve grants the run-scoped approval of the active chain step once', async () => {
+  const approvals = [];
+  const client = chainClient([
+    {
+      controlQueue: [chainItem(0, 'running', { runId: 'run-a' })],
+      approvals: [{ status: 'pending_approval', runId: 'run-a', approvalClasses: ['mutation'] }],
+      planRevision: 3,
+    },
+    {
+      controlQueue: [chainItem(0, 'running', { runId: 'run-a' })],
+      approvals: [{ status: 'pending_approval', runId: 'run-a', approvalClasses: ['mutation'] }],
+      planRevision: 3,
+    },
+    { controlQueue: [chainItem(0, 'done')] },
+  ], { onApprove: (args) => approvals.push(args) });
+  const result = await waitForRuntimeChain(CHAIN_SESSION, [], {
+    chainId: 'chain-1', timeoutMs: 5000, pollMs: 1, autoApprove: true, client,
+  });
+  assert.equal(result.exitCode, 0);
+  assert.equal(approvals.length, 1, 'the same revision must not be approved twice');
+  assert.deepEqual(
+    { runId: approvals[0].runId, scope: approvals[0].scope, planRevision: approvals[0].planRevision },
+    { runId: 'run-a', scope: 'run', planRevision: 3 },
   );
 });

@@ -237,20 +237,53 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   // queue. They must appear in the Queue panel too — otherwise a queued run
   // request is invisible (Queue (0)) even though it is registered and will
   // start automatically.
+  // LOT G: a skill chain is shown as a chain — "wiki-sync 2/3 · Ingest files" —
+  // instead of 64 raw characters of objective. A chain also stays visible once
+  // it stops being active whenever it did not simply succeed: after /run cancel
+  // the point is precisely to see the cancelled step and the skipped remainder,
+  // which the plain active-only filter used to hide.
+  const chainByItemId = createMemo(() => {
+    version();
+    const chains = runtimeState()?.skillChains;
+    const index = new Map<string, any>();
+    if (!Array.isArray(chains)) return index;
+    for (const chain of chains) {
+      for (const step of chain.steps ?? []) {
+        index.set(String(step.id), { chain, step });
+      }
+    }
+    return index;
+  });
   const controlQueueItems = createMemo(() => {
     version();
     const controlQueue = runtimeState()?.controlQueue;
     if (!Array.isArray(controlQueue)) return [] as any[];
+    const chains = chainByItemId();
     return controlQueue
-      .filter((item: any) => ['queued', 'running', 'starting'].includes(String(item.status ?? '').toLowerCase()))
-      .map((item: any) => ({
-        ...item,
-        id: item.id,
-        label: `run: ${String(item.input ?? '').slice(0, 64)}`,
-        status: item.status,
-        _runtime: true,
-        _control: true,
-      }));
+      .filter((item: any) => {
+        const status = String(item.status ?? '').toLowerCase();
+        if (['queued', 'running', 'starting'].includes(status)) return true;
+        const entry = chains.get(String(item.id));
+        return Boolean(entry) && !['done', 'queued'].includes(String(entry.chain.status));
+      })
+      .map((item: any) => {
+        const entry = chains.get(String(item.id));
+        if (!entry) {
+          return { ...item, id: item.id, label: `run: ${String(item.input ?? '').slice(0, 64)}`, status: item.status, _runtime: true, _control: true };
+        }
+        const { chain, step } = entry;
+        const position = `${step.sequence + 1}/${chain.steps.length}`;
+        const reason = step.skipReason ? ` (${step.skipReason})` : '';
+        return {
+          ...item,
+          id: item.id,
+          label: `${chain.skillName ?? 'skill'} ${position} · ${step.label}${reason}`,
+          status: item.status,
+          _runtime: true,
+          _control: true,
+          _chainId: chain.chainId,
+        };
+      });
   });
   const queueItems = createMemo(() => {
     version();

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildAgentSystemPrompt, connectorConfigurationTarget, createAgentGraph, invalidSuggestedSlashCommands, invalidUserFacingToolNames, isOrchestrationBypassTool, knownCapabilityIds, normalizeToolArgumentsFromSchema } from './graph.js';
+import { bareToolCallJson, buildAgentSystemPrompt, connectorConfigurationTarget, createAgentGraph, invalidSuggestedSlashCommands, invalidUserFacingToolNames, isOrchestrationBypassTool, knownCapabilityIds, normalizeToolArgumentsFromSchema } from './graph.js';
 
 test('user-facing response guard hides MCP identifiers generically', () => {
   const session = sessionBase();
@@ -34,6 +34,19 @@ test('configuration routing retains the recent CME conversation context', () => 
     },
   }, 'configurer l’agent wiki');
   assert.deepEqual(target, { serverName: 'cme', setupTool: 'cme_setup' });
+});
+
+test('an optional messaging connector notification is not connector setup', () => {
+  const target = connectorConfigurationTarget({
+    agentProjection: { conversation: [] },
+    mcp: {
+      production: {
+        status: 'connected',
+        tools: [{ name: 'agent_plan', description: 'Plan production work.' }],
+      },
+    },
+  }, 'Run the production pipeline. If a messaging connector and a notification recipient are available, send a terminal summary.');
+  assert.equal(target, null);
 });
 
 test('Donna cannot answer an explicit action with manual instructions instead of delegating', async () => {
@@ -1342,6 +1355,35 @@ test('agent graph executes action inputs inside a runtime run instead of asking 
   }
 });
 
+test('runtime execute_run keeps in-run delegation available while interactive active runs do not', async () => {
+  const seenTools = [];
+  const delegated = [];
+  let turn = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    agentProjection: { status: 'running', conversation: [], activities: [] },
+    _currentRunIdentity: { runId: 'run-skill', turnId: 'run-skill:turn-1', workspace: 'docs' },
+    _delegateWithinRun: async (objective) => { delegated.push(objective); return { accepted: true }; },
+    llm: {
+      async completeWithTools({ tools }) {
+        seenTools.push(tools.map((tool) => tool.function.name));
+        turn += 1;
+        if (turn === 1) return {
+          content: null,
+          message: { role: 'assistant', content: null },
+          tool_calls: [{ id: 'delegate-1', type: 'function', function: { name: 'runtime__delegate', arguments: '{"objective":"run pipeline"}' } }],
+        };
+        return { content: 'Delegated.', message: { role: 'assistant', content: 'Delegated.' }, tool_calls: null };
+      },
+    },
+  });
+
+  const result = await createAgentGraph().invoke({ input: 'run pipeline', session });
+  assert.ok(seenTools[0].includes('runtime__delegate'));
+  assert.deepEqual(delegated, ['run pipeline']);
+  assert.equal(result.response, 'Delegated.');
+});
+
 test('agent graph lets Donna handle ambiguous input during a run with the control suite', async () => {
   // The canned "Peux-tu préciser ?" regex answer is gone: Donna converses,
   // armed with status/enqueue/cancel/kill/approve — and without write tools
@@ -1794,4 +1836,47 @@ test('Donna reads workspace inventory from the canonical wiki status tool', asyn
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+const LOT_F_SESSION = {
+  commands: [],
+  mcp: {
+    production: { status: 'connected', tools: [{ name: 'production_start_job' }] },
+    offline: { status: 'configured', tools: [{ name: 'never_discovered' }] },
+  },
+};
+
+test('LOT F: only real connected identifiers count as a leaked tool name', () => {
+  // A connected tool, and a hallucinated name on a connected server: both leak.
+  assert.deepEqual(
+    invalidUserFacingToolNames('Utilisez production__production_start_job.', LOT_F_SESSION),
+    ['production__production_start_job'],
+  );
+  assert.deepEqual(
+    invalidUserFacingToolNames('J’appelle production__does_not_exist.', LOT_F_SESSION),
+    ['production__does_not_exist'],
+  );
+  // Prose that merely contains a double underscore is not a tool name, and a
+  // server that is configured but not connected offers nothing to leak.
+  assert.deepEqual(invalidUserFacingToolNames('La colonne user__id vaut 3.', LOT_F_SESSION), []);
+  assert.deepEqual(invalidUserFacingToolNames('Voir offline__never_discovered.', LOT_F_SESSION), []);
+});
+
+test('LOT F: a JSON answer is only rejected when it is really a call to an offered tool', () => {
+  const tools = [{ function: { name: 'production__production_start_job' } }];
+  assert.equal(
+    bareToolCallJson('{"name":"production__production_start_job","arguments":{"type":"build"}}', tools),
+    'production__production_start_job',
+  );
+  assert.equal(
+    bareToolCallJson('```json\n{"tool":"production__production_start_job","parameters":{}}\n```', tools),
+    'production__production_start_job',
+  );
+  // A legitimate answer that happens to be JSON must survive untouched.
+  assert.equal(bareToolCallJson('{"retrieval":{"vector":{"provider":"ai-gateway"}}}', tools), null);
+  assert.equal(bareToolCallJson('{"name":"some_other_tool","arguments":{}}', tools), null);
+  assert.equal(bareToolCallJson('Voici un exemple : {"name":"x"}', tools), null);
+  assert.equal(bareToolCallJson('{"name":"production__production_start_job"}', tools), null);
+  // No tool offered this turn → nothing to mistake for a call.
+  assert.equal(bareToolCallJson('{"name":"production__production_start_job","arguments":{}}', []), null);
 });

@@ -365,14 +365,52 @@ export function invalidSuggestedSlashCommands(content, session) {
   return [...candidates].filter((command) => !allowed.has(command)).sort();
 }
 
+// Plan V4.1 LOT F. The guard exists to stop Donna leaking internal MCP
+// identifiers into a user-facing answer. It used to also flag every `x__y`
+// token in the text, which has nothing to do with tools: an ingested page
+// quoting `foo__bar`, a dunder, a column name — each one rejected a valid reply
+// and burned two retries. What must be caught is a real identifier: a tool that
+// is actually connected, or a name whose prefix is one of the connected MCP
+// servers (a hallucinated `production__nope` is still an internal detail).
 export function invalidUserFacingToolNames(content, session) {
   const text = String(content ?? '');
   const connected = buildLlmTools(session?.mcp)
     .map((item) => item?.function?.name)
     .filter(Boolean)
     .filter((name) => text.includes(name));
-  const syntactic = [...text.matchAll(/\b[a-z][a-z0-9_-]*__[a-z][a-z0-9_-]*\b/gi)].map((match) => match[0]);
-  return [...new Set([...connected, ...syntactic])].sort();
+  const connectedServers = new Set(
+    Object.entries(session?.mcp ?? {})
+      .filter(([, value]) => value?.status === 'connected')
+      .map(([serverName]) => serverName.toLowerCase()),
+  );
+  const namespaced = [...text.matchAll(/\b([a-z][a-z0-9_-]*)__([a-z][a-z0-9_-]*)\b/gi)]
+    .filter((match) => connectedServers.has(match[1].toLowerCase()))
+    .map((match) => match[0]);
+  return [...new Set([...connected, ...namespaced])].sort();
+}
+
+// Returns the tool name when `content` is, in substance, a tool call written as
+// text: a JSON object naming one of the tools offered this turn and carrying an
+// argument object. Anything else — prose, a JSON sample, an array, an object
+// that names no offered tool — is not a malformed call and is left alone.
+export function bareToolCallJson(content, tools = []) {
+  const cleaned = String(content ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  if (!cleaned.startsWith('{') || !cleaned.endsWith('}')) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const offered = new Set(tools.map((item) => item?.function?.name).filter(Boolean));
+  const name = [parsed.name, parsed.tool, parsed.tool_name, parsed.function?.name]
+    .find((candidate) => typeof candidate === 'string' && offered.has(candidate));
+  if (!name) return null;
+  const args = parsed.arguments ?? parsed.parameters ?? parsed.args ?? parsed.function?.arguments;
+  const hasArguments = typeof args === 'string'
+    || (args !== null && typeof args === 'object' && !Array.isArray(args));
+  return hasArguments ? name : null;
 }
 
 function parseActionJson(text) {
@@ -886,7 +924,10 @@ export function connectorConfigurationTarget(session, objective) {
     .map((message) => String(message?.content ?? ''))
     .join(' ');
   const text = `${recentContext} ${String(objective ?? '')}`.trim().toLowerCase();
-  if (!/(?:configur|connect|authent|oauth|setup|sign[ -]?in|\bpat\b|api[ _-]?token|credential|identifiant|mot de passe|password)/i.test(text)) return null;
+  // `connect` used to match the noun "connector" as a substring. Production
+  // skills mention an optional messaging connector, so that broad match could
+  // misclassify a business run as connector setup and reject delegation.
+  if (!/(?:configur|\bconnect(?:ed|ing)?\b|authent|oauth|setup|sign[ -]?in|\bpat\b|api[ _-]?token|credential|identifiant|mot de passe|password)/i.test(text)) return null;
   for (const [serverName, server] of Object.entries(session?.mcp ?? {})) {
     if (server?.status !== 'connected' || !Array.isArray(server.tools) || server.tools.length === 0) continue;
     const genericAliasParts = new Set([
@@ -1122,7 +1163,8 @@ function toolsForClassification(classification, writeTools, session = null) {
   // Provider discovery and validation belong to the runtime. Hiding
   // delegation while the shell snapshot is temporarily empty forced Donna
   // to invent commands instead of submitting the objective.
-  const capabilityRunTools = session?.runtime?.url && !classification.activeRun
+  const runtimeExecution = classification.kind === 'execute_run' && typeof session?._delegateWithinRun === 'function';
+  const capabilityRunTools = session?.runtime?.url && (!classification.activeRun || runtimeExecution)
     ? [RUNTIME_DELEGATE_TOOL]
     : [];
   if (classification.activeRun) {
@@ -1130,7 +1172,7 @@ function toolsForClassification(classification, writeTools, session = null) {
     // suite: she can answer, approve, enqueue for later, soft-cancel or
     // kill — but she must not fire new MCP jobs alongside the run (that is
     // what runtime__enqueue is for). No canned regex answers anywhere.
-    return [SHELL_READ_COMMAND_TOOL, ...controlTools];
+    return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools];
   }
   if (session?.runtime?.url) {
     // Offer every connected tool directly EXCEPT orchestration-bypass tools
@@ -1375,6 +1417,36 @@ export function createAgentGraph(options = {}) {
           inputClassification: classification,
           retryWithoutTool: false,
         };
+      }
+
+      // Plan V4.1 LOT F. Some OpenAI-compatible gateways answer a tool-capable
+      // turn by writing the call out as plain JSON text instead of emitting
+      // tool_calls. Shipping that to the user leaks a raw payload and executes
+      // nothing. Retry — but only when the turn actually offered tools and the
+      // text really is a call to one of them: a legitimate answer that happens
+      // to contain JSON (a config excerpt, an API sample) must go through
+      // untouched, which is why this is not a "content starts with {" test.
+      const bareCall = tools.length > 0 ? bareToolCallJson(result.content, tools) : null;
+      if (bareCall) {
+        const retries = Number(state.invalidToolCallRetries ?? 0);
+        if (retries < 2) {
+          state.session._onStreamReset?.();
+          state.session._onStep?.('Agent: tool call written as JSON text rejected; retrying…');
+          return {
+            pendingToolCalls: null,
+            messages: [
+              ...(iterations === 0 ? [{ role: 'user', content: state.input }] : []),
+              {
+                role: 'user',
+                content: `You described a call to ${bareCall} as JSON text instead of calling it. Issue a real tool call now, or answer in plain language. Never print the call as text.`,
+              },
+            ],
+            toolIterations: iterations + 1,
+            readyToStream: false,
+            inputClassification: classification,
+            invalidToolCallRetries: retries + 1,
+          };
+        }
       }
 
       if (runtimeExecution && iterations === 0 && !state.retryWithoutTool) {

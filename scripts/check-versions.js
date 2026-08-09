@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -25,6 +25,34 @@ function matchVersion(relativePath, pattern, label) {
   const text = readText(relativePath);
   const match = pattern.exec(text);
   addCheck(label, match ? match[1] : '<missing>', targetVersion);
+}
+
+// Optional siblings: agent-mailer-api and agent-connectors are built and pushed
+// by build-and-push.sh but are NOT checked out by llm-wiki-manager's CI, which
+// only clones llm-wiki, agent-wiki-production, agent-cme and
+// agent-wiki-documents. A hard check would turn every CI run red, so an absent
+// repository is skipped and reported as such; when it IS present — locally and
+// in the release script — it is checked like any other.
+const skipped = [];
+
+function repoPresent(relativePath) {
+  return existsSync(resolve(repoRoot, relativePath));
+}
+
+function optionalMatchVersion(relativePath, pattern, label) {
+  if (!repoPresent(relativePath)) {
+    skipped.push(`${label} (${relativePath} not checked out)`);
+    return;
+  }
+  matchVersion(relativePath, pattern, label);
+}
+
+function optionalJsonVersion(relativePath, label, pick = (json) => json.version) {
+  if (!repoPresent(relativePath)) {
+    skipped.push(`${label} (${relativePath} not checked out)`);
+    return;
+  }
+  addCheck(label, pick(readJson(relativePath)), targetVersion);
 }
 
 const managerPackage = readJson('llm-wiki-manager/package.json');
@@ -54,6 +82,29 @@ for (const [relativePath, pattern, label] of [
   matchVersion(relativePath, pattern, label);
 }
 
+// Shipped by build-and-push.sh, absent from CI's checkout matrix.
+optionalMatchVersion(
+  'agent-external/agent-mailer-api/mailer_mcp_server.py',
+  /_AGENT_VERSION\s*=\s*"([^"]+)"/,
+  'mailer agent',
+);
+optionalJsonVersion('agent-external/agent-connectors/package.json', 'connectors package');
+optionalJsonVersion(
+  'agent-external/agent-connectors/package-lock.json',
+  'connectors package-lock',
+  (json) => json.version,
+);
+optionalJsonVersion(
+  'agent-external/agent-connectors/package-lock.json',
+  'connectors package-lock root package',
+  (json) => json.packages?.['']?.version ?? '<missing>',
+);
+optionalMatchVersion(
+  'agent-external/agent-connectors/src/server.ts',
+  /CONNECTORS_VERSION\s*=\s*'([^']+)'/,
+  'connectors MCP serverInfo',
+);
+
 if (process.env.CHECK_GIT_TAG === '1') {
   try {
     const tag = execFileSync('git', ['describe', '--tags', '--exact-match'], {
@@ -75,6 +126,8 @@ if (process.env.CHECK_DOCKER_IMAGES === '1') {
     'agent-cme',
     'agent-wiki-documents',
     'agent-wiki-production',
+    'agent-mailer-api',
+    'agent-connectors',
   ];
   for (const suffix of imageSuffixes) {
     const image = `${registryNamespace}/${suffix}`;
@@ -115,6 +168,9 @@ const failed = checks.filter((check) => !check.ok);
 for (const check of checks) {
   const status = check.ok ? 'ok' : 'FAIL';
   console.log(`${status} ${check.label}: ${check.actual}`);
+}
+for (const note of skipped) {
+  console.log(`skip ${note}`);
 }
 
 if (failed.length) {

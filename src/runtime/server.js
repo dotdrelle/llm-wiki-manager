@@ -8,6 +8,10 @@ import { runtimeTokenFromEnv } from './auth.js';
 import { controlMessage } from './controlMessages.js';
 import { tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
 import { approvalClassForTask } from '../orchestrator/approvalPolicy.js';
+import { matchSkillInvocation, parseSkillArguments, applyLegacySkillPlaceholders } from '../core/skillInvocation.js';
+import { compileSkillObjectives, createSkillCompilerFallback } from '../core/skillCompiler.js';
+import { reconcileControlQueue } from './controlDrain.js';
+import { cancelControlChain, cancelQueuedControlItem } from './controlCancellation.js';
 
 export function startRuntimeServer({
   host = '127.0.0.1',
@@ -200,6 +204,21 @@ export function startRuntimeServer({
           });
           return;
         }
+        if (action === 'cancel_item') {
+          const itemId = String(body.itemId ?? body.id ?? '').trim();
+          if (!itemId) {
+            sendJson(response, 400, { error: 'Missing itemId.' });
+            return;
+          }
+          validateContractInDev('controlMessage', { ...body, action, id: itemId });
+          const result = cancelQueuedControlItem(context.session, itemId, {
+            cancelItem: (item, reason) => emitControlCancelled(context, item, reason),
+            skipItem: (item, reason) => emitControlSkipped(context, item, reason),
+          });
+          void drainControlQueue(context);
+          sendJson(response, result.cancelled ? 202 : 200, { ...result, ...controlStatus(context, store) });
+          return;
+        }
         sendJson(response, 400, { error: 'Unsupported control action.' });
         return;
       }
@@ -282,6 +301,18 @@ export function startRuntimeServer({
             return;
           }
           validateContractInDev('runRequest', { ...body, input });
+          const skillMatch = body.skillName
+            ? matchSkillInvocation(context.session, input, { allowReserved: true })
+            : matchSkillInvocation(context.session, input);
+          if (skillMatch) {
+            try {
+              const result = await enqueueSkillInvocation(context, skillMatch);
+              sendJson(response, 202, { accepted: true, kind: 'skill_chain', ...result, ...controlStatus(context, store) });
+            } catch (err) {
+              sendJson(response, skillInvocationErrorStatus(err), { error: skillInvocationErrorMessage(err), code: err?.code ?? 'skill_compile_failed' });
+            }
+            return;
+          }
           if (context.running) {
             // A structured capability plan must never degrade into a free-text
             // control message: its exact arguments and approval policy would
@@ -339,6 +370,16 @@ export function startRuntimeServer({
         // run is active. Other interactive turns still become control
         // messages so they cannot start a competing agent decision.
         const readOnlyChat = String(body.mode ?? '').toLowerCase() === 'chat';
+        const skillMatch = !readOnlyChat ? matchSkillInvocation(context.session, input) : null;
+        if (skillMatch) {
+          try {
+            const result = await enqueueSkillInvocation(context, skillMatch);
+            sendJson(response, 202, { accepted: true, kind: 'skill_chain', ...result, ...controlStatus(context, store) });
+          } catch (err) {
+            sendJson(response, skillInvocationErrorStatus(err), { error: skillInvocationErrorMessage(err), code: err?.code ?? 'skill_compile_failed' });
+          }
+          return;
+        }
         if (context.running && !readOnlyChat) {
           const result = await handleControlMessage(context, store, input, {
             intent: body.intent,
@@ -436,6 +477,10 @@ export function startRuntimeServer({
           sendJson(response, 200, { cancelled: false, reason: 'no active run' });
           return;
         }
+        cancelControlChain(context.session, {
+          runId: context.currentRunId,
+          cancelItem: (item, reason) => emitControlSkipped(context, item, reason),
+        });
         context.currentAbortController.abort();
         await cancel?.(context);
         sendJson(response, 202, { cancelled: true, workspace: context.workspace ?? workspace ?? null });
@@ -561,7 +606,7 @@ export function startRuntimeServer({
         host,
         port: typeof address === 'object' && address ? address.port : port,
         publish,
-        drainControl: (context) => startNextControlRequest(context),
+        drainControl: (context) => drainControlQueue(context),
         close: () => new Promise((closeResolve, closeReject) => {
           for (const client of clients) client.response.end();
           clients.clear();
@@ -649,22 +694,54 @@ export function startRuntimeServer({
         context.currentRunId = null;
         context.currentRunWorkspace = null;
         publishState(runWorkspace, context);
-        void startNextControlRequest(context);
+        void drainControlQueue(context);
       });
     return { accepted: true, runId, workspace: runWorkspace, ...(ready ? { ready } : {}) };
   }
 
   function startNextControlRequest(context) {
-    if (!context?.session || context.running) return false;
-    const item = controlQueueFor(context.session).find((entry) => entry.status === 'queued');
-    if (!item) return false;
-    startRuntimeRun(context, {
-      input: item.input,
-      workspace: item.workspace ?? context.workspace ?? null,
-      ...(item.capabilityPlan !== undefined ? { capabilityPlan: item.capabilityPlan } : {}),
-    }, { controlItemId: item.id });
-    return true;
+    return drainControlQueue(context);
   }
+
+  function drainControlQueue(context) {
+    return reconcileControlQueue(context, {
+      startItem: (item) => startRuntimeRun(context, {
+        input: item.input,
+        workspace: item.workspace ?? context.workspace ?? null,
+        ...(item.capabilityPlan !== undefined ? { capabilityPlan: item.capabilityPlan } : {}),
+      }, { controlItemId: item.id }),
+      skipItem: (item, reason) => emitControlSkipped(context, item, reason),
+    });
+  }
+
+  async function enqueueSkillInvocation(context, match) {
+    const args = parseSkillArguments(match.skill, match.rawArgs);
+    const legacy = applyLegacySkillPlaceholders(match.skill.body, args);
+    const objectives = await compileSkillObjectives(
+      { ...match.skill, body: legacy.body },
+      legacy.deprecatedPlaceholders.length ? {} : args,
+      { llmFallback: createSkillCompilerFallback(context.session?.llm, { timeoutMs: 8_000 }) },
+    );
+    const chainId = `chain-${randomUUID()}`;
+    const items = objectives.map((objective, chainSequence) => enqueueControlRequest(context, objective.text, {
+      chainId,
+      chainSequence,
+      skillName: match.skill.name,
+      optional: objective.optional,
+      continueOnFailure: objective.continueOnFailure,
+    }));
+    void drainControlQueue(context);
+    return { chainId, skill: match.skill.name, objectives: objectives.length, items, deprecatedPlaceholders: legacy.deprecatedPlaceholders };
+  }
+}
+
+function skillInvocationErrorStatus(error) {
+  return ['skill_compile_failed', 'skill_arguments_invalid'].includes(error?.code) ? 400 : 422;
+}
+
+function skillInvocationErrorMessage(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return `Skill invocation could not be compiled: ${message}`;
 }
 
 function workspaceFromUrl(url) {
@@ -875,7 +952,7 @@ async function handleControlMessage(context, store, input, { intent = null, star
     : controlMessage(context?.session, 'converse_while_idle'));
 }
 
-function enqueueControlRequest(context, input, { capabilityPlan } = {}) {
+function enqueueControlRequest(context, input, { capabilityPlan, chainId, chainSequence, skillName, optional = false, continueOnFailure = false } = {}) {
   const now = new Date().toISOString();
   const item = {
     id: `control-${randomUUID()}`,
@@ -886,6 +963,11 @@ function enqueueControlRequest(context, input, { capabilityPlan } = {}) {
     createdAt: now,
     updatedAt: now,
     ...(capabilityPlan !== undefined ? { capabilityPlan } : {}),
+    ...(chainId ? { chainId } : {}),
+    ...(Number.isInteger(chainSequence) ? { chainSequence } : {}),
+    ...(skillName ? { skillName } : {}),
+    optional: optional === true,
+    continueOnFailure: continueOnFailure === true,
   };
   dispatchAgentEvent(context.session, createAgentEvent('control_enqueued', {
     origin: 'runtime',
@@ -893,6 +975,22 @@ function enqueueControlRequest(context, input, { capabilityPlan } = {}) {
     payload: item,
   }));
   return item;
+}
+
+function emitControlSkipped(context, item, reason) {
+  dispatchAgentEvent(context.session, createAgentEvent('control_skipped', {
+    origin: 'runtime',
+    workspace: item.workspace ?? context.workspace ?? null,
+    payload: { id: item.id, reason, finishedAt: new Date().toISOString() },
+  }));
+}
+
+function emitControlCancelled(context, item, reason) {
+  dispatchAgentEvent(context.session, createAgentEvent('control_cancelled', {
+    origin: 'runtime',
+    workspace: item.workspace ?? context.workspace ?? null,
+    payload: { id: item.id, reason, finishedAt: new Date().toISOString() },
+  }));
 }
 
 function storeControlProposal(context, input, classification, status) {

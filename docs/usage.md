@@ -35,6 +35,21 @@ as a **script** (one command, or a sequence of commands), launched on demand or
 **scheduled** (for example "update the wiki every morning"). Ideal for repetitive,
 automated tasks.
 
+For executable workspace skills, scripting mode uses the same persistent
+runtime as the Shell and the web interface:
+
+```bash
+wiki-manager --headless --workspace my-project --skill pipeline
+wiki-manager --headless --workspace my-project --skill "wiki-sync team-space"
+```
+
+The first command produces one runtime run because the production capability
+owns its internal DAG. The second produces a sequential chain (source export,
+then ingest). Headless waits for every item carrying the returned `chainId`,
+returns non-zero if one fails, and reports a pending approval immediately rather
+than waiting for the general timeout. Use `--auto-approve` only for an explicitly
+trusted unattended workflow.
+
 ### 3. The driver assistant (shell) — to talk in plain language
 
 It's a **shell that works like Claude**: you write your request in plain language,

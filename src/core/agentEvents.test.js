@@ -396,6 +396,21 @@ test('reduceAgentEvents: control_enqueued preserves a structured capabilityPlan 
   assert.equal(item.status, 'running');
 });
 
+test('reduceAgentEvents: chain metadata survives replay and control_skipped is terminal', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('control_enqueued', { payload: {
+      id: 'chain-step-2', input: 'ingest', chainId: 'chain-1', chainSequence: 1,
+      skillName: 'wiki-sync', optional: false, continueOnFailure: false,
+    } }),
+    createAgentEvent('control_skipped', { payload: { id: 'chain-step-2', reason: 'chain_cancelled' } }),
+  ]);
+  assert.equal(projection.controlQueue[0].chainId, 'chain-1');
+  assert.equal(projection.controlQueue[0].chainSequence, 1);
+  assert.equal(projection.controlQueue[0].skillName, 'wiki-sync');
+  assert.equal(projection.controlQueue[0].status, 'skipped');
+  assert.equal(projection.controlQueue[0].skipReason, 'chain_cancelled');
+});
+
 test('reduceAgentEvents: activity-owned plan is used when no orchestrator plan exists', () => {
   const projection = reduceAgentEvents([
     createAgentEvent('activity_upserted', {

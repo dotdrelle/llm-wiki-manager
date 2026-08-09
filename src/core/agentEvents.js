@@ -2,6 +2,7 @@ import { normalizeActivity } from './activity.js';
 import { attachActivityToExistingPlan, syncActivitiesToPlan } from './plan.js';
 import { applyPlanPatch, normalizePlanPatch, normalizePlanRevision, rebasePlanPatch } from './planPatch.js';
 import { formatRuntimeLogPayload } from './runtimeLog.js';
+import { projectSkillChains } from './skillChainView.js';
 import { projectWorkflow } from './workflow.js';
 import { validateContractInDev } from '../contracts/schemas.js';
 import { isTerminal, isSuccessful, isUnknownStatus, normalizeTaskStatus } from '../orchestrator/taskStatuses.js';
@@ -41,6 +42,7 @@ const SESSION_PROJECTION_EVENTS = new Set([
   'control_enqueued',
   'control_started',
   'control_cancelled',
+  'control_skipped',
   'agent.registered',
   'agent.health_changed',
   'run_done',
@@ -208,6 +210,8 @@ function publicProjection(state) {
       patch: patch.patch ? { ...patch.patch, operations: (patch.patch.operations ?? []).map((operation) => ({ ...operation })) } : null,
     })),
     controlQueue: state.controlQueue.map((item) => ({ ...item })),
+    // LOT G: the chain is a projection, never stored state.
+    skillChains: projectSkillChains(state.controlQueue),
     agents: Object.values(state.agents)
       .map((agent) => ({ ...agent, description: cloneJson(agent.description) }))
       .sort((a, b) => a.agentInstanceId.localeCompare(b.agentInstanceId)),
@@ -224,6 +228,10 @@ export function applyAgentProjectionToSession(session, projection) {
   session.headlessPlan = projection.plan ? projection.plan.map((step) => ({ ...step })) : null;
   session.activities = Object.fromEntries((projection.activities ?? []).map((activity) => [activity.key, { ...activity }]));
   session.controlQueue = (projection.controlQueue ?? []).map((item) => ({ ...item }));
+  session.skillChains = (projection.skillChains ?? []).map((chain) => ({
+    ...chain,
+    steps: chain.steps.map((step) => ({ ...step })),
+  }));
   session.agents = (projection.agents ?? []).map((agent) => ({ ...agent, description: cloneJson(agent.description) }));
   session.planRevision = projection.planRevision ?? 0;
   session.planPatches = (projection.planPatches ?? []).map((patch) => ({ ...patch }));
@@ -567,6 +575,11 @@ function applyEvent(state, event) {
         createdAt: event.payload?.createdAt ?? event.ts,
         updatedAt: event.ts,
         ...(event.payload?.capabilityPlan !== undefined ? { capabilityPlan: event.payload.capabilityPlan } : {}),
+        ...(event.payload?.chainId ? { chainId: event.payload.chainId } : {}),
+        ...(event.payload?.skillName ? { skillName: event.payload.skillName } : {}),
+        ...(Number.isInteger(event.payload?.chainSequence) ? { chainSequence: event.payload.chainSequence } : {}),
+        optional: event.payload?.optional === true,
+        continueOnFailure: event.payload?.continueOnFailure === true,
       });
       return;
     case 'control_started':
@@ -582,6 +595,15 @@ function applyEvent(state, event) {
       upsertControlItem(state.controlQueue, {
         id: event.payload?.id ?? null,
         status: 'cancelled',
+        finishedAt: event.payload?.finishedAt ?? event.ts,
+        updatedAt: event.ts,
+      });
+      return;
+    case 'control_skipped':
+      upsertControlItem(state.controlQueue, {
+        id: event.payload?.id ?? null,
+        status: 'skipped',
+        skipReason: event.payload?.reason ?? null,
         finishedAt: event.payload?.finishedAt ?? event.ts,
         updatedAt: event.ts,
       });

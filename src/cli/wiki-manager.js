@@ -599,7 +599,14 @@ async function runHeadless(argv, agent) {
   const maxTurnsArg = valueAfter(argv, '--max-turns');
   const timeoutMs = (Number.isFinite(Number(timeoutArg)) ? Math.max(1, Number(timeoutArg)) : 3600) * 1000;
   const maxTurns = Number.isFinite(Number(maxTurnsArg)) ? Math.max(1, Number(maxTurnsArg)) : 20;
+  // --skill accepts its arguments inline, exactly like the Shell and serve
+  // invocation: --skill "deliver rapport polish".
+  const skillArgv = String(skillName ?? '').trim().split(/\s+/).filter(Boolean);
+  const skillId = skillArgv[0] ?? null;
+  const skillArgs = skillArgv.slice(1).join(' ');
   // --skill uses the agentic loop (multi-turn); --prompt uses a single turn unless --wait is set.
+  // The loop is the legacy local path only: when the runtime answers, the skill
+  // is compiled and executed server-side and there is no local loop to run.
   const useAgenticLoop = Boolean(skillName) && !argv.includes('--no-wait');
   const wait = !useAgenticLoop && (argv.includes('--wait'));
   const log = [`wiki-manager ${packageJson.version} headless`, `startedAt=${new Date().toISOString()}`];
@@ -653,6 +660,43 @@ async function runHeadless(argv, agent) {
     session._onStep = step;
 
     let input = prompt;
+    // Plan §24: headless must resolve executable skills through the same
+    // runtime resolver as the Shell and serve. Injecting the skill body into a
+    // local prompt bypasses the compiler, so a multi-capability skill such as
+    // wiki-sync would collapse into a single run here while producing two
+    // everywhere else — and the rewritten bodies are business intentions, not
+    // the step-by-step procedures the local prompt still expects.
+    if (skillId && session.runtime?.url) {
+      if (prompt) {
+        step('headless: --prompt is ignored when --skill runs through the runtime.');
+      }
+      const invocation = `/${skillId}${skillArgs ? ` ${skillArgs}` : ''}`;
+      log.push(`skill=${invocation}`);
+      const { postRuntimeRun } = await import('../runtime/client.js');
+      let accepted;
+      try {
+        accepted = await postRuntimeRun(invocation, {
+          url: session.runtime.url,
+          workspace: session.workspace ?? null,
+          skillName: skillId,
+        });
+      } catch (err) {
+        throw new Error(`Skill invocation failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (accepted?.kind !== 'skill_chain') {
+        throw new Error(`Skill not found: ${skillId}`);
+      }
+      step(`skill: ${accepted.skill} compiled into ${accepted.objectives} objective(s), chain ${accepted.chainId}`);
+      const { exitCode: chainExit } = await waitForRuntimeChain(session, log, {
+        chainId: accepted.chainId,
+        timeoutMs,
+        autoApprove: argv.includes('--auto-approve'),
+      });
+      const saved = await writeHeadlessLog(session, log, logFile);
+      console.log(`Headless log: ${saved}`);
+      if (chainExit !== 0) process.exitCode = chainExit;
+      return;
+    }
     if (skillName) {
       const skillResult = await handleSlashCommand(`/skills run ${skillName}`, { packageJson, session, onStep: step });
       if (skillResult.output && !skillResult.rawOutput) log.push(skillResult.output);
@@ -715,6 +759,115 @@ async function runHeadless(argv, agent) {
     }
     throw err;
   }
+}
+
+// A skill may compile into several sequential runs, so waiting on "the run this
+// turn created" is not enough: wiki-sync would report success as soon as the
+// export finished, before the ingest had even started. The control queue is the
+// only place where the whole chain is observable, so the wait is scoped to
+// chainId and ends when every item of that chain is terminal.
+const CHAIN_TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled', 'skipped']);
+
+export async function waitForRuntimeChain(session, log, {
+  chainId,
+  timeoutMs,
+  pollMs = 1500,
+  autoApprove = false,
+  client = null,
+} = {}) {
+  const { fetchRuntimeState, postRuntimeApprove } = client ?? await import('../runtime/client.js');
+  const url = session.runtime?.url;
+  const workspace = session.workspace ?? null;
+  if (!url || !chainId) return { exitCode: 0 };
+  const deadline = Date.now() + timeoutMs;
+  const approvedRevisions = new Set();
+  const reported = new Map();
+  let lastLogCount = 0;
+  while (Date.now() < deadline) {
+    let state;
+    try {
+      state = await fetchRuntimeState({ url, workspace });
+    } catch (err) {
+      const line = `chain-wait: state fetch failed (${err instanceof Error ? err.message : String(err)})`;
+      log.push(line); console.error(line);
+      return { exitCode: 1 };
+    }
+    const logs = Array.isArray(state?.logs) ? state.logs : [];
+    for (const entry of logs.slice(lastLogCount)) {
+      const text = typeof entry === 'string' ? entry : String(entry?.message ?? JSON.stringify(entry));
+      log.push(`runtime: ${text}`); console.log(`[runtime] ${text}`);
+    }
+    lastLogCount = logs.length;
+
+    const items = (Array.isArray(state?.controlQueue) ? state.controlQueue : [])
+      .filter((item) => item?.chainId === chainId)
+      .sort((a, b) => Number(a.chainSequence ?? 0) - Number(b.chainSequence ?? 0));
+    if (items.length === 0) {
+      const line = `chain-wait: chain ${chainId} is not visible in the runtime queue.`;
+      log.push(line); console.error(line);
+      return { exitCode: 1 };
+    }
+    for (const item of items) {
+      const status = String(item.status ?? 'queued');
+      if (reported.get(item.id) === status) continue;
+      reported.set(item.id, status);
+      const line = `chain-step ${Number(item.chainSequence ?? 0) + 1}/${items.length}: ${status}${item.skipReason ? ` (${item.skipReason})` : ''}`;
+      log.push(line); console.log(`[runtime] ${line}`);
+    }
+
+    const active = items.find((item) => item.status === 'running');
+    if (autoApprove && active?.runId) {
+      const pending = (Array.isArray(state?.approvals) ? state.approvals : [])
+        .filter((approval) => approval.status === 'pending_approval'
+          && (approval.runId == null || String(approval.runId) === String(active.runId)));
+      const planRevision = state?.planRevision ?? 0;
+      const revisionKey = `${active.runId}:${planRevision}`;
+      if (pending.length > 0 && !approvedRevisions.has(revisionKey)) {
+        approvedRevisions.add(revisionKey);
+        const approvalClasses = [...new Set(pending.flatMap((approval) => {
+          const value = approval.approvalClasses ?? approval.approvalClass ?? [];
+          return Array.isArray(value) ? value : [value];
+        }).map(String).filter(Boolean))];
+        try {
+          await postRuntimeApprove({
+            url,
+            workspace,
+            runId: active.runId,
+            scope: 'run',
+            planRevision,
+            approvalClasses: approvalClasses.length > 0 ? approvalClasses : ['default'],
+          });
+          const line = `chain-wait: auto-approved run ${active.runId} (revision ${planRevision})`;
+          log.push(line); console.log(line);
+        } catch (err) {
+          const line = `chain-wait: auto-approve failed (${err instanceof Error ? err.message : String(err)})`;
+          log.push(line); console.error(line);
+          return { exitCode: 1 };
+        }
+      }
+    }
+    if (!autoApprove) {
+      const blocked = (Array.isArray(state?.approvals) ? state.approvals : [])
+        .some((approval) => approval.status === 'pending_approval');
+      if (blocked && active) {
+        const line = `chain-wait: chain ${chainId} is waiting for approval; re-run with --auto-approve to drive it through.`;
+        log.push(line); console.log(line);
+        return { exitCode: 0 };
+      }
+    }
+
+    if (items.every((item) => CHAIN_TERMINAL_STATUSES.has(String(item.status)))) {
+      const failed = items.filter((item) => item.status === 'failed');
+      const skipped = items.filter((item) => item.status === 'skipped');
+      const summary = `chain ${chainId}: ${items.length} step(s), ${failed.length} failed, ${skipped.length} skipped`;
+      log.push(summary); console.log(`[runtime] ${summary}`);
+      return { exitCode: failed.length > 0 ? 1 : 0 };
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  const line = `chain-wait: timeout waiting for chain ${chainId} to finish.`;
+  log.push(line); console.error(line);
+  return { exitCode: 1 };
 }
 
 async function runRuntime(argv, agent) {
@@ -1013,7 +1166,7 @@ async function runRuntime(argv, agent) {
       }
       emitRuntimeLog(context.session, manual ? 'runtime: manual resume completed' : 'runtime: recovery completed');
       const controlStarted = pollingActivities.length === 0
-        ? serverHandle?.drainControl?.(context) === true
+        ? await serverHandle?.drainControl?.(context) === true
         : false;
       return {
         workspace: context.workspace ?? workspace ?? null,

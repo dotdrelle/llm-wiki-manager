@@ -401,7 +401,7 @@ export const contractSchemas = {
     required: ['action'],
     additionalProperties: true,
     properties: {
-      action: { type: 'string', enum: ['status', 'explain', 'message', 'enqueue', 'approve_patch', 'reject_patch'] },
+      action: { type: 'string', enum: ['status', 'explain', 'message', 'enqueue', 'cancel_item', 'approve_patch', 'reject_patch'] },
       input: { type: 'string' },
       message: { type: 'string' },
       prompt: { type: 'string' },

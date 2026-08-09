@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { createInteractiveSession, ensureInteractiveAssistantMessage } from '../cli/wiki-manager.js';
 import { approvalRequestFromStatus, runtimeState, startRuntimeServer as startRuntimeServerImpl } from './server.js';
@@ -1483,6 +1486,61 @@ test('runtime server handle drains a pre-existing hydrated control request', asy
   } finally {
     await handle.close();
   }
+});
+
+test('POST /run compiles a workspace skill into a sequential runtime chain', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'runtime-skill-'));
+  mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
+  writeFileSync(join(root, '.wiki', 'skills', 'wiki-sync.md'), '---\nname: wiki-sync\nparams:\n  - source\n---\nExport the source.\n\nThen ingest the files.');
+  const session = { workspace: 'acme', workspacePath: root, controlQueue: [] };
+  const context = { workspace: 'acme', session, running: false, currentAbortController: null };
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1', port: 0,
+      store: { dbPath: ':memory:', getState: () => ({ status: 'idle', plan: [], queue: [], approvals: [] }), listEvents: () => [] },
+      getContext: async () => context,
+      run: async () => new Promise(() => {}),
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw err;
+  }
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/run?workspace=acme`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ input: '/wiki-sync docs' }) });
+    const body = await response.json();
+    assert.equal(response.status, 202);
+    assert.equal(body.kind, 'skill_chain');
+    assert.equal(body.objectives, 2);
+    assert.equal(session.controlQueue.length, 2);
+    assert.equal(session.controlQueue[0].status, 'running');
+    assert.equal(session.controlQueue[1].status, 'queued');
+    assert.equal(session.controlQueue[0].chainId, session.controlQueue[1].chainId);
+    assert.equal('capabilityPlan' in session.controlQueue[0], false);
+  } finally {
+    context.currentAbortController?.abort();
+    await handle.close();
+  }
+});
+
+test('POST /control cancel_item returns a readable non-error for a non-queued item', async (t) => {
+  const session = { workspace: 'acme', controlQueue: [{ id: 'done-item', status: 'done', input: 'done' }] };
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1', port: 0,
+      store: { dbPath: ':memory:', getState: () => ({ status: 'idle', plan: [], queue: [], approvals: [] }), listEvents: () => [] },
+      getContext: async () => ({ workspace: 'acme', session, running: false }), run: async () => {},
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw err;
+  }
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'cancel_item', id: 'done-item' }) });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json().then(({ cancelled, reason }) => ({ cancelled, reason })), { cancelled: false, reason: 'not_queued' });
+  } finally { await handle.close(); }
 });
 
 test('runtime server exposes config profile list and switch endpoints', async (t) => {

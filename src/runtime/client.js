@@ -55,6 +55,7 @@ export async function postRuntimeRun(input, {
   evaluate = undefined,
   replans = undefined,
   capabilityPlan = undefined,
+  skillName = undefined,
 } = {}) {
   const response = await fetch(runtimeEndpoint(url, '/run', workspace), {
     method: 'POST',
@@ -62,7 +63,7 @@ export async function postRuntimeRun(input, {
       ...runtimeHeaders(token),
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(Object.assign({ input, workspace }, evaluate !== undefined && { evaluate }, replans !== undefined && { replans }, capabilityPlan !== undefined && { capabilityPlan })),
+    body: JSON.stringify(Object.assign({ input, workspace }, evaluate !== undefined && { evaluate }, replans !== undefined && { replans }, capabilityPlan !== undefined && { capabilityPlan }, skillName !== undefined && { skillName })),
   });
   if (!response.ok) {
     const err = new Error(`Runtime run failed: HTTP ${response.status}`);
@@ -120,6 +121,7 @@ export async function postRuntimeControl(action, {
   workspace = null,
   input = undefined,
   intent = undefined,
+  id = undefined,
 } = {}) {
   const response = await fetch(runtimeEndpoint(url, '/control', workspace), {
     method: 'POST',
@@ -127,7 +129,7 @@ export async function postRuntimeControl(action, {
       ...runtimeHeaders(token),
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(Object.assign({ action }, input !== undefined && { input }, intent !== undefined && { intent })),
+    body: JSON.stringify(Object.assign({ action }, input !== undefined && { input }, intent !== undefined && { intent }, id !== undefined && { id })),
   });
   if (!response.ok) {
     const err = new Error(`Runtime control failed: HTTP ${response.status}`);

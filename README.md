@@ -1035,6 +1035,30 @@ Useful primitives:
 Skills are loaded only from the active workspace. The manager itself has no root
 `SKILL.md` and no root `skills/` directory.
 
+Executable skills are resolved by the runtime, not expanded into a private LLM
+prompt by each UI. `/skills run <name>` and `/<name>` therefore use the same
+path in the Shell and in `llm-wiki serve`; headless `--skill` posts the same
+invocation to `/run`. Built-in commands keep priority (`/status` remains the
+Shell status primitive), while `/skills run status` explicitly selects a skill
+with the same name.
+
+The runtime compiles a skill into natural-language objectives. Paragraphs alone
+do not split work: an existing complex capability such as `knowledge.pipeline`
+stays one objective, one capability resolution and one run. Strong workflow
+boundaries create a sequential execution chain instead. In the shipped
+scaffold, `pipeline`, `wiki-ingest`, `wiki-build`, `deliver`, `diagnose`,
+`status` and `new-template` each compile to one run; `wiki-sync` compiles to an
+export run followed by an ingest run. Chain items contain `chainId`, sequence,
+optionality and continuation policy, but never a precomputed `capabilityPlan`.
+Each item is resolved only when its run starts.
+
+`/run cancel` cancels the current run and skips only the remaining required
+items of the same chain. It leaves standalone requests and other chains intact.
+`/run kill` deliberately keeps its broader workspace scope and purges every
+queued control request. `/queue cancel <id>` remains item-scoped. The Activity
+views in both UIs derive their Chain section from the event-sourced control
+queue, including `skipped` and `skipReason`; no separate chain state exists.
+
 Workspace switching is isolated. When you run `/use my-project`, the shell
 switches both the displayed conversation and the LLM history to `my-project`.
 Returning to another workspace restores that workspace's in-memory conversation
@@ -1117,9 +1141,14 @@ node ./bin/wiki-manager.js --headless --workspace my-project --prompt "check pro
 
 Headless mode creates a normal session, runs `/use`, and writes a log under
 `.wiki/logs/` by default. `--prompt` runs one agent turn unless `--wait` is passed.
-`--skill` uses the agentic loop by default: agent turn, wait for active MCP jobs
-declared through `_activity.poll`, then re-invoke the agent with the completed job
-summary so it can start the next required step.
+`--skill "<name> [arguments...]"` submits `/<name> <arguments...>` to the same
+runtime resolver used by the Shell and Serve. It waits for the complete
+`chainId`, not only the first run: every control item must become terminal, and
+any failed item yields exit code 1. A chain waiting for approval returns
+immediately with guidance unless `--auto-approve` was requested. Combining
+`--prompt` with runtime `--skill` ignores the prompt and reports that fact in
+the headless log. `--no-runtime` keeps the former local prompt-injection path as
+an explicit compatibility mode.
 
 Useful headless controls:
 

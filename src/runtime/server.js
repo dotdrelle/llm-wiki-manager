@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { conversationEventSequences, createAgentEvent, dispatchAgentEvent, resetSessionProjection, reduceAgentEvents } from '../core/agentEvents.js';
 import { activeCacertPath } from '../core/cacert.js';
 import { normalizePlanPatch, rebasePlanPatch } from '../core/planPatch.js';
@@ -8,10 +8,11 @@ import { runtimeTokenFromEnv } from './auth.js';
 import { controlMessage } from './controlMessages.js';
 import { tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
 import { approvalClassForTask } from '../orchestrator/approvalPolicy.js';
-import { matchSkillInvocation, parseSkillArguments, applyLegacySkillPlaceholders } from '../core/skillInvocation.js';
-import { compileSkillObjectives, createSkillCompilerFallback } from '../core/skillCompiler.js';
+import { matchSkillInvocation } from '../core/skillInvocation.js';
 import { reconcileControlQueue } from './controlDrain.js';
 import { cancelControlChain, cancelQueuedControlItem } from './controlCancellation.js';
+import { runSkillChain } from './skillRun.js';
+import { findSkill, listSkills } from '../core/skills.js';
 
 export function startRuntimeServer({
   host = '127.0.0.1',
@@ -303,6 +304,24 @@ export function startRuntimeServer({
           validateContractInDev('runRequest', { ...body, input });
           const explicitSkillName = String(body.skillName ?? '').trim().toLowerCase();
           const invokedSkillName = /^\/([A-Za-z0-9_-]+)/.exec(input)?.[1]?.toLowerCase() ?? '';
+          if (body.skillArguments !== undefined && explicitSkillName !== invokedSkillName) {
+            sendJson(response, 400, { ok: false, terminal: true, code: 'skill_name_mismatch' });
+            return;
+          }
+          // This structured API call is itself the caller's explicit skill
+          // designation, including for reserved names. The equality check
+          // above prevents `skillName: status` from turning unrelated prose
+          // into the homonymous skill. Model-originated calls additionally
+          // pass explicitSkillReference() before reaching this endpoint.
+          if (explicitSkillName && body.skillArguments !== undefined) {
+            const result = await context.session._runSkillWithinRun(explicitSkillName, body.skillArguments, {
+              idempotencyKey: body.idempotencyKey ?? null,
+              turnId: body.turnId ?? null,
+              selectionKind: body.selectionKind ?? null,
+            });
+            sendJson(response, result.accepted ? 202 : skillResultErrorStatus(result), result);
+            return;
+          }
           const skillMatch = matchSkillInvocation(context.session, input, {
             // Reserved names are unlocked only by a matching structured skill
             // invocation, never by an unrelated truthy marker in the body.
@@ -621,7 +640,62 @@ export function startRuntimeServer({
   });
 
   async function resolveContext({ workspace = null } = {}) {
-    return resolvedGetContext(workspace);
+    const context = await resolvedGetContext(workspace);
+    if (context?.session) {
+      context.session._runSkillWithinRun = async (skillName, args = {}, metadata = {}) => {
+        const skill = findSkill(context.session, skillName);
+        if (!skill) return {
+          ok: false,
+          terminal: true,
+          code: 'skill_not_found',
+          availableSkills: listSkills(context.session).map((item) => item.name),
+        };
+        try {
+          const idempotencyKey = metadata.idempotencyKey
+            ? String(metadata.idempotencyKey)
+            : metadata.turnId
+              ? skillIdempotencyKey(context.workspace ?? context.session.workspace, metadata.turnId, skill.name, args)
+              : null;
+          context.skillRuns ??= new Map();
+          context.pendingSkillRuns ??= new Map();
+          const persistedChainId = idempotencyKey && typeof store.findSkillRun === 'function'
+            ? store.findSkillRun({ workspace: context.workspace ?? null, idempotencyKey })
+            : null;
+          const existingChainId = persistedChainId ?? (idempotencyKey ? context.skillRuns.get(idempotencyKey) : null);
+          if (existingChainId) return publicSkillRunProjection(context, skill.name, existingChainId, metadata.selectionKind, true);
+          if (idempotencyKey && context.pendingSkillRuns.has(idempotencyKey)) {
+            const pendingChainId = await context.pendingSkillRuns.get(idempotencyKey);
+            return publicSkillRunProjection(context, skill.name, pendingChainId, metadata.selectionKind, true);
+          }
+          const creation = runSkillChain(context, skill, { args, enqueueControlRequest, drainControlQueue, selectionKind: metadata.selectionKind });
+          if (idempotencyKey) context.pendingSkillRuns.set(idempotencyKey, creation.then((item) => item.chainId));
+          const result = await creation;
+          if (idempotencyKey) {
+            context.skillRuns.set(idempotencyKey, result.chainId);
+            store.persistSkillRun?.({
+              workspace: context.workspace ?? context.session.workspace ?? null,
+              idempotencyKey,
+              chainId: result.chainId,
+            });
+          }
+          return publicSkillRunProjection(context, skill.name, result.chainId, metadata.selectionKind, false);
+        } catch (error) {
+          return {
+            ok: false,
+            terminal: true,
+            code: error?.code ?? 'skill_compile_failed',
+          };
+        } finally {
+          const key = metadata.idempotencyKey
+            ? String(metadata.idempotencyKey)
+            : metadata.turnId
+              ? skillIdempotencyKey(context.workspace ?? context.session.workspace, metadata.turnId, skill.name, args)
+              : null;
+          if (key) context.pendingSkillRuns?.delete(key);
+        }
+      };
+    }
+    return context;
   }
 
   // Shared by POST handlers that take a JSON body carrying an optional
@@ -719,31 +793,23 @@ export function startRuntimeServer({
   }
 
   async function enqueueSkillInvocation(context, match) {
-    const args = parseSkillArguments(match.skill, match.rawArgs);
-    const legacy = applyLegacySkillPlaceholders(match.skill.body, args);
-    const naturalArgs = Object.fromEntries(
-      Object.entries(args).filter(([name]) => !legacy.deprecatedPlaceholders.includes(name)),
-    );
-    const objectives = await compileSkillObjectives(
-      { ...match.skill, body: legacy.body },
-      naturalArgs,
-      { llmFallback: createSkillCompilerFallback(context.session?.llm, { timeoutMs: 8_000 }) },
-    );
-    const chainId = `chain-${randomUUID()}`;
-    const items = objectives.map((objective, chainSequence) => enqueueControlRequest(context, objective.text, {
-      chainId,
-      chainSequence,
-      skillName: match.skill.name,
-      optional: objective.optional,
-      continueOnFailure: objective.continueOnFailure,
-    }));
-    void drainControlQueue(context);
-    return { chainId, skill: match.skill.name, objectives: objectives.length, items, deprecatedPlaceholders: legacy.deprecatedPlaceholders };
+    return runSkillChain(context, match.skill, {
+      rawArgs: match.rawArgs,
+      enqueueControlRequest,
+      drainControlQueue,
+      selectionKind: 'explicit_name',
+    });
   }
 }
 
 function skillInvocationErrorStatus(error) {
   return ['skill_compile_failed', 'skill_arguments_invalid'].includes(error?.code) ? 400 : 422;
+}
+
+function skillResultErrorStatus(result) {
+  if (result?.code === 'skill_not_found') return 404;
+  if (result?.code === 'skill_arguments_invalid') return 400;
+  return 422;
 }
 
 function skillInvocationErrorMessage(error) {
@@ -830,6 +896,37 @@ function explainControlState(status) {
 
 function controlQueueFor(session) {
   return Array.isArray(session?.controlQueue) ? session.controlQueue : [];
+}
+
+function skillIdempotencyKey(workspace, turnId, skillName, args) {
+  const canonicalArguments = JSON.stringify(Object.fromEntries(
+    Object.entries(args ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+  ));
+  return createHash('sha256')
+    .update(`${workspace ?? ''}\0${turnId}\0${String(skillName).toLowerCase()}\0${canonicalArguments}`)
+    .digest('hex');
+}
+
+function publicSkillRunProjection(context, skillName, chainId, selectionKind, deduplicated) {
+  const chainItems = controlQueueFor(context?.session).filter((item) => item.chainId === chainId);
+  const resolvedSelectionKind = selectionKind ?? chainItems.find((item) => item.selectionKind)?.selectionKind ?? null;
+  const items = chainItems
+    .sort((left, right) => Number(left.chainSequence ?? 0) - Number(right.chainSequence ?? 0))
+    .map((item) => ({
+      id: item.id,
+      sequence: Number(item.chainSequence ?? 0),
+      status: item.status,
+      optional: item.optional === true,
+    }));
+  return {
+    accepted: true,
+    skill: skillName,
+    chainId,
+    objectiveCount: items.length,
+    items,
+    ...(resolvedSelectionKind ? { selectionKind: resolvedSelectionKind } : {}),
+    ...(deduplicated ? { deduplicated: true } : {}),
+  };
 }
 
 function cancelQueuedControlItems(session, workspace = null) {
@@ -959,7 +1056,7 @@ async function handleControlMessage(context, store, input, { intent = null, star
     : controlMessage(context?.session, 'converse_while_idle'));
 }
 
-function enqueueControlRequest(context, input, { capabilityPlan, chainId, chainSequence, skillName, optional = false, continueOnFailure = false } = {}) {
+function enqueueControlRequest(context, input, { capabilityPlan, chainId, chainSequence, skillName, selectionKind, optional = false, continueOnFailure = false } = {}) {
   const now = new Date().toISOString();
   const item = {
     id: `control-${randomUUID()}`,
@@ -973,6 +1070,7 @@ function enqueueControlRequest(context, input, { capabilityPlan, chainId, chainS
     ...(chainId ? { chainId } : {}),
     ...(Number.isInteger(chainSequence) ? { chainSequence } : {}),
     ...(skillName ? { skillName } : {}),
+    ...(selectionKind ? { selectionKind } : {}),
     optional: optional === true,
     continueOnFailure: continueOnFailure === true,
   };

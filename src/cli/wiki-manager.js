@@ -288,6 +288,7 @@ export function createInteractiveSession(context, { runtimeUrl, turnId, signal =
     'workspace', 'workspacePath', 'workspaceEnvFile', 'workspaceEnv',
     'wikirc', 'wikircConfig', 'language', 'llm', 'mcp', 'commands',
     'packageJson', 'queueStore', 'systemPrompt',
+    '_runSkillWithinRun',
   ]) {
     if (source[key] !== undefined) session[key] = source[key];
   }

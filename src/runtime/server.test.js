@@ -1523,6 +1523,49 @@ test('POST /run compiles a workspace skill into a sequential runtime chain', asy
   }
 });
 
+test('POST /run accepts named skill arguments and deduplicates an explicit retry key', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'runtime-named-skill-'));
+  mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
+  writeFileSync(join(root, '.wiki', 'skills', 'deliver.md'), '---\nname: deliver\nparams:\n  - template\n  - polish\n---\nDeliver the output.');
+  const session = { workspace: 'acme', workspacePath: root, controlQueue: [] };
+  const context = { workspace: 'acme', session, running: false, currentAbortController: null };
+  const persisted = new Map();
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1', port: 0,
+      store: {
+        dbPath: ':memory:', getState: () => ({ status: 'idle', plan: [], queue: [], approvals: [] }), listEvents: () => [],
+        findSkillRun: ({ idempotencyKey }) => persisted.get(idempotencyKey) ?? null,
+        persistSkillRun: ({ idempotencyKey, chainId }) => persisted.set(idempotencyKey, chainId),
+      },
+      getContext: async () => context,
+      run: async () => new Promise(() => {}),
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw err;
+  }
+  try {
+    const request = () => fetch(`http://127.0.0.1:${handle.port}/run?workspace=acme`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: '/deliver', skillName: 'deliver', skillArguments: { template: 'Quarterly report' }, idempotencyKey: 'retry-1' }),
+    });
+    const first = await (await request()).json();
+    const second = await (await request()).json();
+    assert.equal(first.accepted, true);
+    assert.equal(second.deduplicated, true);
+    assert.equal(second.chainId, first.chainId);
+    assert.equal(session.controlQueue.length, 1);
+    assert.equal('input' in first.items[0], false);
+    assert.equal('objectives' in first, false);
+    assert.match(session.controlQueue[0].input, /template: Quarterly report/);
+  } finally {
+    context.currentAbortController?.abort();
+    await handle.close();
+  }
+});
+
 test('POST /run does not unlock a reserved skill with a mismatched skillName', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'runtime-reserved-skill-'));
   mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
@@ -1553,6 +1596,41 @@ test('POST /run does not unlock a reserved skill with a mismatched skillName', a
     assert.equal(session.controlQueue.length, 0);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(received.input, '/status');
+  } finally {
+    context.currentAbortController?.abort();
+    await handle.close();
+  }
+});
+
+test('structured named arguments unlock a reserved skill only when input names the same skill', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'runtime-structured-reserved-'));
+  mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
+  writeFileSync(join(root, '.wiki', 'skills', 'status.md'), '---\nname: status\n---\nRun workspace status.');
+  const session = { workspace: 'acme', workspacePath: root, controlQueue: [] };
+  const context = { workspace: 'acme', session, running: false, currentAbortController: null };
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1', port: 0,
+      store: { dbPath: ':memory:', getState: () => ({ status: 'idle', plan: [], queue: [], approvals: [] }), listEvents: () => [] },
+      getContext: async () => context,
+      run: async () => new Promise(() => {}),
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw err;
+  }
+  try {
+    const post = (input) => fetch(`http://127.0.0.1:${handle.port}/run?workspace=acme`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input, skillName: 'status', skillArguments: {} }),
+    });
+    const mismatch = await post('/deliver');
+    assert.equal(mismatch.status, 400);
+    assert.equal((await mismatch.json()).code, 'skill_name_mismatch');
+    const explicit = await post('/status');
+    assert.equal(explicit.status, 202);
+    assert.equal((await explicit.json()).skill, 'status');
   } finally {
     context.currentAbortController?.abort();
     await handle.close();

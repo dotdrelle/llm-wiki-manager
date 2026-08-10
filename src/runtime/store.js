@@ -90,6 +90,13 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       finished_at TEXT,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS skill_runs (
+      workspace TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      chain_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (workspace, idempotency_key)
+    );
     CREATE TABLE IF NOT EXISTS agents (
       instance_id TEXT PRIMARY KEY,
       agent_type TEXT NOT NULL,
@@ -347,6 +354,14 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     SELECT DISTINCT workspace FROM queue_items
     WHERE workspace IS NOT NULL AND status IN (${RECOVERABLE_QUEUE_STATUSES.map(() => '?').join(', ')})
     ORDER BY workspace
+  `);
+  const persistSkillRunStatement = db.prepare(`
+    INSERT INTO skill_runs (workspace, idempotency_key, chain_id, created_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(workspace, idempotency_key) DO NOTHING
+  `);
+  const findSkillRunStatement = db.prepare(`
+    SELECT chain_id FROM skill_runs WHERE workspace = ? AND idempotency_key = ?
   `);
   const upsertAgentStatement = db.prepare(`
     INSERT INTO agents (
@@ -763,6 +778,8 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       const queue = (workspace
         ? db.prepare('DELETE FROM queue_items WHERE workspace = ?').run(workspace)
         : db.prepare('DELETE FROM queue_items').run()).changes ?? 0;
+      if (workspace) db.prepare('DELETE FROM skill_runs WHERE workspace = ?').run(workspace);
+      else db.prepare('DELETE FROM skill_runs').run();
       const runs = (workspace
         ? db.prepare('DELETE FROM runs WHERE workspace = ?').run(workspace)
         : db.prepare('DELETE FROM runs').run()).changes ?? 0;
@@ -772,6 +789,16 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       db.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  function persistSkillRun({ workspace, idempotencyKey, chainId }) {
+    if (!workspace || !idempotencyKey || !chainId) return false;
+    return (persistSkillRunStatement.run(workspace, idempotencyKey, chainId, new Date().toISOString()).changes ?? 0) > 0;
+  }
+
+  function findSkillRun({ workspace, idempotencyKey }) {
+    if (!workspace || !idempotencyKey) return null;
+    return findSkillRunStatement.get(workspace, idempotencyKey)?.chain_id ?? null;
   }
 
   function saveQueue(queue = [], { workspace = null } = {}) {
@@ -1302,6 +1329,8 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     interruptRuns,
     cancelActiveTasksForInterruptedRuns,
     clearWorkspaceState,
+    persistSkillRun,
+    findSkillRun,
     deleteEventsAfter,
     saveQueue,
     listQueue,
@@ -1377,6 +1406,20 @@ function purgeOldTerminalRuns(db, now = new Date()) {
   if (oldRuns.length === 0) return 0;
   db.exec('BEGIN');
   try {
+    const chainIds = new Set();
+    const chainsForRun = db.prepare(`
+      SELECT DISTINCT json_extract(enqueued.payload, '$.chainId') AS chain_id
+      FROM events AS started
+      JOIN events AS enqueued
+        ON enqueued.type = 'control_enqueued'
+       AND json_extract(enqueued.payload, '$.id') = json_extract(started.payload, '$.id')
+      WHERE started.type = 'control_started'
+        AND started.run_id = ?
+        AND json_extract(enqueued.payload, '$.chainId') IS NOT NULL
+    `);
+    for (const runId of oldRuns) {
+      for (const row of chainsForRun.all(runId)) chainIds.add(row.chain_id);
+    }
     const deleteEvents = db.prepare('DELETE FROM events WHERE run_id = ? OR json_extract(payload, \'$.runId\') = ?');
     const deleteApprovals = db.prepare('DELETE FROM approval_grants WHERE run_id = ?');
     const deleteRun = db.prepare('DELETE FROM runs WHERE id = ?');
@@ -1384,6 +1427,32 @@ function purgeOldTerminalRuns(db, now = new Date()) {
       deleteEvents.run(runId, runId);
       deleteApprovals.run(runId);
       deleteRun.run(runId);
+    }
+    const chainStillRetained = db.prepare(`
+      SELECT 1
+      FROM events AS enqueued
+      JOIN events AS started
+        ON started.type = 'control_started'
+       AND json_extract(started.payload, '$.id') = json_extract(enqueued.payload, '$.id')
+      JOIN runs ON runs.id = started.run_id
+      WHERE enqueued.type = 'control_enqueued'
+        AND json_extract(enqueued.payload, '$.chainId') = ?
+      LIMIT 1
+    `);
+    const chainItemIds = db.prepare(`
+      SELECT json_extract(payload, '$.id') AS id FROM events
+      WHERE type = 'control_enqueued' AND json_extract(payload, '$.chainId') = ?
+    `);
+    const deleteChainEvent = db.prepare(`
+      DELETE FROM events
+      WHERE json_extract(payload, '$.chainId') = ? OR json_extract(payload, '$.id') = ?
+    `);
+    const deleteSkillRun = db.prepare('DELETE FROM skill_runs WHERE chain_id = ?');
+    for (const chainId of chainIds) {
+      if (chainStillRetained.get(chainId)) continue;
+      const itemIds = chainItemIds.all(chainId).map((row) => row.id).filter(Boolean);
+      for (const itemId of itemIds) deleteChainEvent.run(chainId, itemId);
+      deleteSkillRun.run(chainId);
     }
     db.exec('COMMIT');
   } catch (error) {

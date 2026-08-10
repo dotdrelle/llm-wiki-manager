@@ -73,6 +73,35 @@ export async function postRuntimeRun(input, {
   return response.json();
 }
 
+export async function postRuntimeSkill(skillName, args = {}, {
+  url = runtimeUrlFromEnv(),
+  token = runtimeToken(),
+  workspace = null,
+  idempotencyKey = undefined,
+  turnId = undefined,
+} = {}) {
+  const response = await fetch(runtimeEndpoint(url, '/run', workspace), {
+    method: 'POST',
+    headers: { ...runtimeHeaders(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      input: `/${skillName}`,
+      workspace,
+      skillName,
+      skillArguments: args,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+      ...(turnId ? { turnId } : {}),
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(payload.error ?? `Runtime skill failed: HTTP ${response.status}`);
+    error.status = response.status;
+    error.code = payload.code;
+    throw error;
+  }
+  return payload;
+}
+
 export async function postRuntimeTurn(input, {
   url = runtimeUrlFromEnv(),
   token = runtimeToken(),

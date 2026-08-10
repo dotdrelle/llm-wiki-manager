@@ -277,7 +277,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
         return {
           ...item,
           id: item.id,
-          label: `${chain.skillName ?? 'skill'} ${position} · ${step.label}${reason}`,
+          label: `${chain.skillName ?? 'skill'}${chain.selectionKind ? ` [${chain.selectionKind}]` : ''} ${position} · ${step.label}${reason}`,
           status: item.status,
           _runtime: true,
           _control: true,

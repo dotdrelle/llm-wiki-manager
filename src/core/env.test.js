@@ -85,6 +85,7 @@ test('scaffold merges missing top-level keys into an existing endpoints file', (
     // Server keys must match the connected MCP endpoint keys (the tool-call
     // prefix): the wiki server is "llm-wiki", not "wiki".
     assert.ok(merged.chatAccess?.servers?.['llm-wiki']);
+    assert.ok(merged.chatAccess.servers['llm-wiki'].allow.includes('template_write'));
   });
 });
 
@@ -99,6 +100,39 @@ test('scaffold never overwrites an existing chatAccess, including explicit null'
     const after = JSON.parse(readFileSync(endpointsFile, 'utf8'));
     // null means "deliberately disabled" — the merge must preserve it.
     assert.equal(after.chatAccess, null);
+  });
+});
+
+test('scaffold upgrades the packaged wiki chat allow-list with template authoring tools', () => {
+  withTempManagerDir((dir) => {
+    const endpointsFile = join(dir, 'mcp.endpoints.json');
+    const example = JSON.parse(readFileSync('mcp.endpoints.example.json', 'utf8'));
+    example.chatAccess.servers['llm-wiki'].allow = example.chatAccess.servers['llm-wiki'].allow
+      .filter((tool) => !['wiki_outline', 'template_read', 'template_write', 'build_context_write'].includes(tool));
+    writeFileSync(endpointsFile, JSON.stringify(example, null, 2));
+
+    const changes = ensureManagerScaffold();
+    const after = JSON.parse(readFileSync(endpointsFile, 'utf8'));
+
+    assert.ok(changes.some((item) => item.includes('template_write')));
+    assert.ok(after.chatAccess.servers['llm-wiki'].allow.includes('wiki_outline'));
+    assert.ok(after.chatAccess.servers['llm-wiki'].allow.includes('template_read'));
+    assert.ok(after.chatAccess.servers['llm-wiki'].allow.includes('template_write'));
+    assert.ok(after.chatAccess.servers['llm-wiki'].allow.includes('build_context_write'));
+  });
+});
+
+test('scaffold leaves a custom wiki chat allow-list untouched', () => {
+  withTempManagerDir((dir) => {
+    const endpointsFile = join(dir, 'mcp.endpoints.json');
+    writeFileSync(endpointsFile, JSON.stringify({
+      mcpServers: {},
+      chatAccess: { servers: { 'llm-wiki': { allow: ['wiki_read_page'] } } },
+    }, null, 2));
+
+    ensureManagerScaffold();
+    const after = JSON.parse(readFileSync(endpointsFile, 'utf8'));
+    assert.deepEqual(after.chatAccess.servers['llm-wiki'].allow, ['wiki_read_page']);
   });
 });
 

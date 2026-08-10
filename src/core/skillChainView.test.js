@@ -4,7 +4,7 @@ import { chainStepLabel, projectSkillChains, renderSkillChain } from './skillCha
 
 const WIKI_SYNC = [
   {
-    id: 'c0', chainId: 'chain-1', chainSequence: 0, skillName: 'wiki-sync', status: 'done',
+    id: 'c0', chainId: 'chain-1', chainSequence: 0, skillName: 'wiki-sync', selectionKind: 'description_match', status: 'done',
     input: 'Export the requested Confluence source, or all configured sources when none is specified. Check configuration first.\n\nUser parameters:\nsource: docs',
   },
   {
@@ -16,6 +16,7 @@ const WIKI_SYNC = [
 test('a chain reads as ordered steps with one short label each', () => {
   const [chain] = projectSkillChains(WIKI_SYNC);
   assert.equal(chain.skillName, 'wiki-sync');
+  assert.equal(chain.selectionKind, 'description_match');
   assert.equal(chain.status, 'running');
   assert.deepEqual(chain.steps.map((step) => step.symbol), ['✓', '●']);
   assert.equal(chain.steps[0].label, 'Export the requested Confluence source, or all…');

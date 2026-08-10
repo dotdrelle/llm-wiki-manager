@@ -316,6 +316,15 @@ test('runtime store purges terminal runs older than thirty days on open', () => 
     workspace: 'docs',
     payload: { runId: 'old-done', workspace: 'docs' },
   }));
+  first.persistEvent(createAgentEvent('control_enqueued', {
+    origin: 'runtime', workspace: 'docs',
+    payload: { id: 'old-control', chainId: 'old-chain', skillName: 'deliver', input: 'old skill' },
+  }));
+  first.persistEvent(createAgentEvent('control_started', {
+    origin: 'runtime', runId: 'old-done', workspace: 'docs',
+    payload: { id: 'old-control', runId: 'old-done' },
+  }));
+  first.persistSkillRun({ workspace: 'docs', idempotencyKey: 'old-key', chainId: 'old-chain' });
   first.persistEvent(createAgentEvent('assistant_message', {
     origin: 'test',
     runId: 'old-done',
@@ -339,6 +348,8 @@ test('runtime store purges terminal runs older than thirty days on open', () => 
   assert.equal(reopened.listEvents().some((event) => event.runId === 'old-done'), false);
   assert.equal(reopened.listEvents().some((event) => event.runId === 'recent-done'), true);
   assert.equal(reopened.listEvents().some((event) => event.runId === 'old-running'), true);
+  assert.equal(reopened.findSkillRun({ workspace: 'docs', idempotencyKey: 'old-key' }), null);
+  assert.equal(reopened.listEvents().some((event) => event.payload?.chainId === 'old-chain'), false);
   reopened.close();
 });
 

@@ -577,6 +577,7 @@ function applyEvent(state, event) {
         ...(event.payload?.capabilityPlan !== undefined ? { capabilityPlan: event.payload.capabilityPlan } : {}),
         ...(event.payload?.chainId ? { chainId: event.payload.chainId } : {}),
         ...(event.payload?.skillName ? { skillName: event.payload.skillName } : {}),
+        ...(event.payload?.selectionKind ? { selectionKind: event.payload.selectionKind } : {}),
         ...(Number.isInteger(event.payload?.chainSequence) ? { chainSequence: event.payload.chainSequence } : {}),
         optional: event.payload?.optional === true,
         continueOnFailure: event.payload?.continueOnFailure === true,

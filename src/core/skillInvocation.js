@@ -3,6 +3,22 @@ import { findSkill } from './skills.js';
 const INVOCATION_RE = /^\/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/;
 export const RESERVED_SLASH_COMMANDS = new Set(['status', 'stop', 'run', 'queue', 'skills', 'help', 'exit', 'quit', 'chat', 'agent']);
 
+export function explicitSkillReference(input, skillName, language = null) {
+  const name = escapeRegExp(String(skillName ?? '').trim());
+  if (!name) return false;
+  const primary = String(language ?? '').toLowerCase().split(/[-_]/)[0];
+  if (!['en', 'fr'].includes(primary)) return false;
+  const text = String(input ?? '').split(/[.!?\n]/).map((part) => part.trim()).filter(Boolean);
+  const keyword = '(?:skill|workflow)';
+  const patterns = [
+    new RegExp(`\\b${keyword}\\s+${name}\\b`, 'i'),
+    new RegExp(`\\b${name}\\s+${keyword}\\b`, 'i'),
+    new RegExp(`/skills\\s+run\\s+${name}\\b`, 'i'),
+    new RegExp(`/${name}\\s+(?:comme|as)\\s+${keyword}\\b`, 'i'),
+  ];
+  return text.some((sentence) => patterns.some((pattern) => pattern.test(sentence)));
+}
+
 export function matchSkillInvocation(session, input, { allowReserved = false } = {}) {
   const match = INVOCATION_RE.exec(String(input ?? '').trim());
   if (!match) return null;
@@ -56,4 +72,8 @@ function tokenizeArguments(raw) {
 
 function unquote(value) {
   return value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) ? value.slice(1, -1) : value;
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

@@ -1,6 +1,6 @@
 # Repository Guide
 
-Current coordinated release: **0.15.44** (see `package.json`, the only source
+Current coordinated release: **0.15.45** (see `package.json`, the only source
 of truth — this line keeps drifting, so trust the file, not the prose). Keep
 manager handshakes and the local `llm-wiki` engine version aligned across the
 coordinated repositories; `npm run check-versions` covers the fifteen places a

@@ -2,6 +2,15 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFil
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+const LEGACY_DEFAULT_WIKI_CHAT_TOOLS = [
+  'help_list', 'help_read', 'help_search', 'wiki_workspace_status',
+  'wiki_list_pages', 'wiki_read_page', 'wiki_read_pages', 'wiki_search_context',
+  'wiki_collect_context', 'wiki_read_ingested_source',
+];
+const TEMPLATE_AUTHORING_CHAT_TOOLS = [
+  'wiki_outline', 'template_read', 'template_write', 'build_context_write',
+];
+
 export function userManagerDir() {
   return process.cwd();
 }
@@ -126,15 +135,25 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
             && exampleServers && typeof exampleServers === 'object' && !Array.isArray(exampleServers)
             ? Object.keys(exampleServers).filter((key) => !(key in currentServers) && !disabledServers.has(key))
             : [];
+          // Upgrade only the recognizable packaged wiki allow-list. A custom
+          // allow-list remains operator-owned and untouched.
+          const wikiAllow = current.chatAccess?.servers?.['llm-wiki']?.allow;
+          const migrateWikiChatTools = Array.isArray(wikiAllow)
+            && LEGACY_DEFAULT_WIKI_CHAT_TOOLS.every((tool) => wikiAllow.includes(tool));
+          const missingWikiChatTools = migrateWikiChatTools
+            ? TEMPLATE_AUTHORING_CHAT_TOOLS.filter((tool) => !wikiAllow.includes(tool))
+            : [];
           if (missing.length > 0) {
             for (const key of missing) current[key] = example[key];
           }
           for (const key of missingServers) currentServers[key] = exampleServers[key];
-          if (missing.length > 0 || missingServers.length > 0) {
+          wikiAllow?.push(...missingWikiChatTools);
+          if (missing.length > 0 || missingServers.length > 0 || missingWikiChatTools.length > 0) {
             writeFileSync(endpointsFile, `${JSON.stringify(current, null, 2)}\n`);
             const changes = [
               missing.length > 0 ? `keys: ${missing.join(', ')}` : '',
               missingServers.length > 0 ? `servers: ${missingServers.join(', ')}` : '',
+              missingWikiChatTools.length > 0 ? `chat tools: ${missingWikiChatTools.join(', ')}` : '',
             ].filter(Boolean).join('; ');
             created.push(`mcp.endpoints.json ${changes}`);
           }

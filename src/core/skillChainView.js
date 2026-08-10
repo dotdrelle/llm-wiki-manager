@@ -55,6 +55,7 @@ export function projectSkillChains(controlQueue = []) {
     return {
       chainId,
       skillName: chainItems.find((item) => item.skillName)?.skillName ?? null,
+      selectionKind: chainItems.find((item) => item.selectionKind)?.selectionKind ?? null,
       steps,
       status: chainStatus(steps),
     };
@@ -73,7 +74,8 @@ function chainStatus(steps) {
 // The text form used by the Shell; serve renders the same projection as DOM.
 export function renderSkillChain(chain) {
   if (!chain?.steps?.length) return '';
-  const lines = [chain.skillName ?? 'skill', ''];
+  const selection = chain.selectionKind ? ` · ${chain.selectionKind}` : '';
+  const lines = [`${chain.skillName ?? 'skill'}${selection}`, ''];
   for (const step of chain.steps) {
     lines.push(`${step.symbol} ${step.label}`);
     lines.push(`  ${step.status}${step.skipReason ? ` · ${step.skipReason}` : ''}`);

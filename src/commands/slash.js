@@ -11,7 +11,7 @@ import { isTerminal } from '../orchestrator/taskStatuses.js';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { openExternalUrl } from '../shell/openExternal.js';
 import { classifyCommandFailure, failureHint, rawFailureText } from '../core/commandFailure.js';
-import { join, relative } from 'node:path';
+import { basename, join, relative } from 'node:path';
 import { composeServices, listServices, otherWorkspacesRunning, runWikiCli, serviceLogs, serviceNames, serviceStates, startService, stopService } from '../core/compose.js';
 import { agentServiceNames, profileServiceStatus } from '../core/agentsCompose.js';
 import { GOOGLE_GRANTS, GOOGLE_GRANT_LABELS, defaultGoogleGrants } from '../core/googleGrants.js';
@@ -26,7 +26,7 @@ import {
   formatMcpTools,
 } from '../core/mcp.js';
 import { createWorkspace, findWorkspace, listWorkspaces } from '../core/workspaces.js';
-import { findSkill, listSkills } from '../core/skills.js';
+import { findSkill, inspectSkills, listSkills } from '../core/skills.js';
 import { extractActivity, formatActivityError, formatActivityLine, formatActivitySummary, parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import {
@@ -464,23 +464,27 @@ export function compactMcpStatus(mcpStatus) {
 }
 
 function skillsText(session) {
-  const skills = listSkills(session);
-  if (skills.length === 0) return 'No skills discovered.';
-  return skills
+  const { skills, rejected, warnings } = inspectSkills(session);
+  const active = skills
     .map((skill) => {
       const description = String(skill.description || 'workflow skill').replace(/\s+/g, ' ').trim();
       const compact = description.length > 96 ? `${description.slice(0, 93)}...` : description;
       return `${skill.name}\t${skill.scope}\t${compact}`;
     })
     .join('\n');
+  return [
+    active || 'No skills discovered.',
+    rejected.length ? `\nRejected\n${rejected.map((item) => `${item.relativePath}\t${item.reason}${item.name ? `\t${item.name}` : ''}`).join('\n')}` : null,
+    warnings.length ? `\nWarnings\n${warnings.map((item) => `${item.relativePath}\t${item.reason}\t${item.name}`).join('\n')}` : null,
+  ].filter(Boolean).join('\n');
 }
 
-function skillDetailText(skill) {
+function skillDetailText(skill, session) {
   return [
     `# ${skill.name}`,
     '',
     `Scope: ${skill.scope}`,
-    `Path: ${skill.path}`,
+    `Path: ${session?.workspacePath ? relative(session.workspacePath, skill.path) : basename(skill.path)}`,
     skill.description ? `Description: ${skill.description}` : null,
     skill.params?.length ? `Params: ${skill.params.join(', ')}` : null,
     '',
@@ -523,7 +527,7 @@ function skillActionCommand(session, action, name) {
       agentTrigger: buildSkillRunPrompt(skill),
     };
   }
-  return { output: skillDetailText(skill) };
+  return { output: skillDetailText(skill, session) };
 }
 
 function skillEditCommand(session, name) {
@@ -636,6 +640,8 @@ async function statusText(session) {
     `path: ${compactPath(session.workspacePath ?? '-')}`,
     `env: ${compactPath(session.workspaceEnvFile ?? '-')}`,
   ]);
+  const skillDiagnostics = inspectSkills(session);
+  const skillDiagnosticCount = skillDiagnostics.rejected.length + skillDiagnostics.warnings.length;
   const configColumn = sectionBlock('Config', [
     `wikirc: ${session.wikirc?.profile ?? '-'}${session.wikirc?.fileName ? ` (${session.wikirc.fileName})` : ''}`,
     `language: ${session.language ?? '-'}`,
@@ -643,6 +649,7 @@ async function statusText(session) {
     `provider: ${session.wikircConfig?.llm?.provider ?? '-'}`,
     `model: ${session.wikircConfig?.llm?.model ?? '-'}`,
     `baseUrl: ${compactBaseUrl(session.wikircConfig?.llm?.baseUrl)}`,
+    ...(skillDiagnosticCount ? [`skill diagnostics: ${skillDiagnostics.rejected.length} rejected, ${skillDiagnostics.warnings.length} warning(s) (/skills)`] : []),
   ]);
   const runtimeColumn = sectionBlock('Runtime', (states ? serviceStatesText(states) : 'Docker runtime not available or no workspace loaded.').split('\n'));
   const mcpColumn = sectionBlock('MCP', compactMcpStatus(session.mcp).split('\n'));

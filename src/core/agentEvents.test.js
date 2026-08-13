@@ -39,6 +39,20 @@ test('a streamed reply keeps the sequence of the delta that created it', () => {
   assert.deepEqual(conversationEventSequences(events), [1, 2]);
 });
 
+test('an independent queued skill invocation never inherits the active run identity', () => {
+  const session = {
+    workspace: 'docs',
+    _currentRunIdentity: { runId: 'unrelated-run', turnId: 'unrelated-turn', workspace: 'docs' },
+  };
+  const event = dispatchAgentEvent(session, createAgentEvent('user_message', {
+    origin: 'user',
+    payload: { content: '/wiki-build overview', independent: true },
+  }));
+  assert.equal(event.runId, null);
+  assert.equal(event.turnId, null);
+  assert.equal(event.workspace, 'docs');
+});
+
 test('reduceAgentEvents: run_started clears stale plan', () => {
   const projection = reduceAgentEvents([
     createAgentEvent('activity_upserted', {
@@ -261,6 +275,29 @@ test('reduceAgentEvents: approvals move from pending to approved', () => {
   assert.equal(projection.approvals[0].status, 'approved');
   assert.equal(projection.approvals[0].scope, 'run');
   assert.deepEqual(projection.approvals[0].plan, ['Build']);
+});
+
+test('reduceAgentEvents: cancelling a run clears its pending approval projection', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('approval.requested', {
+      origin: 'runtime',
+      runId: 'run-cancelled',
+      payload: { approvalId: 'approval-cancelled', scope: 'run', runId: 'run-cancelled' },
+    }),
+    createAgentEvent('approval.requested', {
+      origin: 'runtime',
+      runId: 'run-other',
+      payload: { approvalId: 'approval-other', scope: 'run', runId: 'run-other' },
+    }),
+    createAgentEvent('run_cancelled', {
+      origin: 'runtime',
+      runId: 'run-cancelled',
+      payload: { runId: 'run-cancelled' },
+    }),
+  ]);
+
+  assert.equal(projection.approvals.find((item) => item.runId === 'run-cancelled')?.status, 'cancelled');
+  assert.equal(projection.approvals.find((item) => item.runId === 'run-other')?.status, 'pending_approval');
 });
 
 test('reduceAgentEvents: bounded approval grant covers matching pending requests only', () => {

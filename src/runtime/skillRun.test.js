@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { runSkillChain, validateNamedSkillArguments } from './skillRun.js';
+import { formatPublicSkillInvocation, runSkillChain, validateNamedSkillArguments } from './skillRun.js';
 
 const skill = { name: 'deliver', params: ['template', 'polish'], body: 'Deliver the requested output.' };
 
@@ -29,7 +29,15 @@ test('runSkillChain enqueues named arguments without exposing a skill body field
   });
   assert.equal(result.objectives, 1);
   assert.match(queued[0].input, /template: Quarterly report/);
+  assert.equal(queued[0].publicInput, '/deliver template="Quarterly report"');
+  assert.equal(queued[0].skillExecution, 'orchestrated');
   assert.equal('body' in queued[0], false);
+});
+
+test('public skill invocation contains arguments but never compiled objective prose', () => {
+  const rendered = formatPublicSkillInvocation('deliver', { template: 'Quarterly report', polish: '' });
+  assert.equal(rendered, '/deliver template="Quarterly report"');
+  assert.doesNotMatch(rendered, /Deliver the requested output/);
 });
 
 /*

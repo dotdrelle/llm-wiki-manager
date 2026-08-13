@@ -18,7 +18,7 @@ import {
   resolveToolCallName,
   truncateToolResult,
 } from '../core/mcp.js';
-import { formatSkillsForAgent } from '../core/skills.js';
+import { findSkill, formatSkillsForAgent } from '../core/skills.js';
 import { RESERVED_SLASH_COMMANDS, explicitSkillReference } from '../core/skillInvocation.js';
 import { handleSlashCommand } from '../commands/slash.js';
 import { extractActivity, formatActivitySummary, parseJsonText, sessionActivities } from '../core/activity.js';
@@ -27,6 +27,7 @@ import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy }
 import { loadWorkspaceProfile, updateWorkspaceProfilePreference } from '../core/profile.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
 import { fetchRuntimeState, postRuntimeApprove, postRuntimeCancel, postRuntimeControl, postRuntimeDelegate, postRuntimeKill, postRuntimeSkill } from '../runtime/client.js';
+import { controlLanguage } from '../runtime/controlMessages.js';
 
 const MAX_TOOL_ITERATIONS = 80;
 /**
@@ -439,6 +440,10 @@ export function bareToolCallJson(content, tools = []) {
   const hasArguments = typeof args === 'string'
     || (args !== null && typeof args === 'object' && !Array.isArray(args));
   return hasArguments ? name : null;
+}
+
+function localizedFailure(session, english, french) {
+  return controlLanguage(session) === 'fr' ? french : english;
 }
 
 function parseActionJson(text) {
@@ -921,6 +926,21 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
     if (tool === 'run_skill') {
       const skillName = String(args.skillName ?? '').trim();
       if (!skillName) return JSON.stringify({ ok: false, terminal: true, code: 'skill_not_found', availableSkills: [] });
+      const selectedSkill = findSkill(session, skillName);
+      const suppliedArguments = args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
+        ? args.arguments
+        : {};
+      const missingParameters = args.selectionKind === 'description_match'
+        ? (selectedSkill?.params ?? []).filter((name) => !Object.hasOwn(suppliedArguments, name))
+        : [];
+      if (missingParameters.length > 0) {
+        return JSON.stringify({
+          ok: false,
+          needsInput: true,
+          missingParameters,
+          instruction: 'Ask the user for the missing scope. Execute nothing and never replace a missing parameter with an unscoped or all-items operation.',
+        });
+      }
       /*
        Une compétence ne se relance pas depuis sa propre exécution.
 
@@ -972,13 +992,14 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
         skillStack,
       };
       if (typeof session?._runSkillWithinRun === 'function') {
-        return JSON.stringify(await session._runSkillWithinRun(skillName, args.arguments ?? {}, metadata));
+        return JSON.stringify(await session._runSkillWithinRun(skillName, suppliedArguments, metadata));
       }
       try {
-        const result = await postRuntimeSkill(skillName, args.arguments ?? {}, {
+        const result = await postRuntimeSkill(skillName, suppliedArguments, {
           url,
           workspace,
           turnId: metadata.turnId,
+          selectionKind: metadata.selectionKind,
           skillStack: metadata.skillStack,
         });
         return JSON.stringify(result);
@@ -1153,6 +1174,8 @@ export function buildAgentSystemPrompt(state) {
   const skills = formatSkillsForAgent(state.session);
   const customPrompt = state.session.systemPrompt ?? null;
   const workspaceProfile = loadWorkspaceProfile(state.session.workspacePath);
+  const runningSkillStack = normalizedSkillStack(state.session);
+  const runningSkillExecution = resolvedSkillExecution(state.session, runningSkillStack);
 
   const agentContext = [
     'You are Donna: first and foremost a warm, helpful assistant for the llm-wiki-manager team, who also happens to orchestrate the workspace behind the scenes. Orchestration is how you help — it is not your personality. Speak like an attentive human colleague: natural, friendly, plain-spoken. Never sound like a raw status dump or a machine reciting fields.',
@@ -1172,6 +1195,9 @@ export function buildAgentSystemPrompt(state) {
     '<skill_catalog trusted="false">',
     skills,
     '</skill_catalog>',
+    runningSkillStack.length > 0
+      ? `You are already executing the compiled objective of workspace skill ${JSON.stringify(runningSkillStack.at(-1))}. Execute the objective in the current user message with the available direct tools${runningSkillExecution === 'direct' ? ' and stop after its requested direct mutation; delegation and nested skills are forbidden for this workflow' : ' or capability delegation'}. Do not select or call that skill again, with or without a leading slash. A skill run is not successful until its requested mutation has an affirmative tool result; never infer success from the runtime merely becoming idle or done.`
+      : null,
     'In interactive agent mode, call only tools actually provided to you. Any directly offered tool stays direct; never substitute an orchestration-contract tool yourself.',
     'When the user asks for an action that can be performed with connected MCP tools or safe primitives, do not answer with future intent such as "I will call...", "I am going to run...", or "launching..." unless you also call the tool in the same turn. Either call the tool now, ask for the exact missing required arguments, or explain the concrete blocker.',
     'Execution truthfulness: never invent a job id, status, percentage, duration, generated file, file content, URL, command, or tool result. An action is executed only when you call an available tool and receive its result. Examples and placeholders are forbidden in execution reports.',
@@ -1265,10 +1291,30 @@ function toolsForClassification(classification, writeTools, session = null) {
   // delegation while the shell snapshot is temporarily empty forced Donna
   // to invent commands instead of submitting the objective.
   const runtimeExecution = classification.kind === 'execute_run' && typeof session?._delegateWithinRun === 'function';
-  const capabilityRunTools = session?.runtime?.url && (!classification.activeRun || runtimeExecution)
+  const skillStack = normalizedSkillStack(session);
+  const compiledSkillExecution = runtimeExecution && skillStack.length > 0;
+  const skillExecution = resolvedSkillExecution(session, skillStack);
+  const directSkillContext = skillStack.length > 0 && skillExecution === 'direct';
+  const directOnlySkillExecution = compiledSkillExecution && directSkillContext;
+  const capabilityRunTools = session?.runtime?.url
+    && (!classification.activeRun || runtimeExecution)
+    && !directOnlySkillExecution
     ? [RUNTIME_RUN_SKILL_TOOL, RUNTIME_DELEGATE_TOOL]
     : [];
+  if (!session?.runtime?.url && directSkillContext) {
+    return [SHELL_READ_COMMAND_TOOL, ...ordinaryDirectTools(writeTools)];
+  }
   if (classification.activeRun) {
+    if (compiledSkillExecution) {
+      // A compiled workspace skill is already the authorized workflow. It
+      // must retain ordinary direct MCP tools such as template_write;
+      // otherwise Donna can only delegate the private prose to a capability
+      // agent. Other runtime objectives keep the narrower delegation path.
+      // Keep orchestration-only starters blocked as elsewhere.
+      const directTools = ordinaryDirectTools(writeTools)
+        .filter((item) => directOnlySkillExecution || isDonnaReadTool(item));
+      return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...directTools];
+    }
     // During an active run Donna gets read + profile + the runtime control
     // suite: she can answer, approve, enqueue for later, soft-cancel or
     // kill — but she must not fire new MCP jobs alongside the run (that is
@@ -1279,14 +1325,31 @@ function toolsForClassification(classification, writeTools, session = null) {
     // Offer every connected tool directly EXCEPT orchestration-bypass tools
     // and raw shell write/profile mutation. Reads, configuration, connector
     // setup — and any newly added MCP's tools — stay directly callable.
-    const directTools = writeTools.filter((item) => {
-      const name = item?.function?.name;
-      if (!name || name === 'shell__run_command' || name === 'shell__profile_update') return false;
-      return !isOrchestrationBypassTool(name);
-    });
+    const directTools = ordinaryDirectTools(writeTools);
     return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...directTools];
   }
   return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...writeTools];
+}
+
+function normalizedSkillStack(session) {
+  return Array.isArray(session?._skillStack)
+    ? session._skillStack.map((name) => String(name).trim()).filter(Boolean)
+    : [];
+}
+
+function resolvedSkillExecution(session, stack = normalizedSkillStack(session)) {
+  const snapshotted = session?._currentRunIdentity?.skillChain?.execution ?? session?._skillExecution;
+  if (snapshotted === 'direct' || snapshotted === 'orchestrated') return snapshotted;
+  const current = stack.at(-1);
+  return current ? findSkill(session, current)?.execution ?? 'orchestrated' : null;
+}
+
+function ordinaryDirectTools(writeTools) {
+  return writeTools.filter((item) => {
+    const name = item?.function?.name;
+    if (!name || name === 'shell__run_command' || name === 'shell__profile_update') return false;
+    return !isOrchestrationBypassTool(name);
+  });
 }
 
 const DONNA_READ_VERBS = new Set(['status', 'list', 'search', 'read', 'get', 'fetch', 'collect']);
@@ -1414,8 +1477,13 @@ export function createAgentGraph(options = {}) {
       : (state.inputClassification ?? { kind: 'modify_run', confidence: 1, reason: 'tool_iteration' });
     if (iterations === 0) {
       state.session._onStep?.(`Agent: classified input as ${classification.kind}`);
+      const runningSkill = Array.isArray(state.session?._skillStack)
+        ? state.session._skillStack.at(-1)
+        : null;
       emitAgentEvent(state.session, 'control_message_received', 'agent_classifier', {
-        input: state.input,
+        // Skill bodies/objectives are private execution material. Logs may
+        // identify the public skill, never reproduce its compiled body.
+        input: runtimeExecution && runningSkill ? `/${runningSkill}` : state.input,
         classification,
       });
     }
@@ -1485,7 +1553,11 @@ export function createAgentGraph(options = {}) {
               invalidToolCallRetries: retries + 1,
             };
           }
-          const failure = 'Action non exécutée : l’appel d’outil généré par le modèle était incomplet.';
+          const failure = localizedFailure(
+            state.session,
+            'Action not executed: the model generated an incomplete tool call.',
+            'Action non exécutée : l’appel d’outil généré par le modèle était incomplet.',
+          );
           emitAgentEvent(state.session, 'assistant_message', 'agent_guard', { content: failure });
           return { response: failure, pendingToolCalls: null, readyToStream: false };
         }
@@ -1548,6 +1620,14 @@ export function createAgentGraph(options = {}) {
             invalidToolCallRetries: retries + 1,
           };
         }
+        state.session._onStreamReset?.();
+        const failure = localizedFailure(
+          state.session,
+          'Action not executed: Donna repeatedly printed an internal tool request instead of calling it. No result was created.',
+          'Action non exécutée : Donna a affiché à plusieurs reprises une requête interne au lieu d’appeler l’outil. Aucun résultat n’a été créé.',
+        );
+        emitAgentEvent(state.session, 'assistant_message', 'agent_guard', { content: failure });
+        return { response: failure, pendingToolCalls: null, readyToStream: false };
       }
 
       if (runtimeExecution && iterations === 0 && !state.retryWithoutTool) {
@@ -1614,7 +1694,11 @@ export function createAgentGraph(options = {}) {
 
       if (runtimeExecution && state.retryWithoutTool) {
         state.session._onStreamReset?.();
-        const failure = 'Action non exécutée : Donna n’a appelé aucun outil disponible. Aucun job ni résultat n’a été créé.';
+        const failure = localizedFailure(
+          state.session,
+          'Action not executed: Donna did not call any available tool. No job or result was created.',
+          'Action non exécutée : Donna n’a appelé aucun outil disponible. Aucun job ni résultat n’a été créé.',
+        );
         emitAgentEvent(state.session, 'assistant_message', 'agent_guard', { content: failure });
         return {
           response: failure,
@@ -1844,7 +1928,9 @@ export function createAgentGraph(options = {}) {
             }
           }
         } else if (server !== 'shell') {
-          await awaitRunApproval(state.session, { runId, tool: toolName });
+          if (!isReadOnlyMcpCall(state.session, server, tool)) {
+            await awaitRunApproval(state.session, { runId, tool: toolName });
+          }
           await awaitToolApproval(state.session, {
             runId,
             server,

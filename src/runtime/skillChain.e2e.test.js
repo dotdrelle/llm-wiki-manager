@@ -122,10 +122,12 @@ test('E2E-001 pipeline: one objective, one run, internal plan left untouched', a
   assert.equal(body.kind, 'skill_chain');
   assert.equal(body.objectives, 1, 'pipeline must never be fragmented into sub-steps');
   assert.equal(env.runs.length, 1, 'one objective must produce exactly one run');
-  // The run receives the business intention verbatim: nothing here pre-resolves
-  // a capability or hands the dispatcher a plan, so the pipeline capability
+  // The executor receives the private business intention while public runtime
+  // projections retain only the skill invocation. Nothing here pre-resolves a
+  // capability or hands the dispatcher a plan, so the pipeline capability
   // keeps its own DAG and its own concurrency.
-  assert.equal(env.runs[0].input, body.items[0].input);
+  assert.equal(body.items[0].input, '/pipeline');
+  assert.match(env.runs[0].input, /^Execute the complete wiki production pipeline/);
   assert.equal(env.runs[0].capabilityPlan, undefined);
   assert.equal(env.chain().length, 1);
 });

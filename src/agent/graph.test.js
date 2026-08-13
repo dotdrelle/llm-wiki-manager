@@ -494,6 +494,51 @@ test('an explicitly selected skill runs through the intra-runtime path with name
   ]]);
 });
 
+test('a natural-language skill match cannot drop declared scope and fall back to all items', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wiki-manager-scoped-skill-'));
+  mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
+  writeFileSync(join(root, '.wiki', 'skills', 'scoped-build.md'), [
+    '---',
+    'name: scoped-build',
+    'description: Build a selected family',
+    'params:',
+    '  - template',
+    '---',
+    'Build only the selected family.',
+  ].join('\n'));
+  const calls = [];
+  let mainCalls = 0;
+  const session = sessionBase({
+    workspacePath: root,
+    runtime: { url: 'http://runtime.test' },
+    _runSkillWithinRun: async (...args) => { calls.push(args); return { accepted: true }; },
+    llm: {
+      async completeWithTools({ tools }) {
+        if (tools.some((tool) => tool.function?.name === 'classify_action_request')) {
+          return { content: null, message: { role: 'assistant', content: null }, tool_calls: [{ id: 'classify', type: 'function', function: { name: 'classify_action_request', arguments: '{"action":true}' } }] };
+        }
+        mainCalls += 1;
+        if (mainCalls === 1) return {
+          content: null,
+          message: { role: 'assistant', content: null },
+          tool_calls: [{ id: 'skill', type: 'function', function: { name: 'runtime__run_skill', arguments: '{"skillName":"scoped-build","selectionKind":"description_match"}' } }],
+        };
+        return { content: 'Quel template faut-il construire ?', message: { role: 'assistant', content: 'Quel template faut-il construire ?' }, tool_calls: null };
+      },
+    },
+  });
+  try {
+    const result = await createAgentGraph().invoke({ input: 'Construis le template dans overview.', session });
+    assert.equal(result.response, 'Quel template faut-il construire ?');
+    assert.deepEqual(calls, []);
+    const toolResult = session.agentEvents.find((event) => event.type === 'tool_call_result');
+    assert.match(toolResult?.payload?.result ?? '', /missingParameters/);
+    assert.match(toolResult?.payload?.result ?? '', /never replace a missing parameter with an unscoped/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a terminal skill refusal stops the whole turn before a delegate fallback', async () => {
   let delegated = false;
   const session = sessionBase({
@@ -1496,6 +1541,46 @@ test('buildAgentSystemPrompt assigns capability resolution exclusively to the ru
   assert.doesNotMatch(withAgents, /ONLY values allowed in requiredCapability/);
 });
 
+test('a compiled skill run is told to execute its objective without selecting itself again', () => {
+  const prompt = buildAgentSystemPrompt({ session: sessionBase({ _skillStack: ['new-template'] }) });
+  assert.match(prompt, /already executing the compiled objective of workspace skill "new-template"/);
+  assert.match(prompt, /Do not select or call that skill again/);
+  assert.match(prompt, /never infer success from the runtime merely becoming idle or done/);
+  // C'est la compétence OUVERTE qui est interdite, nommément : une autre reste
+  // sélectionnable, sinon une chaîne ne pourrait plus composer.
+  assert.match(prompt, /"new-template"/);
+});
+
+test('outside a skill run nothing forbids selecting a skill', () => {
+  // Garde-fou symétrique : l'instruction est conditionnelle. Injectée toujours,
+  // elle empêcherait Donna de lancer la moindre compétence en mode agent.
+  const prompt = buildAgentSystemPrompt({ session: sessionBase() });
+  assert.doesNotMatch(prompt, /already executing the compiled objective/);
+  assert.doesNotMatch(prompt, /Do not select or call that skill again/);
+});
+
+test('a direct skill run is told to stop without delegation or nested skills', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wiki-manager-direct-skill-prompt-'));
+  mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
+  writeFileSync(join(root, '.wiki', 'skills', 'local-write.md'), [
+    '---',
+    'name: local-write',
+    'description: Write one local artifact',
+    'execution: direct',
+    '---',
+    'Write one artifact.',
+  ].join('\n'));
+  try {
+    const prompt = buildAgentSystemPrompt({
+      session: sessionBase({ workspacePath: root, _skillStack: ['local-write'] }),
+    });
+    assert.match(prompt, /stop after its requested direct mutation/);
+    assert.match(prompt, /delegation and nested skills are forbidden for this workflow/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('agent graph executes action inputs inside a runtime run instead of asking for clarification', async () => {
   // Regression: during a runtime run agentProjection.status is 'running', so
   // the interactive classifier turned every action verb into 'ambiguous' and
@@ -1537,8 +1622,24 @@ test('runtime execute_run keeps in-run delegation available while interactive ac
   let turn = 0;
   const session = sessionBase({
     runtime: { url: 'http://runtime.test' },
+    mcp: {
+      wiki: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3001/mcp/',
+        tools: [{
+          name: 'template_write',
+          description: 'Write one template.',
+          inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
+        }, {
+          name: 'wiki_search',
+          description: 'Search the wiki.',
+          inputSchema: { type: 'object', properties: { query: { type: 'string' } } },
+        }],
+      },
+    },
     agentProjection: { status: 'running', conversation: [], activities: [] },
-    _currentRunIdentity: { runId: 'run-skill', turnId: 'run-skill:turn-1', workspace: 'docs' },
+    _skillStack: ['wiki-build'],
+    _currentRunIdentity: { runId: 'run-skill', turnId: 'run-skill:turn-1', workspace: 'docs', skillChain: { skillName: 'wiki-build', execution: 'orchestrated' } },
     _delegateWithinRun: async (objective) => { delegated.push(objective); return { accepted: true }; },
     llm: {
       async completeWithTools({ tools }) {
@@ -1556,8 +1657,94 @@ test('runtime execute_run keeps in-run delegation available while interactive ac
 
   const result = await createAgentGraph().invoke({ input: 'run pipeline', session });
   assert.ok(seenTools[0].includes('runtime__delegate'));
+  assert.ok(seenTools[0].includes('wiki__wiki_search'));
+  assert.ok(!seenTools[0].includes('wiki__template_write'));
   assert.deepEqual(delegated, ['run pipeline']);
   assert.equal(result.response, 'Delegated.');
+});
+
+test('runtime skill objectives retain direct unitary tools and keep their private body out of control logs', async () => {
+  const originalFetch = globalThis.fetch;
+  const root = mkdtempSync(join(tmpdir(), 'wiki-manager-direct-skill-'));
+  mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
+  writeFileSync(join(root, '.wiki', 'skills', 'new-template.md'), [
+    '---',
+    'name: new-template',
+    'description: Create one template',
+    'execution: direct',
+    '---',
+    'Create one template and stop.',
+  ].join('\n'));
+  let toolCalled = false;
+  globalThis.fetch = async (_url, init) => {
+    const request = JSON.parse(init.body);
+    if (request.method === 'tools/call') toolCalled = true;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({ result: { content: [{ type: 'text', text: '{"written":true,"instructionSlots":2}' }] } }),
+    };
+  };
+  let calls = 0;
+  const privateObjective = 'PRIVATE TEMPLATE OBJECTIVE WITH INTERNAL RULES';
+  const session = sessionBase({
+    workspacePath: root,
+    runtime: { url: 'http://runtime.test' },
+    mcp: {
+      wiki: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3001/mcp/',
+        tools: [{
+          name: 'template_write',
+          description: 'Write one template.',
+          inputSchema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, confirm: { type: 'boolean' } } },
+        }],
+      },
+    },
+    agentProjection: { status: 'running', conversation: [], activities: [] },
+    _currentRunIdentity: { runId: 'run-skill', turnId: 'run-skill:turn-1', workspace: 'docs', skillChain: { skillName: 'new-template', execution: 'direct' } },
+    _skillStack: ['new-template'],
+    _delegateWithinRun: async () => { throw new Error('direct tool should have been used'); },
+    llm: {
+      async completeWithTools({ tools }) {
+        calls += 1;
+        const names = tools.map((tool) => tool.function.name);
+        assert.ok(names.includes('wiki__template_write'));
+        assert.ok(!names.includes('production__production_start_job'));
+        assert.ok(!names.includes('runtime__delegate'));
+        assert.ok(!names.includes('runtime__run_skill'));
+        if (calls === 1) return {
+          content: null,
+          message: { role: 'assistant', content: null },
+          tool_calls: [{ id: 'write-template', type: 'function', function: { name: 'wiki__template_write', arguments: '{"path":"templates/example.md","content":"[[INSTRUCTION:\\nWrite it.\\n]]","confirm":true}' } }],
+        };
+        return { content: 'Template créé.', message: { role: 'assistant', content: 'Template créé.' }, tool_calls: null };
+      },
+    },
+  });
+
+  try {
+    // The chain snapshot is authoritative even if the file changes between
+    // two objectives of the same already-compiled chain.
+    writeFileSync(join(root, '.wiki', 'skills', 'new-template.md'), [
+      '---',
+      'name: new-template',
+      'description: Changed after compilation',
+      'execution: orchestrated',
+      '---',
+      'Changed body.',
+    ].join('\n'));
+    const result = await createAgentGraph().invoke({ input: privateObjective, session });
+    assert.equal(result.response, 'Template créé.');
+    assert.equal(toolCalled, true);
+    const control = session.agentEvents.find((event) => event.type === 'control_message_received');
+    assert.equal(control.payload.input, '/new-template');
+    assert.doesNotMatch(JSON.stringify(control.payload), /PRIVATE TEMPLATE OBJECTIVE/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('agent graph lets Donna handle ambiguous input during a run with the control suite', async () => {
@@ -2055,4 +2242,106 @@ test('LOT F: a JSON answer is only rejected when it is really a call to an offer
   assert.equal(bareToolCallJson('{"name":"production__production_start_job"}', tools), null);
   // No tool offered this turn → nothing to mistake for a call.
   assert.equal(bareToolCallJson('{"name":"production__production_start_job","arguments":{}}', []), null);
+});
+
+test('LOT F: repeated bare tool-call JSON never reaches the user', async () => {
+  let calls = 0;
+  const offered = [];
+  const raw = '{"name":"production__production_start_job","arguments":{"type":"build"}}';
+  const session = sessionBase({
+    language: 'fr-FR',
+    llm: {
+      async completeWithTools({ tools }) {
+        calls += 1;
+        offered.push(...tools.map((tool) => tool.function.name));
+        return { content: raw, message: { role: 'assistant', content: raw }, tool_calls: null };
+      },
+    },
+  });
+
+  const result = await createAgentGraph().invoke({ input: 'Construis le document.', session });
+  // Sans cette vérification le test passerait sans jamais exercer le filtre :
+  // un tour qui n'offre pas l'outil ne peut pas produire d'appel écrit en
+  // texte, et c'est une AUTRE garde qui répondrait, avec un message voisin.
+  assert.ok(offered.includes('production__production_start_job'), 'the turn must really offer the tool');
+  assert.equal(calls, 3, 'two retries, then the guard');
+  assert.doesNotMatch(result.response, /production__production_start_job/);
+  assert.match(result.response, /a affiché à plusieurs reprises une requête interne/);
+  assert.match(result.response, /Aucun .*résultat n’a été créé/);
+});
+
+/*
+ Régression observée sur `/new-template` : la garde de récursion refusait bien
+ le ré-appel, mais le modèle répondait ensuite en ÉCRIVANT l'appel — le JSON
+ brut `{"name":"runtime__run_skill",…}` finissait dans la conversation, et rien
+ n'était créé alors que le run passait à `done`.
+
+ Les deux gardes se complètent et aucune ne suffit seule : la garde de
+ récursion ne voit jamais un appel qui n'a pas eu lieu, et le filtre JSON ne
+ sait pas qu'une compétence est ouverte. On vérifie donc le chemin complet.
+*/
+test('LOT F: a skill re-invoking itself as bare JSON is neither executed nor shown', async () => {
+  const raw = '{"name":"runtime__run_skill","arguments":{"skillName":"new-template"}}';
+  const ran = [];
+  const offered = [];
+  let streamResets = 0;
+  let calls = 0;
+  const session = sessionBase({
+    language: 'fr-FR',
+    runtime: { url: 'http://runtime.test' },
+    _skillStack: ['new-template'],
+    _currentRunIdentity: { runId: 'run-skill', turnId: 'run-skill:turn-1', workspace: 'docs' },
+    _delegateWithinRun: async () => ({ accepted: true }),
+    _runSkillWithinRun: async (name) => { ran.push(name); return { ok: true }; },
+    // La UI a déjà reçu des deltas quand le JSON est reconnu : sans remise à
+    // zéro du flux, le payload resterait affiché au-dessus du message de garde.
+    _onStreamReset: () => { streamResets += 1; },
+    llm: {
+      async completeWithTools({ tools }) {
+        calls += 1;
+        offered.push(...tools.map((tool) => tool.function.name));
+        return { content: raw, message: { role: 'assistant', content: raw }, tool_calls: null };
+      },
+    },
+  });
+
+  const result = await createAgentGraph().invoke({ input: 'Crée le modèle de présentation.', session });
+
+  assert.ok(offered.includes('runtime__run_skill'), 'the turn must really offer the skill tool');
+  assert.deepEqual(ran, [], 'a call written as text must never reach the skill runner');
+  assert.doesNotMatch(result.response, /runtime__run_skill/);
+  assert.doesNotMatch(result.response, /[{}]/, 'no JSON fragment may survive in the user-facing answer');
+  assert.match(result.response, /a affiché à plusieurs reprises une requête interne/);
+  assert.ok(streamResets >= 1, 'the partially streamed payload must be wiped before the guard message');
+  assert.ok(calls >= 2, 'the first occurrence is retried, not surfaced');
+
+  // Le message de garde doit exister comme événement, sinon `serve` n'a rien à
+  // persister et l'utilisateur voit un tour vide après un run marqué terminé.
+  const guard = (session.agentEvents ?? [])
+    .filter((event) => event.type === 'assistant_message' && event.origin === 'agent_guard');
+  assert.equal(guard.length, 1);
+  assert.equal(guard[0].payload.content, result.response);
+});
+
+test('LOT F: the guard message follows the session language', async () => {
+  const raw = '{"name":"production__production_start_job","arguments":{"type":"build"}}';
+  const answer = async (language) => {
+    const session = sessionBase({
+      language,
+      llm: {
+        async completeWithTools() {
+          return { content: raw, message: { role: 'assistant', content: raw }, tool_calls: null };
+        },
+      },
+    });
+    const result = await createAgentGraph().invoke({ input: 'Construis le document.', session });
+    return result.response;
+  };
+
+  // Le message de garde est produit par le code, pas par le modèle : il doit
+  // suivre la langue configurée au lieu d'imposer l'anglais comme le faisait
+  // l'ancien texte injecté par l'UI.
+  assert.match(await answer('en-US'), /repeatedly printed an internal tool request/);
+  assert.match(await answer(undefined), /repeatedly printed an internal tool request/);
+  assert.match(await answer('fr'), /a affiché à plusieurs reprises une requête interne/);
 });

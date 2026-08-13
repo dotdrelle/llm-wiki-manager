@@ -1534,13 +1534,14 @@ test('POST /run compiles a workspace skill into a sequential runtime chain', asy
   writeFileSync(join(root, '.wiki', 'skills', 'wiki-sync.md'), '---\nname: wiki-sync\nparams:\n  - source\n---\nExport the source.\n\nThen ingest the files.');
   const session = { workspace: 'acme', workspacePath: root, controlQueue: [] };
   const context = { workspace: 'acme', session, running: false, currentAbortController: null };
+  let startedBody = null;
   let handle;
   try {
     handle = await startRuntimeServer({
       host: '127.0.0.1', port: 0,
       store: { dbPath: ':memory:', getState: () => ({ status: 'idle', plan: [], queue: [], approvals: [] }), listEvents: () => [] },
       getContext: async () => context,
-      run: async () => new Promise(() => {}),
+      run: async (_context, body) => { startedBody = body; return new Promise(() => {}); },
     });
   } catch (err) {
     if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
@@ -1557,8 +1558,102 @@ test('POST /run compiles a workspace skill into a sequential runtime chain', asy
     assert.equal(session.controlQueue[1].status, 'queued');
     assert.equal(session.controlQueue[0].chainId, session.controlQueue[1].chainId);
     assert.equal('capabilityPlan' in session.controlQueue[0], false);
+    assert.equal(session.controlQueue[0].input, '/wiki-sync source="docs"');
+    assert.equal(session.controlQueue[0].skillExecution, 'orchestrated');
+    assert.match(startedBody.input, /Export the source/);
+    assert.equal(startedBody.publicInput, '/wiki-sync source="docs"');
+    assert.equal(startedBody.skillChain.execution, 'orchestrated');
+    assert.equal(startedBody.requireApproval, true);
+    assert.notEqual(startedBody.autoApprove, true);
+    assert.deepEqual(session.agentProjection.conversation, [
+      { role: 'user', content: '/wiki-sync docs' },
+    ]);
+    assert.doesNotMatch(JSON.stringify(session.agentEvents), /Export the source|Then ingest the files/);
   } finally {
     context.currentAbortController?.abort();
+    await handle.close();
+  }
+});
+
+test('POST /turn deterministically compiles an explicit skill invocation', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'runtime-skill-turn-'));
+  mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
+  writeFileSync(join(root, '.wiki', 'skills', 'wiki-build.md'), '---\nname: wiki-build\nparams:\n  - template\n---\nBuild the requested template.');
+  const session = { workspace: 'acme', workspacePath: root, controlQueue: [] };
+  const context = { workspace: 'acme', session, running: false, currentAbortController: null };
+  const turns = [];
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1', port: 0,
+      store: { dbPath: ':memory:', getState: () => ({ status: 'idle', plan: [], queue: [], approvals: [] }), listEvents: () => [] },
+      getContext: async () => context,
+      run: async () => new Promise(() => {}),
+      turn: async (_context, body) => { turns.push(body); return { ok: true }; },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw err;
+  }
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/turn?workspace=acme`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: '/wiki-build overview', mode: 'agent' }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 202);
+    assert.equal(body.kind, 'skill_chain');
+    assert.equal(body.skill, 'wiki-build');
+    assert.equal(turns.length, 0);
+    assert.equal(session.controlQueue.length, 1);
+    assert.equal(session.controlQueue[0].input, '/wiki-build template="overview"');
+    assert.deepEqual(session.agentProjection.conversation, [
+      { role: 'user', content: '/wiki-build overview' },
+    ]);
+  } finally {
+    context.currentAbortController?.abort();
+    await handle.close();
+  }
+});
+
+test('POST /turn keeps informational skill and build questions conversational', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'runtime-skill-question-'));
+  mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
+  writeFileSync(join(root, '.wiki', 'skills', 'new-template.md'), '---\nname: new-template\nparams:\n  - family\n---\nCreate one template.');
+  const session = { workspace: 'acme', workspacePath: root, controlQueue: [] };
+  const context = { workspace: 'acme', session, running: false, currentAbortController: null };
+  const turns = [];
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1', port: 0,
+      store: { dbPath: ':memory:', getState: () => ({ status: 'idle', plan: [], queue: [], approvals: [] }), listEvents: () => [] },
+      getContext: async () => context,
+      run: async () => new Promise(() => {}),
+      turn: async (_context, body) => { turns.push(body); return { ok: true }; },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw err;
+  }
+  try {
+    for (const input of ['Comment fonctionne new-template ?', "Qu'est-ce qu'un build ?"]) {
+      const response = await fetch(`http://127.0.0.1:${handle.port}/turn?workspace=acme`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ input, mode: 'agent' }),
+      });
+      const body = await response.json();
+      assert.equal(response.status, 202);
+      assert.equal(body.kind, 'turn');
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(turns.map((body) => body.input), [
+      'Comment fonctionne new-template ?',
+      "Qu'est-ce qu'un build ?",
+    ]);
+    assert.equal(session.controlQueue.length, 0);
+    assert.equal(context.running, false);
+  } finally {
     await handle.close();
   }
 });
@@ -1599,7 +1694,7 @@ test('POST /run accepts named skill arguments and deduplicates an explicit retry
     assert.equal(session.controlQueue.length, 1);
     assert.equal('input' in first.items[0], false);
     assert.equal('objectives' in first, false);
-    assert.match(session.controlQueue[0].input, /template: Quarterly report/);
+    assert.equal(session.controlQueue[0].input, '/deliver template="Quarterly report"');
   } finally {
     context.currentAbortController?.abort();
     await handle.close();
@@ -1704,8 +1799,7 @@ test('legacy placeholders consume only their own parameter', async (t) => {
     assert.equal(response.status, 202);
     assert.deepEqual(body.deprecatedPlaceholders, ['a']);
     assert.equal(session.controlQueue.length, 2);
-    for (const item of session.controlQueue) assert.match(item.input, /User parameters:\nb: beta/);
-    assert.match(session.controlQueue[0].input, /Use alpha\./);
+    for (const item of session.controlQueue) assert.equal(item.input, '/partial a="alpha" b="beta"');
   } finally {
     context.currentAbortController?.abort();
     await handle.close();

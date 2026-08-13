@@ -48,6 +48,20 @@ test('inspectSkills rejects invalid parameters and case-insensitive name collisi
   assert.equal(result.rejected.every((item) => !item.relativePath.startsWith('/')), true);
 });
 
+test('skills declare whether execution is orchestrated or direct', () => {
+  const root = mkdtempSync(join(tmpdir(), 'skill-execution-'));
+  const dir = join(root, '.wiki', 'skills');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'direct.md'), '---\nname: direct\ndescription: Direct action\nexecution: direct\n---\nAct directly.');
+  writeFileSync(join(dir, 'default.md'), '---\nname: default\ndescription: Delegated action\n---\nDelegate when needed.');
+  writeFileSync(join(dir, 'invalid.md'), '---\nname: invalid\ndescription: Invalid policy\nexecution: magical\n---\nNo.');
+
+  const result = inspectSkills({ workspacePath: root });
+  assert.equal(result.skills.find((skill) => skill.name === 'direct')?.execution, 'direct');
+  assert.equal(result.skills.find((skill) => skill.name === 'default')?.execution, 'orchestrated');
+  assert.equal(result.rejected.find((item) => item.name === 'invalid')?.reason, 'invalid_execution');
+});
+
 test('catalog renders declared parameters and marks a missing description explicit-only', () => {
   const root = mkdtempSync(join(tmpdir(), 'skill-catalog-'));
   const dir = join(root, '.wiki', 'skills');

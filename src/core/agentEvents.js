@@ -132,6 +132,9 @@ function withSessionRunIdentity(event, session) {
   // assistant messages — used to leave with workspace=null and never reached
   // the UI, which then displayed a stale plan from the previous action.
   const workspace = event.workspace ?? identity?.workspace ?? session?.workspace ?? null;
+  if (event.payload?.independent === true) {
+    return { ...event, runId: null, turnId: event.turnId ?? null, taskId: event.taskId ?? null, workspace };
+  }
   if (!identity) {
     return workspace === (event.workspace ?? null) ? event : { ...event, workspace };
   }
@@ -553,6 +556,7 @@ function applyEvent(state, event) {
       // cancelled so the display reflects reality immediately.
       cancelPendingPlanSteps(state.plan);
       cancelActiveActivities(state.activities, event.ts);
+      cancelPendingApprovals(state.approvals, event.runId ?? event.payload?.runId ?? null, event.ts);
       finishControlByRun(state.controlQueue, event.runId ?? event.payload?.runId ?? null, 'cancelled', event.ts);
       return;
     case 'run_error':
@@ -564,6 +568,7 @@ function applyEvent(state, event) {
       // /kill honestly reported 0 because nothing was actually running.
       cancelPendingPlanSteps(state.plan);
       cancelActiveActivities(state.activities, event.ts);
+      cancelPendingApprovals(state.approvals, event.runId ?? event.payload?.runId ?? null, event.ts);
       finishControlByRun(state.controlQueue, event.runId ?? event.payload?.runId ?? null, 'failed', event.ts);
       return;
     case 'control_enqueued':
@@ -577,6 +582,7 @@ function applyEvent(state, event) {
         ...(event.payload?.capabilityPlan !== undefined ? { capabilityPlan: event.payload.capabilityPlan } : {}),
         ...(event.payload?.chainId ? { chainId: event.payload.chainId } : {}),
         ...(event.payload?.skillName ? { skillName: event.payload.skillName } : {}),
+        ...(event.payload?.skillExecution ? { skillExecution: event.payload.skillExecution } : {}),
         /*
          La pile des compétences ouvertes au-dessus de cet élément.
 
@@ -791,6 +797,15 @@ function markCoveredApprovalsApproved(approvals, grant, ts) {
 function cancelPendingPlanSteps(plan) {
   for (const step of plan ?? []) {
     if (!isTerminal(step.status)) step.status = 'cancelled';
+  }
+}
+
+function cancelPendingApprovals(approvals, runId, ts) {
+  for (const approval of approvals ?? []) {
+    if (approval.status !== 'pending_approval') continue;
+    if (runId != null && approval.runId != null && String(approval.runId) !== String(runId)) continue;
+    approval.status = 'cancelled';
+    approval.cancelledAt = ts;
   }
 }
 

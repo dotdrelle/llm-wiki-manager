@@ -84,6 +84,7 @@ export async function postRuntimeSkill(skillName, args = {}, {
   workspace = null,
   idempotencyKey = undefined,
   turnId = undefined,
+  selectionKind = undefined,
   /** Compétences déjà en cours au-dessus de l'appelant, pour la détection de cycle. */
   skillStack = undefined,
 } = {}) {
@@ -97,6 +98,7 @@ export async function postRuntimeSkill(skillName, args = {}, {
       skillArguments: args,
       ...(idempotencyKey ? { idempotencyKey } : {}),
       ...(turnId ? { turnId } : {}),
+      ...(selectionKind ? { selectionKind } : {}),
       ...(Array.isArray(skillStack) && skillStack.length ? { skillStack } : {}),
     }),
   });

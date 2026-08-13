@@ -68,10 +68,13 @@ export async function runSkillChain(context, skill, {
   );
   const chainId = `chain-${randomUUID()}`;
   const nestedStack = [...(Array.isArray(skillStack) ? skillStack : []), skill.name];
+  const publicInput = formatPublicSkillInvocation(skill.name, resolvedArgs);
   const items = objectives.map((objective, chainSequence) => enqueueControlRequest(context, objective.text, {
+    publicInput,
     chainId,
     chainSequence,
     skillName: skill.name,
+    skillExecution: skill.execution === 'direct' ? 'direct' : 'orchestrated',
     skillStack: nestedStack,
     ...(selectionKind ? { selectionKind } : {}),
     optional: objective.optional,
@@ -85,6 +88,13 @@ export async function runSkillChain(context, skill, {
     items,
     deprecatedPlaceholders: legacy.deprecatedPlaceholders,
   };
+}
+
+export function formatPublicSkillInvocation(name, args = {}) {
+  const values = Object.entries(args ?? {})
+    .filter(([, value]) => String(value ?? '').trim())
+    .map(([key, value]) => `${key}=${JSON.stringify(String(value))}`);
+  return `/${String(name ?? '').trim()}${values.length ? ` ${values.join(' ')}` : ''}`;
 }
 
 function argumentError(message) {

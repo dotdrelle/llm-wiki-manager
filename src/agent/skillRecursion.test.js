@@ -14,13 +14,13 @@ import { handleRuntimeControlTool } from './graph.js';
  venait : `chainId` et `skillName` s'arrêtaient à l'item de contrôle.
 */
 
-function session(skillStack) {
+function session(skillStack, ran = []) {
   return {
     // La garde d'entrée exige une URL de runtime ; le chemin run_skill passe
     // ensuite par _runSkillWithinRun sans jamais l'appeler.
     runtime: { url: 'http://runtime.invalid' },
     _skillStack: skillStack,
-    _runSkillWithinRun: async (name) => ({ ok: true, ran: name }),
+    _runSkillWithinRun: async (name) => { ran.push(name); return { ok: true, ran: name }; },
   };
 }
 
@@ -65,6 +65,28 @@ test('laisse passer une invocation hors de toute chaîne', async () => {
   const result = await call(session(undefined), 'wiki-ingest');
 
   assert.equal(result.ok, true);
+});
+
+/*
+ `/new-template` observé en conditions réelles : la compétence se rappelait
+ elle-même, le run finissait `done`, et rien n'avait été créé. Les tests
+ ci-dessus vérifiaient le code de refus ; celui-ci vérifie qu'AUCUN travail
+ n'est lancé — c'est ce qui distingue un refus d'un simple avertissement.
+*/
+test('un refus n’exécute rien du tout', async () => {
+  const ran = [];
+  const result = await handleRuntimeControlTool(
+    session(['new-template'], ran),
+    'run_skill',
+    { skillName: 'new-template', _userInput: 'crée un modèle de présentation' },
+  ).then((raw) => JSON.parse(raw));
+
+  assert.equal(result.code, 'skill_recursion_blocked');
+  assert.deepEqual(ran, [], 'aucun run imbriqué ne doit démarrer');
+  // La pile revient au modèle : sans elle il ne peut pas savoir laquelle des
+  // compétences ouvertes le bloque, et il reformule le même appel.
+  assert.deepEqual(result.skillStack, ['new-template']);
+  assert.match(result.message, /new-template/);
 });
 
 test('borne la profondeur même sans cycle', async () => {

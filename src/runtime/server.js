@@ -14,6 +14,18 @@ import { cancelControlChain, cancelQueuedControlItem } from './controlCancellati
 import { runSkillChain } from './skillRun.js';
 import { findSkill, listSkills } from '../core/skills.js';
 
+const PRIVATE_CONTROL_INPUTS = new WeakMap();
+
+function privateControlInputsFor(session) {
+  if (!session || (typeof session !== 'object' && typeof session !== 'function')) return new Map();
+  let inputs = PRIVATE_CONTROL_INPUTS.get(session);
+  if (!inputs) {
+    inputs = new Map();
+    PRIVATE_CONTROL_INPUTS.set(session, inputs);
+  }
+  return inputs;
+}
+
 export function startRuntimeServer({
   host = '127.0.0.1',
   port = 7788,
@@ -36,6 +48,8 @@ export function startRuntimeServer({
   exitOnShutdown = process.env.WIKI_MANAGER_RUNTIME_CHILD === '1',
 } = {}) {
   const clients = new Set();
+  // Compiled objectives are private execution material. They deliberately do
+  // not enter events, projections, SSE, audit output or the runs table.
   // When this runtime process started — used by ensureRuntime to detect that
   // the manager source has been edited since (dev staleness) and auto-restart.
   const runtimeStartedAtMs = Date.now();
@@ -335,7 +349,9 @@ export function startRuntimeServer({
               const result = await enqueueSkillInvocation(context, skillMatch);
               sendJson(response, 202, { accepted: true, kind: 'skill_chain', ...result, ...controlStatus(context, store) });
             } catch (err) {
-              sendJson(response, skillInvocationErrorStatus(err), { error: skillInvocationErrorMessage(err), code: err?.code ?? 'skill_compile_failed' });
+              const error = skillInvocationErrorMessage(err);
+              publishSkillInvocationFailure(context, input, error);
+              sendJson(response, skillInvocationErrorStatus(err), { error, code: err?.code ?? 'skill_compile_failed' });
             }
             return;
           }
@@ -396,13 +412,20 @@ export function startRuntimeServer({
         // run is active. Other interactive turns still become control
         // messages so they cannot start a competing agent decision.
         const readOnlyChat = String(body.mode ?? '').toLowerCase() === 'chat';
+        // An explicit /skill invocation has deterministic meaning. Keep the
+        // conversational /turn boundary, but do not ask the LLM to rediscover
+        // the skill from prose: it could choose a direct mutation instead and
+        // silently bypass the private workflow. Informational prose merely
+        // mentioning a skill never matches this anchored invocation parser.
         const skillMatch = !readOnlyChat ? matchSkillInvocation(context.session, input) : null;
         if (skillMatch) {
           try {
             const result = await enqueueSkillInvocation(context, skillMatch);
             sendJson(response, 202, { accepted: true, kind: 'skill_chain', ...result, ...controlStatus(context, store) });
           } catch (err) {
-            sendJson(response, skillInvocationErrorStatus(err), { error: skillInvocationErrorMessage(err), code: err?.code ?? 'skill_compile_failed' });
+            const error = skillInvocationErrorMessage(err);
+            publishSkillInvocationFailure(context, input, error);
+            sendJson(response, skillInvocationErrorStatus(err), { error, code: err?.code ?? 'skill_compile_failed' });
           }
           return;
         }
@@ -805,14 +828,19 @@ export function startRuntimeServer({
        personne n'interrompt, cela boucle jusqu'à épuisement du budget LLM.
       */
       startItem: (item) => startRuntimeRun(context, {
-        input: item.input,
+        input: takePrivateControlInput(context.session, item),
+        publicInput: item.input,
         workspace: item.workspace ?? context.workspace ?? null,
+        // Interactive skill runs never approve their own mutations. Headless
+        // may still grant the pending run explicitly through --auto-approve.
+        ...(item.chainId ? { requireApproval: true } : {}),
         ...(item.capabilityPlan !== undefined ? { capabilityPlan: item.capabilityPlan } : {}),
         ...(item.chainId
           ? {
             skillChain: {
               chainId: item.chainId,
               skillName: item.skillName ?? null,
+              execution: item.skillExecution === 'direct' ? 'direct' : 'orchestrated',
               // La pile des ancêtres, sans quoi le run ne peut pas savoir qu'il
               // referme un cycle commencé deux hand-offs plus tôt.
               skillStack: Array.isArray(item.skillStack) ? item.skillStack : [],
@@ -820,17 +848,45 @@ export function startRuntimeServer({
           }
           : {}),
       }, { controlItemId: item.id }),
-      skipItem: (item, reason) => emitControlSkipped(context, item, reason),
+      skipItem: (item, reason) => {
+        privateControlInputsFor(context.session).delete(item.id);
+        emitControlSkipped(context, item, reason);
+      },
     });
   }
 
+  function takePrivateControlInput(session, item) {
+    const privateControlInputs = privateControlInputsFor(session);
+    const input = privateControlInputs.get(item.id) ?? item.input;
+    privateControlInputs.delete(item.id);
+    return input;
+  }
+
   async function enqueueSkillInvocation(context, match) {
-    return runSkillChain(context, match.skill, {
+    const result = await runSkillChain(context, match.skill, {
       rawArgs: match.rawArgs,
       enqueueControlRequest,
       drainControlQueue,
       selectionKind: 'explicit_name',
     });
+    // Publish only after compilation succeeds. The marker prevents an
+    // invocation queued during another run from inheriting that run's id.
+    dispatchAgentEvent(context.session, createAgentEvent('user_message', {
+      origin: 'user',
+      workspace: context.workspace ?? null,
+      payload: { content: `/${match.skill.name}${match.rawArgs ? ` ${match.rawArgs}` : ''}`, independent: true },
+    }));
+    return result;
+  }
+
+  function publishSkillInvocationFailure(context, input, error) {
+    const workspace = context.workspace ?? context.session?.workspace ?? null;
+    dispatchAgentEvent(context.session, createAgentEvent('user_message', {
+      origin: 'user', workspace, payload: { content: input, independent: true },
+    }));
+    dispatchAgentEvent(context.session, createAgentEvent('assistant_message', {
+      origin: 'runtime', workspace, payload: { content: error, independent: true },
+    }));
   }
 }
 
@@ -973,6 +1029,7 @@ function cancelQueuedControlItems(session, workspace = null) {
       item.finishedAt = now;
       item.updatedAt = now;
       const id = item.id ?? item.runId ?? `${item.input}:${item.createdAt}`;
+      privateControlInputsFor(session).delete(item.id);
       if (!counted.has(id)) {
         counted.add(id);
         if (session) {
@@ -1103,13 +1160,13 @@ async function handleControlMessage(context, store, input, { intent = null, star
  Une file est un passage de témoin : ce qui doit survivre au parent voyage avec
  le message, pas dans l'état de celui qui l'a posté.
 */
-function enqueueControlRequest(context, input, { capabilityPlan, chainId, chainSequence, skillName, skillStack, selectionKind, optional = false, continueOnFailure = false } = {}) {
+function enqueueControlRequest(context, input, { publicInput = null, capabilityPlan, chainId, chainSequence, skillName, skillExecution, skillStack, selectionKind, optional = false, continueOnFailure = false } = {}) {
   const now = new Date().toISOString();
   const item = {
     id: `control-${randomUUID()}`,
     workspace: context?.workspace ?? context?.session?.workspace ?? null,
     type: 'run_request',
-    input,
+    input: publicInput ?? input,
     status: 'queued',
     createdAt: now,
     updatedAt: now,
@@ -1117,11 +1174,13 @@ function enqueueControlRequest(context, input, { capabilityPlan, chainId, chainS
     ...(chainId ? { chainId } : {}),
     ...(Number.isInteger(chainSequence) ? { chainSequence } : {}),
     ...(skillName ? { skillName } : {}),
+    ...(skillExecution ? { skillExecution } : {}),
     ...(Array.isArray(skillStack) && skillStack.length ? { skillStack: [...skillStack] } : {}),
     ...(selectionKind ? { selectionKind } : {}),
     optional: optional === true,
     continueOnFailure: continueOnFailure === true,
   };
+  privateControlInputsFor(context?.session).set(item.id, input);
   dispatchAgentEvent(context.session, createAgentEvent('control_enqueued', {
     origin: 'runtime',
     workspace: item.workspace,
@@ -1139,6 +1198,7 @@ function emitControlSkipped(context, item, reason) {
 }
 
 function emitControlCancelled(context, item, reason) {
+  privateControlInputsFor(context?.session).delete(item.id);
   dispatchAgentEvent(context.session, createAgentEvent('control_cancelled', {
     origin: 'runtime',
     workspace: item.workspace ?? context.workspace ?? null,

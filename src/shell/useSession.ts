@@ -410,6 +410,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   });
   const pendingApprovals = createMemo(() => {
     version();
+    if (['cancelled', 'done', 'completed', 'failed', 'error'].includes(String(runtimeState()?.status ?? '').toLowerCase())) return [];
     return (Array.isArray(runtimeState()?.approvals) ? runtimeState().approvals : [])
       .filter((approval: any) => approval.status === 'pending_approval');
   });

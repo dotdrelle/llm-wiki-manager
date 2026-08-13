@@ -71,11 +71,16 @@ function inspectSkillFile(filePath, fallbackName, scope, root) {
     return { rejected: { relativePath, name, reason: 'invalid_param' } };
   }
   const description = descriptionMetadata(meta.description);
+  const execution = String(meta.execution || 'orchestrated').trim().toLowerCase();
+  if (!['orchestrated', 'direct'].includes(execution)) {
+    return { rejected: { relativePath, name, reason: 'invalid_execution' } };
+  }
   const skill = {
     name,
     description: description.value,
     params,
     body,
+    execution,
     scope,
     path: filePath,
   };

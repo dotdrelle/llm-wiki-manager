@@ -31,6 +31,7 @@ import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
 import { resolveCapabilityConcurrency } from '../orchestrator/scheduler.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
 import { listWorkspaces } from '../core/workspaces.js';
+import { findSkill } from '../core/skills.js';
 // Runtime modules use node:sqlite (Node.js built-in unavailable in Bun).
 // They are imported dynamically so the shell / TUI path never loads them.
 
@@ -699,6 +700,13 @@ async function runHeadless(argv, agent) {
       return;
     }
     if (skillName) {
+      const legacySkill = findSkill(session, skillId);
+      if (!legacySkill) throw new Error(`Skill not found: ${skillId}`);
+      if (!argv.includes('--auto-approve')) {
+        throw new Error('Headless --no-runtime skill execution requires explicit --auto-approve before any mutation can run.');
+      }
+      session._skillStack = [legacySkill.name];
+      session._skillExecution = legacySkill.execution === 'direct' ? 'direct' : 'orchestrated';
       const skillResult = await handleSlashCommand(`/skills run ${skillName}`, { packageJson, session, onStep: step });
       if (skillResult.output && !skillResult.rawOutput) log.push(skillResult.output);
       if (String(skillResult.output ?? '').startsWith('Skill not found')) throw new Error(`Skill not found: ${skillName}`);
@@ -1354,13 +1362,17 @@ async function runRuntime(argv, agent) {
       dispatchAgentEvent(session, createAgentEvent('run_started', {
         origin: 'runtime',
         runId,
-        payload: { input, workspace: session._currentRunIdentity.workspace },
+        payload: { input: String(body.publicInput ?? input), workspace: session._currentRunIdentity.workspace },
       }));
-      dispatchAgentEvent(session, createAgentEvent('user_message', {
-        origin: 'user',
-        runId,
-        payload: { content: input },
-      }));
+      // Compiled skill objectives are private execution material. The
+      // original slash invocation is the user-facing conversation turn.
+      if (!skillChain) {
+        dispatchAgentEvent(session, createAgentEvent('user_message', {
+          origin: 'user',
+          runId,
+          payload: { content: input },
+        }));
+      }
       session._abortSignal = signal ?? null;
       session._runApprovalRequired = body.requireApproval === true;
       session._runApprovalResolved = false;

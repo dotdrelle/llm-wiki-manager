@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { RESERVED_SLASH_COMMANDS } from '../core/skillInvocation.js';
 import { startRuntimeServer as startRuntimeServerImpl } from './server.js';
+import { handleRuntimeControlTool } from '../agent/graph.js';
 
 // Plan V4.1 §58 — E2E-001..005.
 //
@@ -38,7 +39,7 @@ function workspaceWithSkills(files) {
 
 // Starts the server with a run stub that records every started run and finishes
 // it on demand, so a chain can be observed step by step.
-async function harness(t, { skills, autoFinish = true } = {}) {
+async function harness(t, { skills, autoFinish = true, onRun = null } = {}) {
   if (!existsSync(SCAFFOLD_SKILLS)) {
     t.skip('llm-wiki is not checked out next to llm-wiki-manager');
     return null;
@@ -61,6 +62,9 @@ async function harness(t, { skills, autoFinish = true } = {}) {
       getContext: async () => context,
       run: async (ctx, body, { runId, signal } = {}) => {
         runs.push({ runId, input: body.input, capabilityPlan: body.capabilityPlan, skillChain: body.skillChain });
+        // Un test peut jouer le rôle de l'agent : c'est le seul moyen de
+        // parcourir réellement enchaînement -> file -> run suivant.
+        if (onRun) await onRun(ctx, body);
         if (autoFinish) {
           dispatchAgentEvent(ctx.session, createAgentEvent('run_done', { origin: 'runtime', runId }));
           return;
@@ -315,4 +319,74 @@ test('E2E-010 skill stack: every run receives the ancestors of its chain', async
   }
   // Et l'élément de file la porte, puisque c'est lui qui survit au parent.
   for (const item of env.chain()) assert.deepEqual(item.skillStack, ['wiki-sync']);
+});
+
+/*
+ E2E-011 — le cycle A→B→A est refusé À TRAVERS deux hand-offs réels.
+
+ E2E-010 ne prouvait que le transport d'une pile à un seul élément, et le test
+ unitaire de la garde injectait `['a', 'b']` directement dans une session : ni
+ l'un ni l'autre ne parcourait le chemin qui était cassé — enchaînement, mise en
+ file, run suivant, relecture de la pile. C'est précisément là que la pile
+ disparaissait, puisqu'elle vivait sur la session le temps d'un seul run.
+
+ Le seul élément simulé ici est la DÉCISION du modèle : « quelle compétence
+ appeler ». Tout le reste — HTTP, file de contrôle, projection d'événements,
+ démarrage du run, garde de récursion — est le code de production.
+*/
+test('E2E-011 skill cycle: A → B → A is refused across two real hand-offs', async (t) => {
+  const refusals = [];
+  const invoked = [];
+  // Ce que la compétence en cours demande ensuite. C'est la seule chose que le
+  // test décide à la place du modèle.
+  const nextSkill = { 'skill-a': 'skill-b', 'skill-b': 'skill-a' };
+
+  const env = await harness(t, {
+    skills: {
+      'skill-a': '---\nname: skill-a\nparams: []\n---\nCollect the pending sources.\n',
+      'skill-b': '---\nname: skill-b\nparams: []\n---\nPublish the collected result.\n',
+    },
+    onRun: async (ctx, body) => {
+      const current = body.skillChain?.skillName;
+      const target = current ? nextSkill[current] : null;
+      if (!target || invoked.length >= 4) return;
+      invoked.push(target);
+      /*
+       Exactement ce que fait `wiki-manager.js` au démarrage d'un run : la pile
+       vient de l'élément, pas de ce que la session a gardé du run précédent.
+      */
+      ctx.session._skillStack = Array.isArray(body.skillChain?.skillStack)
+        ? [...body.skillChain.skillStack]
+        : [];
+      ctx.session.runtime = { url: 'http://runtime.invalid' };
+      const raw = await handleRuntimeControlTool(ctx.session, 'run_skill', {
+        skillName: target,
+        _userInput: target,
+      });
+      const result = JSON.parse(raw);
+      if (result.code === 'skill_recursion_blocked') refusals.push({ target, stack: result.skillStack });
+    },
+  });
+  if (!env) return;
+
+  await env.post('/run?workspace=acme', { input: '/skill-a' });
+  // Chaque cran est un run de plus : on laisse la file se vider jusqu'à ce que
+  // plus rien ne bouge, plutôt que de deviner le nombre de tours.
+  for (let tick = 0; tick < 12 && refusals.length === 0; tick += 1) await env.settle();
+
+  /*
+   A a mis B en file, B a démarré depuis la file — deux hand-offs réels — et
+   c'est le retour vers A qui tombe. Le cycle se referme donc AVANT qu'un
+   troisième run existe, ce qui est le comportement voulu : on refuse la
+   ré-entrée, on n'attend pas que le budget s'épuise.
+  */
+  assert.deepEqual(invoked, ['skill-b', 'skill-a']);
+  assert.equal(refusals.length, 1, 'the cycle must be refused, not merely bounded by the budget');
+  assert.equal(refusals[0].target, 'skill-a');
+  /*
+   Et la pile porte les DEUX ancêtres. C'est l'assertion qui échouait avant le
+   correctif : le run de B repartait de `[]`, puisque le `finally` du run de A
+   avait déjà nettoyé la session, et le retour vers A passait sans être vu.
+  */
+  assert.deepEqual(refusals[0].stack, ['skill-a', 'skill-b']);
 });

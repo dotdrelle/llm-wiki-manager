@@ -39,6 +39,13 @@ export async function runSkillChain(context, skill, {
   enqueueControlRequest,
   drainControlQueue,
   selectionKind = null,
+  /**
+   * Compétences déjà en cours d'exécution au-dessus de celle-ci. Chaque élément
+   * mis en file la porte, augmentée de la compétence courante : c'est ce qui
+   * permet au run imbriqué — qui démarre longtemps après son parent — de
+   * reconnaître un cycle.
+   */
+  skillStack = [],
 } = {}) {
   if (args !== null && rawArgs !== null) {
     const error = new Error('Provide named skill arguments or raw arguments, not both.');
@@ -60,10 +67,12 @@ export async function runSkillChain(context, skill, {
     { llmFallback: createSkillCompilerFallback(context.session?.llm, { timeoutMs: 8_000 }) },
   );
   const chainId = `chain-${randomUUID()}`;
+  const nestedStack = [...(Array.isArray(skillStack) ? skillStack : []), skill.name];
   const items = objectives.map((objective, chainSequence) => enqueueControlRequest(context, objective.text, {
     chainId,
     chainSequence,
     skillName: skill.name,
+    skillStack: nestedStack,
     ...(selectionKind ? { selectionKind } : {}),
     optional: objective.optional,
     continueOnFailure: objective.continueOnFailure,

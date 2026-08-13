@@ -484,7 +484,14 @@ test('an explicitly selected skill runs through the intra-runtime path with name
   });
   const result = await createAgentGraph().invoke({ input: 'lance le skill deliver avec le template Quarterly report', session });
   assert.equal(result.response, 'Skill mis en file.');
-  assert.deepEqual(calls, [['deliver', { template: 'Quarterly report' }, { selectionKind: 'explicit_name', turnId: 'turn-skill-1' }]]);
+  // `skillStack` accompagne désormais la demande : le run imbriqué démarre après
+  // le nettoyage de celui-ci, et c'est le seul canal par lequel il peut savoir
+  // quelles compétences sont déjà ouvertes au-dessus de lui.
+  assert.deepEqual(calls, [[
+    'deliver',
+    { template: 'Quarterly report' },
+    { selectionKind: 'explicit_name', turnId: 'turn-skill-1', skillStack: [] },
+  ]]);
 });
 
 test('a terminal skill refusal stops the whole turn before a delegate fallback', async () => {

@@ -29,6 +29,14 @@ import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry
 import { fetchRuntimeState, postRuntimeApprove, postRuntimeCancel, postRuntimeControl, postRuntimeDelegate, postRuntimeKill, postRuntimeSkill } from '../runtime/client.js';
 
 const MAX_TOOL_ITERATIONS = 80;
+/**
+ * Profondeur maximale d'imbrication de compétences.
+ *
+ * La détection de cycle couvre le cas observé — une compétence qui se relance
+ * elle-même. Cette borne couvre ce qu'elle ne voit pas : une chaîne longue de
+ * compétences distinctes, sans cycle, qui épuiserait le budget aussi sûrement.
+ */
+const MAX_SKILL_DEPTH = 3;
 const MAX_SPINNER_ARG_LENGTH = 96;
 
 // Pseudo-servers handled directly by the tool executor (not present in
@@ -826,7 +834,7 @@ export function planStepsFromFragment(payload) {
   }, index));
 }
 
-async function handleRuntimeControlTool(session, tool, args = {}) {
+export async function handleRuntimeControlTool(session, tool, args = {}) {
   const url = session.runtime?.url ?? null;
   if (!url) return 'Runtime not connected: no runtime URL available in this session.';
   const workspace = session.workspace ?? null;
@@ -913,6 +921,40 @@ async function handleRuntimeControlTool(session, tool, args = {}) {
     if (tool === 'run_skill') {
       const skillName = String(args.skillName ?? '').trim();
       if (!skillName) return JSON.stringify({ ok: false, terminal: true, code: 'skill_not_found', availableSkills: [] });
+      /*
+       Une compétence ne se relance pas depuis sa propre exécution.
+
+       Le corps d'une compétence est compilé en intentions MÉTIER, qui
+       ressemblent forcément à la description de la compétence dont elles
+       sortent — « ingérer les fichiers en attente » est à la fois l'objectif
+       de /wiki-ingest et sa raison d'être. Le sélecteur la reconnaissait donc
+       et la relançait, indéfiniment. En headless, personne n'interrompt : la
+       boucle ne s'arrête qu'au budget.
+
+       Le refus porte sur les CYCLES, pas sur la composition : une compétence
+       peut en appeler une autre, mais aucune ne peut se retrouver deux fois
+       dans la même pile. La profondeur reste bornée pour couvrir les cycles
+       longs qu'un cas non prévu produirait.
+      */
+      const skillStack = Array.isArray(session?._skillStack) ? session._skillStack : [];
+      if (skillStack.some((entry) => String(entry).toLowerCase() === skillName.toLowerCase())) {
+        return JSON.stringify({
+          ok: false,
+          terminal: true,
+          code: 'skill_recursion_blocked',
+          skillStack,
+          message: `Skill "${skillName}" is already running in this chain: execute its objective directly instead of re-invoking it.`,
+        });
+      }
+      if (skillStack.length >= MAX_SKILL_DEPTH) {
+        return JSON.stringify({
+          ok: false,
+          terminal: true,
+          code: 'skill_depth_exceeded',
+          skillStack,
+          message: `Skill nesting depth ${skillStack.length} reached: execute the objective directly.`,
+        });
+      }
       if (RESERVED_SLASH_COMMANDS.has(skillName.toLowerCase())
         && !explicitSkillReference(args._userInput, skillName, session?.language)) {
         return JSON.stringify({ ok: false, terminal: true, code: 'reserved_skill_not_explicit' });
@@ -920,12 +962,25 @@ async function handleRuntimeControlTool(session, tool, args = {}) {
       const metadata = {
         selectionKind: args.selectionKind ?? null,
         turnId: session.turnId ?? session._currentRunIdentity?.turnId ?? null,
+        // La pile part avec la demande. Sans elle, le run imbriqué — qui démarre
+        // après le nettoyage de celui-ci — repartirait d'une pile vide et ne
+        // pourrait plus reconnaître le cycle qu'il est en train de refermer.
+        //
+        // On transmet la pile de CE run telle quelle : c'est `runSkillChain` qui
+        // y empile la compétence appelée, une seule fois et au seul endroit qui
+        // sait quelle compétence a réellement été résolue.
+        skillStack,
       };
       if (typeof session?._runSkillWithinRun === 'function') {
         return JSON.stringify(await session._runSkillWithinRun(skillName, args.arguments ?? {}, metadata));
       }
       try {
-        const result = await postRuntimeSkill(skillName, args.arguments ?? {}, { url, workspace, turnId: metadata.turnId });
+        const result = await postRuntimeSkill(skillName, args.arguments ?? {}, {
+          url,
+          workspace,
+          turnId: metadata.turnId,
+          skillStack: metadata.skillStack,
+        });
         return JSON.stringify(result);
       } catch (error) {
         return JSON.stringify({ ok: false, terminal: true, code: error?.code ?? 'skill_runtime_unavailable' });

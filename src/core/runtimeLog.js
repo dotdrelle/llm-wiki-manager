@@ -93,6 +93,21 @@ export function filterRuntimeLogs(logs = [], filter = '') {
   return logs.filter((line) => runtimeLogMatchesFilter(line, filter));
 }
 
+export function compactRuntimeLogForDisplay(line) {
+  const text = String(line ?? '');
+  if (!/\bWARN\s+retrieval:vector-fallback\b/i.test(text)) return text;
+  const header = text.split(/\r?\n/, 1)[0].trimEnd();
+  const reason = logFieldValue(text, 'reason');
+  const message = logFieldValue(text, 'message');
+  const details = [reason && `reason=${reason}`, message && `message=${message}`].filter(Boolean).join(' ');
+  return details ? `${header} ${details}` : header;
+}
+
+function logFieldValue(text, name) {
+  const match = String(text).match(new RegExp(`(?:^|\\s)${name}=("(?:\\\\.|[^"\\\\])*"|[^\\s]+)`, 'i'));
+  return match?.[1] ?? null;
+}
+
 function timeLabel(ts) {
   const date = ts ? new Date(ts) : new Date();
   if (Number.isNaN(date.getTime())) return null;

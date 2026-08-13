@@ -65,12 +65,17 @@ export async function postRuntimeRun(input, {
     },
     body: JSON.stringify(Object.assign({ input, workspace }, evaluate !== undefined && { evaluate }, replans !== undefined && { replans }, capabilityPlan !== undefined && { capabilityPlan }, skillName !== undefined && { skillName })),
   });
+  const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const err = new Error(`Runtime run failed: HTTP ${response.status}`);
+    const detail = payload.error ?? payload.message ?? payload.detail;
+    const err = new Error(detail
+      ? `Runtime run failed: HTTP ${response.status} — ${detail}`
+      : `Runtime run failed: HTTP ${response.status}`);
     err.status = response.status;
+    err.code = payload.code;
     throw err;
   }
-  return response.json();
+  return payload;
 }
 
 export async function postRuntimeSkill(skillName, args = {}, {
@@ -79,6 +84,8 @@ export async function postRuntimeSkill(skillName, args = {}, {
   workspace = null,
   idempotencyKey = undefined,
   turnId = undefined,
+  /** Compétences déjà en cours au-dessus de l'appelant, pour la détection de cycle. */
+  skillStack = undefined,
 } = {}) {
   const response = await fetch(runtimeEndpoint(url, '/run', workspace), {
     method: 'POST',
@@ -90,6 +97,7 @@ export async function postRuntimeSkill(skillName, args = {}, {
       skillArguments: args,
       ...(idempotencyKey ? { idempotencyKey } : {}),
       ...(turnId ? { turnId } : {}),
+      ...(Array.isArray(skillStack) && skillStack.length ? { skillStack } : {}),
     }),
   });
   const payload = await response.json().catch(() => ({}));

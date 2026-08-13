@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { createMemo, createSignal, Index, Show } from 'solid-js';
-import { filterRuntimeLogs } from '../core/runtimeLog.js';
+import { compactRuntimeLogForDisplay, filterRuntimeLogs } from '../core/runtimeLog.js';
 import { fit } from './textFit';
 
 type PlanStep = { step: number; description: string; status: string };
@@ -312,6 +312,7 @@ type LogSegment = { text: string; fg: string };
 // Continuation lines of a wrapped entry are indented and dimmed so each
 // entry reads as one visual block instead of an undifferentiated wall.
 function logMessageColor(message: string): string {
+  if (/\b(?:trace:\s*)?WARN\b/i.test(message)) return '#FBBF24';
   if (/\b(error|failed|exception|unavailable|introuvable|HTTP 4\d\d|HTTP 5\d\d)\b/i.test(message)) return '#F38BA8';
   if (/\b(warn|warning|avertissement|fallback|retry|expired|stale)\b/i.test(message)) return '#FBBF24';
   if (/^(activity|job)\b/i.test(message)) return '#8BD5CA';
@@ -331,7 +332,7 @@ function logRenderLines(logs: string[], width: number): LogSegment[][] {
 
 function logEntryLines(raw: string, width: number): LogSegment[][] {
   const out: LogSegment[][] = [];
-  for (const item of [raw]) {
+  for (const item of [compactRuntimeLogForDisplay(raw)]) {
     const rawLine = item;
     const sourceMatch = String(rawLine).match(/^(runtime)\s+(.*)$/);
     const rest = sourceMatch ? sourceMatch[2] : String(rawLine);

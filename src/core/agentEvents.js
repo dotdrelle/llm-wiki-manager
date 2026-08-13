@@ -577,6 +577,18 @@ function applyEvent(state, event) {
         ...(event.payload?.capabilityPlan !== undefined ? { capabilityPlan: event.payload.capabilityPlan } : {}),
         ...(event.payload?.chainId ? { chainId: event.payload.chainId } : {}),
         ...(event.payload?.skillName ? { skillName: event.payload.skillName } : {}),
+        /*
+         La pile des compétences ouvertes au-dessus de cet élément.
+
+         Elle DOIT survivre à la projection : c'est le seul état qui relie un
+         run imbriqué à ses ancêtres. Le run n'est pas exécuté en ligne — il est
+         mis en file et démarre après que son parent s'est nettoyé — donc rien
+         d'autre que l'élément lui-même ne peut la lui transmettre. La perdre
+         ici, c'est rouvrir A→B→A en silence.
+        */
+        ...(Array.isArray(event.payload?.skillStack) && event.payload.skillStack.length
+          ? { skillStack: [...event.payload.skillStack] }
+          : {}),
         ...(event.payload?.selectionKind ? { selectionKind: event.payload.selectionKind } : {}),
         ...(Number.isInteger(event.payload?.chainSequence) ? { chainSequence: event.payload.chainSequence } : {}),
         optional: event.payload?.optional === true,

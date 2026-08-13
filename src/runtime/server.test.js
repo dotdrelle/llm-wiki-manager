@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { createInteractiveSession, ensureInteractiveAssistantMessage } from '../cli/wiki-manager.js';
+import { postRuntimeRun } from './client.js';
 import { approvalRequestFromStatus, runtimeState, startRuntimeServer as startRuntimeServerImpl } from './server.js';
 
 // Most server tests exercise endpoint behavior rather than authentication. Keep
@@ -13,6 +14,45 @@ import { approvalRequestFromStatus, runtimeState, startRuntimeServer as startRun
 function startRuntimeServer(options) {
   return startRuntimeServerImpl({ token: '', ...options });
 }
+
+test('runtime run client surfaces the server error instead of only the HTTP status', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    error: 'Workspace services are unavailable. Start them with /start all, then retry.',
+    code: 'services_unavailable',
+  }), {
+    status: 400,
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  try {
+    await assert.rejects(
+      postRuntimeRun('build the wiki', { workspace: 'demo' }),
+      (error) => {
+        assert.equal(error.message, 'Runtime run failed: HTTP 400 — Workspace services are unavailable. Start them with /start all, then retry.');
+        assert.equal(error.status, 400);
+        assert.equal(error.code, 'services_unavailable');
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('runtime run client keeps the HTTP fallback without a JSON error body', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('Bad request', { status: 400 });
+
+  try {
+    await assert.rejects(
+      postRuntimeRun('build the wiki', { workspace: 'demo' }),
+      /Runtime run failed: HTTP 400/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test('approval fallback derives classes from waiting tasks when the approval queue is missing', () => {
   const request = approvalRequestFromStatus({

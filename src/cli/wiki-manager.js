@@ -1309,16 +1309,47 @@ async function runRuntime(argv, agent) {
     const maxTurns = Number.isFinite(Number(body.maxTurns)) ? Math.max(1, Number(body.maxTurns)) : 20;
     const maxReplans = Number.isFinite(Number(body.replans)) ? Math.max(0, Math.floor(Number(body.replans))) : undefined;
     const runId = String(body.runId);
+    // Déclarée hors du try : le finally doit pouvoir restaurer la pile même
+    // quand le run échoue avant de l'avoir installée.
+    const parentStack = Array.isArray(session._skillStack) ? session._skillStack : [];
     try {
       if (workspace && session.workspace !== workspace) {
         const result = await handleSlashCommand(`/use ${workspace}`, { packageJson, session });
         if (!session.workspacePath) throw new Error(result.output || `Workspace not loaded: ${workspace}`);
       }
       context.workspace = session.workspace ?? workspace ?? context.workspace ?? null;
+      /*
+       Pile des compétences en cours d'exécution.
+
+       Une intention compilée depuis une compétence ressemble, par
+       construction, à la description de cette compétence : le sélecteur de
+       l'agent la reconnaît et la relance. Garder la pile permet de refuser un
+       cycle sans interdire une composition légitime.
+      */
+      const skillChain = body.skillChain ?? null;
+      /*
+       La pile vient de l'ÉLÉMENT quand il en porte une.
+
+       Elle était reconstruite à partir de `session._skillStack`, c'est-à-dire
+       de l'état laissé par le run précédent sur cette session. Mais un run de
+       compétence imbriquée démarre après le `finally` de son parent, qui a déjà
+       tout restauré : la pile héritée était donc celle du grand-parent, pas
+       celle du parent. A→B→A traversait sans être vu.
+
+       Le repli sur `parentStack` couvre les éléments d'avant ce changement,
+       encore en file dans un runtime qui redémarre, et l'invocation directe
+       depuis une session interactive.
+      */
+      session._skillStack = Array.isArray(skillChain?.skillStack) && skillChain.skillStack.length
+        ? skillChain.skillStack.map((entry) => String(entry))
+        : skillChain?.skillName
+          ? [...parentStack, String(skillChain.skillName)]
+          : parentStack;
       session._currentRunIdentity = {
         runId,
         turnId: `${runId}:turn-0`,
         workspace: context.workspace,
+        ...(skillChain ? { skillChain } : {}),
       };
       dispatchAgentEvent(session, createAgentEvent('run_started', {
         origin: 'runtime',
@@ -1476,6 +1507,11 @@ async function runRuntime(argv, agent) {
       delete session._runApprovalRequired;
       delete session._runApprovalResolved;
       delete session._approvalTimeoutMs;
+      // La session survit au run : une pile laissée en place bloquerait une
+      // invocation parfaitement légitime au run suivant, et le diagnostic
+      // serait incompréhensible.
+      if (parentStack.length) session._skillStack = parentStack;
+      else delete session._skillStack;
     }
   }
 

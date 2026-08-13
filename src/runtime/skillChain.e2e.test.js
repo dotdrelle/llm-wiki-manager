@@ -60,7 +60,7 @@ async function harness(t, { skills, autoFinish = true } = {}) {
       },
       getContext: async () => context,
       run: async (ctx, body, { runId, signal } = {}) => {
-        runs.push({ runId, input: body.input, capabilityPlan: body.capabilityPlan });
+        runs.push({ runId, input: body.input, capabilityPlan: body.capabilityPlan, skillChain: body.skillChain });
         if (autoFinish) {
           dispatchAgentEvent(ctx.session, createAgentEvent('run_done', { origin: 'runtime', runId }));
           return;
@@ -285,4 +285,34 @@ test('E2E-005 legacy: a structured enqueue keeps carrying its capabilityPlan', a
   await env.finishRun(env.runs[0].runId);
   const structuredRun = env.runs.find((run) => run.capabilityPlan);
   assert.deepEqual(structuredRun?.capabilityPlan, plan);
+});
+
+/*
+ E2E-010 — la pile des compétences franchit le hand-off.
+
+ C'est la seule chose que la garde de récursion ne pouvait pas vérifier
+ elle-même : elle lisait `session._skillStack`, qui vit le temps d'un run, alors
+ qu'une compétence imbriquée est mise en FILE et démarre après le `finally` du
+ parent. Le run recevait donc une pile vide et A→B→A passait, jusqu'à épuiser le
+ budget en headless où personne n'interrompt.
+
+ On vérifie ici la donnée qui traverse la frontière, pas le code qui la produit.
+*/
+test('E2E-010 skill stack: every run receives the ancestors of its chain', async (t) => {
+  const env = await harness(t, { skills: { 'wiki-sync': null } });
+  if (!env) return;
+
+  await env.post('/run?workspace=acme', { input: '/wiki-sync docs' });
+  await env.settle();
+
+  assert.ok(env.runs.length >= 1);
+  for (const run of env.runs) {
+    assert.deepEqual(
+      run.skillChain?.skillStack,
+      ['wiki-sync'],
+      'the run must know which skills are already open above it',
+    );
+  }
+  // Et l'élément de file la porte, puisque c'est lui qui survit au parent.
+  for (const item of env.chain()) assert.deepEqual(item.skillStack, ['wiki-sync']);
 });

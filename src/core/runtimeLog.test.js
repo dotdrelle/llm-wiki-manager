@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createAgentEvent, dispatchAgentEvent } from './agentEvents.js';
-import { formatRuntimeLogPayload } from './runtimeLog.js';
+import { compactRuntimeLogForDisplay, formatRuntimeLogPayload } from './runtimeLog.js';
 import { emitRuntimeLog } from '../runtime/supervisor.js';
 
 const CYCLE_EVENTS = [
@@ -83,4 +83,18 @@ test('emitRuntimeLog accepts structured payloads and preserves legacy strings', 
   // Legacy plain messages now carry the same HH:MM:SS prefix as structured
   // events so the Logs/Trace panel stays chronologically readable.
   assert.match(session.agentProjection.logs[1], /^\d{2}:\d{2}:\d{2} legacy line$/);
+});
+
+test('vector fallback warnings keep only their reason and message for display', () => {
+  const displayed = compactRuntimeLogForDisplay(`09:25:34 trace: WARN retrieval:vector-fallback
+    reason=vector-error indexPath=/workspace/.wiki/vector-index queryPreview="a long query" fallback=lexical
+    consecutiveErrors=1 disabled=false message="Vector index is missing."`);
+
+  assert.equal(displayed, '09:25:34 trace: WARN retrieval:vector-fallback reason=vector-error message="Vector index is missing."');
+  assert.doesNotMatch(displayed, /indexPath|queryPreview|fallback=|consecutiveErrors|disabled=/);
+});
+
+test('runtime display compaction leaves other log entries unchanged', () => {
+  const line = '09:25:35 trace: ERROR retrieval failed message="broken"';
+  assert.equal(compactRuntimeLogForDisplay(line), line);
 });

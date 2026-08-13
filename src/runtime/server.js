@@ -318,6 +318,9 @@ export function startRuntimeServer({
               idempotencyKey: body.idempotencyKey ?? null,
               turnId: body.turnId ?? null,
               selectionKind: body.selectionKind ?? null,
+              // Pile de l'appelant : c'est le seul canal par lequel elle peut
+              // franchir la frontière HTTP.
+              skillStack: Array.isArray(body.skillStack) ? body.skillStack : [],
             });
             sendJson(response, result.accepted ? 202 : skillResultErrorStatus(result), result);
             return;
@@ -667,7 +670,15 @@ export function startRuntimeServer({
             const pendingChainId = await context.pendingSkillRuns.get(idempotencyKey);
             return publicSkillRunProjection(context, skill.name, pendingChainId, metadata.selectionKind, true);
           }
-          const creation = runSkillChain(context, skill, { args, enqueueControlRequest, drainControlQueue, selectionKind: metadata.selectionKind });
+          const creation = runSkillChain(context, skill, {
+            args,
+            enqueueControlRequest,
+            drainControlQueue,
+            selectionKind: metadata.selectionKind,
+            // La pile du run appelant : elle sera empilée sur chaque élément mis
+            // en file, et c'est elle seule qui survit au hand-off.
+            skillStack: Array.isArray(metadata.skillStack) ? metadata.skillStack : [],
+          });
           if (idempotencyKey) context.pendingSkillRuns.set(idempotencyKey, creation.then((item) => item.chainId));
           const result = await creation;
           if (idempotencyKey) {
@@ -783,10 +794,31 @@ export function startRuntimeServer({
 
   function drainControlQueue(context) {
     return reconcileControlQueue(context, {
+      /*
+       La provenance de chaîne suit le run.
+
+       `chainId` et `skillName` vivaient sur l'item de contrôle et s'arrêtaient
+       là : le run ne savait pas qu'il exécutait une intention compilée depuis
+       une compétence. L'agent voyait donc un objectif métier — « ingérer les
+       fichiers en attente » — qui ressemble par construction à la description
+       de la compétence dont il sort, et la resélectionnait. En headless, où
+       personne n'interrompt, cela boucle jusqu'à épuisement du budget LLM.
+      */
       startItem: (item) => startRuntimeRun(context, {
         input: item.input,
         workspace: item.workspace ?? context.workspace ?? null,
         ...(item.capabilityPlan !== undefined ? { capabilityPlan: item.capabilityPlan } : {}),
+        ...(item.chainId
+          ? {
+            skillChain: {
+              chainId: item.chainId,
+              skillName: item.skillName ?? null,
+              // La pile des ancêtres, sans quoi le run ne peut pas savoir qu'il
+              // referme un cycle commencé deux hand-offs plus tôt.
+              skillStack: Array.isArray(item.skillStack) ? item.skillStack : [],
+            },
+          }
+          : {}),
       }, { controlItemId: item.id }),
       skipItem: (item, reason) => emitControlSkipped(context, item, reason),
     });
@@ -1056,7 +1088,22 @@ async function handleControlMessage(context, store, input, { intent = null, star
     : controlMessage(context?.session, 'converse_while_idle'));
 }
 
-function enqueueControlRequest(context, input, { capabilityPlan, chainId, chainSequence, skillName, selectionKind, optional = false, continueOnFailure = false } = {}) {
+/*
+ `skillStack` accompagne l'élément, il ne vit pas sur la session.
+
+ La pile des compétences en cours était posée sur la session pour la durée d'UN
+ run, et restaurée par son `finally`. Or une compétence imbriquée n'est pas
+ exécutée en ligne : elle est MISE EN FILE, et son run démarre après que le
+ parent a fini de se nettoyer. La pile qu'elle lisait était donc déjà vide.
+
+ Conséquence : la garde n'attrapait que le cas pour lequel elle avait été
+ écrite — une compétence qui se relance dans son propre run — et laissait
+ passer A→B→A, qui boucle jusqu'à épuisement du budget en headless.
+
+ Une file est un passage de témoin : ce qui doit survivre au parent voyage avec
+ le message, pas dans l'état de celui qui l'a posté.
+*/
+function enqueueControlRequest(context, input, { capabilityPlan, chainId, chainSequence, skillName, skillStack, selectionKind, optional = false, continueOnFailure = false } = {}) {
   const now = new Date().toISOString();
   const item = {
     id: `control-${randomUUID()}`,
@@ -1070,6 +1117,7 @@ function enqueueControlRequest(context, input, { capabilityPlan, chainId, chainS
     ...(chainId ? { chainId } : {}),
     ...(Number.isInteger(chainSequence) ? { chainSequence } : {}),
     ...(skillName ? { skillName } : {}),
+    ...(Array.isArray(skillStack) && skillStack.length ? { skillStack: [...skillStack] } : {}),
     ...(selectionKind ? { selectionKind } : {}),
     optional: optional === true,
     continueOnFailure: continueOnFailure === true,

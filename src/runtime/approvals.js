@@ -134,11 +134,23 @@ export function createApprovalManager(session, {
   function approve(request = {}) {
     const { approvalId = null, runId = null, itemId = null } = request;
     if (request.scope || request.planRevision != null || request.approvalClasses || request.approvalClass || request.taskId || request.groupId) {
+      const scope = normalizeGrantScope(request.scope);
+      // A run-scope grant must be bounded to a run. Without a runId it would
+      // read as a permanent, workspace-wide grant in `grantCoversTask` (its
+      // runId/revision/class checks all skip on null) — one bare `{scope:'run'}`
+      // could then unlock every mutating task of every run, forever. Fall back
+      // to the active run identity and refuse rather than mint an unbounded
+      // grant when there is none.
+      const effectiveRunId = request.runId ?? session._currentRunIdentity?.runId ?? null;
+      if (scope === 'run' && !effectiveRunId) {
+        return { approved: false, reason: 'run_scope_requires_runId' };
+      }
       const grant = normalizeApprovalGrant({
         ...request,
         id: request.id ?? request.approvalId ?? randomUUID(),
         workspaceId: request.workspaceId ?? request.workspace ?? session.workspace ?? null,
-        scope: normalizeGrantScope(request.scope),
+        scope,
+        runId: effectiveRunId,
         itemId: request.itemId ?? request.taskId ?? null,
         status: 'approved',
       });

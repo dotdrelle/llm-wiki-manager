@@ -8,7 +8,7 @@ endpoints, and provides the `donna` shell: an agent-first terminal UI that can
 inspect workspaces, run safe manager commands, call MCP tools, guide production
 jobs, and run one-shot headless tasks.
 
-Current coordinated release: **0.14.11**. Managed `llm-wiki` services expose
+Current coordinated release: **0.15.48**. Managed `llm-wiki` services expose
 the Wiki Graph v2 browser and APIs; rebuild the `llm-wiki` image when deploying
 this release through Docker.
 
@@ -198,7 +198,7 @@ Then send a one-line prompt to confirm the **LLM answers**, e.g.
 > separate `baseUrl`/`apiKey`, and reranking) used for retrieval-grounded answers.
 
 **7 — Try a few commands & prompts.**
-Plain-language prompts (web chat **or** `donna` shell):
+Plain-language prompts (the web **Agent/Donna** mode or the `donna` shell):
 
 ```text
 "Summarize wiki/index.md and list the pages it links to."
@@ -210,7 +210,7 @@ Slash primitives (shell):
 
 ```text
 /wiki                # inspect the wiki
-/skills              # bundled examples: pipeline, wiki-sync, wiki-build, deliver, diagnose, status
+/skills              # bundled workflows: pipeline, wiki-sync, wiki-build, deliver, new-template, diagnose, status
 /skills run pipeline # run the shipped end-to-end example
 ```
 
@@ -307,12 +307,15 @@ the rules in the **build-context**.
 The process always follows the same chain. Two entry points depending on your
 starting source.
 
-Everything is driven **in plain language** (the web interface chat or the `donna`
-shell), or by running a ready-made **skill**. No command line needed.
+Everything is driven **in plain language** from Agent/Donna mode, or by running
+a ready-made **skill**. Direct Chat is deliberately read-only with respect to
+production orchestration: it can answer and inspect allowed data, but it does
+not start a skill or a production job. No command line is needed.
 
 ### Entry point A — from a wiki / Confluence export
 
-At each step, either you **ask for it in plain language**, or you **run the skill**.
+At each step, either you **ask Donna for the action in Agent mode**, or you
+**run the skill explicitly**.
 
 1. **Export** Confluence (via the CME agent) → the markdown lands in
    `raw/untracked/`.
@@ -631,22 +634,25 @@ Each recovery is emitted as `run_replanned` and appears in runtime state as
 `replans`. Limit attempts with `WIKI_MANAGER_REPLANNER_MAX_REPLANS` or per run
 with `"replans": 1` in the `/run` body.
 
-Runtime approvals support two levels. For run-level approval, post `/run` with
-`"requireApproval": true`; the runtime emits `run_pending_approval` before the
-first action and waits for `POST /approve?runId=...`. For tool-level approval,
-set `requireApproval` on an external endpoint, or set
-`WIKI_MANAGER_REQUIRE_APPROVAL_TOOLS=production.production_start_job` for
-workspace-native MCP tools. Pending tool approvals appear in the queue with
-status `pending_approval` and can be approved with `POST /approve?itemId=...`
-or the shell command `/approve item <id>`. The approval timeout defaults to 10
-minutes and can be changed with `WIKI_MANAGER_APPROVAL_TIMEOUT_MS` or
-`approvalTimeoutMs` in the `/run` body.
+Runtime approvals are bounded to a run, plan revision and approval class.
+Mutating orchestrated tasks **wait for approval by default**, including tasks
+created by a skill or a directly selected capability such as ingest or
+pipeline. Approve them by replying "valide tout", running `/approve`, or
+clicking Approve in either UI (Shell right-pane banner, or the `serve` banner
+above the composer). `POST /approve` also accepts an explicit run scope.
 
-Directly-launched capability runs (ingest, pipeline) now **wait for approval by
-default** before their mutating tasks: reply "valide tout", run `/approve`, or
-click Approve in either UI (Shell right-pane banner, or the `serve` banner above
-the composer). Auto-approval only happens when the run is started with
-`autoApprove: true` (headless/CI).
+An explicitly launched skill is also approval-gated. For an orchestrated skill,
+the scheduler blocks each uncovered mutating task; for a `direct` skill, the
+run-level gate blocks its first direct mutation. Declaring `execution: direct`
+changes routing and available tools—it does not grant automatic approval.
+
+External direct MCP tools may additionally declare a per-tool `requireApproval`
+policy. Their pending entries can be approved with
+`POST /approve?itemId=...` or `/approve item <id>`. The timeout defaults to ten
+minutes and can be changed with `WIKI_MANAGER_APPROVAL_TIMEOUT_MS` or
+`approvalTimeoutMs` in the `/run` body. Auto-approval is never inferred from a
+skill or an interactive UI: it requires the caller to pass
+`autoApprove: true`, intended for headless/CI (`--auto-approve`).
 
 ### Parallelism & throughput
 
@@ -1042,6 +1048,37 @@ invocation to `/run`. Built-in commands keep priority (`/status` remains the
 Shell status primitive), while `/skills run status` explicitly selects a skill
 with the same name.
 
+Donna receives only the sanitized skill catalogue (name, description and
+parameters) when selecting a skill from natural language. The runtime rereads
+and compiles the body after selection. Conversation, queue, audit, SSE and run
+records expose only the public invocation, for example
+`/wiki-build template="overview"`; the compiled objective remains private
+execution material. An informational question about a skill therefore remains
+a question—it does not launch that skill. A natural-language action launches a
+skill only when Donna finds one strong, unique match and all required parameters
+are present; an explicit command always wins.
+
+Every skill may declare its execution policy in front matter:
+
+```yaml
+---
+name: new-template
+description: Create one reusable deliverable template
+execution: direct
+params:
+  - family
+  - intent
+---
+```
+
+`execution: orchestrated` is the default. It gives the compiled run read tools
+plus capability delegation, but no direct mutating MCP tools. Use it for
+production workflows whose agents provide a plan, locks, progress and bounded
+approvals. `execution: direct` gives the compiled run its ordinary direct tools
+and removes runtime delegation; use it for a focused operation such as writing
+one template file. The policy is snapshotted when the chain is created, so an
+edited skill cannot change permissions halfway through an existing chain.
+
 The runtime compiles a skill into natural-language objectives. Paragraphs alone
 do not split work: an existing complex capability such as `knowledge.pipeline`
 stays one objective, one capability resolution and one run. Strong workflow
@@ -1147,8 +1184,10 @@ runtime resolver used by the Shell and Serve. It waits for the complete
 any failed item yields exit code 1. A chain waiting for approval returns
 immediately with guidance unless `--auto-approve` was requested. Combining
 `--prompt` with runtime `--skill` ignores the prompt and reports that fact in
-the headless log. `--no-runtime` keeps the former local prompt-injection path as
-an explicit compatibility mode.
+the headless log. `--no-runtime` keeps the legacy local execution path as an
+explicit compatibility mode, but it still enforces the skill's declared
+`execution` policy. A direct legacy skill requires the explicit
+`--auto-approve` opt-in before receiving direct tools.
 
 Useful headless controls:
 

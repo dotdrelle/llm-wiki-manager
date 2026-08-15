@@ -728,6 +728,57 @@ test('runtime server kill can target a specific run id', async (t) => {
   }
 });
 
+test('runtime server kill purge without workspace is refused', async (t) => {
+  let clearedArgs = null;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'idle' }),
+        listEvents: () => [],
+        interruptRuns: () => 0,
+        cancelActiveTasksForInterruptedRuns: () => 0,
+        clearWorkspaceState: (args) => {
+          clearedArgs = args;
+          return { runs: 0, events: 0, queue: 0 };
+        },
+      },
+      session: {},
+      run: async () => {},
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const unscoped = await fetch(`http://127.0.0.1:${handle.port}/kill`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ purge: true }),
+    });
+    assert.equal(unscoped.status, 400);
+    assert.deepEqual(await unscoped.json(), { killed: false, reason: 'workspace_required' });
+    assert.equal(clearedArgs, null);
+
+    const scoped = await fetch(`http://127.0.0.1:${handle.port}/kill?workspace=docs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ purge: true }),
+    });
+    assert.equal(scoped.status, 202);
+    assert.equal(clearedArgs.workspace, 'docs');
+  } finally {
+    await handle.close();
+  }
+});
+
 test('runtime server state exposes active run identity while running', async (t) => {
   let releaseRun;
   const context = {

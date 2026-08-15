@@ -541,6 +541,13 @@ export function startRuntimeServer({
         const runId = url.searchParams.get('runId') ?? body.runId ?? null;
         const purge = body.purge === true || url.searchParams.get('purge') === 'true';
         const context = await resolveContext({ workspace });
+        const resolvedWorkspace = context?.workspace ?? workspace ?? null;
+        if (purge && !runId && !resolvedWorkspace) {
+          // Purge is workspace-wide and destructive: without a scope it would
+          // wipe every workspace's history. Mirror /conversation/truncate.
+          sendJson(response, 400, { killed: false, reason: 'workspace_required' });
+          return;
+        }
         const result = await killRuntimeRuns(context, { workspace, runId, purge });
         publishState(context.workspace ?? workspace ?? null, context);
         sendJson(response, 202, result);

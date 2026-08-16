@@ -567,6 +567,7 @@ async function waitForRuntimeRun(session, log, { timeoutMs, pollMs = 1500, autoA
             scope: 'run',
             planRevision,
             approvalClasses: approvalClasses.length > 0 ? approvalClasses : ['default'],
+            caller: 'headless-auto-approve',
           });
           const line = `runtime-wait: auto-approved run ${currentRun.id} (revision ${planRevision})${result?.approved ? '' : ' [no pending approval matched]'}`;
           log.push(line); console.log(line);
@@ -845,6 +846,7 @@ export async function waitForRuntimeChain(session, log, {
             scope: 'run',
             planRevision,
             approvalClasses: approvalClasses.length > 0 ? approvalClasses : ['default'],
+            caller: 'chain-wait-auto-approve',
           });
           const line = `chain-wait: auto-approved run ${active.runId} (revision ${planRevision})`;
           log.push(line); console.log(line);

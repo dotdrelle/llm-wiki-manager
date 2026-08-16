@@ -1402,7 +1402,7 @@ export async function handleSlashCommand(line, context) {
           },
         });
         if (result?.runId) {
-          return { output: `▶ Run de capability accepté (${String(result.runId).slice(0, 8)}) — le plan de l'agent sera intégré et dispatché en parallèle ; approbation demandée avant les mutations (« valide tout » ou /approve).` };
+          return { output: `▶ Run de capability accepté (${String(result.runId).slice(0, 8)}) — le plan de l'agent sera intégré et dispatché en parallèle ; approbation demandée avant les mutations (/approve).` };
         }
         return { output: `Run non démarré: ${result?.explanation ?? result?.error ?? JSON.stringify(result)}` };
       }

@@ -382,7 +382,7 @@ Key modules in `src/runtime/`:
   Directly-launched capability runs (ingest/pipeline via `preparedDelegation`)
   now **wait by default**: the scheduler emits a per-task `approval.requested`
   for each mutating task and blocks on `approvalCovered()` until a run-scope
-  grant arrives ("valide tout" / `/approve` / the Approve button). Auto-approval
+  grant arrives (`/approve` / the Approve button). Auto-approval
   fires only when the caller passes `autoApprove: true` (headless/CI). A granted
   run/group scope also flips its covered `pending_approval` grants to `approved`
   in the store and cascades on run purge (no orphan grants). Pending approvals

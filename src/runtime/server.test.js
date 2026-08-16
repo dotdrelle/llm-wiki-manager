@@ -1082,6 +1082,7 @@ test('runtime server exposes approval endpoint', async (t) => {
       groupId: null,
       planRevision: null,
       approvalClasses: [],
+      caller: null,
     });
     assert.deepEqual(await response.json(), { approved: true, runId: 'run-1', itemId: 'item-1' });
   } finally {
@@ -1307,10 +1308,20 @@ test('runtime server control message handles approve and cancel intents during a
     const approveResponse = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'message', input: 'valide tout' }),
+      body: JSON.stringify({ action: 'message', input: 'valide tout', intent: 'approve' }),
     });
     assert.equal(approveResponse.status, 200);
     assert.equal((await approveResponse.json()).kind, 'approve');
+
+    // Free-text approval phrasing is NOT honored anymore: approval is an
+    // explicit /approve (or the approval button), never a keyword match.
+    const freeTextResponse = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'message', input: 'valide tout' }),
+    });
+    assert.equal(freeTextResponse.status, 200);
+    assert.notEqual((await freeTextResponse.json()).kind, 'approve');
 
     const cancelResponse = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`, {
       method: 'POST',

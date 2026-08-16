@@ -642,6 +642,7 @@ export function startRuntimeServer({
           groupId: url.searchParams.get('groupId') ?? body.groupId ?? null,
           planRevision: readOptionalNumber(url.searchParams.get('planRevision') ?? body.planRevision),
           approvalClasses: readOptionalList(body.approvalClasses ?? body.approvalClass ?? url.searchParams.get('approvalClass')),
+          caller: body.caller ?? url.searchParams.get('caller') ?? null,
         });
         sendJson(response, result?.approved ? 202 : 404, result ?? { approved: false });
         return;
@@ -1370,9 +1371,6 @@ function classifyControlMessage(input, status, forcedIntent = null) {
   }[intent];
   if (explicit) {
     return { kind: explicit, confidence: 1, reason: 'explicit_intent' };
-  }
-  if (/\b(valide tout|approve all|approve|approuve|valid[eé]|ok pour tout|go pour tout)\b/i.test(lower)) {
-    return { kind: 'approve', confidence: 0.86, reason: 'approval_request' };
   }
   if (/\b(cancel|annule|stop|arr[eê]te|interromps|abort)\b/i.test(lower)) {
     return { kind: 'cancel', confidence: 0.86, reason: 'cancel_request' };

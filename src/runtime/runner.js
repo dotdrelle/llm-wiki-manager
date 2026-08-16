@@ -407,8 +407,8 @@ export async function runRuntimeParallelPlan(agent, session, input, {
   sanitizeSessionPlanForExecution(session, runId);
   ensurePlanProjection(session, runId);
   emitRuntimeLog(session, `scheduler: parallel plan enabled (concurrency ${limit}; agent=${concurrencyDetail.agentLimit ?? 'n/a'}, ceiling=${concurrencyDetail.ceiling ?? 'none'}${concurrencyDetail.cappedByCeiling ? ' → capped by manager ceiling' : ''})`);
-  // Interactive approvals do NOT expire: the user has /approve, "valide
-  // tout", /cancel and /run kill — an arbitrary timer only created mystery
+  // Interactive approvals do NOT expire: the user has /approve, /cancel and
+  // /run kill — an arbitrary timer only created mystery
   // failures. A deadline exists only when explicitly configured (headless
   // runs, CI) via the session or the env escape hatch.
   const configuredApprovalWait = Number(session._approvalTimeoutMs) > 0
@@ -572,7 +572,7 @@ export async function runRuntimeParallelPlan(agent, session, input, {
                   `⏸ Approbation requise avant exécution : ${newlyRequested.length} tâche(s) mutante(s) en attente.`,
                   ...newlyRequested.slice(0, 5).map((step) => `  - ${step.description ?? step.id}`),
                   newlyRequested.length > 5 ? `  … et ${newlyRequested.length - 5} autre(s).` : null,
-                  'Réponds « valide tout » (ou tape /approve) pour lancer, « annule » pour abandonner.',
+                  'Tape /approve (ou clique sur « Approuver ») pour lancer, « annule » pour abandonner.',
                 ].filter(Boolean).join('\n'),
               },
             }));

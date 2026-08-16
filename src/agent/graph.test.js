@@ -782,67 +782,25 @@ test('runtime status does not manufacture a plan', async () => {
   }
 });
 
-test('one Donna approval grants the complete validated run revision', async () => {
-  const originalFetch = globalThis.fetch;
-  const requests = [];
-  globalThis.fetch = async (url, options = {}) => {
-    requests.push({ url: String(url), method: options.method ?? 'GET', body: options.body ? JSON.parse(options.body) : null });
-    if ((options.method ?? 'GET') === 'GET') {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          running: true,
-          runId: 'run-approval',
-          planRevision: 3,
-          approvals: [
-            { status: 'pending_approval', approvalClasses: ['workspace'] },
-            { status: 'pending_approval', approvalClasses: ['workspace'] },
-          ],
-        }),
-      };
-    }
-    return { ok: true, status: 202, json: async () => ({ approved: true, runId: 'run-approval' }) };
-  };
-  let calls = 0;
+test('Donna has no self-approval tool during an active run', async () => {
+  // Donna must never grant her own pending approval (the recurring "spontaneous
+  // approval" regression). Approval is the user's action, expressed through the
+  // banner button or /approve — never through an LLM tool call.
+  let seenTools = [];
   const session = sessionBase({
     runtime: { url: 'http://runtime.test' },
     agentProjection: { status: 'running', conversation: [], activities: [] },
     llm: {
-      async completeWithTools() {
-        calls += 1;
-        if (calls === 1) {
-          return {
-            content: null,
-            message: { role: 'assistant', content: null },
-            tool_calls: [{
-              id: 'approve-run',
-              type: 'function',
-              function: { name: 'runtime__approve', arguments: '{}' },
-            }],
-          };
-        }
-        return { content: 'Plan approuvé.', message: { role: 'assistant', content: 'Plan approuvé.' }, tool_calls: null };
+      async completeWithTools({ tools }) {
+        seenTools = tools.map((tool) => tool.function.name);
+        return { content: 'ok', message: { role: 'assistant', content: 'ok' }, tool_calls: null };
       },
     },
   });
 
-  try {
-    const result = await createAgentGraph().invoke({ input: 'oui', session });
-    assert.equal(result.response, 'Plan approuvé.');
-    const approval = requests.find((request) => request.url.includes('/approve'));
-    assert.deepEqual(approval.body, {
-      workspace: 'docs',
-      runId: 'run-approval',
-      itemId: null,
-      approvalId: null,
-      scope: 'run',
-      planRevision: 3,
-      approvalClasses: ['workspace'],
-    });
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  await createAgentGraph().invoke({ input: 'oui', session });
+  assert.ok(seenTools.includes('runtime__status'), 'control tools still bound during an active run');
+  assert.ok(!seenTools.includes('runtime__approve'), 'no runtime__approve tool for Donna');
 });
 
 test('agent graph binds the full toolset for a "remember my preference" request, not just read-only tools', async () => {
@@ -1773,7 +1731,7 @@ test('agent graph lets Donna handle ambiguous input during a run with the contro
   assert.match(result.response, /mettre en file/);
   assert.ok(seenTools.includes('runtime__enqueue'));
   assert.ok(seenTools.includes('runtime__status'));
-  assert.ok(seenTools.includes('runtime__approve'));
+  assert.ok(!seenTools.includes('runtime__approve'), 'no self-approval tool for Donna');
   assert.ok(!seenTools.includes('production__production_start_job'), 'no write MCP tools during an active run for ambiguous intents');
 });
 

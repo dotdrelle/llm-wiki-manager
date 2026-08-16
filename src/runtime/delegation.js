@@ -94,7 +94,7 @@ export function integratePreparedDelegation({
     session,
     approval.approved
       ? `approval: run ${runId} auto-approved (autoApprove opt-in)`
-      : `approval: run ${runId} awaiting explicit approval before mutations (/approve or « valide tout »)`,
+      : `approval: run ${runId} awaiting explicit approval before mutations (/approve)`,
   );
   return { integrated, approval };
 }

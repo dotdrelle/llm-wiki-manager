@@ -637,7 +637,7 @@ with `"replans": 1` in the `/run` body.
 Runtime approvals are bounded to a run, plan revision and approval class.
 Mutating orchestrated tasks **wait for approval by default**, including tasks
 created by a skill or a directly selected capability such as ingest or
-pipeline. Approve them by replying "valide tout", running `/approve`, or
+pipeline. Approve them by running `/approve`, or
 clicking Approve in either UI (Shell right-pane banner, or the `serve` banner
 above the composer). `POST /approve` also accepts an explicit run scope.
 

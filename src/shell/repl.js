@@ -2115,6 +2115,7 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
               url: runtime.url,
               workspace: session.workspace ?? null,
               ...(kind === 'item' ? { itemId: id } : kind === 'approval' ? { approvalId: id } : { runId: id }),
+              caller: 'shell-/approve',
             });
             conversationMessages(session).push({ role: 'command', content: `Approval ${result.approved ? 'accepted' : 'not found'}: ${id}` });
             syncRuntimeState();

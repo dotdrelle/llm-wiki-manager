@@ -261,6 +261,7 @@ export async function postRuntimeApprove({
   scope = null,
   planRevision = null,
   approvalClasses = null,
+  caller = null,
 } = {}) {
   const endpoint = runtimeEndpoint(url, '/approve', workspace);
   const parsed = new URL(endpoint);
@@ -278,6 +279,7 @@ export async function postRuntimeApprove({
       scope,
       planRevision,
       approvalClasses,
+      caller,
     }),
   });
   if (!response.ok) throw new Error(`Runtime approve failed: HTTP ${response.status}`);

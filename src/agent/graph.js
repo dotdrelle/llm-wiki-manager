@@ -26,7 +26,7 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
 import { loadWorkspaceProfile, updateWorkspaceProfilePreference } from '../core/profile.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
-import { fetchRuntimeState, postRuntimeApprove, postRuntimeCancel, postRuntimeControl, postRuntimeDelegate, postRuntimeKill, postRuntimeSkill } from '../runtime/client.js';
+import { fetchRuntimeState, postRuntimeCancel, postRuntimeControl, postRuntimeDelegate, postRuntimeKill, postRuntimeSkill } from '../runtime/client.js';
 import { controlLanguage } from '../runtime/controlMessages.js';
 
 const MAX_TOOL_ITERATIONS = 80;
@@ -46,7 +46,7 @@ const MAX_SPINNER_ARG_LENGTH = 96;
 const INTERNAL_TOOL_SERVERS = {
   wiki: ['plan_set', 'plan_done'],
   shell: ['run_command', 'read_command', 'profile_update'],
-  runtime: ['kill', 'cancel', 'status', 'approve', 'enqueue', 'delegate', 'run_skill'],
+  runtime: ['kill', 'cancel', 'status', 'enqueue', 'delegate', 'run_skill'],
 };
 
 const AGENT_SLASH_COMMANDS = new Set([
@@ -160,15 +160,6 @@ const RUNTIME_STATUS_TOOL = {
   function: {
     name: 'runtime__status',
     description: 'Read the runtime state: active run, plan steps, queue items, approvals. Use to answer questions about what is currently running or queued.',
-    parameters: { type: 'object', additionalProperties: false, properties: {} },
-  },
-};
-
-const RUNTIME_APPROVE_TOOL = {
-  type: 'function',
-  function: {
-    name: 'runtime__approve',
-    description: 'Grant the pending approval of the active runtime run (mutating tasks wait on it). Use when the user consents in ANY phrasing: "vas-y", "ok pour l\'export", "approuve", "valide". Confirm what was approved.',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
   },
 };
@@ -364,7 +355,6 @@ function toolDefinitionForCall(session, callName) {
     RUNTIME_STATUS_TOOL,
     RUNTIME_CANCEL_TOOL,
     RUNTIME_KILL_TOOL,
-    RUNTIME_APPROVE_TOOL,
     RUNTIME_ENQUEUE_TOOL,
     RUNTIME_DELEGATE_TOOL,
     RUNTIME_RUN_SKILL_TOOL,
@@ -852,28 +842,6 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
       const result = await postRuntimeCancel({ url, workspace });
       return result.cancelled ? 'Runtime run cancellation requested.' : `No active run to cancel${result.reason ? ` (${result.reason})` : ''}.`;
     }
-    if (tool === 'approve') {
-      const state = await fetchRuntimeState({ url, workspace });
-      const pending = (Array.isArray(state?.approvals) ? state.approvals : [])
-        .filter((approval) => approval.status === 'pending_approval');
-      const runId = state?.runId
-        ?? state?.runs?.find((run) => ['running', 'pending_approval'].includes(run.status))?.id
-        ?? null;
-      if (!runId || pending.length === 0) return 'No pending approval found.';
-      const approvalClasses = [...new Set(pending.flatMap((approval) => {
-        const value = approval.approvalClasses ?? approval.approvalClass ?? [];
-        return Array.isArray(value) ? value : [value];
-      }).map(String).filter(Boolean))];
-      const result = await postRuntimeApprove({
-        url,
-        workspace,
-        runId,
-        scope: 'run',
-        planRevision: state?.planRevision ?? null,
-        approvalClasses: approvalClasses.length > 0 ? approvalClasses : ['default'],
-      });
-      return result?.approved ? 'Current validated plan approved.' : 'No pending approval found.';
-    }
     if (tool === 'delegate') {
       const objective = String(args.objective ?? '').trim();
       if (!objective) return 'Delegation rejected: missing objective.';
@@ -1250,7 +1218,7 @@ export function buildAgentSystemPrompt(state) {
     workspaceProfile
       ? `Workspace profile (.wiki/profile.md) — durable user preferences, apply these to every reply (tone, tutoiement/vouvoiement, formatting, etc.):\n${workspaceProfile}`
       : null,
-    'Runtime control: you have runtime__status, runtime__cancel, runtime__kill, runtime__approve and runtime__enqueue. When the user asks to stop, remove, clean or kill the current run, its jobs or the queue ("supprime le job et la queue", "arr\u00eate tout"), call runtime__kill (or runtime__cancel for a soft stop of just the run) and confirm what was stopped. When the user explicitly asks to delete, reset, abandon or replace the current plan, call runtime__kill with purge=true; never set purge=true for a simple stop. For questions about what is running or queued, call runtime__status and answer from its data. When the user consents to a pending approval in any phrasing ("vas-y", "ok pour l\'export"), call runtime__approve. When the user asks for a NEW action while a run is active, do not execute it: propose runtime__enqueue (run it after) or, if they insist it replaces the current work, runtime__kill then the new action.',
+    'Runtime control: you have runtime__status, runtime__cancel, runtime__kill and runtime__enqueue. When the user asks to stop, remove, clean or kill the current run, its jobs or the queue ("supprime le job et la queue", "arr\u00eate tout"), call runtime__kill (or runtime__cancel for a soft stop of just the run) and confirm what was stopped. When the user explicitly asks to delete, reset, abandon or replace the current plan, call runtime__kill with purge=true; never set purge=true for a simple stop. For questions about what is running or queued, call runtime__status and answer from its data. You have no approval tool: a pending approval is granted only by the user through the approval button or the /approve command. Never grant, claim or report an approval yourself; when the user asks to proceed with pending mutations, tell them to use those controls. When the user asks for a NEW action while a run is active, do not execute it: propose runtime__enqueue (run it after) or, if they insist it replaces the current work, runtime__kill then the new action.',
     'When the user asks to refresh, show, or update the displayed plan or status, call runtime__status. This is a state refresh request, not a new business capability, and must never be delegated.',
     'Report every runtime control outcome exactly as the tool returned it \u2014 never embellish. If runtime__kill reports 0 run(s)/0 task(s)/0 purged, say there was nothing active to stop or purge; do NOT claim a run, plan, pending approval or queue item was removed. If runtime__status returns an error or could not be read, say the runtime state could not be retrieved and do not describe a state you never obtained. Never assert that something was cleaned, cancelled, approved or purged unless that specific tool result confirms it.',
     'Durable profile updates are actions in this stabilized version: delegate them instead of writing directly.',
@@ -1285,7 +1253,7 @@ export function formatLlmUnavailableMessage(reason) {
 
 function toolsForClassification(classification, writeTools, session = null) {
   const controlTools = session?.runtime?.url
-    ? [RUNTIME_STATUS_TOOL, RUNTIME_CANCEL_TOOL, RUNTIME_KILL_TOOL, RUNTIME_APPROVE_TOOL, RUNTIME_ENQUEUE_TOOL]
+    ? [RUNTIME_STATUS_TOOL, RUNTIME_CANCEL_TOOL, RUNTIME_KILL_TOOL, RUNTIME_ENQUEUE_TOOL]
     : [];
   // Provider discovery and validation belong to the runtime. Hiding
   // delegation while the shell snapshot is temporarily empty forced Donna

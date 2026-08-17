@@ -1,13 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { GOOGLE_GRANTS, GOOGLE_GRANT_LABELS, defaultGoogleGrants } from './googleGrants.js';
+
+// `agent-connectors` n'est pas cloné par le CI du manager, qui ne tire que
+// llm-wiki, agent-wiki-production, agent-cme et agent-wiki-documents (voir
+// check-versions.js). Les contrôles de cohérence croisée ci-dessous lisent la
+// source de l'agent connectors : sans elle, on les saute plutôt que d'échouer
+// sur un ENOENT. Le flux de release complet (build-and-push.sh) la fournit,
+// donc le contrôle y reste effectif.
+const connectorsPresent = existsSync(
+  fileURLToPath(new URL('../../../agent-external/agent-connectors', import.meta.url)),
+);
 
 const connectorsSrc = (file) =>
   readFileSync(fileURLToPath(new URL(`../../../agent-external/agent-connectors/src/${file}`, import.meta.url)), 'utf8');
 
-test('the grant names mirror the agent, spelling included', () => {
+test('the grant names mirror the agent, spelling included', { skip: !connectorsPresent }, () => {
   // `modify` est le nom de Google (scope gmail.modify) et celui de l'agent.
   // Un synonyme côté manager créerait une troisième orthographe à tenir à jour
   // — le travers qui avait déjà donné une seconde paire de variables OAuth.
@@ -26,7 +36,7 @@ test('every grant is described in plain words, never left as a bare token', () =
   }
 });
 
-test('the default asks for everything the agent can actually do', () => {
+test('the default asks for everything the agent can actually do', { skip: !connectorsPresent }, () => {
   // Un défaut plus étroit promet des actions que l'autorisation ne couvre pas :
   // `/connector auth google` ne demandait que `read`, et l'envoi comme le
   // marquage échouaient après coup, en ressemblant à des fonctions absentes.

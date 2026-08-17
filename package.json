@@ -1,9 +1,17 @@
 {
   "name": "@dotdrelle/wiki-manager",
-  "version": "0.15.50",
+  "version": "0.15.52",
   "description": "Agentic shell and orchestration cockpit for llm-wiki workspaces.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dotdrelle/llm-wiki-manager.git"
+  },
+  "homepage": "https://github.com/dotdrelle/llm-wiki-manager#readme",
+  "bugs": {
+    "url": "https://github.com/dotdrelle/llm-wiki-manager/issues"
+  },
   "license": "PolyForm-Noncommercial-1.0.0",
-  "author": "dotrelle",
+  "author": "dotdrelle",
   "type": "module",
   "bin": {
     "wiki-manager": "bin/wiki-manager",

@@ -140,6 +140,14 @@ phantom service — don't. See `docs/configuration.md` § "Compose overrides".
 
 ## Shell Model
 
+The left pane keeps in its **header** only what changes the meaning of what is
+typed — the mode bar and the transient hint — and carries workspace, version and
+connection states in a **status foot** under the composer: ambient state one
+glances at, not something read before every message. Both are one line, so the
+row budget in `tui.tsx` (`height - 5 - chatInputHeight()`) is unchanged; that
+constant counts the header, and moving a line between header and foot is the only
+way to touch this layout without touching it.
+
 Interactive ShellUI startup runs ordered infrastructure preflight checks before
 workspace configuration: `docker info` first, then an HTTPS connectivity probe,
 then global agents, workspace initialization/configuration, workspace

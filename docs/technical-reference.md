@@ -57,7 +57,9 @@ wikiLLM is configured by **four files** held together by two families of keys:
 **MCP keys** (Bearer tokens that authenticate *who connects to whom*) and **LLM
 keys** (`apiKey` + `baseUrl` that *reach a model*).
 
-![wikiLLM configuration keys — MCP vs LLM, where each key is configured](https://raw.githubusercontent.com/dotdrelle/llm-wiki-manager/main/docs/config-keys.svg)
+![wikiLLM configuration keys — MCP vs LLM, where each key is configured](https://raw.githubusercontent.com/dotdrelle/llm-wiki-manager/main/docs/config-keys.png)
+
+<sub>Source: [`config-keys.svg`](config-keys.svg) — edit the SVG, regenerate the PNG.</sub>
 
 | File | Owner | Scope | Holds |
 | --- | --- | --- | --- |
@@ -73,7 +75,7 @@ connect to the same surfaces with the same tokens. **MCP keys** are set in the
 root `.env`; the wiki's **LLM keys** live in each workspace `.wikirc.yaml`.
 
 See the full, field-by-field reference in
-**[docs/configuration.md](https://raw.githubusercontent.com/dotdrelle/llm-wiki-manager/main/docs/configuration.md)**.
+**[docs/configuration.md](configuration.md)**.
 
 ## Installing from source
 
@@ -287,7 +289,7 @@ per phase (`ingest_apply` stays serial). The resolved value is shown in both
 UIs' run summary and on the run node of the execution graph, with an amber
 "(ceiling)" marker when the manager ceiling binds. Low/high profiles, the lock
 model and the LLM-backend caveat are in
-[docs/configuration.md § "Parallelism & throughput"](docs/configuration.md).
+[configuration.md § "Parallelism & throughput"](configuration.md).
 
 While a run is active, `GET`/`POST /control` still answers without waiting for
 it to finish: `{"action":"status"}` returns the current run/plan/queue state,
@@ -439,7 +441,7 @@ Compose keeps trying to start.
 
 The most common use behind a VPN is proxy passthrough: containers do not inherit
 the host environment, and only `connectors` ships proxy variables by default. See
-[`docs/configuration.md`](docs/configuration.md) § "Compose overrides" for a
+[`docs/configuration.md`](configuration.md) § "Compose overrides" for a
 copy-paste block and the `host.docker.internal` / `NO_PROXY` pitfalls.
 
 The second use is running an external connector alongside the packaged agents.
@@ -993,4 +995,4 @@ llm-wiki-manager/
 
 ## License
 
-Released under the PolyForm Noncommercial License 1.0.0. See [`LICENSE`](LICENSE).
+Released under the PolyForm Noncommercial License 1.0.0. See [`LICENSE`](../LICENSE).

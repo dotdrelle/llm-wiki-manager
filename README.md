@@ -118,7 +118,7 @@ and a *replaceable* toolbox of *external* MCP servers — to produce the **core
 wiki** outputs, all driven by an agentic, multi-model orchestrator and grounded
 in isolated workspaces.
 
-![wikiLLM functional diagram — inputs, MCP calls and outputs around the agentic orchestrator and workspaces](docs/architecture.svg)
+![wikiLLM functional diagram — inputs, MCP calls and outputs around the agentic orchestrator and workspaces](https://raw.githubusercontent.com/dotdrelle/llm-wiki-manager/main/docs/architecture.png)
 
 ## Quick start — your first wiki in ~5 minutes
 

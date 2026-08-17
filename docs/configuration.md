@@ -9,7 +9,7 @@ For the first-run happy path see the **Quick start** in the
 [main README](../README.md#quick-start--your-first-wiki-in-5-minutes); for the
 four ways to drive the system see [usage.md](usage.md).
 
-![wikiLLM configuration keys — MCP vs LLM, where each key is configured](https://raw.githubusercontent.com/dotdrelle/llm-wiki-manager/main/docs/config-keys.svg)
+![wikiLLM configuration keys — MCP vs LLM, where each key is configured](https://raw.githubusercontent.com/dotdrelle/llm-wiki-manager/main/docs/config-keys.png)
 
 ---
 

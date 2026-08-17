@@ -163,6 +163,4 @@ agent is down, uploads stay staged and can be converted later.
 Each external agent has an entry in `mcp.endpoints.json` with a URL and a
 `Bearer ${TOKEN}` header; set the matching token variables in `.env`. Workspace-
 native servers (`llm-wiki`, `production`) stay configured through each workspace
-`.env` instead. See the **External MCP endpoints** and **Starting external
-agents** sections in the [main README](../README.md#external-mcp-endpoints) for
-the underlying configuration files.
+`.env` instead. See the [**External MCP endpoints**](technical-reference.md#external-mcp-endpoints) and [**Starting external agents**](technical-reference.md#starting-external-agents) sections for the underlying configuration files.

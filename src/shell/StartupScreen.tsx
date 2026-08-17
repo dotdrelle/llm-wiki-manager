@@ -249,7 +249,15 @@ export function StartupScreen(props: {
     return `${workspace} / ${profile}`;
   });
 
-  const innerWidth = createMemo(() => Math.max(40, panelWidth() - 6));
+  /*
+   Usable width inside the panel.
+
+   The panel has no border any more, only `padding={2}`: 4 columns, not 6. The
+   two extra columns were the border's, and keeping them would leave the text
+   measured for a frame that is no longer drawn — every `fit()` truncating two
+   characters early for nothing.
+  */
+  const innerWidth = createMemo(() => Math.max(40, panelWidth() - 4));
   const shortcutHint = createMemo(() => {
     const count = currentLength();
     const quick = count === 1 ? '1 quick select' : `1-${count} quick select`;
@@ -267,9 +275,6 @@ export function StartupScreen(props: {
         top={top()}
         width={panelWidth()}
         height={panelHeight()}
-        border
-        borderStyle="rounded"
-        borderColor="#8BD5CA"
         backgroundColor="#111318"
         padding={2}
         flexDirection="column"

@@ -27,6 +27,24 @@ test('workspace production agent enables restore by default', async () => {
   assert.match(String(allowed), /(?:^|,)restore(?:,|})/);
 });
 
+test('every shipped default allows the taxonomy step', async () => {
+  /*
+   L'absence de `taxonomy` est SILENCIEUSE.
+
+   `agent_plan` retire la tâche taxonomique du fragment d'ingestion quand
+   l'étape n'est pas autorisée (`"taxonomy" in _ALLOWED_STEPS`), sans erreur ni
+   avertissement. Un déploiement par compose ingérait donc sans jamais publier
+   de taxonomie, et la carte restait périmée — exactement le défaut que le Lot 4
+   avait corrigé côté moteur. Le défaut de Python porte `taxonomy` ; un compose
+   POSITIONNE toujours la variable, donc ce défaut ne s'applique jamais là.
+  */
+  const raw = await readFile(new URL('../../docker-compose.yml', import.meta.url), 'utf8');
+  const compose = YAML.parse(raw);
+  const allowed = compose.services['production-mcp'].environment
+    .find((entry) => String(entry).startsWith('PRODUCTION_ALLOWED_STEPS='));
+  assert.match(String(allowed), /(?:^|,)taxonomy(?:,|})/);
+});
+
 test('shipped compose files never carry a build context', async () => {
   // Ces deux fichiers partent dans le paquet npm, où les dépôts frères
   // (`../agent-external/…`) n'existent pas : un `build:` y rend toute commande

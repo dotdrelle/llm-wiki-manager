@@ -246,6 +246,49 @@ test('startActivitySupervisor periodically re-scans the agent registry', async (
   }
 });
 
+test('startActivitySupervisor refreshes MCP before each periodic re-scan', async () => {
+  /*
+   Without the refresh, the re-scan re-reads a cached "not connected" endpoint
+   status and keeps a legacy placeholder forever, so an agent whose container
+   came up after boot is never discovered. The refresh probes the endpoints
+   again before the scan.
+  */
+  const session = {
+    mcp: {},
+    activities: {},
+    headlessPlan: null,
+    jobQueue: [],
+  };
+  let refreshes = 0;
+  let discoveries = 0;
+  const registry = {
+    async discover() {
+      discoveries += 1;
+      return [];
+    },
+    snapshot() {
+      return [];
+    },
+  };
+
+  const supervisor = startActivitySupervisor(session, {
+    intervalMs: 1000,
+    queueIntervalMs: 1000,
+    agentRegistryIntervalMs: 10,
+    agentRegistry: registry,
+    refreshMcp: async () => {
+      refreshes += 1;
+    },
+  });
+
+  try {
+    await waitFor(() => refreshes >= 2);
+    assert.ok(discoveries >= 2);
+  } finally {
+    supervisor.stop();
+  }
+});
+
 test('discoverAgentsOnce uses the session registry and returns discovered agents', async () => {
   const expected = [{ agentInstanceId: 'a' }];
   const registry = {

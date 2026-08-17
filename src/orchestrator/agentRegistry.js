@@ -1,5 +1,6 @@
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
+import { normalizeRuntimeLog } from '../core/runtimeLog.js';
 import { assertContract } from '../contracts/schemas.js';
 
 const AVAILABLE = 'available';
@@ -142,6 +143,39 @@ async function discoverServerAgent(session, serverName, endpoint = {}, { callToo
 function registerAgent(session, agent, { agentsByInstance, instanceByServer }) {
   const previousInstanceId = instanceByServer.get(agent.serverName);
   const previous = previousInstanceId ? agentsByInstance.get(previousInstanceId) : null;
+
+  /*
+   A failed discovery must not erase a known orchestrator agent.
+
+   When the endpoint is transiently unreachable — the runtime boots before its
+   containers (the normal boot order), or a single probe times out —
+   `discoverServerAgent` falls back to a legacy agent with no capabilities. The
+   old code replaced the orchestrator agent with that fallback, so every
+   capability silently vanished from the registry and did not come back until a
+   LATER successful discovery. Keep the orchestrator agent and only refresh its
+   probe timestamp: its capabilities are still real, only the endpoint is down.
+  */
+  if (agent.legacy && previous && !previous.legacy) {
+    agentsByInstance.set(previous.agentInstanceId, { ...previous, lastSeenAt: agent.lastSeenAt });
+    /*
+     Preserving is right; preserving in silence is what caused the hunt.
+
+     Every defect this registry produced was invisible: capabilities vanished
+     without an event, and the resolver could only report the consequence ("no
+     agent provides X") long afterwards. Keeping the agent fixes the loss, not
+     the blindness — a probe that failed is a fact worth stating, once, where
+     the panels and the shell already read.
+
+     Deliberately NOT a health change: the endpoint is down but the agent stays
+     usable by design here, and moving `health` would make `capabilityResolver`
+     refuse it — trading a silent loss for a silent refusal.
+    */
+    dispatchRuntimeLog(session, `agent-registry: ${agent.serverName} did not answer agent_describe`
+      + `${agent.error ? ` (${agent.error})` : ''}; keeping its known capabilities`
+      + ` (${(previous.description?.capabilities ?? []).map((capability) => capability.id).join(', ') || 'none'}).`);
+    return cloneAgent(previous);
+  }
+
   const firstSeenAt = previous?.firstSeenAt ?? agent.firstSeenAt ?? agent.lastSeenAt;
   const next = {
     ...agent,
@@ -165,6 +199,26 @@ function registerAgent(session, agent, { agentsByInstance, instanceByServer }) {
     });
   }
   return cloneAgent(next);
+}
+
+/**
+ * Runtime log line, emitted without importing the supervisor.
+ *
+ * `emitRuntimeLog` lives in `runtime/supervisor.js`, which already imports THIS
+ * module: importing it back would close a cycle for one log line. The event
+ * shape is the contract, not the helper, so we build it from the same
+ * normalizer the supervisor uses.
+ */
+function dispatchRuntimeLog(session, message) {
+  if (!session) return;
+  const payload = normalizeRuntimeLog(message, { session });
+  dispatchAgentEvent(session, createAgentEvent('runtime_log', {
+    origin: 'runtime',
+    runId: payload.runId ?? null,
+    taskId: payload.taskId ?? null,
+    workspace: payload.workspaceId ?? null,
+    payload,
+  }));
 }
 
 function dispatchRegistryEvent(session, type, payload) {

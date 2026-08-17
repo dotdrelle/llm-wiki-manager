@@ -806,7 +806,10 @@ export function startRuntimeServer({
     runPromise
       .catch((err) => {
         rejectReady?.(err);
-        context.session?._onRuntimeError?.(err);
+        // The runId travels with the failure: without it `finishControlByRun`
+        // had nothing to match, so a queued restore stayed "pending" forever
+        // while the run that carried it was already dead.
+        context.session?._onRuntimeError?.(err, runId);
       })
       .finally(() => {
         context.running = false;

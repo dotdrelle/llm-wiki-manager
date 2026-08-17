@@ -637,9 +637,15 @@ with `"replans": 1` in the `/run` body.
 Runtime approvals are bounded to a run, plan revision and approval class.
 Mutating orchestrated tasks **wait for approval by default**, including tasks
 created by a skill or a directly selected capability such as ingest or
-pipeline. Approve them by running `/approve`, or
-clicking Approve in either UI (Shell right-pane banner, or the `serve` banner
-above the composer). `POST /approve` also accepts an explicit run scope.
+pipeline. Approve them by running `/approve`, or clicking Approve in either UI:
+the Shell right-pane banner, or the `serve` banner.
+
+In `serve` that banner is a **fixed overlay, visible in every centre view**. It
+used to sit inside the composer, which the layout hides in the wiki, connectors
+and execution views — so a restore launched from `/history` waited on an
+approval nobody could see, and the Execution view, the one meant for monitoring,
+could not show it either. The Shell never had that gap because its plan pane is
+always on screen. `POST /approve` also accepts an explicit run scope.
 
 An explicitly launched skill is also approval-gated. For an orchestrated skill,
 the scheduler blocks each uncovered mutating task; for a `direct` skill, the
@@ -907,9 +913,33 @@ The shared `docker-compose.yml` starts one workspace stack:
 Use `wiki-workspace` whenever possible so Compose receives the right project
 name, env file, ports, and volume mounts.
 
+`PRODUCTION_ALLOWED_STEPS` gates what `production-mcp` will accept, and an
+omission from it is **silent**: `agent_plan` simply leaves the step's task out of
+the fragment instead of failing. `taxonomy` was missing from the shipped default
+for several releases, so every compose-deployed ingest ran without the taxonomy
+barrier and left the published map stale. Keep the variable in step with the
+in-code default of `production_mcp_server.py` — a test in each repo now compares
+them — and remember that an explicit value in your `.env` overrides the default
+entirely.
+
 Runtime split: the host manager/runtime uses Node.js 22+ for `node:sqlite`; the
 interactive OpenTUI shell uses Bun 1.2+; workspace Docker services run from the
 published images and do not depend on host `node_modules`.
+
+Two consequences worth knowing before debugging anything:
+
+- **The runtime is not a container.** `runtime/lifecycle.js` spawns it locally,
+  detached, from the manager sources — no Compose file declares it. Changing
+  runtime or shell code therefore needs a **restart**, never an image rebuild;
+  changing `llm-wiki` or an agent needs the image rebuilt.
+- **The runtime starts before the workspace containers.** Its first agent
+  discovery legitimately finds them absent. `agentRegistry` keeps a known
+  agent's capabilities when a probe fails — it only refreshes `lastSeenAt`, and
+  says so in the runtime log — and the periodic re-scan re-probes the MCP
+  endpoints instead of reusing a cached status. Without both, a capability the
+  agent really has stayed missing from the registry until the next successful
+  discovery, and the only symptom was a run failing much later with
+  `No agent provides capability …`.
 
 As of 0.11.4, the host runtime store carries a minimal format guard:
 `PRAGMA user_version = 1` in SQLite plus `.wiki/meta.json` with

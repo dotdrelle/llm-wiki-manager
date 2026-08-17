@@ -675,3 +675,24 @@ test('a stream resumed after a discard carries only the final text', () => {
   assert.equal(projection.conversation[1].content, '12 pages.');
   assert.equal(projection.conversation[1].streaming, undefined, 'le message doit être figé');
 });
+
+test('run_error names the failure so the essential journal cannot filter it out', () => {
+  // La liste de mots-clés du journal serve (failed, error, done, approval…)
+  // rejetait un message qui n'en contient aucun — « No agent provides
+  // capability workspace.restore. » — et le panneau affichait « No essential
+  // run event yet » au-dessus d'un run mort avec sa raison déjà connue.
+  const state = reduceAgentEvents([
+    createAgentEvent('run_error', {
+      origin: 'runtime',
+      runId: 'run-1',
+      payload: { message: 'No agent provides capability workspace.restore.' },
+    }),
+  ]);
+
+  assert.equal(state.status, 'error');
+  const line = state.logs.at(-1);
+  assert.match(line, /^Run failed: /);
+  assert.match(line, /workspace\.restore/);
+  // Le mot qui rend l'entrée « essentielle » pour le journal serve.
+  assert.match(line, /failed/i);
+});

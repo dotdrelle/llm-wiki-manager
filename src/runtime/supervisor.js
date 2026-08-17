@@ -13,6 +13,7 @@ export function startActivitySupervisor(session, {
   agentRegistryIntervalMs = registryIntervalFromEnv(),
   agentRegistry = null,
   callTool = callMcpTool,
+  refreshMcp = null,
 } = {}) {
   const pollBusy = new Set();
   let stopped = false;
@@ -32,8 +33,24 @@ export function startActivitySupervisor(session, {
     }
   }, queueIntervalMs);
 
+  /*
+   The re-scan must probe the endpoints again, not trust a stale status.
+
+   The first discovery ran while the containers were still coming up, so the
+   production endpoint was marked "not connected" and its agent fell back to a
+   legacy placeholder. Re-scanning against that cached status kept the fallback
+   forever. `refreshMcp` re-resolves the endpoint states (and their tools)
+   before each discovery, so a container that came up is actually discovered.
+  */
   const agentRegistryTimer = agentRegistryIntervalMs > 0
-    ? setInterval(() => {
+    ? setInterval(async () => {
+      if (refreshMcp) {
+        try {
+          await refreshMcp(session);
+        } catch {
+          /* the discovery below still runs on the cached status */
+        }
+      }
       void discoverAgentsOnce(session, { registry, signal: runSignal });
     }, agentRegistryIntervalMs)
     : null;

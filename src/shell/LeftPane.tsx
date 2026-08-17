@@ -822,13 +822,16 @@ export function LeftPane(props: {
   const showWelcome = () => props.showWelcome && props.messages.length === 0;
   return (
     <box width={props.width} height="100%" flexDirection="column" padding={1} overflow="hidden">
-      <box height={3} flexDirection="column">
+      {/*
+        The header keeps what changes the MEANING of what is typed — the mode,
+        and the transient hint. Workspace, version and connection states moved
+        to the foot of the pane: they are an ambient state one glances at, not
+        something read before every message, and at the top they pushed the
+        conversation down by a line for standing information.
+      */}
+      <box height={2} flexDirection="column">
         <box height={1} flexDirection="row" backgroundColor={modeColor()} paddingX={1}>
           <text fg="#0B1020">{modeLabel()}</text>
-        </box>
-        <box height={1} flexDirection="row">
-          <text fg="#D6DEE8">{props.title}</text>
-          <text fg="#7F8C8D">  {props.statusLine}</text>
         </box>
         <box height={1} flexDirection="row">
           {props.hintLine ? <text fg="#FBBF24">[ {props.hintLine} ]</text> : null}
@@ -860,6 +863,15 @@ export function LeftPane(props: {
         onSubmit={props.submit}
         onHeightChange={props.onInputHeightChange}
       />
+      {/*
+        Status foot. One line, as in the header before it, so the row budget of
+        `conversationRows` (height - 5 - input) is unchanged: the line moved,
+        it was not added.
+      */}
+      <box height={1} flexDirection="row">
+        <text fg="#D6DEE8">{props.title}</text>
+        <text fg="#7F8C8D">  {props.statusLine}</text>
+      </box>
     </box>
   );
 }

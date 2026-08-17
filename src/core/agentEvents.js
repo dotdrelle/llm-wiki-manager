@@ -561,7 +561,18 @@ function applyEvent(state, event) {
       return;
     case 'run_error':
       state.status = 'error';
-      state.logs.push(String(event.payload?.message ?? 'Agent run failed.'));
+      /*
+       "Run failed:" is part of the line, not decoration.
+
+       The serve journal keeps only the entries matching a keyword list
+       (failed, error, done, approval…). A run killed by a message that uses
+       none of those words — "No agent provides capability workspace.restore."
+       — was therefore filtered out as unimportant, and the panel showed "No
+       essential run event yet" over a run that had just died with its reason
+       already in hand. What ends a run is essential by construction; the
+       prefix states that instead of hoping the wording says so.
+      */
+      state.logs.push(`Run failed: ${String(event.payload?.message ?? 'Agent run failed.')}`);
       // A dead run must not leave "pending" plan steps and spinning
       // activities in the persisted projection: they reappeared as ghosts
       // at every relaunch ("des trucs dans le plan qui n'existent pas") and

@@ -980,11 +980,12 @@ async function runRuntime(argv, agent) {
           payload: { message: `runtime: expired ${staleControl.length} stale queued control request(s) from a previous session` },
         }));
       }
-      session._onRuntimeError = (err) => {
+      session._onRuntimeError = (err, runId = null) => {
         const message = err instanceof Error ? err.message : String(err);
         dispatchAgentEvent(session, createAgentEvent('run_error', {
           origin: 'runtime',
-          payload: { message, workspace },
+          ...(runId ? { runId } : {}),
+          payload: { message, workspace, ...(runId ? { runId } : {}) },
         }));
       };
       context.approvalManager = createApprovalManager(session, {
@@ -993,7 +994,9 @@ async function runRuntime(argv, agent) {
           : undefined,
       });
       session._requestApproval = (request) => context.approvalManager.requestApproval(request);
-      context.supervisor = startActivitySupervisor(session);
+      context.supervisor = startActivitySupervisor(session, {
+        refreshMcp: () => refreshMcpRuntimeStatus(session),
+      });
       contexts.set(key, context);
       if (workspace && workspace !== key) contexts.set(workspace, context);
       return context;
@@ -1424,7 +1427,26 @@ async function runRuntime(argv, agent) {
         const provider = agents.find((item) => (item.description?.capabilities ?? [])
           .some((capability) => capability.id === body.capabilityPlan.capability));
         if (!provider?.serverName) {
-          throw new Error(`No agent provides capability ${body.capabilityPlan.capability}.`);
+          /*
+           Say what WAS seen, not only what was missing.
+
+           "No agent provides capability X." leaves three very different causes
+           indistinguishable: no agent registered at all, the right agent
+           registered but advertising a narrower set (an operation excluded by
+           PRODUCTION_ALLOWED_STEPS drops its whole capability from
+           agent_describe, silently), or a name mismatch. Listing the registry
+           turns the next occurrence into its own diagnosis instead of a guess.
+          */
+          const seen = agents.map((item) => {
+            const ids = (item.description?.capabilities ?? []).map((capability) => capability.id);
+            return `${item.serverName ?? '?'}[${ids.join(', ') || 'none'}]`;
+          });
+          throw new Error(
+            `No agent provides capability ${body.capabilityPlan.capability}. `
+            + (seen.length
+              ? `Registered agents: ${seen.join('; ')}.`
+              : 'No agent is registered: none answered agent_describe.'),
+          );
         }
         const fragment = parseJsonText(formatMcpToolResult(await callMcpTool(session.mcp, provider.serverName, 'agent_plan', {
           capability: body.capabilityPlan.capability,

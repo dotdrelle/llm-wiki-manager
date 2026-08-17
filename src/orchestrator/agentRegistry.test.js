@@ -134,6 +134,81 @@ test('agentRegistry marks unavailable boot agents and emits health changes on re
   assert.equal(registry.snapshot()[0].health, 'available');
 });
 
+test('a failed re-discovery keeps the orchestrator agent, never erases its capabilities', async () => {
+  /*
+   Boot order: the runtime starts before its containers. The first scan sees the
+   production endpoint "unavailable" and would register a legacy placeholder —
+   and the old code replaced the orchestrator agent with it, silently dropping
+   every capability until a LATER successful discovery. The agent must survive a
+   transient probe failure, because its capabilities did not change.
+  */
+  const events = [];
+  const session = {
+    workspace: 'acpi',
+    mcp: {
+      production: { status: 'connected', tools: [{ name: 'agent_describe' }] },
+    },
+    _onAgentEvent: (event) => events.push(event),
+  };
+  const registry = createAgentRegistry({
+    callTool: async () => ({ content: [{ type: 'text', text: JSON.stringify(description()) }] }),
+  });
+
+  await registry.discover(session);
+  assert.equal(registry.snapshot()[0].agentInstanceId, 'production-main');
+
+  // The endpoint goes down: discovery now falls back to a legacy placeholder.
+  session.mcp.production.status = 'unavailable';
+  await registry.discover(session);
+
+  const [agent] = registry.snapshot();
+  assert.equal(agent.agentInstanceId, 'production-main');
+  assert.equal(agent.legacy, false);
+  assert.equal(agent.description.capabilities.length, 1);
+  // And it is still routable: the capability was not erased.
+  const capability = createCapabilityRegistry({ agents: registry.snapshot() });
+  assert.equal(capability.providersFor('knowledge.update').length, 1);
+
+  /*
+   Preserving must not be silent.
+
+   Every defect this registry produced was invisible, and that is what turned a
+   boot-order race into a debugging session: the capability vanished with no
+   event, and the only report came much later, from the resolver, as "no agent
+   provides X". A probe that failed is a fact, and it belongs where the shell
+   and the panels already read.
+  */
+  const kept = events.find((event) => event.type === 'runtime_log'
+    && String(event.payload?.message ?? '').includes('agent-registry:'));
+  assert.ok(kept, 'a preserved agent must leave a runtime log');
+  assert.match(String(kept.payload.message), /did not answer agent_describe/);
+  assert.match(String(kept.payload.message), /knowledge\.update/);
+});
+
+test('a failed re-discovery keeps a degraded orchestrator agent too', async () => {
+  // Same protection, but when the agent was discovered healthy then the probe
+  // throws (endpoint "connected" but agent_describe fails mid-flight).
+  const session = {
+    mcp: { production: { status: 'connected', tools: [{ name: 'agent_describe' }] } },
+  };
+  let fail = false;
+  const registry = createAgentRegistry({
+    callTool: async () => {
+      if (fail) throw new Error('agent_describe timeout');
+      return { content: [{ type: 'text', text: JSON.stringify(description()) }] };
+    },
+  });
+
+  await registry.discover(session);
+  fail = true;
+  await registry.discover(session);
+
+  const [agent] = registry.snapshot();
+  assert.equal(agent.agentInstanceId, 'production-main');
+  assert.equal(agent.legacy, false);
+  assert.equal(agent.description.capabilities.length, 1);
+});
+
 test('discovery sends the workspace only to agents whose schema declares it', async () => {
   const seen = {};
   const registry = createAgentRegistry({

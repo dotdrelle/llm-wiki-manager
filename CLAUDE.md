@@ -185,6 +185,32 @@ activity text must stay in English. The active workspace language is forwarded
 to LLM prompts for generated answers only; do not localize manager UI strings
 from `.wikirc`.
 
+## Agent registry — a failed probe is not a lost agent
+
+Boot order is fixed: the runtime starts **before** the workspace containers, so
+the first discovery legitimately finds their endpoints down. Three rules follow,
+and each of them was learned from a defect that hid the next one:
+
+- `registerAgent` never lets a `legacy` fallback overwrite a known orchestrator
+  agent. It keeps its capabilities and only refreshes `lastSeenAt`: the endpoint
+  is down, the capabilities are still real. The old behaviour replaced the agent
+  with an empty placeholder, and every capability vanished from the live
+  registry.
+- **It says so.** A preserved agent emits a `runtime_log` naming the server, the
+  probe error and the capabilities kept. Preserving in silence is what turned a
+  boot-order race into a debugging session.
+- `health` is deliberately **not** downgraded on that path. `capabilityResolver`
+  only accepts `available` or `degraded`, so moving it would trade a silent loss
+  for a silent refusal.
+- The periodic re-scan calls `refreshMcp` before each discovery. Re-scanning
+  against a cached "not connected" status kept the fallback forever, so a
+  container that had come up was never actually discovered.
+
+When a capability cannot be resolved, the error lists the registry it saw
+(`Registered agents: production[knowledge.update, …]`). `production[none]` on a
+present agent points at the registry; an empty list points at discovery. Never
+reduce that message back to what was missing.
+
 ## Agent Orchestration
 
 `src/agent/graph.js` is a ReAct loop:
@@ -583,6 +609,16 @@ All plan/activity mutations go through `dispatchAgentEvent` and the reducer in
   `wiki__plan_set`/`_activity.plan.steps` completes without a fake plan
   driving it).
 - `run_done` finalizes all running/pending plan steps to `done`.
+- `run_error` pushes its message prefixed with **`Run failed: `**, and carries the
+  `runId`. Neither is cosmetic. `serve` keeps only log lines matching a keyword
+  list (`failed`, `error`, `done`, `approval`, …) in **both** its journal and its
+  list view, so a run killed by a message using none of those words — e.g.
+  `No agent provides capability workspace.restore.` — was filtered out as
+  unimportant while the panel read "No essential run event yet". What ends a run
+  is essential by construction; the prefix states it instead of hoping the
+  wording does. The `runId` is what lets `finishControlByRun` mark the queued
+  item failed — without it a queued restore stayed `pending` forever over a dead
+  run.
 - `run_evaluated` sets `state.evaluation { ok, reason, suggestedAction }`.
 - `run_replanned` records `state.replans[]` entries and resets the plan.
 - `run_pending_approval` sets run status to `pending_approval` in SQLite.

@@ -2,7 +2,7 @@ import { normalizeActivity } from './activity.js';
 import { attachActivityToExistingPlan, syncActivitiesToPlan } from './plan.js';
 import { applyPlanPatch, normalizePlanPatch, normalizePlanRevision, rebasePlanPatch } from './planPatch.js';
 import { formatRuntimeLogPayload } from './runtimeLog.js';
-import { projectSkillChains } from './skillChainView.js';
+import { projectSkillChains, TERMINAL as CONTROL_TERMINAL_STATUSES } from './skillChainView.js';
 import { projectWorkflow } from './workflow.js';
 import { validateContractInDev } from '../contracts/schemas.js';
 import { isTerminal, isSuccessful, isUnknownStatus, normalizeTaskStatus } from '../orchestrator/taskStatuses.js';
@@ -269,6 +269,7 @@ function applyEvent(state, event) {
       state.planRevision = 0;
       state.planPatches = [];
       state.summary = null;
+      pruneTerminalControlItems(state.controlQueue);
       return;
     case 'user_message':
       state.conversation.push({ role: 'user', content: String(event.payload?.content ?? '') });
@@ -709,6 +710,44 @@ function finishControlByRun(queue, runId, status, finishedAt) {
   item.status = status;
   item.finishedAt = finishedAt;
   item.updatedAt = finishedAt;
+}
+
+/*
+ A new run makes the previous control items history.
+
+ `run_started` already resets plan, activities and logs, but the control queue
+ was left to accumulate: a cancelled or failed chain stayed in the CHAIN panel
+ across the next plan, and its terminal items kept counting in the queue ("Queue
+ (14)" over 4 live items). Prune here, not in the UI, so both projections agree.
+
+ A chain is dropped only once EVERY item is terminal — the active chain always
+ has a running/queued item and is therefore never pruned mid-flight. Standalone
+ control items (no chainId) are dropped as soon as they are terminal.
+*/
+function pruneTerminalControlItems(queue) {
+  const byChain = new Map();
+  const standalone = [];
+  for (const item of queue) {
+    if (item.chainId) {
+      if (!byChain.has(item.chainId)) byChain.set(item.chainId, []);
+      byChain.get(item.chainId).push(item);
+    } else {
+      standalone.push(item);
+    }
+  }
+  const drop = new Set();
+  for (const items of byChain.values()) {
+    if (items.every((item) => CONTROL_TERMINAL_STATUSES.has(String(item.status ?? '').toLowerCase()))) {
+      for (const item of items) drop.add(item.id);
+    }
+  }
+  for (const item of standalone) {
+    if (CONTROL_TERMINAL_STATUSES.has(String(item.status ?? '').toLowerCase())) drop.add(item.id);
+  }
+  if (!drop.size) return;
+  for (let i = queue.length - 1; i >= 0; i--) {
+    if (drop.has(queue[i].id)) queue.splice(i, 1);
+  }
 }
 
 function appendAssistantDelta(state, delta) {

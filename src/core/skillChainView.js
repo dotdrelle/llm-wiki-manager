@@ -16,7 +16,7 @@ const SYMBOLS = {
   skipped: '–',
 };
 
-const TERMINAL = new Set(['done', 'failed', 'cancelled', 'skipped']);
+export const TERMINAL = new Set(['done', 'failed', 'cancelled', 'skipped']);
 
 // Objectives are whole paragraphs; a chain view needs a line. Keep the first
 // sentence, drop the parameter block the compiler appends, and never cut a word
@@ -39,19 +39,24 @@ export function projectSkillChains(controlQueue = []) {
     byChain.get(item.chainId).push(item);
   }
   return [...byChain.entries()].map(([chainId, chainItems]) => {
-    const steps = chainItems
-      .slice()
-      .sort((a, b) => Number(a.chainSequence ?? 0) - Number(b.chainSequence ?? 0))
-      .map((item) => ({
-        id: item.id,
-        sequence: Number(item.chainSequence ?? 0),
-        label: chainStepLabel(item.input),
-        status: String(item.status ?? 'queued'),
-        symbol: SYMBOLS[String(item.status ?? 'queued')] ?? '○',
-        optional: item.optional === true,
-        ...(item.skipReason ? { skipReason: item.skipReason } : {}),
-        ...(item.runId ? { runId: item.runId } : {}),
-      }));
+    const sorted = chainItems.slice().sort((a, b) => Number(a.chainSequence ?? 0) - Number(b.chainSequence ?? 0));
+    const total = sorted.length;
+    // Compiled objectives are private execution material and never reach the
+    // projection, so a step cannot be labelled with its intent prose. When the
+    // chain has several steps, the public input is identical for all of them —
+    // labelling them all "/skill args" is what read as six tasks with the same
+    // name. Distinguish them by position instead; the skill name already sits
+    // in the chain head.
+    const steps = sorted.map((item, index) => ({
+      id: item.id,
+      sequence: Number(item.chainSequence ?? 0),
+      label: total > 1 ? `Step ${index + 1}/${total}` : chainStepLabel(item.input),
+      status: String(item.status ?? 'queued'),
+      symbol: SYMBOLS[String(item.status ?? 'queued')] ?? '○',
+      optional: item.optional === true,
+      ...(item.skipReason ? { skipReason: item.skipReason } : {}),
+      ...(item.runId ? { runId: item.runId } : {}),
+    }));
     return {
       chainId,
       skillName: chainItems.find((item) => item.skillName)?.skillName ?? null,

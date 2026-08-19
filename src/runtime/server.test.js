@@ -1723,7 +1723,7 @@ test('POST /turn keeps informational skill and build questions conversational', 
 test('POST /run accepts named skill arguments and deduplicates an explicit retry key', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'runtime-named-skill-'));
   mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
-  writeFileSync(join(root, '.wiki', 'skills', 'deliver.md'), '---\nname: deliver\nparams:\n  - template\n  - polish\n---\nDeliver the output.');
+  writeFileSync(join(root, '.wiki', 'skills', 'deliver.md'), '---\nname: deliver\nparams:\n  - deliverable\n  - polish\n---\nDeliver the output.');
   const session = { workspace: 'acme', workspacePath: root, controlQueue: [] };
   const context = { workspace: 'acme', session, running: false, currentAbortController: null };
   const persisted = new Map();
@@ -1746,7 +1746,7 @@ test('POST /run accepts named skill arguments and deduplicates an explicit retry
   try {
     const request = () => fetch(`http://127.0.0.1:${handle.port}/run?workspace=acme`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ input: '/deliver', skillName: 'deliver', skillArguments: { template: 'Quarterly report' }, idempotencyKey: 'retry-1' }),
+      body: JSON.stringify({ input: '/deliver', skillName: 'deliver', skillArguments: { deliverable: 'Quarterly report' }, idempotencyKey: 'retry-1' }),
     });
     const first = await (await request()).json();
     const second = await (await request()).json();
@@ -1756,7 +1756,7 @@ test('POST /run accepts named skill arguments and deduplicates an explicit retry
     assert.equal(session.controlQueue.length, 1);
     assert.equal('input' in first.items[0], false);
     assert.equal('objectives' in first, false);
-    assert.equal(session.controlQueue[0].input, '/deliver template="Quarterly report"');
+    assert.equal(session.controlQueue[0].input, '/deliver deliverable="Quarterly report"');
   } finally {
     context.currentAbortController?.abort();
     await handle.close();

@@ -5,6 +5,7 @@ import { useRenderer } from '@opentui/solid';
 import { colorForRenderedLine, helpCommandParts, keyValueParts, renderPlainMarkdown } from './renderer';
 import { httpLinkParts, wrapHttpLinks } from './externalLinks.js';
 import { normalizeExternalUrl } from './openExternal.js';
+import { ActivityPanel } from './RightPane';
 
 const LEGACY_DONNA_ROLE = 'do' + 't';
 
@@ -806,6 +807,7 @@ export function LeftPane(props: {
   busy: boolean;
   chatMode: boolean;
   chatFocused: boolean;
+  activities: any[];
   setInput: (value: string) => void;
   submit: (value?: string) => void;
   conversationRows: number;
@@ -851,6 +853,15 @@ export function LeftPane(props: {
           onOpenLink={props.onOpenLink}
         />
       )}
+      {/*
+        Activity strip. The run status used to live only in the right pane,
+        one glance away from where the reader types. A compact 4-line strip
+        above the composer keeps the current job in view while composing; the
+        right pane keeps the full Plan/Queue/Logs detail.
+      */}
+      <box flexShrink={0} height={4} flexDirection="column" overflow="hidden">
+        <ActivityPanel activities={props.activities} width={props.width - 2} />
+      </box>
       <ChatInput
         width={props.width}
         prompt={props.prompt}

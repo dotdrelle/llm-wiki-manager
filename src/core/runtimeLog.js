@@ -65,7 +65,7 @@ export function formatRuntimeLogPayload(payload = {}, ts = null) {
   // lines ended up visually glued at the bottom of Logs/Trace, out of
   // chronology with the shell's own timestamped lines.
   if (payload?.message != null && !payload.event) {
-    return [timeLabel(ts), String(payload.message)].filter(Boolean).join(' ');
+    return [timeLabel(ts), shortenUuids(String(payload.message))].filter(Boolean).join(' ');
   }
   const time = timeLabel(ts);
   const event = eventLabel(payload.event);
@@ -75,8 +75,24 @@ export function formatRuntimeLogPayload(payload = {}, ts = null) {
   if (payload.status != null) fields.push(formatField('status', payload.status));
   if (payload.percent != null) fields.push(formatField('percent', payload.percent));
   if (payload.outputs != null) fields.push(formatField('outputs', payload.outputs));
-  if (payload.detail != null && payload.detail !== '') fields.push(`detail=${quoteIfNeeded(payload.detail)}`);
+  if (payload.detail != null && payload.detail !== '') fields.push(`detail=${quoteIfNeeded(shortenUuids(payload.detail))}`);
   return [time, event, ...fields].filter(Boolean).join(' ');
+}
+
+// Runtime/agent ids are long UUIDs (run, task, attempt, agent instance). A full
+// UUID pushed the readable fields off the line and wrapped mid-id, which is what
+// made the Logs/Trace panel illegible. Collapse the UUID to its first 8 hex
+// characters — the same disambiguating prefix every UI already shows — and cap
+// over-long slugs so a single field never monopolises the line.
+const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+
+function shortenUuids(text) {
+  return String(text ?? '').replace(UUID_RE, (uuid) => `${uuid.slice(0, 8)}…`);
+}
+
+export function shortLogId(value, { maxLength = 40 } = {}) {
+  const shortened = shortenUuids(value);
+  return shortened.length > maxLength ? `${shortened.slice(0, maxLength - 1)}…` : shortened;
 }
 
 export function runtimeLogMatchesFilter(line, filter = '') {
@@ -122,7 +138,7 @@ function eventLabel(event) {
 
 function formatField(key, value) {
   if (value == null || value === '') return null;
-  return `${key}=${quoteIfNeeded(value)}`;
+  return `${key}=${quoteIfNeeded(shortenUuids(value))}`;
 }
 
 function quoteIfNeeded(value) {

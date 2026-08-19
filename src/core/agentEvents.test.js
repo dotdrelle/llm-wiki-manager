@@ -401,6 +401,35 @@ test('reduceAgentEvents: control queue is event sourced and follows run status',
   assert.equal(projection.controlQueue[1].status, 'cancelled');
 });
 
+test('reduceAgentEvents: run_started prunes terminal control items and fully terminal chains', () => {
+  const ts = '2026-01-01T00:00:00.000Z';
+  const enqueue = (id, extra = {}) => createAgentEvent('control_enqueued', {
+    origin: 'runtime',
+    workspace: 'docs',
+    payload: { id, workspace: 'docs', input: 'objective', createdAt: ts, ...extra },
+  });
+  const projection = reduceAgentEvents([
+    // Fully terminal chain (done + skipped): becomes history, pruned.
+    enqueue('chain-old-1', { chainId: 'chain-old', chainSequence: 1 }),
+    enqueue('chain-old-2', { chainId: 'chain-old', chainSequence: 2 }),
+    createAgentEvent('control_started', { origin: 'runtime', runId: 'run-old-1', workspace: 'docs', payload: { id: 'chain-old-1', runId: 'run-old-1' } }),
+    createAgentEvent('run_done', { origin: 'runtime', runId: 'run-old-1', workspace: 'docs' }),
+    createAgentEvent('control_skipped', { origin: 'runtime', workspace: 'docs', payload: { id: 'chain-old-2', reason: 'required_predecessor_failed' } }),
+    // Standalone terminal item: pruned.
+    enqueue('standalone-old'),
+    createAgentEvent('control_cancelled', { origin: 'runtime', workspace: 'docs', payload: { id: 'standalone-old' } }),
+    // Active chain (done + queued): must survive the prune.
+    enqueue('chain-active-1', { chainId: 'chain-active', chainSequence: 1 }),
+    enqueue('chain-active-2', { chainId: 'chain-active', chainSequence: 2 }),
+    createAgentEvent('control_started', { origin: 'runtime', runId: 'run-active-1', workspace: 'docs', payload: { id: 'chain-active-1', runId: 'run-active-1' } }),
+    createAgentEvent('run_done', { origin: 'runtime', runId: 'run-active-1', workspace: 'docs' }),
+    // A new run starts: terminal relics are history, the active chain is not.
+    createAgentEvent('run_started', { origin: 'runtime', runId: 'run-new', workspace: 'docs' }),
+  ]);
+
+  assert.deepEqual(projection.controlQueue.map((item) => item.id), ['chain-active-1', 'chain-active-2']);
+});
+
 test('reduceAgentEvents: control_enqueued preserves a structured capabilityPlan across replay', () => {
   const capabilityPlan = {
     capability: 'workspace.restore',

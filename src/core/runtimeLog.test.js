@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createAgentEvent, dispatchAgentEvent } from './agentEvents.js';
-import { compactRuntimeLogForDisplay, formatRuntimeLogPayload } from './runtimeLog.js';
+import { compactRuntimeLogForDisplay, formatRuntimeLogPayload, shortLogId } from './runtimeLog.js';
 import { emitRuntimeLog } from '../runtime/supervisor.js';
 
 const CYCLE_EVENTS = [
@@ -97,4 +97,30 @@ test('vector fallback warnings keep only their reason and message for display', 
 test('runtime display compaction leaves other log entries unchanged', () => {
   const line = '09:25:35 trace: ERROR retrieval failed message="broken"';
   assert.equal(compactRuntimeLogForDisplay(line), line);
+});
+
+test('long UUIDs collapse to a short prefix so log lines stay on one line', () => {
+  const uuid = '7fadad27-0be6-4d08-96e5-664fe7ee841e';
+  const line = formatRuntimeLogPayload({
+    event: 'task.ready',
+    runId: uuid,
+    taskId: `${uuid}:taxonomy-synthesis`,
+    attemptId: `attempt-${uuid}`,
+    agentInstanceId: `production-${uuid}`,
+    capability: 'document.build',
+    operation: 'build',
+  }, '2026-07-08T14:42:18.000Z');
+
+  assert.match(line, /run=7fadad27…/);
+  assert.match(line, /task=7fadad27…:taxonomy-synthesis/);
+  assert.match(line, /attempt=attempt-7fadad27…/);
+  assert.match(line, /agentInstance=production-7fadad27…/);
+  assert.doesNotMatch(line, /7fadad27-0be6-4d08-96e5-664fe7ee841e/);
+});
+
+test('shortLogId caps an over-long task slug while shortening embedded UUIDs', () => {
+  const long = `${'x'.repeat(48)}-deadbeef`;
+  assert.match(shortLogId(long), /…$/);
+  assert.ok(shortLogId(long).length <= 40);
+  assert.equal(shortLogId('7fadad27-0be6-4d08-96e5-664fe7ee841e'), '7fadad27…');
 });

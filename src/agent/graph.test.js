@@ -476,7 +476,7 @@ test('an explicitly selected skill runs through the intra-runtime path with name
         mainCalls += 1;
         if (mainCalls === 1) return {
           content: null, message: { role: 'assistant', content: null },
-          tool_calls: [{ id: 'skill', type: 'function', function: { name: 'runtime__run_skill', arguments: '{"skillName":"deliver","arguments":{"template":"Quarterly report"},"selectionKind":"explicit_name"}' } }],
+          tool_calls: [{ id: 'skill', type: 'function', function: { name: 'runtime__run_skill', arguments: '{"skillName":"deliver","arguments":{"deliverable":"Quarterly report"},"selectionKind":"explicit_name"}' } }],
         };
         return { content: 'Skill mis en file.', message: { role: 'assistant', content: 'Skill mis en file.' }, tool_calls: null };
       },
@@ -489,7 +489,7 @@ test('an explicitly selected skill runs through the intra-runtime path with name
   // quelles compétences sont déjà ouvertes au-dessus de lui.
   assert.deepEqual(calls, [[
     'deliver',
-    { template: 'Quarterly report' },
+    { deliverable: 'Quarterly report' },
     { selectionKind: 'explicit_name', turnId: 'turn-skill-1', skillStack: [] },
   ]]);
 });
@@ -1332,6 +1332,42 @@ test('a delegation missing required provider inputs returns to Donna for clarifi
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('a delegation whose named target does not resolve returns to Donna to resolve, not as a terminal refusal', async () => {
+  let calls = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    _delegateWithinRun: async () => {
+      throw new Error('Delegation failed during agent_plan: provider=production endpoint=http://127.0.0.1:3000/mcp/ templates file does not exist: basic note');
+    },
+    llm: {
+      async completeWithTools() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: 'delegate-target',
+              type: 'function',
+              function: { name: 'runtime__delegate', arguments: '{"objective":"build basic note"}' },
+            }],
+          };
+        }
+        return {
+          content: 'Je n’ai trouvé aucun template « basic note ».',
+          message: { role: 'assistant', content: 'Je n’ai trouvé aucun template « basic note ».' },
+          tool_calls: null,
+        };
+      },
+    },
+  });
+
+  const result = await createAgentGraph().invoke({ input: 'build basic note', session });
+  assert.equal(result.terminalToolFailure, false);
+  assert.equal(result.response, 'Je n’ai trouvé aucun template « basic note ».');
+  assert.doesNotMatch(result.response, /provider=|endpoint=|file does not exist|agent_plan/i);
 });
 
 // Guard: the system prompt must never show a connected tool's bare name

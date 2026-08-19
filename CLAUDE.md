@@ -293,6 +293,15 @@ otherwise hand `source` to the ingest step and leave the export step, the one
 that consumes it, exporting everything. Legacy `{param}` placeholders are still
 substituted when a body contains them.
 
+Those natural-language parameters are turned back into structured arguments at
+delegation time: `prepareDelegation` runs `resolveExecutorArguments` against the
+selected capability's own `inputSchema` and forwards the result as `arguments`
+to `agent_plan` (planner agents) or as the single task's `arguments`
+(executor-only agents). That is what makes a targeted selector — a template, a
+deliverable, a source — reach the plan instead of widening to "all" (a
+`/wiki-build <template>` that built every template, a `/deliver <name>` that
+polished every build).
+
 `RESERVED_SLASH_COMMANDS` (`core/skillInvocation.js`) lists the names where a
 built-in wins: `/status` stays the built-in status command, and the scaffold
 skill of the same name is reachable only through `/skills run status`, which
@@ -347,7 +356,7 @@ Safe `shell__run_command` commands:
 /skills run <name>
 ```
 
-Do not expose `/mcp call`, `/wiki run`, `/start`, `/stop`, `/logs`, `/exit`, or
+Do not expose `/wiki run`, `/start`, `/stop`, `/logs`, `/exit`, or
 raw system commands through this tool without a separate allowlist design.
 
 ## Agent Runtime

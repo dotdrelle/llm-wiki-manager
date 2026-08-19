@@ -109,11 +109,19 @@ export function buildExecutorOnlyFragment({ objective, workspace, selection }) {
 }
 
 /**
- * Fill a single-task executor's arguments from the natural-language objective,
+ * Fill a task's structured arguments from the natural-language objective,
  * generically — against the capability's own declared `inputSchema`, with no
  * per-agent or per-provider knowledge in the manager. This lets Donna honour
  * stated constraints ("les 10 derniers mails", "de LinkedIn") while keeping
  * `runtime__delegate` agnostic (it still only carries the objective).
+ *
+ * Used on BOTH delegation branches:
+ * - executor-only (`singleTaskOnly`) agents: the extracted arguments become the
+ *   single task's `arguments`;
+ * - planner (`canPlan`) agents: the extracted arguments are forwarded to
+ *   `agent_plan` as its `arguments`, so a targeted selector (a template, a
+ *   deliverable, a source) reaches the plan instead of widening to "all"
+ *   (a `/wiki-build <template>` that built every template).
  *
  * Degrades gracefully (cf. provider compatibility): forced tool_choice first,
  * then a JSON-text completion, then no arguments — the executor uses its own
@@ -1234,6 +1242,13 @@ async function runRuntime(argv, agent) {
     let fragment;
     if (canPlan) {
       try {
+        const extractedArguments = await resolveExecutorArguments({
+          llm: session.llm,
+          objective,
+          capability: provider.capability,
+          workspace: session.workspace ?? context.workspace ?? '',
+          signal: session._abortSignal,
+        });
         planResult = await callMcpTool(
           session.mcp,
           provider.serverName,
@@ -1242,6 +1257,9 @@ async function runRuntime(argv, agent) {
             capability: selection.capability,
             operation: selection.operation,
             objective,
+            ...(extractedArguments && Object.keys(extractedArguments).length > 0
+              ? { arguments: extractedArguments }
+              : {}),
             workspace: { revision: String(Date.now()) },
             constraints: {
               maxConcurrency: resolveCapabilityConcurrency(

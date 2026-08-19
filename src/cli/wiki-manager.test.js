@@ -126,6 +126,37 @@ test('argument extraction falls back to a JSON-text completion', async () => {
   assert.deepEqual(args, { query: 'from:linkedin.com' });
 });
 
+const BUILD_CAPABILITY = {
+  description: 'Build llm-wiki deliverables from templates in templates/.',
+  inputSchema: {
+    type: 'object',
+    additionalProperties: true,
+    properties: {
+      templates: { type: 'array', items: { type: 'string' } },
+      stabilize: { type: 'boolean' },
+    },
+  },
+};
+
+test('argument extraction maps a skill template selector to the templates array', async () => {
+  // Regression: a skill carries its `template` parameter as a natural-language
+  // "User parameters:" block. The delegation path must turn it back into the
+  // structured `templates` array, or a targeted build widens to every template.
+  const llm = {
+    completeWithTools: async () => ({
+      tool_calls: [{
+        function: { name: 'set_task_arguments', arguments: JSON.stringify({ templates: ['overview'] }) },
+      }],
+    }),
+  };
+  const args = await resolveExecutorArguments({
+    llm,
+    objective: 'Build deliverables from the current wiki within the exact scope requested by the template parameter.\n\nUser parameters:\ntemplate: overview',
+    capability: BUILD_CAPABILITY,
+  });
+  assert.deepEqual(args, { templates: ['overview'] });
+});
+
 test('argument extraction stays agnostic and safe when it cannot extract', async () => {
   // No inputSchema → no extraction attempted at all.
   assert.deepEqual(

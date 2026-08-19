@@ -672,7 +672,6 @@ Useful primitives:
 /mcp endpoints
 /mcp status
 /mcp tools [mcp]
-/mcp call <mcp> <tool> [json]
 /queue
 /queue cancel <id>
 /queue clear
@@ -772,7 +771,7 @@ tool in the same turn. If required arguments are missing, ask for the exact
 missing values. If the tool/server is unavailable, name the concrete blocker.
 
 `shell__run_command` is limited to safe manager primitives and does not expose
-arbitrary system commands, `/mcp call`, `/wiki run`, `/start`, `/stop`, `/logs`,
+arbitrary system commands, `/wiki run`, `/start`, `/stop`, `/logs`,
 or `/exit`.
 
 ### Tool naming

@@ -78,5 +78,24 @@
 #           resources:
 #             limits:
 #               cpus: '2.0'
+#
+# ── Host timezone (opt-in) ────────────────────────────────────────────────────
+#
+# Containers default to UTC, so runtime/production logs can read an hour or two
+# off the host's wall clock. Mount the host's timezone to make them agree. This
+# is deliberately NOT in the packaged file: the mount assumes /etc/localtime
+# exists on the host (true on most Linux/macOS hosts, but not all), and a
+# timezone is a property of the machine, not of the workspace.
+#
+#     services:
+#       serve:
+#         volumes:
+#           - /etc/localtime:/etc/localtime:ro
+#       mcp-http:
+#         volumes:
+#           - /etc/localtime:/etc/localtime:ro
+#       production-mcp:
+#         volumes:
+#           - /etc/localtime:/etc/localtime:ro
 
 services: {}

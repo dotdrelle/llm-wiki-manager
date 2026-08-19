@@ -9,6 +9,7 @@ type QueueItem = {
   workspace?: string | null;
   status: string;
   args?: Record<string, any>;
+  label?: string;
   jobId?: string;
   error?: string;
   reason?: string;
@@ -170,9 +171,10 @@ function activityJobName(activity: any) {
 }
 
 function queueSummary(item: QueueItem) {
+  const label = item.label ? String(item.label).trim() : '';
   const args = item.args ?? {};
   const parts = [
-    args.type ?? 'production',
+    label || args.type || 'production',
     Array.isArray(args.steps) && args.steps.length ? args.steps.join('+') : null,
     Array.isArray(args.templates) && args.templates.length ? `tpl:${args.templates.length}` : null,
     Array.isArray(args.deliverables) && args.deliverables.length ? `del:${args.deliverables.length}` : null,
@@ -180,10 +182,24 @@ function queueSummary(item: QueueItem) {
   return parts.join(' ');
 }
 
+// A queue id is a long UUID (optionally `control-`-prefixed). The panel shows a
+// short, recognisable prefix instead of the full string, which pushed the
+// status and summary off the line and made the queue unreadable.
+function shortQueueId(id: string) {
+  const value = String(id ?? '').replace(/^control-/, '');
+  return value.length > 12 ? `${value.slice(0, 12)}…` : value;
+}
+
 export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: string; summary?: string | null; spinnerFrame?: string }) {
   // Keep one column for the native vertical scrollbar when the plan is long.
   const lineWidth = () => Math.max(8, props.width - 3);
   const firstPending = () => props.plan.find((s) => s.status === 'pending')?.step ?? null;
+  // A running step carries a thick left border, which costs one column: the
+  // wrap width is therefore one less for it. The same function feeds both the
+  // row-count memo and the render, so the viewport height can never undercount
+  // a running step's wrapped lines and clip the last one.
+  const isRunningStep = (step: PlanStep) => String(step.status ?? '').toLowerCase() === 'running';
+  const stepTextWidth = (step: PlanStep) => lineWidth() - (isRunningStep(step) ? 1 : 0);
   const icon = (rawStatus: string) => {
     const status = String(rawStatus ?? '').toLowerCase();
     if (DONE_STATUSES.includes(status)) return '[✓]';
@@ -195,7 +211,7 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
     return status === 'running' ? `[${props.spinnerFrame ?? '…'}]` : '[ ]';
   };
   const visualRows = createMemo(() => props.plan.reduce((total, step) =>
-    total + wrapLine(`${icon(step.status)} ${step.step}. ${step.description}`, lineWidth()).slice(0, 2).length, 0));
+    total + wrapLine(`${icon(step.status)} ${step.step}. ${step.description}`, stepTextWidth(step)).slice(0, 2).length, 0));
   const title = () => {
     const label = props.jobName ? `Plan : ${props.jobName}` : 'Plan';
     return visualRows() > PLAN_VIEWPORT_ROWS ? `${label} (${props.plan.length}) · scroll` : label;
@@ -225,12 +241,14 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
           {(step) => {
             // Wrap step descriptions over up to 2 lines instead of truncating —
             // "Ingest des 39 documents raw/untrac…" hid the actual target.
-            const lines = () => wrapLine(`${icon(step().status)} ${step().step}. ${step().description}`, lineWidth()).slice(0, 2);
+            const running = () => isRunningStep(step());
+            const textWidth = () => stepTextWidth(step());
+            const lines = () => wrapLine(`${icon(step().status)} ${step().step}. ${step().description}`, textWidth()).slice(0, 2);
             return (
-              <box flexShrink={0} flexDirection="column">
-                <text width={lineWidth()} fg={planStepColor(step(), firstPending())} content={lines()[0]} />
+              <box flexShrink={0} flexDirection="column" border={running() ? ['left'] : undefined} borderStyle="heavy" borderColor="#89B4FA">
+                <text width={textWidth()} fg={planStepColor(step(), firstPending())} content={lines()[0]} />
                 <Show when={lines()[1]}>
-                  <text width={lineWidth()} fg={planStepColor(step(), firstPending())} content={`    ${fit(lines()[1], Math.max(8, lineWidth() - 4))}`} />
+                  <text width={textWidth()} fg={planStepColor(step(), firstPending())} content={`    ${fit(lines()[1], Math.max(8, textWidth() - 4))}`} />
                 </Show>
               </box>
             );
@@ -438,12 +456,12 @@ export function QueuePanel(props: { items: QueueItem[]; info: QueueInfo; width: 
                 <text
                   width={lineWidth()}
                   fg={queueColor(item()?.status)}
-                  content={item() ? fit(`${item()!.id} ${item()!.status} ${queueSummary(item()!)}`, lineWidth()) : ''}
+                  content={item() ? fit(`${item()!.status} · ${queueSummary(item()!)}`, lineWidth()) : ''}
                 />
                 <text
                   width={lineWidth()}
                   fg="#AAB7C4"
-                  content={item() ? fit([item()!.workspace, item()!.jobId ? `job ${item()!.jobId}` : item()!.reason].filter(Boolean).join(' · '), lineWidth()) : ''}
+                  content={item() ? fit([shortQueueId(item()!.id), item()!.workspace, item()!.jobId ? `job ${item()!.jobId}` : item()!.reason].filter(Boolean).join(' · '), lineWidth()) : ''}
                 />
                 <text
                   width={lineWidth()}
@@ -521,7 +539,6 @@ export function RightPane(props: {
           <Show when={props.plan && props.plan.length > 0}>
             <PlanPanel width={props.width} plan={props.plan!} jobName={planJobName()} summary={props.runSummary} spinnerFrame={props.spinnerFrame} />
           </Show>
-          <ActivityPanel width={props.width} activities={props.activities} />
         </>
       )}>
         <QueuePanel width={props.width} items={props.queueItems} info={props.queueInfo} />

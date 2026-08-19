@@ -99,47 +99,11 @@ sources, and output are **isolated per workspace**:
 workspaces/<workspace>/raw/untracked/               # exported Markdown
 ```
 
-The active workspace (`/use <workspace>`) is injected automatically on every CME
-call — you never pass `workspace` explicitly.
-
-**1. Always start with a status check.** `configured` → proceed; `not_configured`
-→ run setup first.
-
-```text
-/mcp call cme cme_status
-```
-
-**2. First-run setup (once per workspace).** Set `verify_ssl` to `false` for
-self-signed / internal certificates. `cme_setup` is idempotent — call it again to
-update a credential.
-
-```text
-/mcp call cme cme_setup {"base_url":"http://confluence.example.com","username":"user@example.com","pat":"<personal_access_token>","verify_ssl":false}
-```
-
-**3. Manage export sources.**
-
-```text
-/mcp call cme cme_sources_list
-/mcp call cme cme_source_add {"name":"team-space","type":"space","base_url":"http://confluence.example.com","space":"KEY"}
-/mcp call cme cme_source_add {"name":"one-page","type":"page","url":"http://confluence.example.com/display/KEY/Title"}
-/mcp call cme cme_source_remove {"name":"team-space"}
-```
-
-**4. Run exports (asynchronous — poll the job).**
-
-```text
-/mcp call cme cme_export_run
-/mcp call cme cme_export_status {"job_id":"<job_id>"}
-```
-
-> You can do all of the above in plain language too, e.g. *"Configure Confluence
-> for this workspace with base URL … and token …, add the space KEY as a source,
-> then export it."* The orchestrator maps your request to the CME tools above.
-
-Rules of thumb: never skip `cme_status` at the start of a CME session, never
-hard-code credentials (always pass them via `cme_setup`), and remember the active
-workspace is injected for you.
+Configure and use CME through Donna in Agent mode. For example: *"Configure
+Confluence for this workspace with this base URL and token, add space KEY, then
+export it."* Donna selects the appropriate tools and sends exports through the
+orchestrated workflow. The active workspace is applied automatically; never put
+the workspace name or credentials in a command line.
 
 ### Documents — files → Markdown
 

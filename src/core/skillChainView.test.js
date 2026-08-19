@@ -19,7 +19,7 @@ test('a chain reads as ordered steps with one short label each', () => {
   assert.equal(chain.selectionKind, 'description_match');
   assert.equal(chain.status, 'running');
   assert.deepEqual(chain.steps.map((step) => step.symbol), ['✓', '●']);
-  assert.equal(chain.steps[0].label, 'Export the requested Confluence source, or all…');
+  assert.equal(chain.steps[0].label, 'Step 1/2');
   assert.equal(chain.steps[1].runId, 'run-b');
 });
 
@@ -40,7 +40,7 @@ test('after a cancel the chain shows the cancelled step and the skipped remainde
   assert.equal(chain.status, 'cancelled');
   assert.equal(
     renderSkillChain(chain),
-    ['wiki-sync', '', '✓ Export source', '  done', '× Ingest files', '  cancelled', '– Publish results', '  skipped · chain_cancelled'].join('\n'),
+    ['wiki-sync', '', '✓ Step 1/3', '  done', '× Step 2/3', '  cancelled', '– Step 3/3', '  skipped · chain_cancelled'].join('\n'),
   );
 });
 

@@ -34,6 +34,15 @@ test('/status MCP overview contains only connector name, port and status', () =>
   assert.doesNotMatch(output, /tools|error|detail|http/i);
 });
 
+test('/mcp exposes diagnostics only and cannot directly execute arbitrary MCP tools', async () => {
+  const result = await handleSlashCommand('/mcp call production production_start_job {"step":"ingest"}', {
+    packageJson: { version: 'test' },
+    session: { mcp: {} },
+  });
+
+  assert.equal(result.output, 'Usage: /mcp <status|endpoints|tools> [mcp]');
+});
+
 test('/status base URL displays only its domain while retaining the full link', () => {
   assert.equal(
     compactBaseUrl('https://albert.api.etalab.gouv.fr/v1'),

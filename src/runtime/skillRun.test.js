@@ -2,24 +2,24 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { formatPublicSkillInvocation, runSkillChain, validateNamedSkillArguments } from './skillRun.js';
 
-const skill = { name: 'deliver', params: ['template', 'polish'], body: 'Deliver the requested output.' };
+const skill = { name: 'deliver', params: ['deliverable', 'polish'], body: 'Deliver the requested output.' };
 
 test('named skill arguments preserve spaces and fill omitted declarations with empty strings', () => {
-  const args = validateNamedSkillArguments(skill, { template: 'Quarterly report' });
+  const args = validateNamedSkillArguments(skill, { deliverable: 'Quarterly report' });
   assert.equal(Object.getPrototypeOf(args), null);
-  assert.deepEqual({ ...args }, { template: 'Quarterly report', polish: '' });
+  assert.deepEqual({ ...args }, { deliverable: 'Quarterly report', polish: '' });
 });
 
 test('named skill arguments reject undeclared, non-string, and oversized values', () => {
   assert.throws(() => validateNamedSkillArguments(skill, { target: 'x' }), { code: 'skill_arguments_invalid' });
-  assert.throws(() => validateNamedSkillArguments(skill, { template: 42 }), { code: 'skill_arguments_invalid' });
-  assert.throws(() => validateNamedSkillArguments(skill, { template: 'x'.repeat(2_001) }), { code: 'skill_arguments_invalid' });
+  assert.throws(() => validateNamedSkillArguments(skill, { deliverable: 42 }), { code: 'skill_arguments_invalid' });
+  assert.throws(() => validateNamedSkillArguments(skill, { deliverable: 'x'.repeat(2_001) }), { code: 'skill_arguments_invalid' });
 });
 
 test('runSkillChain enqueues named arguments without exposing a skill body field', async () => {
   const queued = [];
   const result = await runSkillChain({ session: {} }, skill, {
-    args: { template: 'Quarterly report' },
+    args: { deliverable: 'Quarterly report' },
     enqueueControlRequest(_context, input, metadata) {
       const item = { id: `item-${queued.length}`, input, status: 'queued', ...metadata };
       queued.push(item);
@@ -28,15 +28,15 @@ test('runSkillChain enqueues named arguments without exposing a skill body field
     drainControlQueue() {},
   });
   assert.equal(result.objectives, 1);
-  assert.match(queued[0].input, /template: Quarterly report/);
-  assert.equal(queued[0].publicInput, '/deliver template="Quarterly report"');
+  assert.match(queued[0].input, /deliverable: Quarterly report/);
+  assert.equal(queued[0].publicInput, '/deliver deliverable="Quarterly report"');
   assert.equal(queued[0].skillExecution, 'orchestrated');
   assert.equal('body' in queued[0], false);
 });
 
 test('public skill invocation contains arguments but never compiled objective prose', () => {
-  const rendered = formatPublicSkillInvocation('deliver', { template: 'Quarterly report', polish: '' });
-  assert.equal(rendered, '/deliver template="Quarterly report"');
+  const rendered = formatPublicSkillInvocation('deliver', { deliverable: 'Quarterly report', polish: '' });
+  assert.equal(rendered, '/deliver deliverable="Quarterly report"');
   assert.doesNotMatch(rendered, /Deliver the requested output/);
 });
 

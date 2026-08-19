@@ -175,7 +175,9 @@ function App(props: {
   let lastCopiedSelection = '';
   const state = useSession(props);
   const startup = createMemo(() => startupInfo(props.packageJson, props.initialWorkspaceName));
-  const conversationRows = createMemo(() => Math.max(4, dimensions().height - 5 - chatInputHeight()));
+  // The Activity strip (4 rows) now sits above the composer, so it costs the
+  // conversation exactly those 4 rows.
+  const conversationRows = createMemo(() => Math.max(4, dimensions().height - 5 - chatInputHeight() - 4));
   const rightColumns = createMemo(() => {
     const width = dimensions().width;
     // 38% + 2 columns / cap 58: the Plan/Activity/Logs panes carry job
@@ -381,6 +383,7 @@ function App(props: {
             input={state.input()}
             busy={state.busy()}
             chatMode={state.chatMode()}
+            activities={state.activities()}
             // The composer must lose focus for EVERY modal, not just the file
             // editor. While the setup wizard was open the input stayed focused
             // underneath it, so answering a wizard question also typed into the

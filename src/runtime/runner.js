@@ -14,6 +14,7 @@ import { assertValidatedFragment } from '../orchestrator/planValidator.js';
 import { createResultAggregator } from '../orchestrator/resultAggregator.js';
 import { describePlanConcurrency, drainActive, startReadyTasks } from '../orchestrator/scheduler.js';
 import { emitRuntimeLog, pollActivitiesOnce } from './supervisor.js';
+import { shortLogId } from '../core/runtimeLog.js';
 
 // 0 by default: automatic replans turn evaluator/replanner TEXT into
 // executable pseudo-tasks (no capability, no operation) that stall at 0%
@@ -713,7 +714,7 @@ export function skipImpossibleTasks(session, runId, { maxPasses = 50 } = {}) {
         taskId: skippedId,
         payload: { taskId: skippedId, status: 'skipped', reason: `dependency_failed:${because}` },
       }));
-      emitRuntimeLog(session, `scheduler: skipping ${skippedId} (dependency failed: ${because})`);
+      emitRuntimeLog(session, `scheduler: skipping ${shortLogId(skippedId)} (dependency failed: ${because.split(', ').map((dep) => shortLogId(dep)).join(', ')})`);
     }
     total += changed;
     if (changed === 0) break;

@@ -70,7 +70,7 @@ const SHELL_RUN_COMMAND_TOOL = {
     description: [
       'Run a deterministic wiki-manager slash command inside the current shell session.',
       'Allowed commands: /workspace list, /workspace init <name> [path], /use <workspace>, /config, /status, /services, /skills, /skills show <name>, /skills run <name>, /upload <path>, /upload convert <id|pending>.',
-      'Do not use for arbitrary system shell commands, /workspace delete, /mcp call, /wiki run, /start, /stop, /logs, or /exit.',
+      'Do not use for arbitrary system shell commands, /workspace delete, /wiki run, /start, /stop, /logs, or /exit.',
     ].join(' '),
     parameters: {
       type: 'object',
@@ -522,6 +522,27 @@ function delegationBlockerForDonna(rawFailure) {
   });
 }
 
+function isUnresolvedTargetFailure(rawFailure) {
+  return /file does not exist|does not exist|no files match/i.test(rawFailure);
+}
+
+function unresolvedTargetForDonna(rawFailure) {
+  const cleaned = String(rawFailure ?? '')
+    .replace(/\b(?:provider|endpoint)=[^\s,]+/g, '')
+    .replace(/\[[^\]]*\.(?:agent_plan|agent_execute)\]/g, '')
+    .replace(/\s*Available capabilities:\s*[\s\S]*$/i, '')
+    .replace(/\s*<-\s*[\s\S]*$/s, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return JSON.stringify({
+    delegated: false,
+    blocker: 'unresolved_target',
+    reason: cleaned,
+    instruction:
+      'The target the user named does not match an existing file. Look up the available targets with the read-only list tools, then retry the delegation with the exact resolved path, or ask the user to confirm which target they meant. Never widen to an all-targets operation, and never expose exception names, tool names, or internal routing details.',
+  });
+}
+
 function summarizeToolArguments(rawArguments) {
   if (!rawArguments || rawArguments === '{}') return '';
   try {
@@ -869,17 +890,13 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
        409 garde tout son sens.
       */
       if (typeof session?._delegateWithinRun === 'function') {
-        try {
-          const inRun = await session._delegateWithinRun(objective);
-          return JSON.stringify({
-            delegated: true,
-            runId: inRun.runId,
-            summary: inRun.summary ?? null,
-            message: `Action lancée (${String(inRun.runId).slice(0, 8)}) après validation du plan réel : ${inRun.summary?.tasks ?? 0} tâche(s), ${inRun.summary?.agent ?? 'agent résolu'}. Exécution en cours.`,
-          });
-        } catch (err) {
-          return `Délégation refusée : ${err instanceof Error ? err.message : String(err)}`;
-        }
+        const inRun = await session._delegateWithinRun(objective);
+        return JSON.stringify({
+          delegated: true,
+          runId: inRun.runId,
+          summary: inRun.summary ?? null,
+          message: `Action lancée (${String(inRun.runId).slice(0, 8)}) après validation du plan réel : ${inRun.summary?.tasks ?? 0} tâche(s), ${inRun.summary?.agent ?? 'agent résolu'}. Exécution en cours.`,
+        });
       }
       const result = await postRuntimeDelegate(objective, { url, workspace });
       return result?.runId
@@ -1877,7 +1894,8 @@ export function createAgentGraph(options = {}) {
           if (tool === 'delegate' && /^Runtime control error \(delegate\):/i.test(resultText)) {
             const delegationFailure = resultText
               .replace(/^Runtime control error \(delegate\):\s*/i, '')
-              .replace(/^Delegation failed during objective_resolution:\s*/i, '');
+              .replace(/^Delegation failed during objective_resolution:\s*/i, '')
+              .replace(/^Delegation failed during agent_plan:\s*/i, '');
             const needsInput = delegationFailure.match(/^Delegation requires input:\s*(.+)$/i);
             if (needsInput) {
               // Missing provider-required fields are a conversational blocker,
@@ -1889,6 +1907,11 @@ export function createAgentGraph(options = {}) {
                 missingRequiredFields: needsInput[1].split(',').map((item) => item.trim()).filter(Boolean),
                 instruction: 'Ask the user for the missing required information. Do not expose internal validation details.',
               });
+            } else if (isUnresolvedTargetFailure(delegationFailure)) {
+              // A named target that resolves to nothing is not an unsupported
+              // action: Donna can look it up and retry (or ask), so the turn
+              // must not be marked terminal here.
+              resultText = unresolvedTargetForDonna(delegationFailure);
             } else {
               terminalFailure = delegationFailure;
               resultText = delegationBlockerForDonna(delegationFailure);

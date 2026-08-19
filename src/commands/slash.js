@@ -32,9 +32,7 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import {
   cancelQueueItem,
   clearFinishedQueueItems,
-  enqueueProductionJob,
   formatQueue,
-  productionLockBusy,
 } from '../core/jobQueue.js';
 import {
   listWikircProfiles,
@@ -599,11 +597,6 @@ async function createWorkspaceCommand(context, workspaceName, targetPath) {
 }
 
 
-function formatMcpCallActivity(serverName, toolName, resultText) {
-  if (serverName === 'production') return null;
-  return formatActivitySummary(serverName, toolName, resultText);
-}
-
 function publishPayloadActivity(session, payload, context = {}) {
   const activity = extractActivity(payload, context);
   if (!activity) return null;
@@ -748,7 +741,7 @@ ${helpPair('/stop [all|everything|service|agents]', 'Stop service(s)', '/logs <s
 ${helpPair('/skills', 'List skills', '/skills show <n>', 'Show skill')}
 ${helpPair('/skills run <n>', 'Run skill guide', '/skills edit <n>', 'Edit skill')}
 ${helpPair('/mcp status', 'MCP status', '/mcp endpoints', 'MCP endpoints')}
-${helpPair('/mcp tools [mcp]', 'MCP tools', '/mcp call ...', 'Call MCP tool')}
+${helpPair('/mcp tools [mcp]', 'MCP tools', '', '')}
 ${helpPair('/connector list', 'Connector auth status', '/connector auth <n>', 'Authorize connector')}
 ${helpPair('/upload <path>', 'Upload document', '/uploads', 'Uploaded docs')}
 ${helpPair('/upload convert pending', 'Convert pending', '/uploads clean', 'Clean uploads')}
@@ -1218,40 +1211,7 @@ export async function handleSlashCommand(line, context) {
         }
         return { output: formatMcpTools(context.session.mcp, filterName) };
       }
-      if (subcommand === 'call') {
-        const serverName = args[2];
-        const toolName = args[3];
-        if (!serverName || !toolName) {
-          return { output: 'Usage: /mcp call <mcp> <tool> [json]' };
-        }
-        try {
-          const rawArgs = args.slice(4).join(' ');
-          let toolArgs = rawArgs ? JSON.parse(rawArgs) : {};
-          if (serverName === 'production' && toolName === 'production_start_job' && context.session.workspace && !toolArgs.callerLabel) {
-            toolArgs = { ...toolArgs, callerLabel: `${context.session.workspace}/wiki-manager` };
-          }
-          if (serverName === 'production' && toolName === 'production_start_job' && productionLockBusy(context.session)) {
-            const item = enqueueProductionJob(context.session, toolArgs, 'production lock busy');
-            return { output: `Queued ${item.id}: waiting ${item.workspace ?? 'no-workspace'} ${item.tool}` };
-          }
-          step(`MCP: calling ${serverName}.${toolName}…`);
-          const result = await callMcpTool(context.session.mcp, serverName, toolName, toolArgs);
-          const output = formatMcpToolResult(result);
-          const payload = parseJsonText(output);
-          if (serverName === 'production' && toolName === 'production_start_job' && payload?.ok === false && payload?.error === 'workspace_busy') {
-            const item = enqueueProductionJob(context.session, toolArgs, 'workspace_busy');
-            return { output: `Queued ${item.id}: waiting for production lock (${payload.activeJobId ?? 'active job'})` };
-          }
-          const activity = formatMcpCallActivity(serverName, toolName, output);
-          if (activity) step(activity);
-          return rawCommandResult(`/mcp call ${serverName} ${toolName}`, output);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          step(formatActivityError(serverName, toolName, err));
-          return { output: message };
-        }
-      }
-      return { output: 'Usage: /mcp <status|endpoints|tools|call> [mcp]' };
+      return { output: 'Usage: /mcp <status|endpoints|tools> [mcp]' };
     }
     case 'connector': {
       const subcommand = args[1] ?? 'list';

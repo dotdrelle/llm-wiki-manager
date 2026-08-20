@@ -29,7 +29,7 @@
   "chatAccess": {
     "maxToolIterations": 8,
     "servers": {
-      "llm-wiki":         { "allow": ["help_list", "help_read", "help_search", "wiki_workspace_status", "wiki_list_pages", "wiki_read_page", "wiki_read_pages", "wiki_search_context", "wiki_collect_context", "wiki_read_ingested_source", "wiki_outline", "template_read", "template_write", "build_context_write"] },
+      "llm-wiki":         { "allow": ["help_list", "help_read", "help_search", "wiki_workspace_status", "wiki_list_pages", "wiki_read_page", "wiki_read_pages", "wiki_search_context", "wiki_collect_context", "wiki_read_ingested_source", "wiki_outline", "template_read", "template_write", "build_context_write", "wiki_read_deliverable"] },
       "wiki-production":  { "allow": ["production_job_status", "production_jobs_list"] },
       "cme":              { "allow": ["cme_status", "cme_sources_list", "cme_export_status"] }
     }

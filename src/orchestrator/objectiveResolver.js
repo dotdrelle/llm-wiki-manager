@@ -16,7 +16,10 @@ export class ObjectiveNotOrchestrableError extends Error {
 export async function resolveObjective(objective, session) {
   const candidates = capabilityCandidates(session);
   if (candidates.length === 0) throw new Error('No orchestrable capability is currently available.');
-  const deterministic = resolveMentionedRegistryOperation(objective, candidates);
+  // Resolution sees the primary intention only (notification + guardrails
+  // stripped). The delegated agent still receives the full objective.
+  const clean = objectiveForResolution(objective);
+  const deterministic = resolveMentionedRegistryOperation(clean, candidates);
   if (deterministic) return selectionWithProvider(session, deterministic, candidates);
   const llm = session?.llm;
   if (!llm?.completeWithTools) throw new Error('Objective resolution requires the configured workspace LLM.');
@@ -25,6 +28,7 @@ export async function resolveObjective(objective, session) {
     system: [
       'You resolve one user objective against a closed capability registry.',
       'Select exactly one listed capability and one of its supported operations.',
+      'The aliases of a capability are the strongest signal: match them before the generic description.',
       // Without an explicit way out, the model has to pick SOMETHING: an
       // objective no listed capability covers ("authorize Gmail") came back as
       // workspace.diagnose/doctor and launched an unrelated job. Declining is
@@ -36,7 +40,7 @@ export async function resolveObjective(objective, session) {
     tools: [],
     messages: [{
       role: 'user',
-      content: `Objective:\n${String(objective)}\n\nRegistry:\n${JSON.stringify(candidates, null, 2)}`,
+      content: `Objective:\n${clean}\n\nRegistry:\n${JSON.stringify(candidates, null, 2)}`,
     }],
     signal: session?._abortSignal,
   });
@@ -54,21 +58,72 @@ export async function resolveObjective(objective, session) {
   return selectionWithProvider(session, { capability, operation }, candidates);
 }
 
-// Prefer an operation explicitly named by the user when that name resolves to
-// exactly one entry in the live registry. This is deliberately generic: the
-// resolver knows neither capability ids nor business verbs. Prefix matching
-// covers natural inflections such as an operation name followed by a suffix.
-function resolveMentionedRegistryOperation(objective, candidates) {
-  const words = String(objective ?? '')
+// The best-effort notification sentence and the negative guardrails
+// ("Do not …", "Never …") are execution constraints, not the thing being
+// resolved. They are kept intact for the delegated agent (prepareDelegation
+// passes the original objective), but stripped here so they cannot poison the
+// lexical matcher or the LLM prompt.
+const NOTIFICATION_RE = /\s*[^.!?]*\bnotification\b[^.!?]*[.!?]/g;
+const GUARDRAIL_RE = /\s*\b(?:Do not|do not|Never|never)\b[^.]*\./g;
+
+export function objectiveForResolution(objective) {
+  return String(objective ?? '')
+    .replace(NOTIFICATION_RE, ' ')
+    .replace(GUARDRAIL_RE, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeText(text) {
+  return String(text ?? '')
     .normalize('NFKD')
     .replace(/\p{Diacritic}/gu, '')
-    .toLowerCase()
-    .match(/[a-z0-9]+/g) ?? [];
-  const matches = candidates.flatMap((candidate) => candidate.operations
-    .filter((operation) => String(operation).split(/[._-]+/).some((token) =>
-      token.length >= 4 && words.some((word) => word.startsWith(token))))
-    .map((operation) => ({ capability: candidate.id, operation })));
-  return matches.length === 1 ? matches[0] : null;
+    .toLowerCase();
+}
+
+function normalizePhrase(value) {
+  return normalizeText(value).replace(/[._-]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function phraseIn(phrase, words, text) {
+  if (!phrase) return false;
+  if (!phrase.includes(' ')) return words.includes(phrase);
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`).test(text);
+}
+
+// Deterministic fast path, safe by construction:
+// - whole-word/phrase matching only — no sub-token split (so `ingest_plan`
+//   never matches the generic word "plan") and no prefix stemming (so
+//   "exported"/"builds" never match "export"/"build");
+// - aliases (declared by each agent in agent_describe) are authoritative and
+//   disambiguate overloaded verbs ("export" CME vs publish);
+// - it fires only when exactly one capability is named, otherwise the LLM
+//   resolver decides. A new external agent registers simply by declaring its
+//   aliases; nothing here is hardcoded.
+function resolveMentionedRegistryOperation(objective, candidates) {
+  const words = normalizeText(objective).match(/[a-z0-9]+/g) ?? [];
+  const text = normalizeText(objective);
+
+  const aliasHits = candidates
+    .filter((candidate) => (candidate.aliases ?? []).some((alias) =>
+      phraseIn(normalizePhrase(alias), words, text)))
+    .map((candidate) => ({ capability: candidate.id, operation: candidate.operations[0] }));
+  if (aliasHits.length === 1) return aliasHits[0];
+  if (aliasHits.length > 1) return null;
+
+  const opHits = [];
+  for (const candidate of candidates) {
+    const matched = candidate.operations.filter((operation) =>
+      phraseIn(normalizePhrase(operation), words, text));
+    if (matched.length === 1) opHits.push({ capability: candidate.id, operation: matched[0] });
+    else if (matched.length > 1) opHits.push({ capability: candidate.id, operation: matched[0], ambiguous: true });
+  }
+  if (opHits.length === 1 && !opHits[0].ambiguous) {
+    const { capability, operation } = opHits[0];
+    return { capability, operation };
+  }
+  return null;
 }
 
 function selectionWithProvider(session, selection, candidates) {
@@ -86,8 +141,9 @@ export function capabilityCandidates(session) {
   for (const [versionedId, providers] of Object.entries(snapshot)) {
     const id = versionedId.includes('@') ? versionedId.slice(0, versionedId.lastIndexOf('@')) : versionedId;
     const operations = [...new Set((providers ?? []).flatMap((provider) => provider?.capability?.supportedOperations ?? []))].sort();
+    const aliases = [...new Set((providers ?? []).flatMap((provider) => provider?.capability?.aliases ?? []))].sort();
     const description = (providers ?? []).map((provider) => provider?.capability?.description).find(Boolean) ?? '';
-    byId.set(id, { id, description, operations });
+    byId.set(id, { id, description, operations, aliases });
   }
   return [...byId.values()].filter((item) => item.operations.length > 0).sort((a, b) => a.id.localeCompare(b.id));
 }

@@ -32,6 +32,7 @@ import { resolveCapabilityConcurrency } from '../orchestrator/scheduler.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
 import { listWorkspaces } from '../core/workspaces.js';
 import { findSkill } from '../core/skills.js';
+import { rememberArtifact } from '../core/currentArtifact.js';
 // Runtime modules use node:sqlite (Node.js built-in unavailable in Bun).
 // They are imported dynamically so the shell / TUI path never loads them.
 
@@ -243,6 +244,21 @@ export function missingRequiredArguments(schema, args) {
     if (Array.isArray(value)) return value.length === 0;
     return false;
   });
+}
+
+// After a delegated document.build, remember the targeted template as the
+// current artifact so the next "améliore cette slide" / "relance le build"
+// resolves the file without re-discovery. Best effort: a build of every
+// template (no `templates` argument) leaves the artifact untouched.
+function rememberBuildTemplateArtifact(session, selection, args) {
+  if (selection?.capability !== 'document.build') return;
+  const templates = Array.isArray(args?.templates) ? args.templates : [];
+  if (templates.length !== 1) return;
+  const name = String(templates[0] ?? '').trim().replace(/\\/g, '/');
+  if (!name) return;
+  const withExt = name.toLowerCase().endsWith('.md') ? name : `${name}.md`;
+  const pathValue = withExt.startsWith('templates/') ? withExt : `templates/${withExt.replace(/^\.?\//, '')}`;
+  rememberArtifact(session, { path: pathValue, kind: 'template' });
 }
 
 function safeParseArgumentObject(text) {
@@ -1249,6 +1265,7 @@ async function runRuntime(argv, agent) {
           workspace: session.workspace ?? context.workspace ?? '',
           signal: session._abortSignal,
         });
+        rememberBuildTemplateArtifact(session, selection, extractedArguments);
         planResult = await callMcpTool(
           session.mcp,
           provider.serverName,

@@ -9,6 +9,7 @@ const LEGACY_DEFAULT_WIKI_CHAT_TOOLS = [
 ];
 const TEMPLATE_AUTHORING_CHAT_TOOLS = [
   'wiki_outline', 'template_read', 'template_write', 'build_context_write',
+  'wiki_read_deliverable',
 ];
 
 export function userManagerDir() {

@@ -313,7 +313,7 @@ export function createInteractiveSession(context, { runtimeUrl, turnId, signal =
     'workspace', 'workspacePath', 'workspaceEnvFile', 'workspaceEnv',
     'wikirc', 'wikircConfig', 'language', 'llm', 'mcp', 'commands',
     'packageJson', 'queueStore', 'systemPrompt',
-    '_runSkillWithinRun',
+    '_runSkillWithinRun', 'currentArtifact',
   ]) {
     if (source[key] !== undefined) session[key] = source[key];
   }
@@ -1665,6 +1665,12 @@ async function runRuntime(argv, agent) {
       });
     } else {
       response = await runAgentTurn(agent, ephemeral, input, { messages, signal });
+    }
+    // Persist the artifact the turn may have opened/edited (template_write,
+    // template_read, …) back onto the long-lived session, so the next /turn —
+    // chat or agent — sees it. The ephemeral session is otherwise discarded.
+    if (ephemeral.currentArtifact) {
+      context.session.currentArtifact = ephemeral.currentArtifact;
     }
     ensureInteractiveAssistantMessage(ephemeral, response, {
       turnId,

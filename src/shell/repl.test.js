@@ -482,6 +482,25 @@ test('direct chat prompt exposes an escaped non-executable skill catalog with pa
   }
 });
 
+test('direct chat prompt injects the current artifact for follow-up edits', () => {
+  const prompt = buildDirectChatSystemPrompt({
+    workspace: 'demo',
+    commands: [],
+    mcp: {},
+    currentArtifact: { workspace: 'demo', path: 'templates/presentation/presentation.md', kind: 'template' },
+  });
+  assert.match(prompt, /templates\/presentation\/presentation\.md/);
+  assert.match(prompt, /this slide/);
+  // A foreign-workspace artifact must not leak into this prompt.
+  const other = buildDirectChatSystemPrompt({
+    workspace: 'demo',
+    commands: [],
+    mcp: {},
+    currentArtifact: { workspace: 'other', path: 'templates/x.md', kind: 'template' },
+  });
+  assert.doesNotMatch(other, /templates\/x\.md/);
+});
+
 test('submitRuntimeRun reports acceptance without throwing', async () => {
   const restore = stubFetch(async (url) => {
     assert.equal(pathOf(url), '/run');

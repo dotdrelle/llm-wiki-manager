@@ -104,6 +104,15 @@ test('interactive runtime sessions isolate canonical run state', () => {
   ]) assert.equal(Object.hasOwn(session, key), false, `${key} must not leak`);
 });
 
+test('interactive runtime sessions carry the current artifact across turns', () => {
+  const artifact = { workspace: 'demo', path: 'templates/notes/basic.md', kind: 'template' };
+  const session = createInteractiveSession({ session: {
+    workspace: 'demo', currentArtifact: artifact,
+    mcp: {}, llm: { invoke() {} }, commands: [], packageJson: {}, queueStore: {},
+  } }, { runtimeUrl: 'http://127.0.0.1:7788', turnId: 'turn-1' });
+  assert.deepEqual(session.currentArtifact, artifact);
+});
+
 test('interactive turns publish a fallback assistant message exactly once', () => {
   const published = [];
   const session = { agentEvents: [], _onAgentEvent: (event) => published.push(event) };

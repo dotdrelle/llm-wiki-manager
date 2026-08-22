@@ -209,6 +209,47 @@ test('a failed re-discovery keeps a degraded orchestrator agent too', async () =
   assert.equal(agent.description.capabilities.length, 1);
 });
 
+test('a stopped agent is reported once, not on every re-scan', async () => {
+  // The re-scan runs every minute; a deliberately stopped agent must not flood
+  // the log with the same "did not answer" line. The message is edge-triggered:
+  // emitted on the transition from answering to not answering, then silent
+  // until it answers again.
+  const events = [];
+  const session = {
+    workspace: 'acpi',
+    mcp: { production: { status: 'connected', tools: [{ name: 'agent_describe' }] } },
+    _onAgentEvent: (event) => events.push(event),
+  };
+  let down = false;
+  const registry = createAgentRegistry({
+    callTool: async () => {
+      if (down) throw new Error('fetch failed');
+      return { content: [{ type: 'text', text: JSON.stringify(description()) }] };
+    },
+  });
+
+  await registry.discover(session);
+  down = true;
+  await registry.discover(session);
+  await registry.discover(session);
+  await registry.discover(session);
+
+  const reports = events.filter((event) => event.type === 'runtime_log'
+    && String(event.payload?.message ?? '').includes('agent-registry:'));
+  assert.equal(reports.length, 1, 'the down agent is reported once, not once per scan');
+
+  // It answers again, then drops again: the next failure is reported again.
+  down = false;
+  await registry.discover(session);
+  down = true;
+  await registry.discover(session);
+  assert.equal(
+    events.filter((event) => event.type === 'runtime_log'
+      && String(event.payload?.message ?? '').includes('agent-registry:')).length,
+    2,
+  );
+});
+
 test('discovery sends the workspace only to agents whose schema declares it', async () => {
   const seen = {};
   const registry = createAgentRegistry({

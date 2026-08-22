@@ -7,7 +7,7 @@ import { createAssignmentManager } from '../orchestrator/assignmentManager.js';
 import { createAttemptManager } from '../orchestrator/attemptManager.js';
 import { createBudgetManager, BudgetExceededError } from '../orchestrator/budgetManager.js';
 import { createDispatcher } from '../orchestrator/dispatcher.js';
-import { approvalRequestForTask } from '../orchestrator/approvalPolicy.js';
+import { approvalCovered, approvalRequestForTask } from '../orchestrator/approvalPolicy.js';
 import { blockedByFailedDependency, tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
 import { isFailed, isPending, isSkipped, isSuccessful, isTerminal, isUnknownStatus } from '../orchestrator/taskStatuses.js';
 import { assertValidatedFragment } from '../orchestrator/planValidator.js';
@@ -616,8 +616,26 @@ export async function runRuntimeParallelPlan(agent, session, input, {
         // Any genuine approval-only block returned above. Remaining tasks are
         // unschedulable for another reason.
         const reason = 'no_ready_plan_task';
-        emitRuntimeLog(session, `scheduler: stalled (${reason})`);
-        return { ok: false, stalled: true, reason, completed: sessionActivities(session), failures };
+        const diagnostics = stallDiagnostics(session.headlessPlan ?? [], {
+          approvals: session.agentProjection?.approvals ?? session.approvals ?? [],
+          registry: session.capabilityRegistry ?? null,
+          lockManager: attempts,
+          runId,
+          workspaceId: session.workspace ?? null,
+          planRevision: session.planRevision ?? session.agentProjection?.planRevision ?? null,
+        });
+        emitRuntimeLog(session, `scheduler: stalled (${reason}) — ${diagnostics.length} pending task(s)`);
+        for (const line of diagnostics) {
+          emitRuntimeLog(session, `scheduler: stalled-detail ${line}`);
+        }
+        return {
+          ok: false,
+          stalled: true,
+          reason,
+          completed: sessionActivities(session),
+          failures,
+          stallDiagnostics: diagnostics,
+        };
       }
 
       const settled = await Promise.race([...active.values()].map((entry) => entry.promise));
@@ -687,6 +705,70 @@ export async function runRuntimeParallelPlan(agent, session, input, {
  exemple —, on s'arrête. Sans lui, une incohérence de statut se paierait en
  boucle infinie, c'est-à-dire en run figé : exactement ce qu'on répare.
 */
+/**
+ * Diagnostic au moment d'un stall `no_ready_plan_task`.
+ *
+ * Le scheduler sait seulement « plus aucune tâche prête ». Pour distinguer
+ * « dépendance en attente » de « approbation non couverte » de « lock tenu »
+ * de « capability non résolue », on relit ici l'état RÉEL de chaque tâche
+ * pendante : statut, statut de chaque dépendance, état de la barrière de
+ * groupe, état des locks, couverture d'approbation, présence d'un fournisseur
+ * de capability. Une ligne par tâche, lisible dans les logs SSE et reportée
+ * dans le message du `run_error`.
+ */
+function stallDiagnostics(plan, {
+  approvals = [],
+  registry = null,
+  lockManager = null,
+  runId = null,
+  workspaceId = null,
+  planRevision = null,
+} = {}) {
+  const byId = new Map((plan ?? []).map((task) => [String(task.id ?? task.step), task]));
+  const lines = [];
+  for (const task of plan ?? []) {
+    if (!isPending(task.status)) continue;
+    const id = shortLogId(String(task.id ?? task.step ?? '?'));
+    const parts = [`status=${task.status}`];
+
+    const deps = Array.isArray(task.dependsOn) ? task.dependsOn : [];
+    if (deps.length > 0) {
+      parts.push(`dependsOn=${deps.map((dep) => {
+        const depTask = byId.get(String(dep));
+        return `${shortLogId(String(dep))}=${depTask ? depTask.status : 'missing'}`;
+      }).join(',')}`);
+    }
+
+    if (task.dependsOnGroup) {
+      const members = (plan ?? []).filter((candidate) => (candidate.groupId ?? candidate.group) === task.dependsOnGroup);
+      const terminal = members.filter((candidate) => isTerminal(candidate.status)).length;
+      parts.push(`dependsOnGroup=${shortLogId(String(task.dependsOnGroup))}(${terminal}/${members.length} terminal)`);
+    }
+
+    if (Array.isArray(task.locks) && task.locks.length > 0) {
+      const free = lockManager && typeof lockManager.canAcquire === 'function'
+        ? lockManager.canAcquire(task)
+        : 'n/a';
+      parts.push(`locks=[${task.locks.join(',')}] free=${free}`);
+    }
+
+    if (task.requiresApproval) {
+      const covered = approvalCovered(task, approvals, { runId, workspaceId, planRevision });
+      parts.push(`requiresApproval covered=${covered}`);
+    }
+
+    if (task.requiredCapability) {
+      const providers = registry && typeof registry.providersFor === 'function'
+        ? (registry.providersFor(task.requiredCapability) ?? [])
+        : [];
+      parts.push(`capability=${task.requiredCapability} providers=${providers.length}`);
+    }
+
+    lines.push(`${id}: ${parts.join(' | ')}`);
+  }
+  return lines;
+}
+
 export function skipImpossibleTasks(session, runId, { maxPasses = 50 } = {}) {
   let total = 0;
   for (let pass = 0; pass < maxPasses; pass += 1) {
@@ -1340,9 +1422,12 @@ function replanTriggerFromLoopResult(result) {
     if (blocking.length > 0 && blocking.every(isBusyFailure)) {
       return null;
     }
+    const diagnostics = Array.isArray(result.stallDiagnostics) && result.stallDiagnostics.length > 0
+      ? ` ${result.stallDiagnostics.join(' · ')}`
+      : '';
     return {
       kind: 'plan_stalled',
-      reason: `Plan is stalled: ${result.reason ?? 'no ready task'} (pending steps exist but none have their dependencies satisfied).`,
+      reason: `Plan is stalled: ${result.reason ?? 'no ready task'} (pending steps exist but none have their dependencies satisfied).${diagnostics}`,
       suggestedAction: 'Drop or replace the unsatisfiable dependency.',
       activity: null,
     };

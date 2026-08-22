@@ -246,6 +246,82 @@ function task(id, overrides = {}) {
 }
 
 /*
+  Cas observé le 2026-08-22 (workspace acpi) : `/wiki-ingest` planifie 13
+  ingest_plan (groupe `ingest`) + 13 ingest_apply (groupe `apply`, sérialisés
+  sur le lock `workspace-write`, derrière la barrière `ingest`) + 1 taxonomy
+  (barrière `apply`). Le grant run-scope émis par le bouton Approve est « nu » :
+  `approvalClasses: []`, `planRevision: null`. Après la fin des 13 ingest_plan,
+  le scheduler a déclaré `no_ready_plan_task` au lieu de démarrer les apply.
+
+  Ce test verrouille la couverture du grant nu : les apply `waiting_approval`
+  DOIVENT redevenir ready quand le grant run-scope (même sans classes ni
+  révision) les couvre.
+*/
+test('un grant run-scope « nu » (sans classes ni révision) débloque les apply derrière une barrière', () => {
+  const plan = {
+    runId: 'run-1',
+    workspace: 'acpi',
+    planRevision: 1,
+    tasks: [
+      // 13 ingest_plan du groupe ingest, tous done.
+      ...Array.from({ length: 13 }, (_, i) => task(`ingest-plan-${i}`, {
+        groupId: 'ingest',
+        status: 'done',
+        requiredCapability: 'knowledge.update',
+        operation: 'ingest_plan',
+      })),
+      // 13 apply : groupe apply, barrière ingest, lock workspace-write.
+      ...Array.from({ length: 13 }, (_, i) => task(`ingest-apply-${i}`, {
+        groupId: 'apply',
+        dependsOnGroup: 'ingest',
+        barrier: true,
+        dependsOn: [`ingest-plan-${i}`],
+        status: 'waiting_approval',
+        requiredCapability: 'knowledge.update',
+        operation: 'ingest_apply',
+        locks: ['workspace-write'],
+        parallelizable: false,
+        requiresApproval: true,
+        approvalClass: 'mutation',
+        priority: i + 1,
+      })),
+      task('taxonomy', {
+        dependsOnGroup: 'apply',
+        barrier: true,
+        status: 'waiting_approval',
+        requiredCapability: 'knowledge.update',
+        operation: 'taxonomy',
+        requiresApproval: true,
+        approvalClass: 'mutation',
+      }),
+    ],
+  };
+
+  // Sans grant : rien n'est ready.
+  assert.deepEqual(readyTasks(plan).map((item) => item.id), []);
+
+  // Grant run-scope « nu » — exactement ce que le bouton Approve émet.
+  // La couverture ne bloque pas : les 13 apply sont tous prêts.
+  const ready = readyTasks(plan, {
+    approvals: [{
+      status: 'approved',
+      scope: 'run',
+      runId: 'run-1',
+      workspaceId: 'acpi',
+      planRevision: null,
+      approvalClasses: [],
+    }],
+  });
+
+  assert.deepEqual(ready.map((item) => item.id), [
+    'ingest-apply-0', 'ingest-apply-1', 'ingest-apply-2', 'ingest-apply-3',
+    'ingest-apply-4', 'ingest-apply-5', 'ingest-apply-6', 'ingest-apply-7',
+    'ingest-apply-8', 'ingest-apply-9', 'ingest-apply-10', 'ingest-apply-11',
+    'ingest-apply-12',
+  ]);
+});
+
+/*
  Cas observé le 2026-08-04 (workspace juno) : une ingestion de dix fichiers,
  neuf réussis, le dixième en échec sur du JSON malformé. La barrière de groupe
  exigeait que TOUS les membres soient `done` : elle ne s'est jamais ouverte, le

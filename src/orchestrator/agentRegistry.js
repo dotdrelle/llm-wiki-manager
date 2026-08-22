@@ -62,6 +62,11 @@ export function createAgentRegistry({
 } = {}) {
   const agentsByInstance = new Map();
   const instanceByServer = new Map();
+  // Whether the LAST probe of an instance failed. The "did not answer
+  // agent_describe" log is edge-triggered: it is emitted once when an instance
+  // stops answering, not on every re-scan while it stays down. A stopped agent
+  // is not an error to repeat every minute.
+  const lastProbeFailed = new Map();
 
   return {
     async discover(session, { signal = null } = {}) {
@@ -70,13 +75,18 @@ export function createAgentRegistry({
       const activeServers = new Set(endpoints.map(([serverName]) => serverName));
       for (const [serverName, endpoint] of endpoints) {
         const agent = await discoverServerAgent(session, serverName, endpoint, { callTool, signal, now });
-        discovered.push(registerAgent(session, agent, { agentsByInstance, instanceByServer }));
+        discovered.push(registerAgent(session, agent, { agentsByInstance, instanceByServer, lastProbeFailed }));
       }
       for (const [serverName, instanceId] of instanceByServer) {
         if (activeServers.has(serverName)) continue;
         const previous = agentsByInstance.get(instanceId);
         instanceByServer.delete(serverName);
         agentsByInstance.delete(instanceId);
+        // Same cleanup as the two maps above: without it, a long-running
+        // process that sees many renamed/reconnected connectors (the
+        // Connectors panel supports exactly this) accumulates one stale
+        // entry per retired instance for the process lifetime.
+        lastProbeFailed.delete(instanceId);
         if (previous) dispatchRegistryEvent(session, 'agent.unregistered', {
           agentInstanceId: instanceId,
           serverName,
@@ -140,7 +150,7 @@ async function discoverServerAgent(session, serverName, endpoint = {}, { callToo
   }
 }
 
-function registerAgent(session, agent, { agentsByInstance, instanceByServer }) {
+function registerAgent(session, agent, { agentsByInstance, instanceByServer, lastProbeFailed }) {
   const previousInstanceId = instanceByServer.get(agent.serverName);
   const previous = previousInstanceId ? agentsByInstance.get(previousInstanceId) : null;
 
@@ -166,13 +176,21 @@ function registerAgent(session, agent, { agentsByInstance, instanceByServer }) {
      the blindness — a probe that failed is a fact worth stating, once, where
      the panels and the shell already read.
 
+     "Once" is the operative word: the re-scan runs every minute, and a stopped
+     agent is not an error to repeat each time it is scanned. The log is
+     edge-triggered on the transition from answering to not answering.
+
      Deliberately NOT a health change: the endpoint is down but the agent stays
      usable by design here, and moving `health` would make `capabilityResolver`
      refuse it — trading a silent loss for a silent refusal.
-    */
-    dispatchRuntimeLog(session, `agent-registry: ${agent.serverName} did not answer agent_describe`
-      + `${agent.error ? ` (${agent.error})` : ''}; keeping its known capabilities`
-      + ` (${(previous.description?.capabilities ?? []).map((capability) => capability.id).join(', ') || 'none'}).`);
+     */
+    const wasAnswering = lastProbeFailed.get(previous.agentInstanceId) !== true;
+    lastProbeFailed.set(previous.agentInstanceId, true);
+    if (wasAnswering) {
+      dispatchRuntimeLog(session, `agent-registry: ${agent.serverName} did not answer agent_describe`
+        + `${agent.error ? ` (${agent.error})` : ''}; keeping its known capabilities`
+        + ` (${(previous.description?.capabilities ?? []).map((capability) => capability.id).join(', ') || 'none'}).`);
+    }
     return cloneAgent(previous);
   }
 
@@ -187,6 +205,7 @@ function registerAgent(session, agent, { agentsByInstance, instanceByServer }) {
   }
   agentsByInstance.set(next.agentInstanceId, next);
   instanceByServer.set(next.serverName, next.agentInstanceId);
+  if (lastProbeFailed) lastProbeFailed.set(next.agentInstanceId, false);
 
   if (!previous || previous.agentInstanceId !== next.agentInstanceId) {
     dispatchRegistryEvent(session, 'agent.registered', { agent: next });

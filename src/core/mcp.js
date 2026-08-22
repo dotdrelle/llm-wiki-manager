@@ -585,7 +585,7 @@ function retryDelay(ms, signal) {
   });
 }
 
-export async function discoverMcpTools(mcpStatus) {
+export async function discoverMcpTools(mcpStatus, previous = null) {
   const next = {};
   await Promise.all(Object.entries(mcpStatus ?? {}).map(async ([name, value]) => {
     if (value.status === 'missing') {
@@ -607,11 +607,26 @@ export async function discoverMcpTools(mcpStatus) {
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // A transient probe failure during a background re-scan must not degrade
+      // a live endpoint. Docker service state (applyMcpRuntimeStatus) is the
+      // authority on whether the container is up; this probe is only a tool
+      // refresh, so keep last-known-good status and tools instead of flipping
+      // an in-flight run's endpoint to "not connected".
+      const prior = previous?.[name];
+      const freshlyConnected = value.status === 'connected';
+      const keepConnected = freshlyConnected || prior?.status === 'connected';
+      // `degraded` marks the case Docker itself no longer confirms as
+      // connected (freshlyConnected is false) and only prior history keeps
+      // this endpoint reporting "connected" — the preservation this whole
+      // branch exists for, worth surfacing rather than masking indefinitely.
+      // `refreshMcpRuntimeStatus` (slash.js) owns the edge-triggered log, by
+      // comparing this flag against the previous cycle's.
       next[name] = {
         ...value,
-        status: value.status === 'connected' ? 'configured' : value.status,
-        tools: [],
+        status: keepConnected ? 'connected' : value.status,
+        tools: keepConnected ? (prior?.tools ?? []) : [],
         toolError: message,
+        degraded: keepConnected && !freshlyConnected,
       };
     }
   }));

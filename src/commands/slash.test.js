@@ -460,3 +460,36 @@ test('refreshMcpRuntimeStatus does not expose an intermediate configured status'
   assert.equal(session.mcp.production.status, 'connected');
 });
 
+test('refreshMcpRuntimeStatus reports a degraded MCP endpoint once, not on every re-scan', async () => {
+  const session = {
+    workspacePath: '/tmp/ws',
+    workspaceEnv: { PRODUCTION_MCP_PORT: '3202', PRODUCTION_MCP_AUTH_TOKEN: 'token' },
+    wikircConfig: {},
+    mcp: { production: { status: 'connected', tools: [] } },
+  };
+  const degradedRuns = (n) => async () => ({
+    production: { status: 'connected', tools: [], toolError: `probe ${n} failed`, degraded: true },
+  });
+  const deps = { serviceStates: async () => ({}) };
+
+  await refreshMcpRuntimeStatus(session, { ...deps, discoverMcpTools: degradedRuns(1) });
+  await refreshMcpRuntimeStatus(session, { ...deps, discoverMcpTools: degradedRuns(2) });
+  await refreshMcpRuntimeStatus(session, { ...deps, discoverMcpTools: degradedRuns(3) });
+
+  const reports = (session.agentEvents ?? []).filter((event) => event.type === 'runtime_log'
+    && String(event.payload?.message ?? '').includes('mcp: production'));
+  assert.equal(reports.length, 1, 'a degraded endpoint is reported once, not once per re-scan');
+
+  // Recovers, then degrades again: reported a second time.
+  await refreshMcpRuntimeStatus(session, {
+    ...deps,
+    discoverMcpTools: async () => ({ production: { status: 'connected', tools: [], degraded: false } }),
+  });
+  await refreshMcpRuntimeStatus(session, { ...deps, discoverMcpTools: degradedRuns(4) });
+  assert.equal(
+    (session.agentEvents ?? []).filter((event) => event.type === 'runtime_log'
+      && String(event.payload?.message ?? '').includes('mcp: production')).length,
+    2,
+  );
+});
+

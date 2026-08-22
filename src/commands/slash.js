@@ -29,6 +29,7 @@ import { createWorkspace, findWorkspace, listWorkspaces } from '../core/workspac
 import { findSkill, inspectSkills, listSkills } from '../core/skills.js';
 import { extractActivity, formatActivityError, formatActivityLine, formatActivitySummary, parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
+import { normalizeRuntimeLog } from '../core/runtimeLog.js';
 import {
   cancelQueueItem,
   clearFinishedQueueItems,
@@ -631,10 +632,39 @@ export async function refreshMcpRuntimeStatus(session, deps = {}) {
   try {
     const states = await getStates(session);
     session.mcp = await discover(applyMcpRuntimeStatus(base, states), previousMcp);
+    reportNewlyDegradedMcp(session, previousMcp);
     return states;
   } catch {
     session.mcp = await discover(base, previousMcp);
+    reportNewlyDegradedMcp(session, previousMcp);
     return null;
+  }
+}
+
+/**
+ * "Degraded" (`discoverMcpTools`, mcp.js) means an endpoint is reporting
+ * "connected" only because a prior cycle was, not because Docker or the
+ * latest probe confirm it now — the preservation that endpoint's
+ * `keepConnected` branch exists for, deliberately not reverted here since a
+ * transient probe blip must not flip a live run's endpoint away. But
+ * preserving it in silence is exactly the "stale status kept forever"
+ * pattern already fixed once in agentRegistry.js: report it, edge-triggered
+ * on the transition into the degraded state, so it does not repeat every
+ * re-scan while it persists.
+ */
+function reportNewlyDegradedMcp(session, previousMcp) {
+  for (const [name, entry] of Object.entries(session.mcp ?? {})) {
+    if (!entry?.degraded || previousMcp?.[name]?.degraded) continue;
+    const message = `mcp: ${name} still reports "connected" only from a prior probe`
+      + ` (${entry.toolError ?? 'no detail'}); Docker/the latest probe no longer confirm it.`;
+    const payload = normalizeRuntimeLog(message, { session });
+    dispatchAgentEvent(session, createAgentEvent('runtime_log', {
+      origin: 'runtime',
+      runId: payload.runId ?? null,
+      taskId: payload.taskId ?? null,
+      workspace: payload.workspaceId ?? null,
+      payload,
+    }));
   }
 }
 

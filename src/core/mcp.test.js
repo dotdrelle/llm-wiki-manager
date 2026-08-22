@@ -501,7 +501,7 @@ test('resolveRetryPolicy supports endpoint and tool overrides', () => {
   assert.deepEqual(policy, { maxAttempts: 4, backoffMs: 100 });
 });
 
-test('discoverMcpTools downgrades connected endpoint when tool discovery fails', async () => {
+test('discoverMcpTools keeps a connected endpoint connected when tool discovery fails', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => ({
     ok: false,
@@ -519,9 +519,71 @@ test('discoverMcpTools downgrades connected endpoint when tool discovery fails',
       },
     });
 
-    assert.equal(status.wiki.status, 'configured');
+    assert.equal(status.wiki.status, 'connected');
     assert.equal(status.wiki.tools.length, 0);
     assert.match(status.wiki.toolError, /401/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('discoverMcpTools preserves last-known-good status and tools across a failed re-probe', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 502,
+    headers: { get: () => null },
+    text: async () => 'Bad gateway',
+  });
+
+  try {
+    const status = await discoverMcpTools(
+      {
+        production: {
+          status: 'configured',
+          url: 'http://127.0.0.1:3202/mcp/',
+          token: 'token',
+        },
+      },
+      {
+        production: {
+          status: 'connected',
+          tools: [{ name: 'production__agent_execute' }, { name: 'production__agent_status' }],
+        },
+      },
+    );
+
+    assert.equal(status.production.status, 'connected');
+    assert.deepEqual(status.production.tools.map((tool) => tool.name), [
+      'production__agent_execute',
+      'production__agent_status',
+    ]);
+    assert.match(status.production.toolError, /502/);
+    // Docker (`value.status`) no longer confirms this endpoint; only prior
+    // history keeps it "connected". `degraded` is what lets the caller
+    // (refreshMcpRuntimeStatus) tell this apart from a genuinely fresh probe
+    // success, so it can report the preservation instead of masking it.
+    assert.equal(status.production.degraded, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('discoverMcpTools does not mark a fresh probe failure on an already-connected endpoint as degraded', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 401,
+    headers: { get: () => null },
+    text: async () => '{"error":"invalid or missing bearer token"}',
+  });
+
+  try {
+    const status = await discoverMcpTools({
+      wiki: { status: 'connected', url: 'http://127.0.0.1:3201/mcp', token: 'token' },
+    });
+    assert.equal(status.wiki.status, 'connected');
+    assert.equal(status.wiki.degraded, false);
   } finally {
     globalThis.fetch = originalFetch;
   }

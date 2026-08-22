@@ -29,7 +29,7 @@ import { createWorkspace, findWorkspace, listWorkspaces } from '../core/workspac
 import { findSkill, inspectSkills, listSkills } from '../core/skills.js';
 import { extractActivity, formatActivityError, formatActivityLine, formatActivitySummary, parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { normalizeRuntimeLog } from '../core/runtimeLog.js';
+import { emitRuntimeLog } from '../runtime/supervisor.js';
 import {
   cancelQueueItem,
   clearFinishedQueueItems,
@@ -655,16 +655,8 @@ export async function refreshMcpRuntimeStatus(session, deps = {}) {
 function reportNewlyDegradedMcp(session, previousMcp) {
   for (const [name, entry] of Object.entries(session.mcp ?? {})) {
     if (!entry?.degraded || previousMcp?.[name]?.degraded) continue;
-    const message = `mcp: ${name} still reports "connected" only from a prior probe`
-      + ` (${entry.toolError ?? 'no detail'}); Docker/the latest probe no longer confirm it.`;
-    const payload = normalizeRuntimeLog(message, { session });
-    dispatchAgentEvent(session, createAgentEvent('runtime_log', {
-      origin: 'runtime',
-      runId: payload.runId ?? null,
-      taskId: payload.taskId ?? null,
-      workspace: payload.workspaceId ?? null,
-      payload,
-    }));
+    emitRuntimeLog(session, `mcp: ${name} still reports "connected" only from a prior probe`
+      + ` (${entry.toolError ?? 'no detail'}); Docker/the latest probe no longer confirm it.`);
   }
 }
 

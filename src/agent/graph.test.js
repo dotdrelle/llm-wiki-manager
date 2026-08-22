@@ -62,6 +62,27 @@ test('a connection problem still routes to connector configuration', () => {
   assert.deepEqual(target, { serverName: 'acme', setupTool: 'acme_auth' });
 });
 
+test('a stale configure-connector message does not poison a later business delegation', () => {
+  const target = connectorConfigurationTarget({
+    agentProjection: {
+      conversation: [
+        { role: 'user', content: 'donne moi la config du cme' },
+        { role: 'user', content: 'liste les pages wiki configurer pour l’agent cme' },
+      ],
+    },
+    mcp: {
+      cme: {
+        status: 'connected',
+        tools: [
+          { name: 'cme_setup', description: 'Configure Confluence credentials.' },
+          { name: 'cme_export_run', description: 'Run export.' },
+        ],
+      },
+    },
+  }, 'Ingest pending staged Markdown files from raw/untracked into the wiki.');
+  assert.equal(target, null);
+});
+
 test('Donna cannot answer an explicit action with manual instructions instead of delegating', async () => {
   const originalFetch = globalThis.fetch;
   let delegated = false;

@@ -1026,11 +1026,18 @@ export function connectorConfigurationTarget(session, objective) {
     .filter((message) => message?.role === 'user')
     .map((message) => String(message?.content ?? ''))
     .join(' ');
-  const text = `${recentContext} ${String(objective ?? '')}`.trim().toLowerCase();
-  // `connect` used to match the noun "connector" as a substring. Production
-  // skills mention an optional messaging connector, so that broad match could
-  // misclassify a business run as connector setup and reject delegation.
-  if (!/(?:configur|\bconnect(?:ed|ing|ion|ions)?\b|authent|oauth|setup|sign[ -]?in|\bpat\b|api[ _-]?token|credential|identifiant|mot de passe|password)/i.test(text)) return null;
+  const objectiveText = String(objective ?? '').trim().toLowerCase();
+  // The configuration keyword must describe the objective being delegated NOW,
+  // not something the user said earlier in the session. Matching it against
+  // recent conversation context made a stale "configurer le CME" message poison
+  // every later delegation — an unrelated `/wiki-ingest` objective was rejected
+  // as connector setup. Recent context is used only to resolve WHICH connector
+  // the current objective refers to. (`connect` used to match the noun
+  // "connector" as a substring, and production skills mention an optional
+  // messaging connector; the narrowed word-boundary form keeps that from
+  // misclassifying a business run as connector setup.)
+  if (!/(?:configur|\bconnect(?:ed|ing|ion|ions)?\b|authent|oauth|setup|sign[ -]?in|\bpat\b|api[ _-]?token|credential|identifiant|mot de passe|password)/i.test(objectiveText)) return null;
+  const contextText = `${recentContext} ${objectiveText}`.trim().toLowerCase();
   for (const [serverName, server] of Object.entries(session?.mcp ?? {})) {
     if (server?.status !== 'connected' || !Array.isArray(server.tools) || server.tools.length === 0) continue;
     const genericAliasParts = new Set([
@@ -1043,7 +1050,7 @@ export function connectorConfigurationTarget(session, objective) {
     ]
       .flatMap((value) => String(value).toLowerCase().split(/[^a-z0-9]+/))
       .filter((part) => part.length >= 3 && !genericAliasParts.has(part));
-    if (!aliases.some((alias) => text.includes(alias))) continue;
+    if (!aliases.some((alias) => contextText.includes(alias))) continue;
     const setupTool = server.tools.find((tool) => {
       const name = String(tool?.name ?? '').toLowerCase();
       const description = String(tool?.description ?? '').toLowerCase();
@@ -1182,7 +1189,7 @@ export function buildAgentSystemPrompt(state) {
     skills,
     '</skill_catalog>',
     runningSkillStack.length > 0
-      ? `You are already executing the compiled objective of workspace skill ${JSON.stringify(runningSkillStack.at(-1))}. Execute the objective in the current user message with the available direct tools${runningSkillExecution === 'direct' ? ' and stop after its requested direct mutation; delegation and nested skills are forbidden for this workflow' : ' or capability delegation'}. Do not select or call that skill again, with or without a leading slash. A skill run is not successful until its requested mutation has an affirmative tool result; never infer success from the runtime merely becoming idle or done.`
+      ? `You are already executing the compiled objective of workspace skill ${JSON.stringify(runningSkillStack.at(-1))}. The current user message IS that objective: execute it directly${runningSkillExecution === 'direct' ? ' and stop after its requested direct mutation; delegation and nested skills are forbidden for this workflow' : ' by delegating it with runtime__delegate (or a matching direct tool)'}. Do not select or call that skill again, with or without a leading slash — the runtime refuses the re-invocation with skill_recursion_blocked, and that refusal means act on the objective yourself, not report an error. A skill run is not successful until its requested mutation has an affirmative tool result; never infer success from the runtime merely becoming idle or done, and never end the run with an empty reply or a bare "{}".`
       : null,
     'In interactive agent mode, call only tools actually provided to you. Any directly offered tool stays direct; never substitute an orchestration-contract tool yourself.',
     'When the user asks for an action that can be performed with connected MCP tools or safe primitives, do not answer with future intent such as "I will call...", "I am going to run...", or "launching..." unless you also call the tool in the same turn. Either call the tool now, ask for the exact missing required arguments, or explain the concrete blocker.',
@@ -1219,6 +1226,7 @@ export function buildAgentSystemPrompt(state) {
     'When an action fails or is refused for lack of an authorization grant or scope (rather than a missing capability), say exactly that and name the primitive that grants it. Do not describe the feature as unavailable.',
     'For an action with no matching direct tool, call runtime__delegate with the user objective only. The runtime chooses the capability, operation, agent and plan, including a validated single task for executor-only agents. Never choose those identifiers yourself. Never call <provider>__agent_plan, <provider>__agent_execute, legacy production__production_start_job, wiki__plan_set, or wiki__plan_done from interactive chat.',
     'Do not ask the user which sources, files, connectors, or templates to use for an ingest, build, or export: the specialized agent discovers them from the workspace. When the objective is clear (e.g. "lance une ingestion"), delegate it as stated, without a clarifying question.',
+    'Templates are instruction-only specs and deliverables are regenerated from them. When asked to change what a generated document says, edit the underlying wiki content (wiki_write_page) or the template\'s [[INSTRUCTION: ...]] sections — never write finished prose into a template, because a build copies it verbatim and it can no longer be refreshed from the wiki. template_write refuses prose outside an instruction block, so keep every sentence inside one.',
     'Promise only what the resolved capability actually exposes in its declared contract (the input schema the specialized agent publishes for that capability). When the user requests an execution parameter — a batch or chunk size, a count "N at a time", concurrency, ordering, priority, or any tuning knob — apply it only if that parameter exists in the target capability\'s published input schema. Otherwise do not confirm or promise it: delegate the objective, and if the user explicitly asked for that parameter, say plainly in one line that you started the work but do not control that aspect (the runtime and the specialized agent decide it). Never state or imply a parameter was applied when the agent contract cannot enforce it.',
     'If runtime__delegate returns a blocker or no specialized provider is available, report only that concrete blocker concisely. Never replace the missing execution path with a suggested slash command, skill, MCP tool name, manual file move, administrator escalation, or alternative workflow unless the user explicitly asks for alternatives.',
     'For workspace inventory and page listings, use the connected wiki MCP read tools. Never invent or call a /wiki shell command through shell__run_command. Use /workspace init <name> [path] for low-level non-interactive workspace creation; in the interactive TUI, /new <name> opens the setup wizard.',

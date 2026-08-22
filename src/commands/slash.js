@@ -612,16 +612,28 @@ function publishDocumentActivity(session, activity) {
   return publishPayloadActivity(session, { _activity: activity }, { server: 'documents', tool: 'documents_convert_to_markdown' });
 }
 
-export async function refreshMcpRuntimeStatus(session) {
-  session.mcp = buildMcpStatus(session);
-  if (!session.workspacePath) return null;
+export async function refreshMcpRuntimeStatus(session, deps = {}) {
+  const getStates = deps.serviceStates ?? serviceStates;
+  const discover = deps.discoverMcpTools ?? discoverMcpTools;
+  const previousMcp = session.mcp;
+  const base = buildMcpStatus(session);
+  if (!session.workspacePath) {
+    session.mcp = base;
+    return null;
+  }
+  // Build the next status in local variables and assign `session.mcp` only at
+  // the end. Assigning `buildMcpStatus` first (status "configured", no tools)
+  // and then awaiting `serviceStates`/`discoverMcpTools` exposed a window in
+  // which a background re-scan had downgraded `production` to "configured",
+  // and the dispatcher — reading `session.mcp` mid-refresh — refused the next
+  // `agent_execute` with "MCP is not connected: production" while the agent
+  // was actually up.
   try {
-    const states = await serviceStates(session);
-    session.mcp = applyMcpRuntimeStatus(session.mcp, states);
-    session.mcp = await discoverMcpTools(session.mcp);
+    const states = await getStates(session);
+    session.mcp = await discover(applyMcpRuntimeStatus(base, states), previousMcp);
     return states;
   } catch {
-    session.mcp = await discoverMcpTools(session.mcp);
+    session.mcp = await discover(base, previousMcp);
     return null;
   }
 }
@@ -1557,7 +1569,12 @@ export async function handleSlashCommand(line, context) {
           const wikiArgs = args.slice(2);
           if (wikiArgs.length === 0) return { output: 'Usage: /wiki run <args...>' };
           step(`Wiki: running ${wikiArgs.join(' ')}…`);
+          // Steps that drive LLM work (taxonomy, build, ingest, export, polish)
+          // legitimately run for minutes: the production agent gives them a
+          // 600s LLM timeout, so the raw hatch must not cut them at 180s.
+          const longRunning = new Set(['taxonomy', 'build', 'ingest', 'export', 'polish', 'pipeline']);
           const output = await runWikiCli(context.session, wikiArgs, {
+            timeout: longRunning.has(wikiArgs[0] ?? '') ? 600_000 : 180_000,
             onOutput: (line) => step(`Wiki: ${line}`),
           });
           const activity = formatActivitySummary('wiki', wikiArgs[0] ?? 'run', output);

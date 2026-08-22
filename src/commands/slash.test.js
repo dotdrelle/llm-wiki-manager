@@ -4,7 +4,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { agentConcurrencySections, compactBaseUrl, compactMcpStatus, handleSlashCommand, localizedOperationResult } from './slash.js';
+import { agentConcurrencySections, compactBaseUrl, compactMcpStatus, handleSlashCommand, localizedOperationResult, refreshMcpRuntimeStatus } from './slash.js';
 import { completionContext } from '../shell/repl.js';
 
 test('deterministic operation results ask Donna to localize compact facts without leaking commands', () => {
@@ -437,3 +437,26 @@ test('/queue cancel reports unknown ids that are not runtime-managed', async () 
   });
   assert.match(result.output ?? '', /Unknown queue item/i);
 });
+
+test('refreshMcpRuntimeStatus does not expose an intermediate configured status', async () => {
+  const session = {
+    workspacePath: '/tmp/ws',
+    workspaceEnv: { PRODUCTION_MCP_PORT: '3202', PRODUCTION_MCP_AUTH_TOKEN: 'token' },
+    wikircConfig: {},
+    mcp: { production: { status: 'connected', tools: [{ name: 'production__agent_execute' }] } },
+  };
+  const originalMcp = session.mcp;
+  let resolveStates;
+  const statesPromise = new Promise((resolve) => { resolveStates = resolve; });
+  const pending = refreshMcpRuntimeStatus(session, {
+    serviceStates: () => statesPromise,
+    discoverMcpTools: async (mcp) => mcp,
+  });
+  // While serviceStates is still in flight, the dispatcher-facing status must
+  // keep the previous connected snapshot — never the fresh "configured" base.
+  assert.equal(session.mcp, originalMcp, 'session.mcp reassigned mid-refresh');
+  resolveStates({ 'production-mcp': { running: true } });
+  await pending;
+  assert.equal(session.mcp.production.status, 'connected');
+});
+

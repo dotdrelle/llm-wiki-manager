@@ -2281,8 +2281,8 @@ test('LOT F: repeated bare tool-call JSON never reaches the user', async () => {
   assert.ok(offered.includes('production__production_start_job'), 'the turn must really offer the tool');
   assert.equal(calls, 3, 'two retries, then the guard');
   assert.doesNotMatch(result.response, /production__production_start_job/);
-  assert.match(result.response, /a affiché à plusieurs reprises une requête interne/);
-  assert.match(result.response, /Aucun .*résultat n’a été créé/);
+  assert.match(result.response, /repeatedly printed an internal tool request/);
+  assert.match(result.response, /No .*result was created/);
 });
 
 /*
@@ -2326,7 +2326,7 @@ test('LOT F: a skill re-invoking itself as bare JSON is neither executed nor sho
   assert.deepEqual(ran, [], 'a call written as text must never reach the skill runner');
   assert.doesNotMatch(result.response, /runtime__run_skill/);
   assert.doesNotMatch(result.response, /[{}]/, 'no JSON fragment may survive in the user-facing answer');
-  assert.match(result.response, /a affiché à plusieurs reprises une requête interne/);
+  assert.match(result.response, /repeatedly printed an internal tool request/);
   assert.ok(streamResets >= 1, 'the partially streamed payload must be wiped before the guard message');
   assert.ok(calls >= 2, 'the first occurrence is retried, not surfaced');
 
@@ -2338,7 +2338,7 @@ test('LOT F: a skill re-invoking itself as bare JSON is neither executed nor sho
   assert.equal(guard[0].payload.content, result.response);
 });
 
-test('LOT F: the guard message follows the session language', async () => {
+test('LOT F: the guard message stays English-only for every session language', async () => {
   const raw = '{"name":"production__production_start_job","arguments":{"type":"build"}}';
   const answer = async (language) => {
     const session = sessionBase({
@@ -2353,10 +2353,10 @@ test('LOT F: the guard message follows the session language', async () => {
     return result.response;
   };
 
-  // Le message de garde est produit par le code, pas par le modèle : il doit
-  // suivre la langue configurée au lieu d'imposer l'anglais comme le faisait
-  // l'ancien texte injecté par l'UI.
+  // The guard message is produced by deterministic code, not by the model, and
+  // this lane deliberately does not run an LLM turn — so it is English-only
+  // rather than a hardcoded catalog that would leave most languages unanswered.
   assert.match(await answer('en-US'), /repeatedly printed an internal tool request/);
   assert.match(await answer(undefined), /repeatedly printed an internal tool request/);
-  assert.match(await answer('fr'), /a affiché à plusieurs reprises une requête interne/);
+  assert.match(await answer('fr'), /repeatedly printed an internal tool request/);
 });

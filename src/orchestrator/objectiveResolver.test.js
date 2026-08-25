@@ -7,8 +7,8 @@ import {
   ObjectiveNotOrchestrableError,
 } from './objectiveResolver.js';
 
-function makeCapability(id, { operations = [], aliases = [], description = '' } = {}) {
-  return { id, version: '1', description, supportedOperations: operations, aliases };
+function makeCapability(id, { operations = [], aliases = [], aliasOperations = {}, description = '' } = {}) {
+  return { id, version: '1', description, supportedOperations: operations, aliases, aliasOperations };
 }
 
 function provider(agentInstanceId, capability) {
@@ -63,6 +63,7 @@ test('capabilityCandidates exposes aliases from the closed live registry', () =>
     description: 'Update knowledge from pending sources.',
     operations: ['ingest', 'ingest_apply', 'ingest_plan'],
     aliases: ['ingest', 'ingestion'],
+    aliasOperations: {},
   }]);
 });
 
@@ -117,6 +118,67 @@ test('resolveObjective resolves diagnose via alias despite the notification "sen
   };
   const objective = 'Run a complete read-only diagnostic. If a messaging connector is available, send a short summary; otherwise skip notification silently.';
   const result = await resolveObjective(objective, session);
+  assert.equal(result.capability, 'workspace.diagnose');
+  assert.equal(result.operation, 'doctor');
+});
+
+const concepts = makeCapability('knowledge.concepts', {
+  operations: ['concepts', 'reclassify-concepts'],
+  aliases: ['concept grid', 'reclassify concepts', 'file unclassified concepts'],
+  aliasOperations: {
+    'concept grid': 'concepts',
+    'reclassify concepts': 'reclassify-concepts',
+    'file unclassified concepts': 'reclassify-concepts',
+  },
+  description: 'Synthesize the concept grid or file unclassified pages into it.',
+});
+
+/*
+ Regression: with two operations, [...new Set(supportedOperations)].sort()
+ alphabetizes to ["concepts", "reclassify-concepts"], so a naive alias hit
+ defaulting to operations[0] would ALWAYS resolve to "concepts" — the
+ destructive grid rebuild — even for aliases explicitly authored to reach the
+ safe "reclassify-concepts" operation. aliasOperations must be consulted
+ first.
+*/
+test('resolveObjective routes "reclassify concepts" to reclassify-concepts, not operations[0]', async () => {
+  const session = sessionWith([provider('production-1', concepts)]);
+  session.llm.completeWithTools = async () => {
+    throw new Error('the aliased operation must not depend on LLM selection');
+  };
+  const result = await resolveObjective('Please reclassify concepts in the workspace', session);
+  assert.equal(result.capability, 'knowledge.concepts');
+  assert.equal(result.operation, 'reclassify-concepts');
+});
+
+test('resolveObjective routes "file unclassified concepts" to reclassify-concepts', async () => {
+  const session = sessionWith([provider('production-1', concepts)]);
+  session.llm.completeWithTools = async () => {
+    throw new Error('the aliased operation must not depend on LLM selection');
+  };
+  const result = await resolveObjective('File unclassified concepts into the grid', session);
+  assert.equal(result.capability, 'knowledge.concepts');
+  assert.equal(result.operation, 'reclassify-concepts');
+});
+
+test('resolveObjective routes "concept grid" to the concepts operation', async () => {
+  const session = sessionWith([provider('production-1', concepts)]);
+  session.llm.completeWithTools = async () => {
+    throw new Error('the aliased operation must not depend on LLM selection');
+  };
+  const result = await resolveObjective('Rebuild the concept grid', session);
+  assert.equal(result.capability, 'knowledge.concepts');
+  assert.equal(result.operation, 'concepts');
+});
+
+test('resolveObjective falls back to operations[0] when a matched alias has no aliasOperations entry', async () => {
+  // A capability that never declares aliasOperations (every existing
+  // single-operation capability) must keep working exactly as before.
+  const session = sessionWith(
+    [provider('production-1', diagnose)],
+    { capability: 'workspace.diagnose', operation: 'doctor' },
+  );
+  const result = await resolveObjective('diagnose the workspace', session);
   assert.equal(result.capability, 'workspace.diagnose');
   assert.equal(result.operation, 'doctor');
 });

@@ -9,6 +9,7 @@ import {
   callMcpTool,
   discoverMcpTools,
   formatMcpToolsForAgent,
+  readChatAccessConfig,
   resetMcpSessionsForTests,
   resetMcpThrottleForTests,
   resolveRetryPolicy,
@@ -156,6 +157,71 @@ test('buildMcpStatus interpolates external endpoints from manager .env', async (
     else process.env.TEST_EXTERNAL_TOKEN = originalToken;
     if (originalPort === undefined) delete process.env.TEST_EXTERNAL_PORT;
     else process.env.TEST_EXTERNAL_PORT = originalPort;
+  }
+});
+
+test('readChatAccessConfig aliases the built-in servers\' public names onto their internal session.mcp keys', async () => {
+  // Every shipped example and scaffolded mcp.endpoints.json declares
+  // chatAccess for the built-in workspace servers under their public names
+  // ("llm-wiki", "wiki-production"), but session.mcp discovers them under
+  // different internal keys ("wiki", "production" — MCP_SERVICE_MAP).
+  // Without aliasing, chatAllowedTools' intersection against session.mcp
+  // never matches these entries and /chat silently gets zero wiki/production
+  // tools no matter what is configured.
+  const originalCwd = process.cwd();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wiki-manager-chat-access-'));
+  await writeFile(
+    path.join(root, 'mcp.endpoints.json'),
+    JSON.stringify({
+      mcpServers: {},
+      chatAccess: {
+        maxToolIterations: 8,
+        servers: {
+          'llm-wiki': { allow: ['wiki_search_context', 'wiki_read_page'] },
+          'wiki-production': { allow: ['production_job_status'] },
+          cme: { allow: ['cme_status'] },
+        },
+      },
+    }),
+    'utf8',
+  );
+
+  try {
+    process.chdir(root);
+    const config = readChatAccessConfig();
+    assert.deepEqual(config.servers.wiki, { allow: ['wiki_search_context', 'wiki_read_page'] });
+    assert.deepEqual(config.servers.production, { allow: ['production_job_status'] });
+    assert.deepEqual(config.servers.cme, { allow: ['cme_status'] });
+    assert.equal(config.servers['llm-wiki'], undefined);
+    assert.equal(config.servers['wiki-production'], undefined);
+  } finally {
+    process.chdir(originalCwd);
+  }
+});
+
+test('readChatAccessConfig merges a wildcard from either the public or internal built-in name', async () => {
+  const originalCwd = process.cwd();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wiki-manager-chat-access-wildcard-'));
+  await writeFile(
+    path.join(root, 'mcp.endpoints.json'),
+    JSON.stringify({
+      mcpServers: {},
+      chatAccess: {
+        servers: {
+          wiki: { allow: ['wiki_read_page'] },
+          'llm-wiki': { allow: '*' },
+        },
+      },
+    }),
+    'utf8',
+  );
+
+  try {
+    process.chdir(root);
+    const config = readChatAccessConfig();
+    assert.deepEqual(config.servers.wiki, { allow: '*' });
+  } finally {
+    process.chdir(originalCwd);
   }
 });
 

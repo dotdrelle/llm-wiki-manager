@@ -1,6 +1,6 @@
 import { createSignal } from 'solid-js';
 import { postRuntimeCancel } from '../runtime/client.js';
-import { conversationMessages, recordRuntimeUnavailableAgentInput, runLine, shouldHandleFreeTextLocally, submitRuntimeTurn } from './repl.js';
+import { applyRuntimeOutcome, conversationMessages, recordRuntimeUnavailableAgentInput, runLine, shouldHandleFreeTextLocally, submitRuntimeTurn } from './repl.js';
 
 export function useAgent(props: { agent: unknown; packageJson: Record<string, unknown>; session: Record<string, any>; chatMode: () => boolean; runtimeUrl?: string | null; runtimeUnavailableReason?: string | null; refresh: () => void; addLog: (line: string) => void; onRuntimeAccepted?: () => void }) {
   const [busy, setBusy] = createSignal(false);
@@ -41,24 +41,12 @@ export function useAgent(props: { agent: unknown; packageJson: Record<string, un
           runtime: { url: props.runtimeUrl },
           session: props.session,
         });
-        if (outcome.kind === 'turn' || (outcome as any).result?.accepted === true) {
-          props.addLog('runtime: agent turn accepted');
-        } else if (outcome.kind === 'queued') {
-          // The server localizes control-lane acknowledgements from the
-          // session language (src/runtime/controlMessages.js) — always prefer
-          // its explanation over a local hardcoded string.
-          const explanation = (outcome as any).result?.explanation ?? 'Request added to the queue.';
-          conversationMessages(props.session).push({ role: 'command', content: String(explanation) });
-          props.addLog('runtime: control queued');
-        } else if ((outcome as any).result?.explanation) {
-          // Control-lane kinds (cancel / approve / observe / modify_run…):
-          // surface the server's localized explanation instead of an error.
-          conversationMessages(props.session).push({ role: 'command', content: String((outcome as any).result.explanation) });
-          props.addLog(`runtime: ${outcome.kind}`);
-        } else {
-          conversationMessages(props.session).push({ role: 'command', content: `Runtime error: ${outcome.message}` });
-          props.addLog(`runtime error: ${outcome.message}`);
-        }
+        // Same classification → message mapping as the legacy TTY shell —
+        // see applyRuntimeOutcome in repl.js. Control-lane acknowledgements
+        // (src/runtime/controlMessages.js) are deterministic and English-only
+        // by design, never localized; this only supplies the last-resort
+        // fallback text for a response that carries neither.
+        applyRuntimeOutcome(props.session, outcome, props.addLog);
         props.refresh();
         return { exit: false, runtime: true };
       }

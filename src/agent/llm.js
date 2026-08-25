@@ -26,9 +26,10 @@ export function createLlmClientFromWikiConfig(config) {
   }
 
   return {
-    async complete({ system, input }) {
+    async complete({ system, input, signal }) {
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
+        signal,
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',

@@ -130,7 +130,7 @@ services:
       # error. Every compose-deployed ingest then ran without the Lot 4 barrier
       # and left the published map stale — the very defect that work fixed.
       # `copy` stays out on purpose: it is the legacy step, opt-in only.
-      - PRODUCTION_ALLOWED_STEPS=${PRODUCTION_ALLOWED_STEPS:-doctor,ingest,ingest_plan,ingest_apply,taxonomy,build,export,polish,restore,pipeline}
+      - PRODUCTION_ALLOWED_STEPS=${PRODUCTION_ALLOWED_STEPS:-doctor,ingest,ingest_plan,ingest_apply,concepts,reclassify-concepts,taxonomy,build,export,polish,restore,pipeline}
       - PRODUCTION_REQUIRE_CONFIRMATION=${PRODUCTION_REQUIRE_CONFIRMATION:-false}
       # Parallelism levers — effective concurrency ≈ recommendedConcurrency.
       # Intermediate defaults (4/8). Low profile 2/4, high profile 8/16.

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { formatPublicSkillInvocation, runSkillChain, validateNamedSkillArguments } from './skillRun.js';
+import { formatPublicSkillInvocation, generateSkillAcknowledgment, runSkillChain, validateNamedSkillArguments } from './skillRun.js';
 
 const skill = { name: 'deliver', params: ['deliverable', 'polish'], body: 'Deliver the requested output.' };
 
@@ -81,4 +81,39 @@ test('runSkillChain starts a fresh stack for a top-level invocation', async () =
   });
 
   assert.deepEqual(queued[0].skillStack, ['deliver']);
+});
+
+test('generateSkillAcknowledgment asks Donna in the session language and echoes the invocation', async () => {
+  const calls = [];
+  const session = {
+    language: 'es',
+    llm: { complete: async (request) => { calls.push(request); return 'Lanzado /deliver deliverable="Informe" — 1 paso en cola.'; } },
+  };
+  const reply = await generateSkillAcknowledgment(session, { publicInput: '/deliver deliverable="Informe"', objectives: 1 });
+  assert.equal(reply, 'Lanzado /deliver deliverable="Informe" — 1 paso en cola.');
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].input, /es/);
+  assert.match(calls[0].input, /\/deliver deliverable="Informe"/);
+});
+
+test('generateSkillAcknowledgment degrades to a neutral message without an LLM client', async () => {
+  const reply = await generateSkillAcknowledgment({ language: 'fr' }, { publicInput: '/wiki-ingest docs', objectives: 2 });
+  assert.equal(reply, 'Started /wiki-ingest docs — 2 step(s) in progress.');
+});
+
+test('generateSkillAcknowledgment falls back when the LLM call fails', async () => {
+  const session = { language: 'en', llm: { complete: async () => { throw new Error('down'); } } };
+  const reply = await generateSkillAcknowledgment(session, { publicInput: '/deliver', objectives: 1 });
+  assert.equal(reply, 'Started /deliver — 1 step(s) in progress.');
+});
+
+test('generateSkillAcknowledgment announces an LLM failure instead of degrading silently', async () => {
+  // A degradation must announce itself: falling back to the neutral message
+  // with no trace anywhere makes "LLM unconfigured" (expected) and "LLM
+  // failing every call" (a real problem) look identical in the UI.
+  const session = { language: 'en', llm: { complete: async () => { throw new Error('provider timeout'); } } };
+  await generateSkillAcknowledgment(session, { publicInput: '/deliver', objectives: 1 });
+  const runtimeLogs = (session.agentEvents ?? []).filter((event) => event.type === 'runtime_log');
+  assert.equal(runtimeLogs.length, 1);
+  assert.match(runtimeLogs[0].payload.detail ?? runtimeLogs[0].payload.message, /provider timeout/);
 });

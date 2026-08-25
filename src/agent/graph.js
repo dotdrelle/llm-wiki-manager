@@ -28,7 +28,6 @@ import { loadWorkspaceProfile, updateWorkspaceProfilePreference } from '../core/
 import { artifactFromToolCall, currentArtifactFor, currentArtifactPromptLine, rememberArtifact } from '../core/currentArtifact.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
 import { fetchRuntimeState, postRuntimeCancel, postRuntimeControl, postRuntimeDelegate, postRuntimeKill, postRuntimeSkill } from '../runtime/client.js';
-import { controlLanguage } from '../runtime/controlMessages.js';
 
 const MAX_TOOL_ITERATIONS = 80;
 /**
@@ -431,10 +430,6 @@ export function bareToolCallJson(content, tools = []) {
   const hasArguments = typeof args === 'string'
     || (args !== null && typeof args === 'object' && !Array.isArray(args));
   return hasArguments ? name : null;
-}
-
-function localizedFailure(session, english, french) {
-  return controlLanguage(session) === 'fr' ? french : english;
 }
 
 function parseActionJson(text) {
@@ -1548,11 +1543,7 @@ export function createAgentGraph(options = {}) {
               invalidToolCallRetries: retries + 1,
             };
           }
-          const failure = localizedFailure(
-            state.session,
-            'Action not executed: the model generated an incomplete tool call.',
-            'Action non exécutée : l’appel d’outil généré par le modèle était incomplet.',
-          );
+          const failure = 'Action not executed: the model generated an incomplete tool call.';
           emitAgentEvent(state.session, 'assistant_message', 'agent_guard', { content: failure });
           return { response: failure, pendingToolCalls: null, readyToStream: false };
         }
@@ -1616,11 +1607,7 @@ export function createAgentGraph(options = {}) {
           };
         }
         state.session._onStreamReset?.();
-        const failure = localizedFailure(
-          state.session,
-          'Action not executed: Donna repeatedly printed an internal tool request instead of calling it. No result was created.',
-          'Action non exécutée : Donna a affiché à plusieurs reprises une requête interne au lieu d’appeler l’outil. Aucun résultat n’a été créé.',
-        );
+        const failure = 'Action not executed: Donna repeatedly printed an internal tool request instead of calling it. No result was created.';
         emitAgentEvent(state.session, 'assistant_message', 'agent_guard', { content: failure });
         return { response: failure, pendingToolCalls: null, readyToStream: false };
       }
@@ -1689,11 +1676,7 @@ export function createAgentGraph(options = {}) {
 
       if (runtimeExecution && state.retryWithoutTool) {
         state.session._onStreamReset?.();
-        const failure = localizedFailure(
-          state.session,
-          'Action not executed: Donna did not call any available tool. No job or result was created.',
-          'Action non exécutée : Donna n’a appelé aucun outil disponible. Aucun job ni résultat n’a été créé.',
-        );
+        const failure = 'Action not executed: Donna did not call any available tool. No job or result was created.';
         emitAgentEvent(state.session, 'assistant_message', 'agent_guard', { content: failure });
         return {
           response: failure,

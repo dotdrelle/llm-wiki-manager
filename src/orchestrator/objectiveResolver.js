@@ -106,9 +106,22 @@ function resolveMentionedRegistryOperation(objective, candidates) {
   const text = normalizeText(objective);
 
   const aliasHits = candidates
-    .filter((candidate) => (candidate.aliases ?? []).some((alias) =>
-      phraseIn(normalizePhrase(alias), words, text)))
-    .map((candidate) => ({ capability: candidate.id, operation: candidate.operations[0] }));
+    .map((candidate) => {
+      const matchedAlias = (candidate.aliases ?? []).find((alias) =>
+        phraseIn(normalizePhrase(alias), words, text));
+      if (matchedAlias === undefined) return null;
+      // A capability with more than one operation may declare
+      // aliasOperations, mapping the specific alias phrase that matched to
+      // the operation it actually names. Without it, operations[0]
+      // (alphabetical) is a silent guess: for knowledge.concepts this always
+      // picked the destructive grid-rebuild "concepts" operation, even when
+      // the matched alias ("reclassify concepts", "file unclassified
+      // concepts") named the safe, mechanical "reclassify-concepts" one —
+      // making that operation structurally unreachable from natural language.
+      const operation = candidate.aliasOperations?.[matchedAlias] ?? candidate.operations[0];
+      return { capability: candidate.id, operation };
+    })
+    .filter(Boolean);
   if (aliasHits.length === 1) return aliasHits[0];
   if (aliasHits.length > 1) return null;
 
@@ -142,8 +155,12 @@ export function capabilityCandidates(session) {
     const id = versionedId.includes('@') ? versionedId.slice(0, versionedId.lastIndexOf('@')) : versionedId;
     const operations = [...new Set((providers ?? []).flatMap((provider) => provider?.capability?.supportedOperations ?? []))].sort();
     const aliases = [...new Set((providers ?? []).flatMap((provider) => provider?.capability?.aliases ?? []))].sort();
+    const aliasOperations = Object.assign(
+      {},
+      ...(providers ?? []).map((provider) => provider?.capability?.aliasOperations ?? {}),
+    );
     const description = (providers ?? []).map((provider) => provider?.capability?.description).find(Boolean) ?? '';
-    byId.set(id, { id, description, operations, aliases });
+    byId.set(id, { id, description, operations, aliases, aliasOperations });
   }
   return [...byId.values()].filter((item) => item.operations.length > 0).sort((a, b) => a.id.localeCompare(b.id));
 }

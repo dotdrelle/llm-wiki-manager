@@ -1110,19 +1110,23 @@ export function shouldHandleFreeTextLocally(_line, session, { llmAvailable = Boo
   return { local: true, classification };
 }
 
-// Shared by both the one-shot `/agent <question>` path in runLine and the
-// interactive free-text-to-runtime path below: maps a submitRuntimeRun()
-// outcome to the conversation message(s) it produces and a short log line,
+// Shared by every caller that turns a submitRuntimeRun()/submitRuntimeTurn()
+// outcome into the conversation message(s) it produces and a short log line —
+// the legacy TTY shell (runLine, the interactive free-text path, /approve's
+// ambiguous-choice resubmission below) and the OpenTUI shell (useAgent.ts) —
 // so the classification → message mapping isn't duplicated per call site.
-function applyRuntimeOutcome(session, outcome, onLog, {
+// 'turn' (submitRuntimeTurn's default kind for a plain accepted turn) is
+// treated the same as submitRuntimeRun's 'accepted': the actual reply arrives
+// separately over the event stream, this call only logs.
+export function applyRuntimeOutcome(session, outcome, onLog, {
   ambiguousFallback = 'Runtime could not classify that message.',
 } = {}) {
-  if (outcome.kind === 'accepted') {
+  if (outcome.kind === 'accepted' || outcome.kind === 'turn') {
     onLog('runtime: run accepted');
-  } else if (outcome.kind === 'queued') {
+  } else if (outcome.kind === 'queued' || outcome.kind === 'enqueue_run') {
     conversationMessages(session).push({ role: 'command', content: String(outcome.result?.explanation ?? 'Request added to the queue.') });
     onLog('runtime: control queued');
-  } else if (outcome.kind === 'observe' || outcome.kind === 'converse' || outcome.kind === 'mutate') {
+  } else if (outcome.kind === 'observe' || outcome.kind === 'converse' || outcome.kind === 'modify_run') {
     conversationMessages(session).push({ role: 'command', content: String(outcome.result?.explanation ?? 'Runtime control message accepted.') });
     onLog(`runtime: ${outcome.kind}`);
   } else if (outcome.kind === 'ambiguous') {

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
 
-const WIKI_MANAGER_VERSION = '0.15.59';
+const WIKI_MANAGER_VERSION = '0.15.60';
 
 function envValue(key) {
   const filePath = managerEnvFile();
@@ -76,6 +76,17 @@ function normalizeExternalUrlForRuntime(url) {
 // server's entry shaped differently from every other. It is folded into
 // `allow` on read so existing installs keep working without regenerating
 // their endpoints file, but nothing writes it any more.
+// The packaged example and every scaffolded mcp.endpoints.json declare the
+// two built-in workspace servers' chatAccess under their public/documented
+// names ("llm-wiki", "wiki-production" — see PROTECTED_SERVERS in
+// mcpEndpoints.js and the root CLAUDE.md). Those servers are actually
+// discovered into session.mcp under different internal keys ("wiki",
+// "production" — MCP_SERVICE_MAP below). Without this alias, chatAllowedTools'
+// intersection of session.mcp against chatAccess.servers never matches the
+// built-in servers, so /chat silently gets zero wiki/production tools no
+// matter what is configured — alias both spellings onto the internal key.
+const BUILTIN_CHAT_ACCESS_ALIASES = { 'llm-wiki': 'wiki', 'wiki-production': 'production' };
+
 export function readChatAccessConfig() {
   const filePath = managerMcpEndpointsFile();
   if (!existsSync(filePath)) return null;
@@ -84,19 +95,21 @@ export function readChatAccessConfig() {
   const chatAccess = raw?.chatAccess;
   if (!chatAccess || typeof chatAccess !== 'object' || Array.isArray(chatAccess)) return null;
   const servers = {};
-  for (const [name, entry] of Object.entries(chatAccess.servers ?? {})) {
+  for (const [rawName, entry] of Object.entries(chatAccess.servers ?? {})) {
+    const name = BUILTIN_CHAT_ACCESS_ALIASES[rawName] ?? rawName;
     // "*" is also commonly written as a one-element array (["*"]) since every
     // other "allow" example in this config is an array of tool names — treat
     // both forms as the same wildcard rather than silently allowing nothing.
     const legacyActions = Array.isArray(entry?.allowActions)
       ? entry.allowActions.map(String).filter(Boolean)
       : [];
-    if (entry?.allow === '*' || (Array.isArray(entry?.allow) && entry.allow.length === 1 && entry.allow[0] === '*')) {
+    const isWildcard = entry?.allow === '*' || (Array.isArray(entry?.allow) && entry.allow.length === 1 && entry.allow[0] === '*');
+    const priorAllow = servers[name]?.allow;
+    if (isWildcard || priorAllow === '*') {
       servers[name] = { allow: '*' };
-    } else if (Array.isArray(entry?.allow)) {
-      servers[name] = { allow: [...new Set([...entry.allow.map(String).filter(Boolean), ...legacyActions])] };
-    } else if (legacyActions.length > 0) {
-      servers[name] = { allow: legacyActions };
+    } else if (Array.isArray(entry?.allow) || legacyActions.length > 0) {
+      const merged = [...(Array.isArray(priorAllow) ? priorAllow : []), ...(Array.isArray(entry?.allow) ? entry.allow.map(String).filter(Boolean) : []), ...legacyActions];
+      servers[name] = { allow: [...new Set(merged)] };
     }
   }
   const maxToolIterations = Number.isFinite(Number(chatAccess.maxToolIterations)) && Number(chatAccess.maxToolIterations) > 0

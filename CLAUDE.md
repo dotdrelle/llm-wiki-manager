@@ -746,7 +746,10 @@ remain the source of truth. Queue state is workspace-scoped.
 - CA overrides inject `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
   `REQUESTS_CA_BUNDLE`, and `CURL_CA_BUNDLE` in containers; do not hard-code
   equivalent machine-specific certificate settings in the base compose files.
-- Keep default production pipeline as `ingest`, `build`, `export`, `polish`.
+- Default production pipeline (no `steps` requested) is `ingest`, `concepts`,
+  `reclassify-concepts`, `taxonomy`, `build`, `export`, `polish` since
+  2026-08-25 — see `agent-wiki-production/CLAUDE.md`'s `knowledge.pipeline`
+  entry for the full reasoning and the two entry points that must share it.
 - Use `stabilize: true` for production builds that should preserve unchanged
   existing deliverable sections.
 - The legacy `copy` step is only for deployments that explicitly configure it.

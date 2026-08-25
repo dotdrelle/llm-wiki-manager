@@ -142,7 +142,7 @@ test('E2E-002 wiki-sync: two objectives, two ordered runs, one chainId', async (
   assert.equal(body.objectives, 2);
   assert.equal(env.runs.length, 2, 'the second objective must run after the first');
   assert.match(env.runs[0].input, /^Export the requested Confluence source/);
-  assert.match(env.runs[1].input, /^Ingest the newly exported Markdown/);
+  assert.match(env.runs[1].input, /^Run the production pipeline over the newly exported Markdown/);
   // CME first, Production second — and the parameter reaches the step that
   // consumes it, not only the last objective.
   for (const run of env.runs) assert.match(run.input, /User parameters:\nsource: docs/);

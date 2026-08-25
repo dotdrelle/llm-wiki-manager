@@ -11,7 +11,7 @@ import { approvalClassForTask } from '../orchestrator/approvalPolicy.js';
 import { matchSkillInvocation } from '../core/skillInvocation.js';
 import { reconcileControlQueue } from './controlDrain.js';
 import { cancelControlChain, cancelQueuedControlItem } from './controlCancellation.js';
-import { runSkillChain } from './skillRun.js';
+import { generateSkillAcknowledgment, runSkillChain } from './skillRun.js';
 import { findSkill, listSkills } from '../core/skills.js';
 
 const PRIVATE_CONTROL_INPUTS = new WeakMap();
@@ -347,7 +347,8 @@ export function startRuntimeServer({
           if (skillMatch) {
             try {
               const result = await enqueueSkillInvocation(context, skillMatch);
-              sendJson(response, 202, { accepted: true, kind: 'skill_chain', ...result, ...controlStatus(context, store) });
+              const explanation = await generateSkillAcknowledgment(context.session, result);
+              sendJson(response, 202, { accepted: true, kind: 'skill_chain', explanation, ...result, ...controlStatus(context, store) });
             } catch (err) {
               const error = skillInvocationErrorMessage(err);
               publishSkillInvocationFailure(context, input, error);
@@ -421,7 +422,8 @@ export function startRuntimeServer({
         if (skillMatch) {
           try {
             const result = await enqueueSkillInvocation(context, skillMatch);
-            sendJson(response, 202, { accepted: true, kind: 'skill_chain', ...result, ...controlStatus(context, store) });
+            const explanation = await generateSkillAcknowledgment(context.session, result);
+            sendJson(response, 202, { accepted: true, kind: 'skill_chain', explanation, ...result, ...controlStatus(context, store) });
           } catch (err) {
             const error = skillInvocationErrorMessage(err);
             publishSkillInvocationFailure(context, input, error);

@@ -1,21 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { controlLanguage, controlMessage } from './controlMessages.js';
+import { controlMessage } from './controlMessages.js';
 
-test('controlLanguage maps fr locales to fr and everything else to en', () => {
-  assert.equal(controlLanguage({ language: 'fr-FR' }), 'fr');
-  assert.equal(controlLanguage({ language: 'fr' }), 'fr');
-  assert.equal(controlLanguage({ language: 'en-US' }), 'en');
-  assert.equal(controlLanguage({ language: null }), 'en');
-  assert.equal(controlLanguage(null), 'en');
+test('controlMessage returns the deterministic English acknowledgement regardless of locale', () => {
+  assert.match(controlMessage({ language: 'fr-FR' }, 'queued_for_future_run'), /added to the queue/);
+  assert.match(controlMessage({ language: 'es' }, 'queued_for_future_run'), /added to the queue/);
+  assert.match(controlMessage(null, 'queued_for_future_run'), /added to the queue/);
 });
 
-test('controlMessage returns the localized queued acknowledgement', () => {
-  assert.match(controlMessage({ language: 'fr-FR' }, 'queued_for_future_run'), /ajoutée à la file/);
-  assert.match(controlMessage({ language: 'en-US' }, 'queued_for_future_run'), /added to the queue/);
-});
-
-test('controlMessage falls back to en for unknown locales and throws on unknown keys', () => {
-  assert.match(controlMessage({ language: 'de-DE' }, 'queued_for_future_run'), /added to the queue/);
+test('controlMessage keeps every key in English and throws on unknown keys', () => {
+  assert.match(controlMessage({ language: 'fr' }, 'ambiguous_control'), /queue it/);
+  assert.match(controlMessage({ language: 'fr' }, 'converse_while_idle'), /treated as conversation/);
   assert.throws(() => controlMessage({ language: 'fr-FR' }, 'nope'), /Unknown control message key/);
 });

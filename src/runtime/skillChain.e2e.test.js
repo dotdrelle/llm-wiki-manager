@@ -202,7 +202,7 @@ test('E2E-003 cancel: the running step and its chain stop, unrelated queue survi
 // that silently fragments would show up as extra runs, not as extra objectives.
 const PERFORMANCE_TABLE = {
   pipeline: 1,
-  'wiki-ingest': 1,
+  'wiki-ingest': 2,
   'wiki-build': 1,
   deliver: 1,
   diagnose: 1,

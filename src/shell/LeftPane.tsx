@@ -859,7 +859,7 @@ export function LeftPane(props: {
         above the composer keeps the current job in view while composing; the
         right pane keeps the full Plan/Queue/Logs detail.
       */}
-      <box flexShrink={0} height={4} flexDirection="column" overflow="hidden">
+      <box flexShrink={0} height={4} flexDirection="column" overflow="hidden" backgroundColor="#111318">
         <ActivityPanel activities={props.activities} width={props.width - 2} />
       </box>
       <ChatInput

@@ -463,9 +463,12 @@ number, two tasks only run together if their write scopes do not overlap:
 
 - **Ingest — planning** (`ingest_plan`, read-only): fully parallel. This is the
   phase your concurrency number actually buys.
-- **Ingest — apply** (`ingest_apply`): takes the global `workspace-write` lock
-  **and** is chained task-to-task, so applies are **strictly serialized (1 at a
-  time), by design** to keep wiki writes consistent. No setting parallelizes this.
+- **Ingest — apply** (`ingest_apply`): takes the global `workspace-write` lock,
+  so applies are **strictly serialized (1 at a time), by design** to keep wiki
+  writes consistent. Its group also declares `recommendedConcurrency: 1`. No
+  setting parallelizes this. (The applies are no longer chained to each other
+  on top of the lock: one failed plan used to skip every apply behind it in the
+  chain. The lock alone already prevents two applies from running together.)
 - **Build** (per template): scoped to `template:<name>`, so distinct templates
   build in parallel.
 - **Export / Polish** (per deliverable): scoped to `deliverable:<path>`, so

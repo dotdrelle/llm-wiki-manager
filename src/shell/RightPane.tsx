@@ -20,7 +20,10 @@ type LogLineParts = { time: string | null; message: string };
 // 4 slots (was 6): items can now span up to 5 lines each (wrapped label +
 // wrapped status/error), so fewer, readable entries beat more, truncated ones.
 const ACTIVITY_SLOTS = Array.from({ length: 4 }, (_, index) => index);
-const PLAN_VIEWPORT_ROWS = 12;
+// Hauteur du panneau Plan : 6 lignes visibles au maximum. Les etapes suivantes
+// restent atteignables en faisant defiler la scrollbox (barre de defilement
+// affichee des que le plan depasse la fenetre).
+const PLAN_VIEWPORT_ROWS = 6;
 
 function wrapLine(value: string, width: number) {
   const max = Math.max(8, width);
@@ -194,12 +197,10 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
   // Keep one column for the native vertical scrollbar when the plan is long.
   const lineWidth = () => Math.max(8, props.width - 3);
   const firstPending = () => props.plan.find((s) => s.status === 'pending')?.step ?? null;
-  // A running step carries a thick left border, which costs one column: the
-  // wrap width is therefore one less for it. The same function feeds both the
-  // row-count memo and the render, so the viewport height can never undercount
-  // a running step's wrapped lines and clip the last one.
-  const isRunningStep = (step: PlanStep) => String(step.status ?? '').toLowerCase() === 'running';
-  const stepTextWidth = (step: PlanStep) => lineWidth() - (isRunningStep(step) ? 1 : 0);
+  // Plus de liseré bleu à gauche : l'icône et la couleur du texte suffisent à
+  // distinguer une étape en cours, et le cadre se voyait aussi sur une étape en
+  // attente (jaune). Toutes les étapes utilisent donc la même largeur.
+  const stepTextWidth = (_step: PlanStep) => lineWidth();
   const icon = (rawStatus: string) => {
     const status = String(rawStatus ?? '').toLowerCase();
     if (DONE_STATUSES.includes(status)) return '[✓]';
@@ -241,11 +242,10 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
           {(step) => {
             // Wrap step descriptions over up to 2 lines instead of truncating —
             // "Ingest des 39 documents raw/untrac…" hid the actual target.
-            const running = () => isRunningStep(step());
             const textWidth = () => stepTextWidth(step());
             const lines = () => wrapLine(`${icon(step().status)} ${step().step}. ${step().description}`, textWidth()).slice(0, 2);
             return (
-              <box flexShrink={0} flexDirection="column" border={running() ? ['left'] : undefined} borderStyle="heavy" borderColor="#89B4FA">
+              <box flexShrink={0} flexDirection="column">
                 <text width={textWidth()} fg={planStepColor(step(), firstPending())} content={lines()[0]} />
                 <Show when={lines()[1]}>
                   <text width={textWidth()} fg={planStepColor(step(), firstPending())} content={`    ${fit(lines()[1], Math.max(8, textWidth() - 4))}`} />
@@ -265,7 +265,7 @@ export function ActivityPanel(props: { activities: any[]; width: number }) {
   const visibleSlots = () => visible().map((_activity, index) => index);
   const activityAt = (index: number) => visible()[index] ?? null;
   return (
-    <box flexShrink={0} flexDirection="column" paddingX={1}>
+    <box flexShrink={0} flexDirection="column" paddingX={1} backgroundColor="#111318">
       <text width={lineWidth()} fg="#D6DEE8" content="Activity" />
       <Show when={visible().length > 0} fallback={<text width={lineWidth()} fg="#7F8C8D" content="no active jobs" />}>
         <Index each={visibleSlots()}>
@@ -385,7 +385,7 @@ export function LogPanel(props: { logs: string[]; width: number; filter?: string
     .filter((line) => activeLogTab() === 'agent-status' ? isAgentStatus(line) : !isAgentStatus(line));
   const allLines = createMemo(() => logRenderLines(filteredLogs(), lineWidth()));
   return (
-    <box flexGrow={2} flexDirection="column" paddingX={1} focusable={false}>
+    <box flexGrow={2} flexDirection="column" paddingX={1} marginTop={6} focusable={false}>
       <text width={lineWidth()} fg="#4B5563" content={'─'.repeat(lineWidth())} />
       <box height={1} flexDirection="row">
         <text

@@ -1434,10 +1434,14 @@ test('runtime server control message records active plan mutation as a proposal'
   }
 });
 
-test('runtime server control message reports ambiguity without starting a run', async (t) => {
+test('runtime server auto-queues a clear new action while a run is active', async (t) => {
   const session = {
     workspace: 'acme',
     controlQueue: [],
+    _onAgentEvent: () => {},
+    // The classifier asks the model whether the message is a new action; a
+    // keyword list is deliberately not part of the code path.
+    llm: { complete: async () => 'action' },
   };
   let runCount = 0;
   let handle;
@@ -1451,6 +1455,7 @@ test('runtime server control message reports ambiguity without starting a run', 
           status: 'running',
           plan: [{ step: 1, description: 'Generate', status: 'running' }],
           queue: [],
+          controlQueue: session.controlQueue,
           approvals: [],
           summary: null,
         }),
@@ -1478,12 +1483,11 @@ test('runtime server control message reports ambiguity without starting a run', 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'message', input: 'Lance aussi la publication' }),
     });
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 202);
     const body = await response.json();
-    assert.equal(body.kind, 'ambiguous');
-    assert.equal(body.choices.length, 3);
-    assert.equal(session.controlQueue.length, 0);
-    assert.equal(runCount, 0);
+    assert.equal(body.kind, 'enqueue_run');
+    assert.equal(body.item.status, 'queued');
+    assert.equal(runCount, 0, 'the queued task must not start while the current run is active');
   } finally {
     await handle.close();
   }
@@ -1545,7 +1549,7 @@ test('runtime server drains queued control requests when idle', async (t) => {
     assert.match(receivedBody.runId, /^[0-9a-f-]{36}$/);
     assert.equal(session.controlQueue[0].status, 'running');
     assert.equal(session.controlQueue[0].runId, receivedBody.runId);
-    assert.deepEqual(events.map((event) => event.type), ['control_enqueued', 'control_started']);
+    assert.deepEqual(events.map((event) => event.type), ['control_enqueued', 'control_started', 'assistant_message']);
   } finally {
     await handle.close();
   }

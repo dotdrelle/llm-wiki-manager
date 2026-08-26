@@ -12,6 +12,7 @@ import { matchSkillInvocation } from '../core/skillInvocation.js';
 import { reconcileControlQueue } from './controlDrain.js';
 import { cancelControlChain, cancelQueuedControlItem } from './controlCancellation.js';
 import { generateSkillAcknowledgment, runSkillChain } from './skillRun.js';
+import { emitRuntimeLog } from './supervisor.js';
 import { findSkill, listSkills } from '../core/skills.js';
 
 const PRIVATE_CONTROL_INPUTS = new WeakMap();
@@ -780,7 +781,7 @@ export function startRuntimeServer({
     return { killed: true, workspace: targetWorkspace, runId: targetRunId, runs, tasks, queued, ...(purged !== null ? { purged } : {}) };
   }
 
-  function startRuntimeRun(context, body, { controlItemId = null, waitForPlan = false } = {}) {
+  function startRuntimeRun(context, body, { controlItemId = null, waitForPlan = false, announceLaunch = false } = {}) {
     const runId = randomUUID();
     const runWorkspace = context.workspace ?? body.workspace ?? null;
     context.running = true;
@@ -803,6 +804,14 @@ export function startRuntimeServer({
         workspace: runWorkspace,
         payload: { id: controlItemId, runId },
       }));
+      // A control item is now a live run: announce it in the conversation so the
+      // "queued" acknowledgement is closed out by a "starting" one. A task is a
+      // task whether it waited or not — it is about to go through approval — so
+      // this is not gated on having waited. Skill-chain steps are skipped: they
+      // already announced the whole skill at invocation.
+      if (announceLaunch) {
+        announceControlLaunch(context.session, body.publicInput ?? body.input, runWorkspace);
+      }
     }
     const runPromise = run(context, runBody, { signal: context.currentAbortController.signal, runId });
     runPromise
@@ -860,7 +869,7 @@ export function startRuntimeServer({
             },
           }
           : {}),
-      }, { controlItemId: item.id }),
+      }, { controlItemId: item.id, announceLaunch: !item.chainId }),
       skipItem: (item, reason) => {
         privateControlInputsFor(context.session).delete(item.id);
         emitControlSkipped(context, item, reason);
@@ -1091,7 +1100,11 @@ export function approvalRequestFromStatus(status) {
 
 async function handleControlMessage(context, store, input, { intent = null, startNextControlRequest = () => false, cancel = null, approve = null } = {}) {
   const status = controlStatus(context, store);
-  const classification = classifyControlMessage(input, status, intent);
+  const classification = await classifyControlMessage(input, status, {
+    forcedIntent: intent,
+    llm: context?.session?.llm,
+    session: context?.session,
+  });
   if (classification.kind === 'observe') {
     return readOnlyControlResponse('observe', classification, status, explainControlState(status));
   }
@@ -1129,6 +1142,7 @@ async function handleControlMessage(context, store, input, { intent = null, star
     // startNextControlRequest), which can change running/plan/status — a full
     // controlStatus() recompute is required here, not just controlQueue.
     void startNextControlRequest(context);
+    const explanation = await generateControlAcknowledgment(context?.session, { kind: 'queued', input });
     return {
       statusCode: 202,
       body: {
@@ -1137,7 +1151,7 @@ async function handleControlMessage(context, store, input, { intent = null, star
         classification,
         item,
         ...controlStatus(context, store),
-        explanation: controlMessage(context?.session, 'queued_for_future_run'),
+        explanation,
       },
     };
   }
@@ -1156,6 +1170,61 @@ async function handleControlMessage(context, store, input, { intent = null, star
   return readOnlyControlResponse('converse', classification, status, status.running
     ? controlMessage(context?.session, 'converse_while_running')
     : controlMessage(context?.session, 'converse_while_idle'));
+}
+
+/*
+ Control-lane acknowledgements are Donna's to localize.
+
+ The control lane stays deterministic in its CLASSIFICATION and its actions,
+ but the acknowledgement the user reads ("queued, will run after this one" /
+ "the queued task is starting") is a conversational reply: it goes through a
+ single bounded LLM completion, like the skill-launch acknowledgement, and
+ falls back to the deterministic English catalog when no LLM is configured or
+ the call fails. The fallback is what keeps the lane deterministic-under-failure.
+ */
+async function generateControlAcknowledgment(session, { kind, input }) {
+  const language = String(session?.language ?? '').trim().toLowerCase() || 'en';
+  const llm = session?.llm;
+  const fallback = kind === 'queued'
+    ? controlMessage(session, 'queued_for_future_run')
+    : controlMessage(session, 'control_run_started');
+  if (llm && typeof llm.complete === 'function') {
+    try {
+      const scenario = kind === 'queued'
+        ? 'The user requested a new task while a run is active. It was queued and will start automatically after the current run finishes.'
+        : 'A task the user queued earlier is now starting.';
+      const instruction = kind === 'queued'
+        ? 'their request is queued and will run after the current run finishes'
+        : 'the queued task is now starting';
+      const reply = await llm.complete({
+        system: 'You are Donna, the workspace assistant. You acknowledge a runtime queue event in the user\'s language. Be concise: exactly one short sentence.',
+        input: `${scenario}\n\nThe task is: ${input}\n\nWrite ONE short sentence in ${language} that tells the user ${instruction}. Return only that sentence, nothing else.`,
+        signal: AbortSignal.timeout(8_000),
+      });
+      const text = String(reply ?? '').trim();
+      if (text) return text;
+      emitRuntimeLog(session, 'control-acknowledgment: LLM returned an empty reply, using the deterministic fallback');
+    } catch (err) {
+      // A degradation must announce itself: silently falling through here
+      // hides the difference between "no LLM configured" (expected) and "the
+      // configured LLM is failing every call" (a real problem) — both would
+      // otherwise look identical from the Shell or serve UI.
+      emitRuntimeLog(session, `control-acknowledgment: LLM call failed, using the deterministic fallback — ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return fallback;
+}
+
+function announceControlLaunch(session, input, workspace) {
+  void generateControlAcknowledgment(session, { kind: 'started', input })
+    .then((content) => {
+      dispatchAgentEvent(session, createAgentEvent('assistant_message', {
+        origin: 'runtime',
+        workspace,
+        payload: { content, independent: true },
+      }));
+    })
+    .catch(() => {});
 }
 
 /*
@@ -1353,13 +1422,15 @@ function rejectPlanPatch(context, store, patchId, reason) {
   };
 }
 
-// Interim classifier for control §4.2 of the plan directeur: the plan expects
-// an LLM-backed classification eventually ("la classification LLM se
-// trompera" — the plan's own fallback-UX rule presupposes an LLM). This is a
-// synchronous keyword/regex stand-in with the same {kind, confidence, reason}
-// contract, so swapping in an LLM call later shouldn't require touching
-// handleControlMessage.
-function classifyControlMessage(input, status, forcedIntent = null) {
+// Classifier for control §4.2 of the plan directeur. The plan expects an
+// LLM-backed classification — "the classification LLM se trompera" — and this
+// is that, now: the only deterministic matches left are the runtime's own
+// control verbs (cancel, an explicit "later/queue", status and plan-change
+// wording). Deciding "is this a NEW task to queue vs plain conversation" is a
+// semantic judgement about the workspace's domain, so it is never a keyword
+// list here — it goes to the model, bounded, and falls back to the choice menu
+// (`ambiguous`) rather than guessing when no model is available.
+async function classifyControlMessage(input, status, { forcedIntent = null, llm = null, session = null } = {}) {
   // Caller (the /control message route) already trims and rejects empty input.
   const lower = String(input ?? '').toLowerCase();
   const intent = forcedIntent ? String(forcedIntent).toLowerCase() : null;
@@ -1377,22 +1448,53 @@ function classifyControlMessage(input, status, forcedIntent = null) {
   if (explicit) {
     return { kind: explicit, confidence: 1, reason: 'explicit_intent' };
   }
+  // Cancel stays a keyword: it is a runtime control verb, and an abort must not
+  // wait on a model round-trip.
   if (/\b(cancel|annule|stop|arr[eê]te|interromps|abort)\b/i.test(lower)) {
     return { kind: 'cancel', confidence: 0.86, reason: 'cancel_request' };
   }
   if (/\b(plus tard|later|ensuite|apr[eè]s ce run|enqueue|mets en file|met en file|futur|next run|future run)\b/i.test(lower)) {
     return { kind: 'enqueue_run', confidence: 0.8, reason: 'future_run_request' };
   }
-  if (/\b(o[uù] en es[t-]|status|statut|progress|progression|build|run|job|queue|file|logs?|explique|explain|inspect|show|montre|quoi de neuf)\b/i.test(lower)) {
+  if (/\b(o[uù] en es[t-]|status|statut|progress|progression|logs?|explique|explain|inspect|show|montre|quoi de neuf)\b/i.test(lower)) {
     return { kind: 'observe', confidence: 0.86, reason: 'status_or_explanation_request' };
   }
   if (status.running && /\b(ajoute|add|change|modifie|modify|remplace|replace|retire|remove|skip|ignore|apr[eè]s|before|after|chaque|each|plan|step|t[aâ]che)\b/i.test(lower)) {
     return { kind: 'modify_run', confidence: 0.78, reason: 'active_run_change_request' };
   }
-  if (status.running && /\b(lance|run|g[eé]n[eè]re|build|export|cr[eé]e|create|send|envoie|ingest|convert|importe|import)\b/i.test(lower)) {
-    return { kind: 'ambiguous', confidence: 0.45, reason: 'active_run_action_is_ambiguous' };
+  if (!status.running) return { kind: 'converse', confidence: 0.62, reason: 'plain_conversation' };
+  // A run is active and none of the runtime control verbs matched. The message
+  // is either a request to perform a NEW mutating task (→ queue it to run
+  // after the current one) or ordinary conversation — that is a judgement about
+  // the workspace's domain, so the model decides it, never a keyword list.
+  if (llm && typeof llm.complete === 'function') {
+    try {
+      const reply = await llm.complete({
+        system: 'You classify one user message typed while a run is already active. Return exactly one word, nothing else.',
+        input: [
+          `The user typed this while a run is active: "${input}"`,
+          '',
+          'Choose ONE of:',
+          '- "action" — a request to perform a NEW task (generate, create, ingest, build, export, convert, send, publish, produce…), which must run after the current run.',
+          '- "conversation" — ordinary conversation, a question, or an unrelated remark.',
+          '',
+          'Return only that one word.',
+        ].join('\n'),
+        signal: AbortSignal.timeout(8_000),
+      });
+      const kind = String(reply ?? '').trim().toLowerCase();
+      if (kind.startsWith('action')) return { kind: 'enqueue_run', confidence: 0.85, reason: 'llm_classified_action' };
+      if (kind.startsWith('conversation')) return { kind: 'converse', confidence: 0.85, reason: 'llm_classified_conversation' };
+      emitRuntimeLog(session, `control-classify: LLM returned an unrecognized reply, falling back to the choice menu — ${JSON.stringify(kind).slice(0, 200)}`);
+    } catch (err) {
+      // A degradation must announce itself: silently falling through here
+      // hides the difference between "no LLM configured" (expected) and "the
+      // configured LLM is failing every call" (a real problem) — both would
+      // otherwise look identical from the Shell or serve UI.
+      emitRuntimeLog(session, `control-classify: LLM call failed, falling back to the choice menu — ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
-  return { kind: 'converse', confidence: 0.62, reason: 'plain_conversation' };
+  return { kind: 'ambiguous', confidence: 0.45, reason: 'action_vs_conversation_unclear' };
 }
 
 function isAuthorized(request, token) {

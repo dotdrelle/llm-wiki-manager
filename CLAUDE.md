@@ -271,6 +271,10 @@ runs. Nothing injects a skill body into a local prompt any more — the only
 exception is `wiki-manager --headless --no-runtime`, kept for the legacy
 direct-MCP path.
 
+Authoring rules for skill bodies — split, chains, concurrency, parameters,
+interpretation — live in `docs/authoring-skills.md`. Keep it in sync with
+`core/skillCompiler.js`.
+
 `core/skillCompiler.js` turns a body into 1..12 **business intentions**. The
 split is deterministic — numbered lists, bullets, or a paragraph opening on a
 strong connector (`Puis`, `Then`, `Ensuite`, `if available`…) — and the LLM is

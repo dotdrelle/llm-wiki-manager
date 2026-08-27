@@ -737,6 +737,11 @@ export run followed by an ingest run. Chain items contain `chainId`, sequence,
 optionality and continuation policy, but never a precomputed `capabilityPlan`.
 Each item is resolved only when its run starts.
 
+Writing a skill body is a contract with that compiler: its markdown shape decides
+the number of runs, the approval boundaries and whether a capability keeps its
+own concurrency. [`docs/authoring-skills.md`](authoring-skills.md) is the
+reference for it.
+
 `/run cancel` cancels the current run and skips only the remaining required
 items of the same chain. It leaves standalone requests and other chains intact.
 `/run kill` deliberately keeps its broader workspace scope and purges every

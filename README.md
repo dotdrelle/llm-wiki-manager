@@ -401,6 +401,7 @@ answer "what is this and how do I start it", and stop there.
 | [`docs/usage.md`](docs/usage.md) | The four ways to run wikiLLM, and how to configure the external agents |
 | [`docs/configuration.md`](docs/configuration.md) | Every configuration key: root `.env`, Compose overrides, `mcp.endpoints.json`, workspace `.env`, `.wikirc.yaml`, parallelism |
 | [`docs/technical-reference.md`](docs/technical-reference.md) | Workspace model, services, the `donna` shell, agent tooling, orchestration and activity contracts, security model |
+| [`docs/authoring-skills.md`](docs/authoring-skills.md) | Writing a workspace skill: what splits a body into runs, chains, concurrency, parameters, and the interpretation rules |
 | [`docs/claude-desktop.md`](docs/claude-desktop.md) | Using a workspace from Claude Desktop |
 | [`CLAUDE.md`](CLAUDE.md) | Repository guidance: invariants to preserve when changing this code |
 

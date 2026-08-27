@@ -19,7 +19,7 @@ import {
   truncateToolResult,
 } from '../core/mcp.js';
 import { findSkill, formatSkillsForAgent } from '../core/skills.js';
-import { RESERVED_SLASH_COMMANDS, explicitSkillReference } from '../core/skillInvocation.js';
+import { RESERVED_SLASH_COMMANDS, explicitSkillReference, objectiveNamesSkill } from '../core/skillInvocation.js';
 import { handleSlashCommand } from '../commands/slash.js';
 import { extractActivity, formatActivitySummary, parseJsonText, sessionActivities } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
@@ -947,6 +947,32 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
           message: `Skill "${skillName}" is already running in this chain: execute its objective directly instead of re-invoking it.`,
         });
       }
+      /*
+       Depuis une intention compilée, une compétence se lance par son NOM, pas
+       par ressemblance.
+
+       La garde de cycle ci-dessus ne voit que les répétitions. Elle laissait
+       donc passer la cascade réellement observée sur un `/wiki-ingest` :
+       l'intention n°2 du corps est mot pour mot celui de
+       `/wiki-rebuild-concepts`, dont l'intention décrit à son tour
+       `/wiki-reclassify`, puis `/wiki-taxonomy`. Trois compétences distinctes,
+       aucun cycle, et la grille de concepts comme la taxonomie reconstruites
+       plusieurs fois pour une seule demande.
+
+       Une intention compilée EST déjà le travail à faire : elle se délègue.
+       La composition explicite reste ouverte — un corps qui nomme sa cible dit
+       ce qu'il veut ; une intention qui se contente de la décrire ne le dit
+       pas.
+      */
+      if (skillStack.length > 0 && !objectiveNamesSkill(args._userInput, skillName)) {
+        return JSON.stringify({
+          ok: false,
+          terminal: true,
+          code: 'nested_skill_match_blocked',
+          skillStack,
+          message: `The current objective does not name skill "${skillName}"; it only describes what that skill does. Execute the objective yourself with runtime__delegate instead of re-routing it to another skill.`,
+        });
+      }
       if (skillStack.length >= MAX_SKILL_DEPTH) {
         return JSON.stringify({
           ok: false,
@@ -1184,7 +1210,7 @@ export function buildAgentSystemPrompt(state) {
     skills,
     '</skill_catalog>',
     runningSkillStack.length > 0
-      ? `You are already executing the compiled objective of workspace skill ${JSON.stringify(runningSkillStack.at(-1))}. The current user message IS that objective: execute it directly${runningSkillExecution === 'direct' ? ' and stop after its requested direct mutation; delegation and nested skills are forbidden for this workflow' : ' by delegating it with runtime__delegate (or a matching direct tool)'}. Do not select or call that skill again, with or without a leading slash — the runtime refuses the re-invocation with skill_recursion_blocked, and that refusal means act on the objective yourself, not report an error. A skill run is not successful until its requested mutation has an affirmative tool result; never infer success from the runtime merely becoming idle or done, and never end the run with an empty reply or a bare "{}".`
+      ? `You are already executing the compiled objective of workspace skill ${JSON.stringify(runningSkillStack.at(-1))}. The current user message IS that objective: execute it directly${runningSkillExecution === 'direct' ? ' and stop after its requested direct mutation; delegation and nested skills are forbidden for this workflow' : ' by delegating it with runtime__delegate (or a matching direct tool)'}. Do not select or call that skill again, with or without a leading slash — the runtime refuses the re-invocation with skill_recursion_blocked, and that refusal means act on the objective yourself, not report an error. Do not select ANY OTHER skill by description either: an objective necessarily reads like the description of the neighbouring skill that performs it, and re-routing it there re-runs work this objective already covers. From inside a compiled objective, runtime__run_skill is only for a skill the objective names explicitly; everything else is delegated with runtime__delegate. A skill run is not successful until its requested mutation has an affirmative tool result; never infer success from the runtime merely becoming idle or done, and never end the run with an empty reply or a bare "{}".`
       : null,
     'In interactive agent mode, call only tools actually provided to you. Any directly offered tool stays direct; never substitute an orchestration-contract tool yourself.',
     'When the user asks for an action that can be performed with connected MCP tools or safe primitives, do not answer with future intent such as "I will call...", "I am going to run...", or "launching..." unless you also call the tool in the same turn. Either call the tool now, ask for the exact missing required arguments, or explain the concrete blocker.',

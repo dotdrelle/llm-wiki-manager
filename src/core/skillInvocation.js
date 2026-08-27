@@ -19,6 +19,48 @@ export function explicitSkillReference(input, skillName, language = null) {
   return text.some((sentence) => patterns.some((pattern) => pattern.test(sentence)));
 }
 
+/*
+ Une intention compilée NOMME-t-elle la compétence qu'on veut lancer depuis
+ elle ?
+
+ Le corps d'une compétence est compilé en intentions métier, et une intention
+ décrit forcément ce que fait une compétence voisine : la deuxième intention de
+ `/wiki-ingest` est mot pour mot le corps de `/wiki-rebuild-concepts`. Le
+ sélecteur par description la reconnaissait donc et relançait la compétence
+ voisine, qui relançait la suivante — concepts et taxonomie produits plusieurs
+ fois pour un seul `/wiki-ingest`.
+
+ La composition volontaire reste possible : un corps qui écrit `/deliver` ou
+ « the deliver skill » nomme sa cible, et se distingue ainsi d'une intention
+ qui se contente de la décrire. C'est le seul signal qui ne dépende pas de ce
+ que le modèle déclare de sa propre sélection.
+*/
+export function objectiveNamesSkill(input, skillName) {
+  const raw = String(skillName ?? '').trim();
+  const name = escapeRegExp(raw);
+  if (!name) return false;
+  const text = String(input ?? '').trim();
+  // Une invocation directe : la demande EST le nom, rien d'autre.
+  if (text.toLowerCase() === raw.toLowerCase()) return true;
+  /*
+   Le nom seul ne suffit pas : plusieurs compétences du scaffold portent un nom
+   qui est aussi un mot courant. « Run the production pipeline steps concepts,
+   reclassify-concepts and taxonomy » nomme ainsi la compétence `pipeline`, qui
+   relance ingest + build + export + polish — bien pire que la cascade qu'on
+   corrige. Le nom doit donc être cité EN TANT QUE compétence : forme slash, ou
+   tournure explicite. La borne droite est écrite à la main, `\b` ne bornant pas
+   après un `-` final (`wiki-build` ne doit pas matcher dans `wiki-builder`).
+  */
+  const end = '(?![A-Za-z0-9_-])';
+  const keyword = '(?:skill|workflow|compétence)';
+  return [
+    new RegExp(`(?:^|[^A-Za-z0-9_-])/${name}${end}`, 'i'),
+    new RegExp(`\\b${keyword}\\s+/?${name}${end}`, 'i'),
+    new RegExp(`(?:^|[^A-Za-z0-9_-])/?${name}${end}\\s+${keyword}\\b`, 'i'),
+    new RegExp(`/skills\\s+run\\s+${name}${end}`, 'i'),
+  ].some((pattern) => pattern.test(text));
+}
+
 export function matchSkillInvocation(session, input, { allowReserved = false } = {}) {
   const match = INVOCATION_RE.exec(String(input ?? '').trim());
   if (!match) return null;

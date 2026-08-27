@@ -185,6 +185,28 @@ test('extractActivity: a non-production agent status payload yields an activity'
   assert.equal(activity.poll.tool, 'agent_status');
 });
 
+test('extractActivity: a non-status tool result on another server is not inferred into an activity', () => {
+  // Agent mode: the LLM calls an arbitrary connector tool whose result happens
+  // to carry a jobId/progress-shaped object. Without an `_activity` opt-in and
+  // without a `*_status` poll tool, this must not create or replace the plan.
+  const activity = extractActivity({
+    jobId: 'export-42',
+    progress: { steps: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] },
+  }, { server: 'connectors', tool: 'gmail_export_run' });
+  assert.equal(activity, null);
+});
+
+test('extractActivity: production start-job result is still inferred without a status tool', () => {
+  const activity = extractActivity({
+    jobId: 'job-1',
+    status: 'running',
+    progress: { percent: 5, phase: 'ingest' },
+  }, { server: 'production', tool: 'production_start_job' });
+  assert.ok(activity);
+  assert.equal(activity.source, 'production');
+  assert.equal(activity.poll.tool, 'production_job_status');
+});
+
 test('mergePolledActivity: keeps the tracked key, poll and stepId across polls', () => {
   const tracked = normalizeActivity({
     id: 'job-know-1',

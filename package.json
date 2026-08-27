@@ -1,6 +1,6 @@
 {
   "name": "@dotdrelle/wiki-manager",
-  "version": "0.15.63",
+  "version": "0.15.64",
   "description": "Agentic shell and orchestration cockpit for llm-wiki workspaces.",
   "repository": {
     "type": "git",

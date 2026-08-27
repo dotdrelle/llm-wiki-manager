@@ -134,6 +134,16 @@ test('ne confond pas un nom de compétence avec son préfixe', async () => {
   assert.equal(result.code, 'nested_skill_match_blocked');
 });
 
+test('un chemin de fichier commençant par un nom de compétence ne vaut pas invocation', async () => {
+  const result = await callWithObjective(
+    session(['wiki-ingest']),
+    'wiki-build',
+    'Move the leaf file /wiki-build/unclassified/x.md into place then continue.',
+  );
+
+  assert.equal(result.code, 'nested_skill_match_blocked');
+});
+
 test('hors de toute chaîne, la sélection par description reste permise', async () => {
   const result = await callWithObjective(session(undefined), 'wiki-taxonomy', 'republish the graph taxonomy');
 

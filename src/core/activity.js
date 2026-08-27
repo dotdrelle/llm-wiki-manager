@@ -183,11 +183,17 @@ export function extractActivity(payload, context = {}) {
   if (payload._activity) {
     return normalizeActivity(payload._activity, { source: context.server });
   }
-  // Any agent that answers a `*_status` poll with {jobId, status, progress}
-  // gets the same treatment as `production`. Restricting this branch to the
-  // production server meant a job run by any other executor (knowledge.update
-  // on agent-cme, for instance) produced NO activity update on every poll:
-  // the panel kept showing the dispatcher's initial 0 % for the whole run.
+  // Without an explicit `_activity` opt-in, a status payload is inferred into an
+  // activity only where we already know how it would be polled: the production
+  // server (whose `*_start_job` result carries the first snapshot), or any agent
+  // answering through a `*_status` tool. This is what lets a job run by another
+  // executor (knowledge.update on agent-cme, polled via `agent_status`) update
+  // its percentage instead of the panel showing the dispatcher's initial 0 %
+  // for the whole run. An arbitrary agent-mode tool call that merely happens to
+  // return a `jobId`/`progress`-shaped object must NOT create or replace the run
+  // plan — monitoring stays opt-in (`_activity`) for it.
+  const source = String(context?.server ?? 'production');
+  if (source !== 'production' && !statusPollTool(context, source)) return null;
   return activityFromStatusPayload(payload, context);
 }
 

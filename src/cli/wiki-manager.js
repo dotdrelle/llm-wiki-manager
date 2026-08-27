@@ -24,7 +24,7 @@ import { applySessionWikircProfile } from '../core/sessionConfig.js';
 import { listWikircProfiles } from '../core/wikirc.js';
 import { callMcpTool, formatMcpToolResult, readChatAccessConfig } from '../core/mcp.js';
 import { deleteManagedMcpEndpoint, listManagedMcpEndpoints, upsertManagedMcpEndpoint } from '../core/mcpEndpoints.js';
-import { extractActivity, parseJsonText, sessionActivities, terminalFailures } from '../core/activity.js';
+import { extractActivity, mergePolledActivity, parseJsonText, sessionActivities, terminalFailures } from '../core/activity.js';
 import { syncActivitiesToPlan, formatPlanStatus } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../core/agentEvents.js';
 import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
@@ -432,7 +432,7 @@ async function runHeadlessActivityLoop(session, log, { wait, timeoutMs }) {
       try {
         const result = await callMcpTool(session.mcp, activity.poll.server, activity.poll.tool, activity.poll.args ?? {});
         const payload = parseJsonText(formatMcpToolResult(result));
-        const polledActivity = extractActivity(payload, { server: activity.poll.server, tool: activity.poll.tool });
+        const polledActivity = mergePolledActivity(activity, extractActivity(payload, { server: activity.poll.server, tool: activity.poll.tool }));
         if (polledActivity) {
           dispatchAgentEvent(session, createAgentEvent('activity_upserted', {
             origin: 'poll',

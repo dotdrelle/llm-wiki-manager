@@ -52,9 +52,15 @@ export function objectiveNamesSkill(input, skillName) {
    après un `-` final (`wiki-build` ne doit pas matcher dans `wiki-builder`).
   */
   const end = '(?![A-Za-z0-9_-])';
+  // The slash form is a command, not a path: `/wiki-build` followed by `/` is
+  // `wiki/concepts/...`-style text referencing a file, not an invocation of the
+  // `wiki-build` skill. A trailing `/` must not satisfy the right boundary here,
+  // or a compiled objective that merely names a path re-opens the nested-skill
+  // cascade this guard exists to close.
+  const slashEnd = '(?![A-Za-z0-9_/-])';
   const keyword = '(?:skill|workflow|compétence)';
   return [
-    new RegExp(`(?:^|[^A-Za-z0-9_-])/${name}${end}`, 'i'),
+    new RegExp(`(?:^|[^A-Za-z0-9_-])/${name}${slashEnd}`, 'i'),
     new RegExp(`\\b${keyword}\\s+/?${name}${end}`, 'i'),
     new RegExp(`(?:^|[^A-Za-z0-9_-])/?${name}${end}\\s+${keyword}\\b`, 'i'),
     new RegExp(`/skills\\s+run\\s+${name}${end}`, 'i'),

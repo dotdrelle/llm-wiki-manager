@@ -11,7 +11,7 @@ import { markedTerminal } from 'marked-terminal';
 import { buildAgentSystemPrompt, formatLlmUnavailableMessage, isOrchestrationBypassTool } from '../agent/graph.js';
 import { handleSlashCommand, rawCommandAgentPrompt } from '../commands/slash.js';
 import { serviceChoices as composeServiceChoices, serviceDescription } from '../core/compose.js';
-import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
+import { extractActivity, mergePolledActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { syncActivitiesToPlan } from '../core/plan.js';
 import { buildLlmTools, callMcpTool, formatMcpToolResult, parseToolCallName, resolveToolCallName } from '../core/mcp.js';
 import { runBoundedToolLoop } from '../core/toolLoop.js';
@@ -1948,7 +1948,7 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
       void callMcpTool(session.mcp, activity.poll.server, activity.poll.tool, activity.poll.args ?? {})
         .then((result) => {
           const payload = parseJsonText(formatMcpToolResult(result));
-          const polledActivity = extractActivity(payload, { server: activity.poll.server, tool: activity.poll.tool });
+          const polledActivity = mergePolledActivity(activity, extractActivity(payload, { server: activity.poll.server, tool: activity.poll.tool }));
           if (polledActivity) {
             dispatchAgentEvent(session, createAgentEvent('activity_upserted', {
               origin: 'poll',

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeActivity, extractActivity, isCancelledStatus, rememberActivity, rememberActivityFromPayload } from './activity.js';
+import { normalizeActivity, extractActivity, mergePolledActivity, isCancelledStatus, rememberActivity, rememberActivityFromPayload } from './activity.js';
 
 test('normalizeActivity: plan.steps preserved with id and label', () => {
   const a = normalizeActivity({
@@ -170,4 +170,40 @@ test('rememberActivityFromPayload: returns activity for _activity payload', () =
 test('rememberActivityFromPayload: returns null for irrelevant payload', () => {
   const session = {};
   assert.equal(rememberActivityFromPayload(session, { message: 'ok' }), null);
+});
+
+test('extractActivity: a non-production agent status payload yields an activity', () => {
+  const activity = extractActivity({
+    jobId: 'job-know-1',
+    status: 'running',
+    progress: { percent: 42, phase: 'knowledge.update', detail: 'chunk 3/7' },
+  }, { server: 'cme', tool: 'agent_status' });
+  assert.ok(activity, 'a knowledge.update job run outside the production server must still produce an activity');
+  assert.equal(activity.source, 'cme');
+  assert.equal(activity.progress.percent, 42);
+  assert.equal(activity.poll.server, 'cme');
+  assert.equal(activity.poll.tool, 'agent_status');
+});
+
+test('mergePolledActivity: keeps the tracked key, poll and stepId across polls', () => {
+  const tracked = normalizeActivity({
+    id: 'job-know-1',
+    source: 'cme',
+    kind: 'knowledge.update',
+    label: 'Mise a jour des connaissances',
+    status: 'queued',
+    progress: { percent: 0, stepId: 'task-3' },
+    poll: { server: 'cme', tool: 'agent_status', args: { jobId: 'job-know-1' }, intervalMs: 1000 },
+  });
+  const polled = extractActivity({
+    jobId: 'job-know-1',
+    status: 'running',
+    progress: { percent: 63, detail: 'chunk 5/7' },
+  }, { server: 'cme', tool: 'agent_status' });
+  const merged = mergePolledActivity(tracked, polled);
+  assert.equal(merged.key, tracked.key, 'the activity must not be re-keyed by a poll');
+  assert.equal(merged.progress.stepId, 'task-3', 'the plan task link must survive a poll');
+  assert.equal(merged.progress.percent, 63);
+  assert.equal(merged.poll.tool, 'agent_status');
+  assert.equal(merged.terminal, false);
 });

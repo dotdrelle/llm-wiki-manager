@@ -3,7 +3,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import { formatMcpToolResult, callMcpTool } from '../core/mcp.js';
 import { versionWithBuild } from '../core/buildInfo.js';
-import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
+import { extractActivity, mergePolledActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { formatPlanStatus, formatCompletedActivities, formatPlanStep } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { projectQueue, queueCounts, startNextQueuedJob, syncQueueWithActivity } from '../core/jobQueue.js';
@@ -602,10 +602,10 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
       void callMcpTool(session.mcp, activity.poll.server, activity.poll.tool, activity.poll.args ?? {})
         .then((result) => {
           const payload = parseJsonText(formatMcpToolResult(result));
-          const polledActivity = extractActivity(payload, {
+          const polledActivity = mergePolledActivity(activity, extractActivity(payload, {
             server: activity.poll.server,
             tool: activity.poll.tool,
-          });
+          }));
           if (polledActivity) {
             dispatchAgentEvent(session, createAgentEvent('activity_upserted', {
               origin: 'poll',

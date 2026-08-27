@@ -1,7 +1,7 @@
 import { openSync, readSync, closeSync, fstatSync } from 'node:fs';
 import { isAbsolute, join, normalize, resolve } from 'node:path';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { extractActivity, parseJsonText, sessionActivities } from '../core/activity.js';
+import { extractActivity, mergePolledActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { normalizeRuntimeLog } from '../core/runtimeLog.js';
 import { startNextQueuedJob, syncQueueWithActivity } from '../core/jobQueue.js';
@@ -107,10 +107,10 @@ export async function pollActivitiesOnce(session, {
     try {
       const result = await callTool(session.mcp, activity.poll.server, activity.poll.tool, activity.poll.args ?? {}, signal);
       const payload = parseJsonText(formatMcpToolResult(result));
-      const polledActivity = extractActivity(payload, {
+      const polledActivity = mergePolledActivity(activity, extractActivity(payload, {
         server: activity.poll.server,
         tool: activity.poll.tool,
-      });
+      }));
       if (polledActivity) {
         dispatchAgentEvent(session, createAgentEvent('activity_upserted', {
           origin: 'runtime_poll',

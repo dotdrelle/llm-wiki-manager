@@ -104,7 +104,19 @@ export function normalizeActivity(activity, fallback = {}) {
   return normalized;
 }
 
-function productionActivityFromPayload(payload, context = {}) {
+// A status payload can only be polled with the tool that produced it. Any
+// `*_status` tool qualifies; anything else (a `*_start_job` call whose result
+// carried the first snapshot) falls back to the production status tool, and
+// for a non-production agent to null — the caller then keeps the poll
+// descriptor the tracked activity already had.
+function statusPollTool(context, source) {
+  const tool = String(context?.tool ?? '');
+  if (/status$/i.test(tool)) return tool;
+  return source === 'production' ? 'production_job_status' : null;
+}
+
+function activityFromStatusPayload(payload, context = {}) {
+  const source = String(context?.server ?? 'production');
   const progress = payload?.progress;
   const job = payload?.job;
   const jobId = payload?.jobId ?? job?.jobId;
@@ -141,11 +153,12 @@ function productionActivityFromPayload(payload, context = {}) {
     progressDetail,
     progress?.lastEvent ? `last ${progress.lastEvent}` : null,
   ].filter(Boolean).join(' · ');
+  const prefix = source === 'production' ? 'Production' : source;
   return normalizeActivity({
     id: jobId,
-    source: 'production',
+    source,
     kind: job?.type ?? payload?.operation ?? payload?.type ?? progress?.phase ?? progress?.currentStep ?? 'job',
-    label: detail ? `Production: ${detail}` : `Production: ${status}`,
+    label: detail ? `${prefix}: ${detail}` : `${prefix}: ${status}`,
     status,
     progress: {
       ...(progress ?? {}),
@@ -154,9 +167,9 @@ function productionActivityFromPayload(payload, context = {}) {
       ...(payload?.taskId ? { stepId: String(payload.taskId) } : {}),
     },
     plan: Array.isArray(progress?.steps) ? { steps: progress.steps } : null,
-    poll: jobId ? {
-      server: 'production',
-      tool: context.tool === 'agent_status' ? 'agent_status' : 'production_job_status',
+    poll: jobId && statusPollTool(context, source) ? {
+      server: source,
+      tool: statusPollTool(context, source),
       args: { jobId },
       intervalMs: 2500,
     } : null,
@@ -170,10 +183,41 @@ export function extractActivity(payload, context = {}) {
   if (payload._activity) {
     return normalizeActivity(payload._activity, { source: context.server });
   }
-  if (context.server === 'production') {
-    return productionActivityFromPayload(payload, context);
-  }
-  return null;
+  // Any agent that answers a `*_status` poll with {jobId, status, progress}
+  // gets the same treatment as `production`. Restricting this branch to the
+  // production server meant a job run by any other executor (knowledge.update
+  // on agent-cme, for instance) produced NO activity update on every poll:
+  // the panel kept showing the dispatcher's initial 0 % for the whole run.
+  return activityFromStatusPayload(payload, context);
+}
+
+// A poll answers with the AGENT's view of the job: it knows the job id, the
+// status and the progress, but nothing about the plan task the orchestrator
+// dispatched it for. Re-normalizing that answer on its own therefore dropped
+// `progress.stepId` and could re-key the activity under a different source,
+// breaking the task<->activity link the Activity/Plan panels use to attach a
+// live percentage to a plan step. Merge onto the tracked activity instead:
+// identity and linkage come from what we already know, live values from the
+// poll.
+export function mergePolledActivity(tracked, polled) {
+  if (!polled) return null;
+  if (!tracked) return polled;
+  const stepId = polled.progress?.stepId ?? tracked.progress?.stepId ?? null;
+  return normalizeActivity({
+    ...polled,
+    // Identity: keep the tracked source/id so activityKey() stays stable.
+    id: tracked.id ?? polled.id,
+    source: tracked.source ?? polled.source,
+    // Keep polling with the descriptor that worked when the agent's answer
+    // does not carry one of its own.
+    poll: polled.poll ?? tracked.poll,
+    plan: polled.plan ?? tracked.plan ?? null,
+    startedAt: tracked.startedAt ?? polled.startedAt ?? null,
+    progress: {
+      ...(polled.progress ?? {}),
+      ...(stepId !== null ? { stepId } : {}),
+    },
+  });
 }
 
 export function rememberActivity(session, activity) {

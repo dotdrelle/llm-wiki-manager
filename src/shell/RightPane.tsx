@@ -20,10 +20,11 @@ type LogLineParts = { time: string | null; message: string };
 // 4 slots (was 6): items can now span up to 5 lines each (wrapped label +
 // wrapped status/error), so fewer, readable entries beat more, truncated ones.
 const ACTIVITY_SLOTS = Array.from({ length: 4 }, (_, index) => index);
-// Hauteur du panneau Plan : 6 lignes visibles au maximum. Les etapes suivantes
-// restent atteignables en faisant defiler la scrollbox (barre de defilement
-// affichee des que le plan depasse la fenetre).
-const PLAN_VIEWPORT_ROWS = 6;
+// Hauteur MINIMALE du panneau Plan : 6 lignes visibles. Le panneau occupe
+// desormais tout l'espace libre jusqu'au panneau Runtime/Agent status (il ne
+// reste plus de trou de 6 lignes entre les deux) ; la scrollbox reste
+// defilable des que le plan depasse cette fenetre.
+const PLAN_MIN_VIEWPORT_ROWS = 6;
 
 function wrapLine(value: string, width: number) {
   const max = Math.max(8, width);
@@ -215,12 +216,11 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
     total + wrapLine(`${icon(step.status)} ${step.step}. ${step.description}`, stepTextWidth(step)).slice(0, 2).length, 0));
   const title = () => {
     const label = props.jobName ? `Plan : ${props.jobName}` : 'Plan';
-    return visualRows() > PLAN_VIEWPORT_ROWS ? `${label} (${props.plan.length}) · scroll` : label;
+    return visualRows() > PLAN_MIN_VIEWPORT_ROWS ? `${label} (${props.plan.length}) · scroll` : label;
   };
-  const viewportRows = () => Math.min(PLAN_VIEWPORT_ROWS, Math.max(1, visualRows()));
   const summaryLines = () => props.summary ? wrapLine(props.summary, lineWidth()).slice(0, 2) : [];
   return (
-    <box flexShrink={0} flexDirection="column" padding={1}>
+    <box flexGrow={1} flexShrink={1} minHeight={PLAN_MIN_VIEWPORT_ROWS + 2} flexDirection="column" padding={1}>
       <text width={lineWidth()} fg="#D6DEE8" content={fit(title(), lineWidth())} />
       <Show when={summaryLines().length > 0}>
         <box flexShrink={0} flexDirection="column">
@@ -230,13 +230,15 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
         </box>
       </Show>
       <scrollbox
-        height={viewportRows()}
+        flexGrow={1}
+        flexShrink={1}
+        minHeight={Math.min(PLAN_MIN_VIEWPORT_ROWS, Math.max(1, visualRows()))}
         focusable={false}
         scrollY={true}
         scrollX={false}
         stickyStart="top"
         viewportCulling={true}
-        verticalScrollbarOptions={{ visible: visualRows() > PLAN_VIEWPORT_ROWS }}
+        verticalScrollbarOptions={{ visible: visualRows() > PLAN_MIN_VIEWPORT_ROWS }}
       >
         <Index each={props.plan}>
           {(step) => {
@@ -385,7 +387,11 @@ export function LogPanel(props: { logs: string[]; width: number; filter?: string
     .filter((line) => activeLogTab() === 'agent-status' ? isAgentStatus(line) : !isAgentStatus(line));
   const allLines = createMemo(() => logRenderLines(filteredLogs(), lineWidth()));
   return (
-    <box flexGrow={2} flexDirection="column" paddingX={1} marginTop={6} focusable={false}>
+    // No hardcoded marginTop here any more: the 6 blank lines it reserved
+    // above the Runtime/Agent status tabs left a dead gap under a short Plan
+    // and made the two panels look detached. The Plan/Queue panel now grows
+    // into that space instead, so its bottom edge meets this panel's header.
+    <box flexGrow={2} flexDirection="column" paddingX={1} focusable={false}>
       <text width={lineWidth()} fg="#4B5563" content={'─'.repeat(lineWidth())} />
       <box height={1} flexDirection="row">
         <text

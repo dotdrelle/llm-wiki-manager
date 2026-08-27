@@ -16,6 +16,18 @@ const SYMBOLS = {
   skipped: '–',
 };
 
+// The selection reason is an audit enum (`explicit_name` / `description_match`);
+// leaking it verbatim into a queue label read as a broken token (`[explicit_name]`).
+// Humanize it for display; keep the raw value on `selectionKind` for audit.
+const SELECTION_KIND_LABELS = {
+  explicit_name: 'explicit name',
+  description_match: 'description match',
+};
+
+export function selectionKindLabel(selectionKind) {
+  return SELECTION_KIND_LABELS[selectionKind] ?? selectionKind ?? null;
+}
+
 export const TERMINAL = new Set(['done', 'failed', 'cancelled', 'skipped']);
 
 // Objectives are whole paragraphs; a chain view needs a line. Keep the first
@@ -61,6 +73,7 @@ export function projectSkillChains(controlQueue = []) {
       chainId,
       skillName: chainItems.find((item) => item.skillName)?.skillName ?? null,
       selectionKind: chainItems.find((item) => item.selectionKind)?.selectionKind ?? null,
+      selectionLabel: selectionKindLabel(chainItems.find((item) => item.selectionKind)?.selectionKind ?? null),
       steps,
       status: chainStatus(steps),
     };
@@ -79,7 +92,7 @@ function chainStatus(steps) {
 // The text form used by the Shell; serve renders the same projection as DOM.
 export function renderSkillChain(chain) {
   if (!chain?.steps?.length) return '';
-  const selection = chain.selectionKind ? ` · ${chain.selectionKind}` : '';
+  const selection = chain.selectionLabel ? ` · ${chain.selectionLabel}` : '';
   const lines = [`${chain.skillName ?? 'skill'}${selection}`, ''];
   for (const step of chain.steps) {
     lines.push(`${step.symbol} ${step.label}`);

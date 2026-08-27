@@ -271,6 +271,12 @@ runs. Nothing injects a skill body into a local prompt any more — the only
 exception is `wiki-manager --headless --no-runtime`, kept for the legacy
 direct-MCP path.
 
+Documentation has three trees with three readers: `help-doc/` is shipped and
+read at runtime by the **user**; each repo's `docs/` is repo-only and read by
+whoever **changes or deploys** that code. Write a fact once, in the tree whose
+reader needs it, and link from the other. The full ownership table is in the
+wikiLLM root `CLAUDE.md`, § "Where a documented fact belongs".
+
 Authoring rules for skill bodies — split, chains, concurrency, parameters,
 interpretation — live in `docs/authoring-skills.md`. Keep it in sync with
 `core/skillCompiler.js`.

@@ -36,7 +36,7 @@ export async function runAgentTurn(agent, session, input, {
     if (session._abortSignal === signal) delete session._abortSignal;
   }
   if (result.streamedInline) {
-    return streamedContent.trim() || formatLlmUnavailableMessage('flux vide');
+    return streamedContent.trim() || formatLlmUnavailableMessage('empty stream');
   }
   if (result.response != null) return result.response;
   if (result.readyToStream && session.llm?.stream) {
@@ -49,9 +49,9 @@ export async function runAgentTurn(agent, session, input, {
     })) {
       content += delta;
     }
-    return content.trim() || formatLlmUnavailableMessage('flux vide');
+    return content.trim() || formatLlmUnavailableMessage('empty stream');
   }
-  return formatLlmUnavailableMessage('reponse vide');
+  return formatLlmUnavailableMessage('empty response');
 }
 
 export async function runAgenticLoop(agent, session, initialInput, {

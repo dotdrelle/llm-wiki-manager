@@ -156,7 +156,7 @@ function App(props: {
   const exitShell = () => {
     if (exiting) return;
     exiting = true;
-    setExitStatus('Fermeture enclenchée…');
+    setExitStatus('Shutting down…');
     const task = Promise.resolve().then(async () => {
       renderer.destroy();
       console.log('[wiki-manager] shell closed; shared runtime left running.');
@@ -180,11 +180,11 @@ function App(props: {
   const conversationRows = createMemo(() => Math.max(4, dimensions().height - 5 - chatInputHeight() - 4));
   const rightColumns = createMemo(() => {
     const width = dimensions().width;
-    // 38% + 2 columns / cap 58: the Plan/Activity/Logs panes carry job
-    // labels, file names and error messages — 40 columns truncated everything
-    // into unreadable stubs. The small addition uses the terminal's right-side
-    // slack without making the conversation pane noticeably narrower.
-    return Math.max(32, Math.min(58, Math.floor(width * 0.38) + 2));
+    // 38% + 2 columns: the Plan/Activity/Logs panes carry job labels, file
+    // names and error messages. The pane scales with the terminal instead of
+    // being capped, so a wide screen widens the detail pane rather than leaving
+    // it narrow while the conversation column absorbs all the extra slack.
+    return Math.max(32, Math.floor(width * 0.38) + 2);
   });
   const leftColumns = createMemo(() => Math.max(32, dimensions().width - rightColumns() - 1));
   const conversationColumns = createMemo(() => {

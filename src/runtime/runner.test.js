@@ -865,7 +865,7 @@ test('runRuntimeParallelPlan skips work stuck behind a failed dependency instead
   // tâche disparaître sans savoir pourquoi.
   assert.match(session.headlessPlan[1].error.message, /\ba\b/);
   assert.equal(session.agentEvents.some((event) => event.type === 'assistant_message'
-    && /Approbation requise/.test(event.payload?.content ?? '')), false);
+    && /Approval required/.test(event.payload?.content ?? '')), false);
   assert.equal(session.agentEvents.some((event) => event.type === 'plan_step_updated'
     && event.payload?.status === 'skipped'), true);
 });

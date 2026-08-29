@@ -18,7 +18,7 @@ test('runAgentTurn returns a one-line LLM error on empty stream', async () => {
 
   const response = await runAgentTurn(agent, session, 'salut');
 
-  assert.equal(response, '⚠ LLM injoignable : flux vide');
+  assert.equal(response, '⚠ LLM unavailable: empty stream');
 });
 
 test('runAgenticLoop waits for new activities and continues with a completion summary', async () => {

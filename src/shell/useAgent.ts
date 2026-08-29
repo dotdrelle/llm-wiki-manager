@@ -52,7 +52,7 @@ export function useAgent(props: { agent: unknown; packageJson: Record<string, un
       }
       if (!props.chatMode() && !trimmed.startsWith('/') && !freeTextRouting?.local) {
         const message = recordRuntimeUnavailableAgentInput(props.session, trimmed, {
-          error: props.runtimeUnavailableReason ?? 'runtime introuvable',
+          error: props.runtimeUnavailableReason ?? 'runtime unavailable',
         });
         props.addLog(message ?? 'runtime: disconnected');
         props.refresh();

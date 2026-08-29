@@ -1386,7 +1386,7 @@ export async function handleSlashCommand(line, context) {
         if (!context.session.workspace) return { output: 'No workspace loaded. Use /use <workspace> first.' };
         const operation = args[3] && !args[3].includes('.') && !args[3].includes('/') ? args[3] : undefined;
         const inputs = args.slice(operation ? 4 : 3);
-        const result = await postRuntimeRun(`Run de capability ${capability}${operation ? ` (${operation})` : ''} demandé via /run capability.`, {
+        const result = await postRuntimeRun(`Capability run ${capability}${operation ? ` (${operation})` : ''} requested via /run capability.`, {
           url,
           workspace: context.session.workspace,
           capabilityPlan: {
@@ -1396,9 +1396,9 @@ export async function handleSlashCommand(line, context) {
           },
         });
         if (result?.runId) {
-          return { output: `▶ Run de capability accepté (${String(result.runId).slice(0, 8)}) — le plan de l'agent sera intégré et dispatché en parallèle ; approbation demandée avant les mutations (/approve).` };
+          return { output: `▶ Capability run accepted (${String(result.runId).slice(0, 8)}) — the agent's plan will be integrated and dispatched in parallel; approval requested before mutations (/approve).` };
         }
-        return { output: `Run non démarré: ${result?.explanation ?? result?.error ?? JSON.stringify(result)}` };
+        return { output: `Run not started: ${result?.explanation ?? result?.error ?? JSON.stringify(result)}` };
       }
       if (subcommand === 'kill') {
         const result = await postRuntimeKill({ url, workspace: context.session.workspace ?? null, runId: args[2] ?? null });
@@ -1419,7 +1419,7 @@ export async function handleSlashCommand(line, context) {
         const runActive = String(context.session.agentProjection?.status ?? '').toLowerCase() === 'running';
         if (count === 0 && (activeRuntimeItems > 0 || runActive)) {
           return {
-            output: `Cleared 0 finished queue items — ${activeRuntimeItems || 'des'} item(s) actifs sont gérés par le runtime${runActive ? ' (run en cours)' : ''}. Utilisez /run cancel (arrêt doux) ou /run kill (abort + purge complète).`,
+            output: `Cleared 0 finished queue items — ${activeRuntimeItems || 'the'} active item(s) are managed by the runtime${runActive ? ' (run in progress)' : ''}. Use /run cancel (graceful stop) or /run kill (abort + full purge).`,
           };
         }
         return { output: `Cleared ${count} finished queue item${count === 1 ? '' : 's'}.` };
@@ -1433,7 +1433,7 @@ export async function handleSlashCommand(line, context) {
         // would silently revert the item to waiting (fake cancel).
         const localItem = (context.session.jobQueue ?? []).find((item) => String(item.id) === String(id));
         if (localItem?.origin === 'runtime' || (!localItem && runtimeManagedItemId(context, id))) {
-          if (!context.runtime?.url) return { output: 'Item géré par le runtime — reconnectez le runtime pour l’annuler, ou utilisez /run cancel ou /run kill.' };
+          if (!context.runtime?.url) return { output: 'Runtime-managed item — reconnect the runtime to cancel it, or use /run cancel or /run kill.' };
           try {
             const result = await postRuntimeControl('cancel_item', {
               url: context.runtime.url,
@@ -1659,13 +1659,13 @@ export async function handleSlashCommand(line, context) {
         try {
           const killed = await postRuntimeKill({ url: runtime.url, workspace, runId: null, purge: true });
           const purged = killed.purged ?? { runs: 0, events: 0, queue: 0 };
-          parts.push(`runtime : ${killed.runs ?? 0} run(s) interrompu(s), ${killed.tasks ?? 0} tâche(s), ${killed.queued ?? 0} requête(s)`);
-          parts.push(`store purgé : ${purged.runs ?? 0} run(s), ${purged.events ?? 0} événement(s), ${purged.queue ?? 0} item(s) de file`);
+          parts.push(`runtime: ${killed.runs ?? 0} run(s) stopped, ${killed.tasks ?? 0} task(s), ${killed.queued ?? 0} request(s)`);
+          parts.push(`store purged: ${purged.runs ?? 0} run(s), ${purged.events ?? 0} event(s), ${purged.queue ?? 0} queue item(s)`);
         } catch (err) {
-          parts.push(`runtime kill échoué : ${err instanceof Error ? err.message : String(err)}`);
+          parts.push(`runtime kill failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       } else {
-        parts.push('runtime non connecté (rien à purger côté serveur)');
+        parts.push('runtime not connected (nothing to purge server-side)');
       }
 
       const clearedQueue = clearFinishedQueueItems(context.session);
@@ -1686,9 +1686,9 @@ export async function handleSlashCommand(line, context) {
       context.session.workflow = null;
       context.session.jobQueue = [];
       context.session.productionActivity = null;
-      parts.push(`file locale : ${clearedQueue} item(s) terminés nettoyés`);
+      parts.push(`local queue: ${clearedQueue} finished item(s) cleared`);
 
-      return { output: `Interface réinitialisée (--all) — ${parts.join(' · ')}.` };
+      return { output: `Interface reset (--all) — ${parts.join(' · ')}.` };
     }
     case 'exit':
     case 'quit':

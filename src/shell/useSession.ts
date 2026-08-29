@@ -158,7 +158,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   const runtimeHint = createMemo(() => {
     version();
     if (props.runtime?.url) return null;
-    return runtimeUnavailableAgentMessage({ error: runtimeUnavailableReason() ?? 'runtime introuvable' });
+    return runtimeUnavailableAgentMessage({ error: runtimeUnavailableReason() ?? 'runtime unavailable' });
   });
   const matchContext = createMemo(() => {
     if (input() === dismissedSlashInput()) return null;

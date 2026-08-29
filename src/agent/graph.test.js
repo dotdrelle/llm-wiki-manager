@@ -292,7 +292,7 @@ test('agent graph reports LLM unavailable without Donna active boilerplate', asy
   const agent = createAgentGraph();
   const result = await agent.invoke({ input: 'salut', session: sessionBase({ llm: null }) });
 
-  assert.equal(result.response, '⚠ LLM injoignable : aucun client LLM configure');
+  assert.equal(result.response, '⚠ LLM unavailable: no LLM client configured');
   assert.doesNotMatch(result.response, /Donna is active/);
 });
 

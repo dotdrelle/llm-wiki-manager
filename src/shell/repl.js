@@ -127,12 +127,12 @@ const SUBCOMMAND_COMPLETION_DESCRIPTIONS = {
 export function runtimeUnavailableReason(runtime) {
   if (runtime?.url) return null;
   const reason = runtime?.error ?? runtime?.unavailableReason ?? runtime?.reason ?? null;
-  return reason ? String(reason) : 'runtime introuvable';
+  return reason ? String(reason) : 'runtime unavailable';
 }
 
 export function runtimeUnavailableAgentMessage(runtime) {
   const reason = runtimeUnavailableReason(runtime);
-  return reason ? `⚠ Runtime indisponible : ${reason} — /agent désactivé, /chat reste possible` : null;
+  return reason ? `⚠ Runtime unavailable: ${reason} — /agent disabled, /chat still available` : null;
 }
 
 export function runtimeStatusLine(runtime, session) {
@@ -145,7 +145,7 @@ export function runtimeStatusLine(runtime, session) {
 export function recordRuntimeUnavailableAgentInput(session, line, runtime) {
   const message = runtimeUnavailableAgentMessage(runtime);
   conversationMessages(session).push({ role: 'user', content: line });
-  conversationMessages(session).push({ role: 'command', content: message ?? 'Runtime indisponible.' });
+  conversationMessages(session).push({ role: 'command', content: message ?? 'Runtime unavailable.' });
   return message;
 }
 
@@ -1422,10 +1422,10 @@ async function runAgentTurn(input, {
     if (donnaMessage) {
       donnaMessage.content = stripDsmlArtifacts(donnaMessage.content).trimEnd();
       if (!donnaMessage.content.trim()) {
-        donnaMessage.content = formatLlmUnavailableMessage('flux vide');
+        donnaMessage.content = formatLlmUnavailableMessage('empty stream');
       }
     } else {
-      messages.push({ role: 'donna', content: formatLlmUnavailableMessage('flux vide') });
+      messages.push({ role: 'donna', content: formatLlmUnavailableMessage('empty stream') });
     }
     onUpdate?.();
     return {};
@@ -1464,7 +1464,7 @@ async function runAgentTurn(input, {
       }
       donnaMessage.content = stripDsmlArtifacts(donnaMessage.content).trimEnd();
       if (!donnaMessage.content.trim()) {
-        donnaMessage.content = formatLlmUnavailableMessage('flux vide');
+        donnaMessage.content = formatLlmUnavailableMessage('empty stream');
         onUpdate?.();
       }
     } catch (err) {
@@ -1481,9 +1481,9 @@ async function runAgentTurn(input, {
   }
 
   if (donnaMessage) {
-    donnaMessage.content = formatLlmUnavailableMessage('reponse vide');
+    donnaMessage.content = formatLlmUnavailableMessage('empty response');
   } else {
-    messages.push({ role: 'donna', content: formatLlmUnavailableMessage('reponse vide') });
+    messages.push({ role: 'donna', content: formatLlmUnavailableMessage('empty response') });
   }
   onUpdate?.();
   return {};
@@ -1533,8 +1533,8 @@ async function runChatToolLoop({ input, session, history, donnaMessage, onUpdate
     onTextReset,
   });
   donnaMessage.content = capped
-    ? 'Je n’ai pas pu conclure dans la limite d’itérations du mode chat. Passe en /agent si besoin.'
-    : (stripDsmlArtifacts(content).trimEnd() || formatLlmUnavailableMessage('reponse vide'));
+    ? 'Could not finish within the chat mode iteration limit. Switch to /agent if needed.'
+    : (stripDsmlArtifacts(content).trimEnd() || formatLlmUnavailableMessage('empty response'));
   onUpdate?.();
 }
 
@@ -1580,7 +1580,7 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
       }
       donnaMessage.content = stripDsmlArtifacts(donnaMessage.content).trimEnd();
       if (!donnaMessage.content.trim()) {
-        donnaMessage.content = formatLlmUnavailableMessage('flux vide');
+        donnaMessage.content = formatLlmUnavailableMessage('empty stream');
         onUpdate?.();
       }
     }
@@ -1639,7 +1639,7 @@ export async function runHeadlessChatTurn(session, input, { history = [], onStep
       const clean = stripDsmlArtifacts(delta);
       if (clean) { content += clean; onTextDelta?.(clean); }
     }
-    return stripDsmlArtifacts(content).trimEnd() || formatLlmUnavailableMessage('flux vide');
+    return stripDsmlArtifacts(content).trimEnd() || formatLlmUnavailableMessage('empty stream');
   }
   return directChatUnavailableText(session);
 }

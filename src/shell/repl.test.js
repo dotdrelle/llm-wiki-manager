@@ -114,7 +114,7 @@ test('Activity uses only visible jobs and leaves remaining height to Flow/Trace'
     source.indexOf('export function ActivityPanel'),
     source.indexOf('type LogSegment'),
   );
-  assert.match(activityPanel, /<Index each=\{visibleSlots\(\)\}>/);
+  assert.match(activityPanel, /<Index each=\{visible\(\)\}>/);
   assert.doesNotMatch(activityPanel, /<Index each=\{ACTIVITY_SLOTS\}>/);
   assert.match(activityPanel, /paddingX=\{1\}/);
   assert.doesNotMatch(activityPanel, /updatedLine\(activity\(\)\)/);
@@ -144,7 +144,7 @@ test('ShellUI launcher never starts agents or workspace services implicitly', as
 test('ShellUI lets the right pane extend to the terminal edge', async () => {
   const tui = await readFile(new URL('./tui.tsx', import.meta.url), 'utf8');
   const pane = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
-  assert.match(tui, /Math\.min\(58, Math\.floor\(width \* 0\.38\) \+ 2\)/);
+  assert.match(tui, /Math\.max\(32, Math\.floor\(width \* 0\.38\) \+ 2\)/);
   assert.match(pane, /paddingLeft=\{1\}/);
   assert.doesNotMatch(pane, /height="100%" flexDirection="column" padding=\{1\}/);
 });
@@ -742,7 +742,7 @@ test('agent mode without runtime records a visible error instead of falling back
 
   const message = recordRuntimeUnavailableAgentInput(session, 'salut', { error: 'port 7788 already in use' });
 
-  assert.equal(message, '⚠ Runtime indisponible : port 7788 already in use — /agent désactivé, /chat reste possible');
+  assert.equal(message, '⚠ Runtime unavailable: port 7788 already in use — /agent disabled, /chat still available');
   // `at` est posé à l'insertion : on compare le reste.
   assert.deepEqual(
     conversationMessages(session).map(({ at, ...rest }) => rest),
@@ -760,7 +760,7 @@ test('runtime status exposes the disconnected reason', () => {
   );
   assert.equal(
     runtimeUnavailableAgentMessage({ error: 'token mismatch' }),
-    '⚠ Runtime indisponible : token mismatch — /agent désactivé, /chat reste possible',
+    '⚠ Runtime unavailable: token mismatch — /agent disabled, /chat still available',
   );
 });
 
@@ -806,7 +806,7 @@ test('/queue cancel on a runtime workflow id points to run cancellation commands
   });
 
   assert.equal(result.exit, false);
-  assert.match(conversationMessages(session).at(-1).content, /Item géré par le runtime/);
+  assert.match(conversationMessages(session).at(-1).content, /Runtime-managed item/);
   assert.match(conversationMessages(session).at(-1).content, /\/run kill/);
 });
 

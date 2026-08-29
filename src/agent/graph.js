@@ -1295,8 +1295,8 @@ export function buildLimitedAgentResponse(state, reason = 'no workspace loaded w
 }
 
 export function formatLlmUnavailableMessage(reason) {
-  const clean = String(reason ?? 'raison inconnue').replace(/\s+/g, ' ').trim();
-  return `⚠ LLM injoignable : ${clean || 'raison inconnue'}`;
+  const clean = String(reason ?? 'unknown reason').replace(/\s+/g, ' ').trim();
+  return `⚠ LLM unavailable: ${clean || 'unknown reason'}`;
 }
 
 function toolsForClassification(classification, writeTools, session = null) {
@@ -1455,7 +1455,7 @@ export function createAgentGraph(options = {}) {
     const llm = state.session.llm ?? options.llm ?? null;
 
     if (!llm) {
-      return { response: formatLlmUnavailableMessage('aucun client LLM configure'), pendingToolCalls: null, readyToStream: false };
+      return { response: formatLlmUnavailableMessage('no LLM client configured'), pendingToolCalls: null, readyToStream: false };
     }
 
     const iterations = state.toolIterations ?? 0;

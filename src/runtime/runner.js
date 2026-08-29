@@ -116,7 +116,7 @@ export async function runRuntimeAgenticLoop(agent, session, initialInput, { sign
       dispatchAgentEvent(session, createAgentEvent('assistant_message', {
         origin: 'runtime',
         runId,
-        payload: { content: summary || 'Action terminée.' },
+        payload: { content: summary || 'Action completed.' },
       }));
     },
     onMaxTurns: ({ maxTurns: totalTurns }) => {
@@ -261,7 +261,7 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
           origin: 'runtime',
           runId,
           payload: {
-            content: `Le run est terminé mais l'évaluation le juge incomplet : ${evaluation.reason}`,
+            content: `The run finished but the evaluation judged it incomplete: ${evaluation.reason}`,
           },
         }));
         dispatchAgentEvent(session, createAgentEvent('run_error', {
@@ -570,10 +570,10 @@ export async function runRuntimeParallelPlan(agent, session, input, {
               runId,
               payload: {
                 content: [
-                  `⏸ Approbation requise avant exécution : ${newlyRequested.length} tâche(s) mutante(s) en attente.`,
+                  `⏸ Approval required before execution: ${newlyRequested.length} mutating task(s) pending.`,
                   ...newlyRequested.slice(0, 5).map((step) => `  - ${step.description ?? step.id}`),
-                  newlyRequested.length > 5 ? `  … et ${newlyRequested.length - 5} autre(s).` : null,
-                  'Tape /approve (ou clique sur « Approuver ») pour lancer, « annule » pour abandonner.',
+                  newlyRequested.length > 5 ? `  … and ${newlyRequested.length - 5} more.` : null,
+                  'Type /approve (or click "Approve") to start, "cancel" to abandon.',
                 ].filter(Boolean).join('\n'),
               },
             }));
@@ -591,7 +591,7 @@ export async function runRuntimeParallelPlan(agent, session, input, {
             origin: 'runtime',
             runId,
             payload: {
-              content: `⏱ Approbation non reçue dans le délai imparti — run arrêté, ${needingApproval.length} tâche(s) annulée(s). Relance la demande quand tu veux.`,
+              content: `⏱ Approval not received in time — run stopped, ${needingApproval.length} task(s) cancelled. Ask again whenever you're ready.`,
             },
           }));
           return { ok: false, stalled: true, reason: 'awaiting_approval', completed: sessionActivities(session), failures };

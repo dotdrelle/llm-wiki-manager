@@ -263,16 +263,23 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
 
 export function ActivityPanel(props: { activities: any[]; width: number }) {
   const lineWidth = () => Math.max(8, props.width - 2);
-  const visible = () => props.activities.slice(-ACTIVITY_SLOTS.length).reverse();
-  const visibleSlots = () => visible().map((_activity, index) => index);
-  const activityAt = (index: number) => visible()[index] ?? null;
+  const visible = () => props.activities.slice().reverse();
   return (
-    <box flexShrink={0} flexDirection="column" paddingX={1} backgroundColor="#111318">
+    <box flexGrow={1} flexDirection="column" paddingX={1} backgroundColor="#111318">
       <text width={lineWidth()} fg="#D6DEE8" content="Activity" />
       <Show when={visible().length > 0} fallback={<text width={lineWidth()} fg="#7F8C8D" content="no active jobs" />}>
-        <Index each={visibleSlots()}>
-          {(slot) => {
-            const activity = () => activityAt(slot());
+        <scrollbox
+          flexGrow={1}
+          flexShrink={1}
+          focusable={false}
+          scrollY={true}
+          scrollX={false}
+          stickyStart="top"
+          viewportCulling={true}
+          verticalScrollbarOptions={{ visible: visible().length > 3 }}
+        >
+        <Index each={visible()}>
+          {(activity) => {
             // Wrap instead of hard-truncating: a 40-column pane cut labels to
             // "Appliquer la config recommandée (doct…" and hid the one thing
             // that mattered. Labels get up to 2 lines, the status/error line
@@ -320,6 +327,7 @@ export function ActivityPanel(props: { activities: any[]; width: number }) {
             );
           }}
         </Index>
+        </scrollbox>
       </Show>
     </box>
   );
@@ -536,8 +544,8 @@ export function RightPane(props: {
       <TabHeader active={props.activeTab} queueCount={props.queueInfo.active} onTabClick={props.onTabClick} />
       <Show when={props.pendingApprovals.length > 0}>
         <box height={2} flexDirection="column" border={['left']} borderStyle="heavy" borderColor="#FBBF24" paddingX={1}>
-          <text fg="#FBBF24" content={`${props.pendingApprovals.length} approbation(s) requise(s)`} />
-          <text fg="#0B1020" bg="#FBBF24" content=" Approuver le run " onMouseUp={props.onApprove} />
+          <text fg="#FBBF24" content={`${props.pendingApprovals.length} approval(s) required`} />
+          <text fg="#0B1020" bg="#FBBF24" content=" Approve run " onMouseUp={props.onApprove} />
         </box>
       </Show>
       <Show when={props.activeTab === 'queue'} fallback={(

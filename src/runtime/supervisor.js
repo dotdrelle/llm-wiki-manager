@@ -1,11 +1,11 @@
 import { openSync, readSync, closeSync, fstatSync } from 'node:fs';
 import { isAbsolute, join, normalize, resolve } from 'node:path';
-import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
+import { createAgentEvent, dispatchAgentEvent, dispatchRuntimeLog } from '../core/agentEvents.js';
 import { extractActivity, mergePolledActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
-import { normalizeRuntimeLog } from '../core/runtimeLog.js';
 import { startNextQueuedJob, syncQueueWithActivity } from '../core/jobQueue.js';
 import { createAgentRegistry } from '../orchestrator/agentRegistry.js';
+import { discoverRuntimeProvidersOnce } from '../orchestrator/providers/runtimeProviders.js';
 
 export function startActivitySupervisor(session, {
   intervalMs = 1000,
@@ -52,11 +52,13 @@ export function startActivitySupervisor(session, {
         }
       }
       void discoverAgentsOnce(session, { registry, signal: runSignal });
+      void discoverRuntimeProvidersOnce(session, { signal: runSignal });
     }, agentRegistryIntervalMs)
     : null;
 
   void pollActivitiesOnce(session, { pollBusy, callTool, signal: runSignal });
   void discoverAgentsOnce(session, { registry, signal: runSignal });
+  void discoverRuntimeProvidersOnce(session, { signal: runSignal });
 
   return {
     pollBusy,
@@ -199,14 +201,7 @@ export async function pollActivitiesOnce(session, {
 }
 
 export function emitRuntimeLog(session, message) {
-  const payload = normalizeRuntimeLog(message, { session });
-  dispatchAgentEvent(session, createAgentEvent('runtime_log', {
-    origin: 'runtime',
-    runId: payload.runId ?? null,
-    taskId: payload.taskId ?? null,
-    workspace: payload.workspaceId ?? null,
-    payload,
-  }));
+  dispatchRuntimeLog(session, message);
 }
 
 function registryIntervalFromEnv() {

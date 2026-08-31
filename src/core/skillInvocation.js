@@ -24,11 +24,12 @@ export function explicitSkillReference(input, skillName, language = null) {
  elle ?
 
  Le corps d'une compétence est compilé en intentions métier, et une intention
- décrit forcément ce que fait une compétence voisine : la deuxième intention de
- `/wiki-ingest` est mot pour mot le corps de `/wiki-rebuild-concepts`. Le
- sélecteur par description la reconnaissait donc et relançait la compétence
- voisine, qui relançait la suivante — concepts et taxonomie produits plusieurs
- fois pour un seul `/wiki-ingest`.
+ décrit forcément ce que fait une compétence voisine : c'est ainsi qu'un seul
+ `/wiki-ingest` relançait autrefois la compétence sœur qui reconstruisait la
+ grille de concepts, qui relançait la suivante — concepts et taxonomie produits
+ plusieurs fois pour une seule demande. (Ces compétences sœurs ont disparu avec
+ la simplification 0.15.66 ; la garde contre la sélection par description
+ reste, c'est elle que ces règles verrouillent.)
 
  La composition volontaire reste possible : un corps qui écrit `/deliver` ou
  « the deliver skill » nomme sa cible, et se distingue ainsi d'une intention
@@ -44,8 +45,8 @@ export function objectiveNamesSkill(input, skillName) {
   if (text.toLowerCase() === raw.toLowerCase()) return true;
   /*
    Le nom seul ne suffit pas : plusieurs compétences du scaffold portent un nom
-   qui est aussi un mot courant. « Run the production pipeline steps concepts,
-   reclassify-concepts and taxonomy » nomme ainsi la compétence `pipeline`, qui
+   qui est aussi un mot courant. « Run the production pipeline steps ingest,
+   build, export and polish » nomme ainsi la compétence `pipeline`, qui
    relance ingest + build + export + polish — bien pire que la cascade qu'on
    corrige. Le nom doit donc être cité EN TANT QUE compétence : forme slash, ou
    tournure explicite. La borne droite est écrite à la main, `\b` ne bornant pas
@@ -61,7 +62,11 @@ export function objectiveNamesSkill(input, skillName) {
   const keyword = '(?:skill|workflow|compétence)';
   return [
     new RegExp(`(?:^|[^A-Za-z0-9_-])/${name}${slashEnd}`, 'i'),
-    new RegExp(`\\b${keyword}\\s+/?${name}${end}`, 'i'),
+    // Same path-vs-invocation distinction as the slash form above: unlike
+    // the third pattern below, nothing after this one forces a following
+    // whitespace, so a trailing `/` here would otherwise satisfy `end` and
+    // let "the skill /wiki-build/export-context" match `wiki-build`.
+    new RegExp(`\\b${keyword}\\s+/?${name}${slashEnd}`, 'i'),
     new RegExp(`(?:^|[^A-Za-z0-9_-])/?${name}${end}\\s+${keyword}\\b`, 'i'),
     new RegExp(`/skills\\s+run\\s+${name}${end}`, 'i'),
   ].some((pattern) => pattern.test(text));

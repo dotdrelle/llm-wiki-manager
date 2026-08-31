@@ -14,8 +14,8 @@
 | [`llm-wiki`](https://github.com/dotdrelle/llm-wiki) | Workspace engine: CLI, web UI, MCP server, retrieval, deliverables, skills |
 | [`llm-wiki-manager`](https://github.com/dotdrelle/llm-wiki-manager) | Multi-workspace cockpit, Docker orchestration, `donna` shell |
 | [`agent-cme`](https://github.com/dotdrelle/agent-cme) | Global Confluence to Markdown MCP exporter; workspace injected automatically by Donna |
-| [`agent-wiki-production`](https://github.com/dotdrelle/agent-wiki-production) | Workspace-scoped production jobs: ingest, build, export, polish, pipeline |
-| [`agent-wiki-documents`](https://github.com/dotdrelle/agent-wiki-documents) | Document conversion MCP: PDF/Office/HTML/images → Markdown (OCR-capable) |
+| [`agent-production`](https://github.com/dotdrelle/agent-production) | Workspace-scoped production jobs: ingest, build, export, polish, pipeline |
+| [`agent-documents`](https://github.com/dotdrelle/agent-documents) | Document conversion MCP: PDF/Office/HTML/images → Markdown (OCR-capable) |
 
 ## Workspace Model
 
@@ -537,7 +537,7 @@ the fragment instead of failing. `taxonomy` was missing from the shipped default
 for several releases, so every compose-deployed ingest ran without the taxonomy
 barrier and left the published map stale. Keep the variable in step with the
 in-code default of `production_mcp_server.py`: a test here asserts `taxonomy` is
-present, and one in `agent-wiki-production` compares the whole list against that
+present, and one in `agent-production` compares the whole list against that
 in-code reference. Remember that an explicit value in your `.env` overrides the
 default entirely.
 

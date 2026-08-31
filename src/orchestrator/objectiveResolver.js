@@ -113,11 +113,10 @@ function resolveMentionedRegistryOperation(objective, candidates) {
       // A capability with more than one operation may declare
       // aliasOperations, mapping the specific alias phrase that matched to
       // the operation it actually names. Without it, operations[0]
-      // (alphabetical) is a silent guess: for knowledge.concepts this always
-      // picked the destructive grid-rebuild "concepts" operation, even when
-      // the matched alias ("reclassify concepts", "file unclassified
-      // concepts") named the safe, mechanical "reclassify-concepts" one —
-      // making that operation structurally unreachable from natural language.
+      // (alphabetical) is a silent guess — a multi-operation capability's
+      // other operations become structurally unreachable from natural
+      // language, and the alphabetical first one may well be the destructive
+      // one.
       const operation = candidate.aliasOperations?.[matchedAlias] ?? candidate.operations[0];
       return { capability: candidate.id, operation };
     })
@@ -176,7 +175,10 @@ function registrySnapshot(session) {
   const registry = session?.capabilityRegistry;
   if (registry?.snapshot) return registry.snapshot();
   if (registry && typeof registry === 'object') return registry;
-  const agents = session?.agentRegistry?.snapshot?.() ?? session?.agentRegistrySnapshot ?? [];
+  const agents = [
+    ...(session?.agentRegistry?.snapshot?.() ?? session?.agentRegistrySnapshot ?? []),
+    ...(session?.runtimeProviderAgents ?? []),
+  ];
   const snapshot = {};
   for (const agent of agents) {
     for (const capability of agent?.description?.capabilities ?? []) {
@@ -187,6 +189,8 @@ function registrySnapshot(session) {
         capability,
         description: agent.description,
         health: agent.health,
+        providerKind: agent.providerKind ?? null,
+        runtimeProvider: agent.runtimeProvider ?? null,
       });
     }
   }

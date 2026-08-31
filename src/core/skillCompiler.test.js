@@ -31,7 +31,7 @@ test('validation rejects technical routing details', () => {
 });
 
 test('scaffold skills preserve existing capabilities and split only wiki-sync', async () => {
-  const expected = { pipeline: 1, 'wiki-ingest': 2, 'wiki-build': 1, deliver: 1, diagnose: 1, status: 1, 'new-template': 1, 'wiki-sync': 2 };
+  const expected = { pipeline: 1, 'wiki-ingest': 1, 'wiki-build': 1, deliver: 1, diagnose: 1, status: 1, 'new-template': 1, 'wiki-sync': 2 };
   for (const [name, count] of Object.entries(expected)) {
     const raw = readFileSync(resolve('../llm-wiki/scaffold/workspace/.wiki/skills', `${name}.md`), 'utf8');
     const { meta, body } = parseFrontmatter(raw);

@@ -190,7 +190,7 @@ objective already covers.
 explicitly: `/deliver`, `the deliver skill`, `skill deliver`, or
 `/skills run deliver`. A bare occurrence of the name is **not** a citation —
 several skills are named after common words, and "run the production **pipeline**
-steps concepts, reclassify-concepts and taxonomy" must not launch `/pipeline`.
+steps ingest, build, export and polish" must not launch `/pipeline`.
 Anything else is refused as `nested_skill_match_blocked` and delegated instead.
 
 Two further guards apply: a skill already on the stack is refused

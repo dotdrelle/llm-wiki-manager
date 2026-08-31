@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { GOOGLE_GRANTS, GOOGLE_GRANT_LABELS, defaultGoogleGrants } from './googleGrants.js';
 
 // `agent-connectors` n'est pas cloné par le CI du manager, qui ne tire que
-// llm-wiki, agent-wiki-production, agent-cme et agent-wiki-documents (voir
+// llm-wiki, agent-production, agent-cme et agent-documents (voir
 // check-versions.js). Les contrôles de cohérence croisée ci-dessous lisent la
 // source de l'agent connectors : sans elle, on les saute plutôt que d'échouer
 // sur un ENOENT. Le flux de release complet (build-and-push.sh) la fournit,

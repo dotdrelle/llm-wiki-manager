@@ -263,7 +263,11 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
 
 export function ActivityPanel(props: { activities: any[]; width: number }) {
   const lineWidth = () => Math.max(8, props.width - 2);
-  const visible = () => props.activities.slice().reverse();
+  // session.activities is never pruned within a run (see core/agentEvents.js),
+  // so a long batch job's activity count is unbounded — render only the most
+  // recent slice, memoized like LogPanel's allLines, instead of copying and
+  // re-wrapping the entire lifetime history on every reactive tick.
+  const visible = createMemo(() => props.activities.slice(-200).reverse());
   return (
     <box flexGrow={1} flexDirection="column" paddingX={1} backgroundColor="#111318">
       <text width={lineWidth()} fg="#D6DEE8" content="Activity" />
@@ -340,6 +344,10 @@ type LogSegment = { text: string; fg: string };
 // Continuation lines of a wrapped entry are indented and dimmed so each
 // entry reads as one visual block instead of an undifferentiated wall.
 function logMessageColor(message: string): string {
+  // A doctor summary with ZERO errors is a warning by construction
+  // ("⚠ 0 error(s), 2 warning(s)") — amber, never red, even though it
+  // mentions the word "error".
+  if (/(?<!\d)0 error\(s\)/i.test(message)) return '#FBBF24';
   if (/\b(?:trace:\s*)?WARN\b/i.test(message)) return '#FBBF24';
   if (/\b(error|failed|exception|unavailable|introuvable|HTTP 4\d\d|HTTP 5\d\d)\b/i.test(message)) return '#F38BA8';
   if (/\b(warn|warning|avertissement|fallback|retry|expired|stale)\b/i.test(message)) return '#FBBF24';

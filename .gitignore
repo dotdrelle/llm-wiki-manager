@@ -39,6 +39,7 @@ docker-compose*.local.yml
 !.vscode/
 !.vscode/settings.json
 !mcp.endpoints.example.json
+!agent-runtimes.example.json
 !package.json
 !pnpm-lock.yaml
 !tsconfig.json

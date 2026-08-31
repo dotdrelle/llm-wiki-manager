@@ -1,4 +1,4 @@
-import { createCapabilityRegistry } from './capabilityRegistry.js';
+import { capabilityRegistryForSession } from './capabilityRegistry.js';
 import { CapabilityUnavailableError, resolve } from './capabilityResolver.js';
 
 export function createAssignmentManager({
@@ -27,9 +27,7 @@ export async function assign(task, {
   if (!capability) {
     throw new CapabilityUnavailableError(capability, 'task_missing_required_capability', { taskId: task?.id ?? task?.step });
   }
-  const effectiveRegistry = registry ?? session?.capabilityRegistry ?? createCapabilityRegistry({
-    agents: session?.agentRegistrySnapshot ?? session?.agents ?? [],
-  });
+  const effectiveRegistry = registry ?? capabilityRegistryForSession(session);
   const effectiveWorkspaceConfig = workspaceConfig ?? session?.wikircConfig ?? session?.wikirc?.config ?? {};
   const retryAssignment = task?.retryAssignment;
   if (retryAssignment?.agentInstanceId) {
@@ -46,6 +44,14 @@ export async function assign(task, {
       capability,
       operation: task?.operation ?? null,
       serverName: agent?.serverName ?? provider?.serverName ?? null,
+      // Mirrors the primary resolution branch below: without this, retrying a
+      // task assigned to an external-runtime provider drops the routing
+      // discriminator and the dispatcher misroutes it to the MCP path, which
+      // throws "No MCP server found" since external-runtime agents carry no
+      // serverName.
+      providerKind: provider?.providerKind ?? 'mcp-agent',
+      runtimeProvider: provider?.runtimeProvider ?? null,
+      runtimeId: provider?.runtimeId ?? null,
       agent,
       retry: true,
       previousAgentInstanceId: retryAssignment.previousAgentInstanceId ?? null,
@@ -62,6 +68,12 @@ export async function assign(task, {
     capability,
     operation: task?.operation ?? null,
     serverName: agent?.serverName ?? provider?.serverName ?? null,
+    // External runtime providers (RFC § 8) resolve through the same registry
+    // as MCP agents; the assignment carries the routing discriminator so the
+    // dispatcher can hand the task to the runtime instead of agent_execute.
+    providerKind: provider?.providerKind ?? 'mcp-agent',
+    runtimeProvider: provider?.runtimeProvider ?? null,
+    runtimeId: provider?.runtimeId ?? null,
     agent,
   };
 }

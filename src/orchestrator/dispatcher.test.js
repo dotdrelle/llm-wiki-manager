@@ -1,6 +1,52 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createDispatcher, normalizeTaskError } from './dispatcher.js';
+import { activeProfileMcp, createDispatcher, normalizeTaskError } from './dispatcher.js';
+
+test('activeProfileMcp forwards only the read-only wiki tools to the external runtime', () => {
+  const session = {
+    mcp: {
+      wiki: {
+        url: 'http://wiki:3000/mcp',
+        status: 'connected',
+        token: 't',
+        tools: [
+          { name: 'wiki_read_page' },
+          { name: 'wiki_search_context' },
+          { name: 'wiki_workspace_status' },
+          { name: 'help_read' },
+          // every mutation tool must be dropped, including the ones the old
+          // substring denylist ("write_page|add_source|…") let through:
+          { name: 'wiki_write_page' },
+          { name: 'wiki_add_source' },
+          { name: 'profile_update' },
+          { name: 'template_write' },
+          { name: 'build_context_write' },
+          // and a hypothetical future mutation tool the denylist could not know:
+          { name: 'wiki_delete_page' },
+          { name: 'wiki_move_page' },
+        ],
+      },
+    },
+  };
+  const [pool] = activeProfileMcp(session);
+  assert.deepEqual(
+    [...pool.tools].sort(),
+    ['help_read', 'wiki_read_page', 'wiki_search_context', 'wiki_workspace_status'],
+  );
+});
+
+test('activeProfileMcp tolerates namespaced tool names', () => {
+  const session = {
+    mcp: {
+      wiki: {
+        url: 'http://wiki:3000/mcp',
+        status: 'connected',
+        tools: [{ name: 'wiki__wiki_read_page' }, { name: 'wiki__wiki_write_page' }],
+      },
+    },
+  };
+  assert.deepEqual(activeProfileMcp(session)[0].tools, ['wiki__wiki_read_page']);
+});
 
 test('dispatcher returns a retryable logical failure when agent_execute reports workspace_busy', async () => {
   const session = {
@@ -214,4 +260,69 @@ test('normalizeTaskError falls back only when the agent reports no reason at all
 
   assert.equal(error.code, 'execution_rejected');
   assert.equal(error.message, 'agent_execute rejected task');
+});
+
+test('dispatcher passes confirm=true to agent_execute for an approval-gated task', async () => {
+  let executeArgs;
+  const session = {
+    workspace: 'test',
+    mcp: {
+      production: {
+        tools: [{ name: 'agent_execute' }, { name: 'agent_status' }, { name: 'agent_cancel' }],
+      },
+    },
+    activities: {},
+  };
+  const dispatcher = createDispatcher({
+    session,
+    pollIntervalMs: 1,
+    callTool: async (_mcp, _server, tool, args) => {
+      if (tool === 'agent_execute') {
+        executeArgs = args;
+        return { accepted: true, jobId: 'job-ingest', status: 'queued' };
+      }
+      return { jobId: 'job-ingest', status: 'succeeded', terminal: true, result: { status: 'succeeded' } };
+    },
+  });
+
+  await dispatcher.execute(
+    { id: 'ingest-a', requiredCapability: 'knowledge.update', operation: 'ingest_apply', arguments: {}, requiresApproval: true },
+    { serverName: 'production', agentInstanceId: 'production-main' },
+    { runId: 'run-donna-confirm', attempt: { attemptId: 'ingest-a:attempt-1', locks: [], release() {} } },
+  );
+
+  assert.equal(executeArgs.arguments.confirm, true, 'covered mutating task must carry confirm=true');
+  assert.equal(executeArgs.constraints.requireApprovalForMutations, true);
+});
+
+test('dispatcher does not invent confirm=true for a non-gated task', async () => {
+  let executeArgs;
+  const session = {
+    workspace: 'test',
+    mcp: {
+      production: {
+        tools: [{ name: 'agent_execute' }, { name: 'agent_status' }, { name: 'agent_cancel' }],
+      },
+    },
+    activities: {},
+  };
+  const dispatcher = createDispatcher({
+    session,
+    pollIntervalMs: 1,
+    callTool: async (_mcp, _server, tool, args) => {
+      if (tool === 'agent_execute') {
+        executeArgs = args;
+        return { accepted: true, jobId: 'job-doctor', status: 'queued' };
+      }
+      return { jobId: 'job-doctor', status: 'succeeded', terminal: true, result: { status: 'succeeded' } };
+    },
+  });
+
+  await dispatcher.execute(
+    { id: 'doctor-a', requiredCapability: 'workspace.diagnose', operation: 'doctor', arguments: {} },
+    { serverName: 'production', agentInstanceId: 'production-main' },
+    { runId: 'run-donna-doctor', attempt: { attemptId: 'doctor-a:attempt-1', locks: [], release() {} } },
+  );
+
+  assert.equal(executeArgs.arguments.confirm, undefined);
 });

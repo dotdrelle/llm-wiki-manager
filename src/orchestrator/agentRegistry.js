@@ -1,6 +1,5 @@
-import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
+import { createAgentEvent, dispatchAgentEvent, dispatchRuntimeLog } from '../core/agentEvents.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
-import { normalizeRuntimeLog } from '../core/runtimeLog.js';
 import { assertContract } from '../contracts/schemas.js';
 
 const AVAILABLE = 'available';
@@ -218,26 +217,6 @@ function registerAgent(session, agent, { agentsByInstance, instanceByServer, las
     });
   }
   return cloneAgent(next);
-}
-
-/**
- * Runtime log line, emitted without importing the supervisor.
- *
- * `emitRuntimeLog` lives in `runtime/supervisor.js`, which already imports THIS
- * module: importing it back would close a cycle for one log line. The event
- * shape is the contract, not the helper, so we build it from the same
- * normalizer the supervisor uses.
- */
-function dispatchRuntimeLog(session, message) {
-  if (!session) return;
-  const payload = normalizeRuntimeLog(message, { session });
-  dispatchAgentEvent(session, createAgentEvent('runtime_log', {
-    origin: 'runtime',
-    runId: payload.runId ?? null,
-    taskId: payload.taskId ?? null,
-    workspace: payload.workspaceId ?? null,
-    payload,
-  }));
 }
 
 function dispatchRegistryEvent(session, type, payload) {

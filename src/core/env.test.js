@@ -37,6 +37,25 @@ test('scaffold copies the packaged examples into a fresh directory', () => {
   });
 });
 
+test('scaffold seeds an enabled agent-runtimes example and never rewrites an existing one', () => {
+  withTempManagerDir((dir) => {
+    const created = ensureManagerScaffold();
+    assert.ok(created.includes('agent-runtimes.json'));
+    const runtimes = JSON.parse(readFileSync(join(dir, 'agent-runtimes.json'), 'utf8'));
+    assert.ok(Array.isArray(runtimes.runtimes));
+    assert.equal(runtimes.runtimes[0].enabled, true, 'the scaffold ships the gateway enabled (GATEWAY_ENABLED=true)');
+
+    // Operator-owned: once present, the file is never touched again.
+    writeFileSync(join(dir, 'agent-runtimes.json'), JSON.stringify({ runtimes: [] }));
+    const second = ensureManagerScaffold();
+    assert.ok(!second.includes('agent-runtimes.json'));
+    assert.deepEqual(
+      JSON.parse(readFileSync(join(dir, 'agent-runtimes.json'), 'utf8')),
+      { runtimes: [] },
+    );
+  });
+});
+
 test('an install predating the required runtime host receives it on its placeholder', () => {
   withTempManagerDir((dir) => {
     const envFile = join(dir, '.env');

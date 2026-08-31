@@ -27,52 +27,20 @@ test('workspace production agent enables restore by default', async () => {
   assert.match(String(allowed), /(?:^|,)restore(?:,|})/);
 });
 
-test('every shipped default allows the taxonomy step', async () => {
+test('the shipped default carries no step the engine retired in 0.15.66', async () => {
   /*
-   L'absence de `taxonomy` est SILENCIEUSE.
-
-   `agent_plan` retire la tâche taxonomique du fragment d'ingestion quand
-   l'étape n'est pas autorisée (`"taxonomy" in _ALLOWED_STEPS`), sans erreur ni
-   avertissement. Un déploiement par compose ingérait donc sans jamais publier
-   de taxonomie, et la carte restait périmée — exactement le défaut que le Lot 4
-   avait corrigé côté moteur. Le défaut de Python porte `taxonomy` ; un compose
-   POSITIONNE toujours la variable, donc ce défaut ne s'applique jamais là.
+   0.15.66 a retiré du moteur llm-wiki les commandes `wiki concepts`,
+   `reclassify-concepts` et `taxonomy` (simplification : le concept EST le
+   dossier). Un défaut livré qui les autoriserait encore ferait échouer le
+   pipeline à la première de ces étapes — `unknown command 'concepts'` — sans
+   jamais les exécuter. Ces trois étapes ne doivent donc figurer dans AUCUN
+   défaut livré, ni ici ni dans agent-production.
   */
   const raw = await readFile(new URL('../../docker-compose.yml', import.meta.url), 'utf8');
   const compose = YAML.parse(raw);
   const allowed = compose.services['production-mcp'].environment
     .find((entry) => String(entry).startsWith('PRODUCTION_ALLOWED_STEPS='));
-  assert.match(String(allowed), /(?:^|,)taxonomy(?:,|})/);
-});
-
-test('every shipped default allows the concepts step', async () => {
-  /*
-   Same silent-omission risk as `taxonomy` above, one lot earlier: without
-   `concepts`, `wiki concepts --apply` (which writes wiki/concepts-grid.md) is
-   never reachable through /wiki-sync, /pipeline, or any orchestrated flow.
-   Every ingest then files every concept page under the reserved
-   `unclassified` class forever, with nothing surfacing why.
-  */
-  const raw = await readFile(new URL('../../docker-compose.yml', import.meta.url), 'utf8');
-  const compose = YAML.parse(raw);
-  const allowed = compose.services['production-mcp'].environment
-    .find((entry) => String(entry).startsWith('PRODUCTION_ALLOWED_STEPS='));
-  assert.match(String(allowed), /(?:^|,)concepts(?:,|})/);
-});
-
-test('every shipped default allows the reclassify-concepts step', async () => {
-  /*
-   One step further than `concepts`: without `reclassify-concepts`, a page
-   already stuck under wiki/concepts/unclassified stays there even after a
-   grid exists — re-ingesting its source is not a reliable fix, since the
-   ingest prompt updates an existing leaf at its existing path instead of
-   moving it.
-  */
-  const raw = await readFile(new URL('../../docker-compose.yml', import.meta.url), 'utf8');
-  const compose = YAML.parse(raw);
-  const allowed = compose.services['production-mcp'].environment
-    .find((entry) => String(entry).startsWith('PRODUCTION_ALLOWED_STEPS='));
-  assert.match(String(allowed), /(?:^|,)reclassify-concepts(?:,|})/);
+  assert.doesNotMatch(String(allowed), /(?:^|,)(?:concepts|reclassify-concepts|taxonomy)(?:,|})/);
 });
 
 test('shipped compose files never carry a build context', async () => {

@@ -209,3 +209,65 @@ function expansionRegistry() {
     },
   };
 }
+
+test('resultAggregator surfaces the planner rejection instead of contract noise', async () => {
+  const session = sessionWithPlan();
+  session.approvals = [{ id: 'approval-run', scope: 'run', status: 'approved', runId: 'run-expansion' }];
+
+  const result = await accept(taskResultWithExpansion(), {
+    session,
+    runId: 'run-expansion',
+    task: session.headlessPlan[0],
+    assignment: { agentInstanceId: 'production-main', serverName: 'production' },
+    registry: expansionRegistry(),
+    callTool: async () => ({ ok: false, error: 'knowledge.update cannot plan operation: doctor' }),
+  });
+
+  assert.equal(result.ok, true, 'the producing task itself completed');
+  assert.equal(result.expansion.ok, false);
+  assert.equal(result.expansion.errors[0].code, 'planner_rejected');
+  assert.match(result.expansion.errors[0].message, /cannot plan operation: doctor/);
+});
+
+test('resultAggregator defaults requireApprovalForMutations to true on the plan request', async () => {
+  const session = sessionWithPlan();
+  session.approvals = [{ id: 'approval-run', scope: 'run', status: 'approved', runId: 'run-expansion' }];
+  const calls = [];
+
+  await accept(taskResultWithExpansion(), {
+    session,
+    runId: 'run-expansion',
+    task: session.headlessPlan[0],
+    assignment: { agentInstanceId: 'production-main', serverName: 'production' },
+    registry: expansionRegistry(),
+    callTool: async (_mcp, serverName, toolName, args) => {
+      calls.push(args);
+      return expansionFragment();
+    },
+  });
+
+  assert.equal(calls[0].constraints.requireApprovalForMutations, true);
+});
+
+test('resultAggregator honours an explicit opt-out from the proposal constraints', async () => {
+  const session = sessionWithPlan();
+  session.approvals = [{ id: 'approval-run', scope: 'run', status: 'approved', runId: 'run-expansion' }];
+  const calls = [];
+  const expansion = taskResultWithExpansion();
+  expansion.planExpansionRequest.constraints = { requireApprovalForMutations: false, maxTasks: 2 };
+
+  await accept(expansion, {
+    session,
+    runId: 'run-expansion',
+    task: session.headlessPlan[0],
+    assignment: { agentInstanceId: 'production-main', serverName: 'production' },
+    registry: expansionRegistry(),
+    callTool: async (_mcp, serverName, toolName, args) => {
+      calls.push(args);
+      return expansionFragment();
+    },
+  });
+
+  assert.equal(calls[0].constraints.requireApprovalForMutations, false);
+  assert.equal(calls[0].constraints.maxTasks, 2);
+});

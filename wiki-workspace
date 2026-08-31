@@ -299,7 +299,12 @@ agents_compose() {
     local cacert_args=()
     local profile_args=()
     connectors_enabled && profile_args+=(--profile connectors)
-    WORKSPACES_ROOT="$workspaces_root" AGENTS_DATA_DIR="$agents_data_dir" \
+    gateway_enabled && profile_args+=(--profile gateway)
+    # The gateway mounts the MANAGER's agent-runtimes.json — absolute path:
+    # compose resolves relative volume paths against the compose file's
+    # directory (the installed package), never the operator's state dir.
+    local agent_runtimes_file="$(dirname "$MANAGER_ENV_FILE")/agent-runtimes.json"
+    WORKSPACES_ROOT="$workspaces_root" AGENTS_DATA_DIR="$agents_data_dir" AGENT_RUNTIMES_FILE="$agent_runtimes_file" \
       read_lines_into_array cacert_args cacert_compose_args "$agents_compose_file" "agents.cacert.compose.yml"
     # User-owned override: optional external agents, proxy passthrough and
     # any local fix live in a file the user maintains under .wiki/compose —
@@ -307,7 +312,7 @@ agents_compose() {
     local override_args=()
     local user_override="$MANAGER_COMPOSE_DIR/agents.docker-compose.override.yml"
     [[ -f "$user_override" ]] && override_args+=(-f "$user_override")
-    WORKSPACES_ROOT="$workspaces_root" AGENTS_DATA_DIR="$agents_data_dir" \
+    WORKSPACES_ROOT="$workspaces_root" AGENTS_DATA_DIR="$agents_data_dir" AGENT_RUNTIMES_FILE="$agent_runtimes_file" \
       COMPOSE_PROFILES= \
       docker compose --project-directory "$DEFAULT_MANAGER_DIR" \
         ${compose_env_args[@]+"${compose_env_args[@]}"} -f "$agents_compose_file" ${override_args[@]+"${override_args[@]}"} ${cacert_args[@]+"${cacert_args[@]}"} ${profile_args[@]+"${profile_args[@]}"} -p wiki-agents "$@"
@@ -331,6 +336,7 @@ agents_compose() {
       [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
       mkdir -p "$agents_data_dir/cme" "$agents_data_dir/documents/input" "$agents_data_dir/documents/output" "$agents_data_dir/documents/uploads"
       connectors_enabled && mkdir -p "$agents_data_dir/connectors"
+      gateway_enabled && mkdir -p "$agents_data_dir/gateway"
       mkdir -p "$workspaces_root"
       $do_pull && _agents_dc pull
       local up_args=(up -d)
@@ -345,6 +351,7 @@ agents_compose() {
       printf 'Agents: cme=:%s  documents=:%s' \
         "${CME_MCP_PORT:-3336}" "${DOCUMENTS_MCP_PORT:-3337}"
       connectors_enabled && printf '  connectors=:%s' "${CONNECTORS_MCP_PORT:-3338}"
+      gateway_enabled && printf '  gateway=:%s' "${GATEWAY_PORT:-7789}"
       printf '\n'
       [[ ! -f "$MANAGER_COMPOSE_DIR/agents.docker-compose.override.yml" ]] || printf 'User override: %s\n' "$MANAGER_COMPOSE_DIR/agents.docker-compose.override.yml"
       ;;
@@ -509,7 +516,7 @@ ensure_agent_tokens() {
   # workspace and runtime tokens are generated. Leaving them empty made a
   # fresh install start agents nobody could talk to.
   local key token
-  for key in CME_MCP_AUTH_TOKEN DOCUMENTS_MCP_AUTH_TOKEN; do
+  for key in CME_MCP_AUTH_TOKEN DOCUMENTS_MCP_AUTH_TOKEN GATEWAY_AUTH_TOKEN; do
     token="$(env_value "$MANAGER_ENV_FILE" "$key" "")"
     if [[ -z "$token" ]]; then
       token="$(generate_token)"
@@ -552,6 +559,15 @@ ensure_agent_tokens() {
 connectors_enabled() {
   local enabled
   enabled="$(env_value "$MANAGER_ENV_FILE" CONNECTORS_ENABLED "${CONNECTORS_ENABLED:-false}")"
+  case "$enabled" in
+    1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+gateway_enabled() {
+  local enabled
+  enabled="$(env_value "$MANAGER_ENV_FILE" GATEWAY_ENABLED "${GATEWAY_ENABLED:-true}")"
   case "$enabled" in
     1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) return 0 ;;
     *) return 1 ;;

@@ -1,7 +1,7 @@
 import { normalizeActivity } from './activity.js';
 import { attachActivityToExistingPlan, syncActivitiesToPlan } from './plan.js';
 import { applyPlanPatch, normalizePlanPatch, normalizePlanRevision, rebasePlanPatch } from './planPatch.js';
-import { formatRuntimeLogPayload } from './runtimeLog.js';
+import { formatRuntimeLogPayload, normalizeRuntimeLog } from './runtimeLog.js';
 import { projectSkillChains, TERMINAL as CONTROL_TERMINAL_STATUSES } from './skillChainView.js';
 import { projectWorkflow } from './workflow.js';
 import { validateContractInDev } from '../contracts/schemas.js';
@@ -106,6 +106,23 @@ export function dispatchAgentEvent(session, event) {
   }
   session._onAgentEvent?.(normalized, session.agentProjection);
   return normalized;
+}
+
+// Shared `runtime_log` shaping — was independently reimplemented byte-for-byte
+// in runtime/supervisor.js, orchestrator/agentRegistry.js and
+// orchestrator/providers/runtimeProviders.js (each citing the same "avoid a
+// cycle with supervisor.js" reason, even where no such cycle existed). This
+// module already sits below all three, so it is the one safe common home.
+export function dispatchRuntimeLog(session, message) {
+  if (!session) return;
+  const payload = normalizeRuntimeLog(message, { session });
+  return dispatchAgentEvent(session, createAgentEvent('runtime_log', {
+    origin: 'runtime',
+    runId: payload.runId ?? null,
+    taskId: payload.taskId ?? null,
+    workspace: payload.workspaceId ?? null,
+    payload,
+  }));
 }
 
 // Full in-memory projection reset for a session. The runtime keeps the live

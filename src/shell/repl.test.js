@@ -173,6 +173,19 @@ test('Flow/Trace does not repeat the runtime source prefix on every line', async
   assert.match(entryRenderer, /prefix\.push\(\{ text: `\$\{parts\.time\} /);
 });
 
+test('a doctor summary with a nonzero error count is colored as an error, not a warning', async () => {
+  const source = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
+  const colorFn = source.slice(
+    source.indexOf('function logMessageColor'),
+    source.indexOf('function logRenderLines'),
+  );
+  // The "0 error(s)" amber shortcut must be digit-anchored: "10 error(s)"
+  // ends in "0 error(s)" too, and an unanchored test painted a 10-error
+  // doctor failure the same colour as a clean run.
+  assert.match(colorFn, /\(\?<!\\d\)0 error\\\(s\\\)/);
+  assert.doesNotMatch(colorFn, /\/0 error\\\(s\\\)\/i\.test/);
+});
+
 test('runtime logs have a separator and a concise Runtime tab label', async () => {
   const source = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
   const logPanel = source.slice(

@@ -30,6 +30,7 @@ import { findSkill, inspectSkills, listSkills } from '../core/skills.js';
 import { extractActivity, formatActivityError, formatActivityLine, formatActivitySummary, parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { emitRuntimeLog } from '../runtime/supervisor.js';
+import { discoverRuntimeProvidersOnce } from '../orchestrator/providers/runtimeProviders.js';
 import {
   cancelQueueItem,
   clearFinishedQueueItems,
@@ -660,8 +661,30 @@ function reportNewlyDegradedMcp(session, previousMcp) {
   }
 }
 
+function runtimeProvidersSection(session) {
+  const agents = session.runtimeProviderAgents ?? [];
+  if (agents.length === 0) return null;
+  const byRuntime = new Map();
+  for (const agent of agents) {
+    const runtimeId = agent.runtimeId ?? 'external';
+    if (!byRuntime.has(runtimeId)) byRuntime.set(runtimeId, []);
+    byRuntime.get(runtimeId).push(agent);
+  }
+  const lines = [];
+  for (const [runtimeId, list] of byRuntime) {
+    const health = list[0]?.health ?? 'unknown';
+    const capabilities = list
+      .map((agent) => agent.description?.capabilities?.[0]?.id ?? agent.agentInstanceId)
+      .join(', ');
+    lines.push(`${runtimeId}: ${health}`);
+    lines.push(`capabilities: ${capabilities}`);
+  }
+  return sectionBlock('Agentic runtime', lines);
+}
+
 async function statusText(session) {
   const states = await refreshMcpRuntimeStatus(session);
+  await discoverRuntimeProvidersOnce(session);
   const workspaceStats = collectWorkspaceStats(session);
   const workspaceColumn = sectionBlock(`Workspace · ${session.workspace ?? '-'}`, [
     `path: ${compactPath(session.workspacePath ?? '-')}`,
@@ -678,11 +701,20 @@ async function statusText(session) {
     `baseUrl: ${compactBaseUrl(session.wikircConfig?.llm?.baseUrl)}`,
     ...(skillDiagnosticCount ? [`skill diagnostics: ${skillDiagnostics.rejected.length} rejected, ${skillDiagnostics.warnings.length} warning(s) (/skills)`] : []),
   ]);
-  const runtimeColumn = sectionBlock('Runtime', (states ? serviceStatesText(states) : 'Docker runtime not available or no workspace loaded.').split('\n'));
+  // The workspace stack (serve / mcp-http / production-mcp) only means
+  // something once a workspace is loaded AND services are actually declared;
+  // an empty list is noise either way. Named "Services" (not "Runtime") to
+  // avoid colliding with the "Agentic runtime" section that lists the
+  // external engines.
+  const hasServices = Boolean(states && Object.keys(states).length > 0);
+  const runtimeColumn = hasServices
+    ? sectionBlock('Services', serviceStatesText(states).split('\n'))
+    : null;
   const mcpColumn = sectionBlock('MCP', compactMcpStatus(session.mcp).split('\n'));
+  const runtimesColumn = runtimeProvidersSection(session);
   const stats = workspaceStatsColumns(workspaceStats, session);
 
-  const leftColumn = [workspaceColumn, stats.left, runtimeColumn, mcpColumn].filter(Boolean).join('\n\n');
+  const leftColumn = [workspaceColumn, stats.left, runtimeColumn, mcpColumn, runtimesColumn].filter(Boolean).join('\n\n');
   const rightColumn = [configColumn, stats.right].filter(Boolean).join('\n\n');
 
   // Leading/trailing blank row so the boxed pair doesn't butt directly against
@@ -1396,7 +1428,10 @@ export async function handleSlashCommand(line, context) {
           },
         });
         if (result?.runId) {
-          return { output: `▶ Capability run accepted (${String(result.runId).slice(0, 8)}) — the agent's plan will be integrated and dispatched in parallel; approval requested before mutations (/approve).` };
+          // Honest and generic: the runtime decides, per task, whether a
+          // mutation needs approval. Claiming "awaiting approval" here would
+          // be false for read-only capabilities like agent.review.
+          return { output: `▶ Capability run accepted (${String(result.runId).slice(0, 8)}) — the plan will be integrated and dispatched in parallel; any mutating step will wait for /approve.` };
         }
         return { output: `Run not started: ${result?.explanation ?? result?.error ?? JSON.stringify(result)}` };
       }

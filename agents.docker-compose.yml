@@ -25,6 +25,12 @@
 #   DOCUMENT_LLM_MODEL     — lightonai/LightOnOCR-2-1B
 #   DOCUMENT_LLM_API_KEY   — OpenAI/OpenAI-compatible API key for document OCR
 #   DOCUMENT_LLM_TIMEOUT_SECONDS — 120
+#   GATEWAY_PORT           — 7789
+#   GATEWAY_ENABLED        — false; true to start the agentic runtime gateway
+#   GATEWAY_AUTH_TOKEN     — bearer token for the gateway (generated if empty);
+#                            the manager sends it on every call. The model is
+#                            NOT configured here: the manager sends its active
+#                            profile model with every run.
 #
 # Set these variables in a .env file at the directory where you run wiki-workspace,
 # or export them in your shell before running wiki-workspace agents up.
@@ -62,7 +68,7 @@ services:
     restart: unless-stopped
 
   documents:
-    image: dotdrelle/agent-wiki-documents:latest
+    image: dotdrelle/agent-documents:latest
     user: "${UID:-1000}:${GID:-1000}"
     ports:
       - "${DOCUMENTS_MCP_PORT:-3337}:8080"
@@ -132,5 +138,33 @@ services:
       - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
     volumes:
       - ${AGENTS_DATA_DIR:-./.agents-data}/connectors:/data
+      - ${WORKSPACES_ROOT:?Set WORKSPACES_ROOT to the directory containing all workspace folders}:/workspaces
+    restart: unless-stopped
+
+  # Agentic runtime gateway — the external Deep Agents service the manager
+  # routes open-ended analysis to (agent-runtimes.json, endpoint 7789).
+  # Opt-in like connectors: set GATEWAY_ENABLED=true. The manager never starts
+  # this service, only discovers it; its failure leaves every DAG untouched.
+  gateway:
+    profiles: [gateway]
+    image: dotdrelle/wiki-agentic-gateway:latest
+    user: "${UID:-1000}:${GID:-1000}"
+    ports:
+      - "${GATEWAY_PORT:-7789}:7789"
+    environment:
+      - GATEWAY_CONFIG_DIR=/config
+      - GATEWAY_AUTH_TOKEN=${GATEWAY_AUTH_TOKEN:-}
+      - NODE_USE_ENV_PROXY=${NODE_USE_ENV_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      # One file, two readers: the manager routes on agent-runtimes.json, the
+      # gateway serves the capabilities of its own entry from the same file.
+      # Absolute path, computed by wiki-workspace from the manager state dir.
+      - ${AGENT_RUNTIMES_FILE:?Set AGENT_RUNTIMES_FILE}:/config/agent-runtimes.json:ro
+      - ${AGENTS_DATA_DIR:-./.agents-data}/gateway:/config
       - ${WORKSPACES_ROOT:?Set WORKSPACES_ROOT to the directory containing all workspace folders}:/workspaces
     restart: unless-stopped

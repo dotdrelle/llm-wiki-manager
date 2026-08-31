@@ -142,7 +142,7 @@ test('E2E-002 wiki-sync: two objectives, two ordered runs, one chainId', async (
   assert.equal(body.objectives, 2);
   assert.equal(env.runs.length, 2, 'the second objective must run after the first');
   assert.match(env.runs[0].input, /^Export the requested Confluence source/);
-  assert.match(env.runs[1].input, /^Run the production pipeline over the newly exported Markdown/);
+  assert.match(env.runs[1].input, /^Run the production pipeline step ingest over the newly exported Markdown/);
   // CME first, Production second — and the parameter reaches the step that
   // consumes it, not only the last objective.
   for (const run of env.runs) assert.match(run.input, /User parameters:\nsource: docs/);
@@ -202,7 +202,7 @@ test('E2E-003 cancel: the running step and its chain stop, unrelated queue survi
 // that silently fragments would show up as extra runs, not as extra objectives.
 const PERFORMANCE_TABLE = {
   pipeline: 1,
-  'wiki-ingest': 2,
+  'wiki-ingest': 1,
   'wiki-build': 1,
   deliver: 1,
   diagnose: 1,

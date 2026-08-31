@@ -2,6 +2,7 @@ import { validateContract } from '../contracts/schemas.js';
 import { parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
+import { capabilityRegistryForSession } from './capabilityRegistry.js';
 import { resolve as resolveCapability } from './capabilityResolver.js';
 import { integrate } from './planIntegrator.js';
 import { validateFragment } from './planValidator.js';
@@ -112,7 +113,11 @@ async function maybeExpandPlan(result, {
     return rejectExpansion({ session, runId, taskId, store, errors: requestValidation.errors.map((message) => ({ code: 'invalid_plan_expansion_request', message })) });
   }
 
-  const effectiveRegistry = registry ?? session.capabilityRegistry;
+  // session.capabilityRegistry is never assigned anywhere in production;
+  // falling back to it here meant every planExpansionRequest resolved
+  // against `undefined` and was unconditionally rejected as
+  // capability_unavailable, regardless of whether the capability existed.
+  const effectiveRegistry = registry ?? capabilityRegistryForSession(session);
   let resolved;
   try {
     resolved = resolveCapability(request.capability, {
@@ -151,6 +156,24 @@ async function maybeExpandPlan(result, {
   const toolName = toolNameFor(session, serverName, 'agent_plan');
   const planRequest = agentPlanRequest(request, session);
   const fragment = parseToolPayload(await callTool(session.mcp, serverName, toolName, planRequest));
+  // A planner that REFUSES answers { ok: false, error } (the production agent
+  // does, e.g. "knowledge.update cannot plan operation: doctor"). Feeding that
+  // envelope to validateFragment turned the planner's actual sentence into
+  // contract noise ("taskGraphFragment.ok is not allowed") — the human saw a
+  // schema violation instead of the reason. Surface the planner's words.
+  if (fragment && typeof fragment === 'object' && !Array.isArray(fragment) && fragment.ok === false) {
+    return rejectExpansion({
+      session,
+      runId,
+      taskId,
+      store,
+      errors: [{
+        code: 'planner_rejected',
+        message: String(fragment.error ?? 'the planner rejected the objective without a reason'),
+        details: { capability: request.capability, operation: request.operation ?? null },
+      }],
+    });
+  }
   const validation = validateFragment(fragment, {
     registry: effectiveRegistry,
     run: { plannerAgentInstanceId: resolved.agentInstanceId },
@@ -211,7 +234,17 @@ function agentPlanRequest(request, session) {
     objective: request.objective ?? request.reason ?? undefined,
     workspace: request.workspace ?? workspaceRequest(session),
     arguments: request.arguments && typeof request.arguments === 'object' ? request.arguments : {},
-    constraints: request.constraints && typeof request.constraints === 'object' ? request.constraints : {},
+    constraints: {
+      ...(request.constraints && typeof request.constraints === 'object' ? request.constraints : {}),
+      // Default governance, same as prepareDelegation: mutations wait for a
+      // human grant. Omitting it here let the planner answer mutating tasks
+      // with requiresApproval:false — the scheduler dispatched an ingest
+      // plan with no gate, and the production agent's confirmation guard
+      // then rejected every job ("requires confirm=true").
+      // requireApprovalForMutations: false from the proposal itself remains
+      // an explicit opt-out (a runtime declaring its own policy).
+      requireApprovalForMutations: request.constraints?.requireApprovalForMutations !== false,
+    },
   };
 }
 

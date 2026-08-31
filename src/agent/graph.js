@@ -891,7 +891,7 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
           delegated: true,
           runId: inRun.runId,
           summary: inRun.summary ?? null,
-          message: `Action lancée (${String(inRun.runId).slice(0, 8)}) après validation du plan réel : ${inRun.summary?.tasks ?? 0} tâche(s), ${inRun.summary?.agent ?? 'agent résolu'}. Exécution en cours.`,
+          message: `Action started (${String(inRun.runId).slice(0, 8)}) after real-plan validation: ${inRun.summary?.tasks ?? 0} task(s), ${inRun.summary?.agent ?? 'resolved agent'}. Execution in progress.`,
         });
       }
       const result = await postRuntimeDelegate(objective, { url, workspace });
@@ -900,9 +900,9 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
             delegated: true,
             runId: result.runId,
             summary: result.delegation ?? null,
-            message: `Action lancée (${String(result.runId).slice(0, 8)}) après validation du plan réel : ${result.delegation?.tasks ?? 0} tâche(s), ${result.delegation?.agent ?? 'agent résolu'}. Exécution en cours.`,
+            message: `Action started (${String(result.runId).slice(0, 8)}) after real-plan validation: ${result.delegation?.tasks ?? 0} task(s), ${result.delegation?.agent ?? 'resolved agent'}. Execution in progress.`,
           })
-        : `Délégation refusée : ${result?.error ?? JSON.stringify(result)}`;
+        : `Delegation refused: ${result?.error ?? JSON.stringify(result)}`;
     }
     if (tool === 'run_skill') {
       const skillName = String(args.skillName ?? '').trim();
@@ -952,12 +952,13 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
        par ressemblance.
 
        La garde de cycle ci-dessus ne voit que les répétitions. Elle laissait
-       donc passer la cascade réellement observée sur un `/wiki-ingest` :
-       l'intention n°2 du corps est mot pour mot celui de
-       `/wiki-rebuild-concepts`, dont l'intention décrit à son tour
-       `/wiki-reclassify`, puis `/wiki-taxonomy`. Trois compétences distinctes,
-       aucun cycle, et la grille de concepts comme la taxonomie reconstruites
-       plusieurs fois pour une seule demande.
+       donc passer la cascade réellement observée sur un `/wiki-ingest` : une
+       intention compilée décrivait mot pour mot le corps d'une compétence
+       sœur, dont l'intention décrivait à son tour la suivante. Trois
+       compétences distinctes, aucun cycle, et la grille de concepts comme la
+       taxonomie reconstruites plusieurs fois pour une seule demande.
+       (Ces compétences sœurs ont disparu avec la simplification 0.15.66 ; la
+       garde, elle, reste.)
 
        Une intention compilée EST déjà le travail à faire : elle se délègue.
        La composition explicite reste ouverte — un corps qui nomme sa cible dit
@@ -1266,7 +1267,7 @@ export function buildAgentSystemPrompt(state) {
       ? `Workspace profile (.wiki/profile.md) — durable user preferences, apply these to every reply (tone, tutoiement/vouvoiement, formatting, etc.):\n${workspaceProfile}`
       : null,
     currentArtifactPromptLine(currentArtifactFor(state.session)),
-    'Runtime control: you have runtime__status, runtime__cancel, runtime__kill and runtime__enqueue. When the user asks to stop, remove, clean or kill the current run, its jobs or the queue ("supprime le job et la queue", "arr\u00eate tout"), call runtime__kill (or runtime__cancel for a soft stop of just the run) and confirm what was stopped. When the user explicitly asks to delete, reset, abandon or replace the current plan, call runtime__kill with purge=true; never set purge=true for a simple stop. For questions about what is running or queued, call runtime__status and answer from its data. You have no approval tool: a pending approval is granted only by the user through the approval button or the /approve command. Never grant, claim or report an approval yourself; when the user asks to proceed with pending mutations, tell them to use those controls. When the user asks for a NEW action while a run is active, do not execute it: propose runtime__enqueue (run it after) or, if they insist it replaces the current work, runtime__kill then the new action.',
+    'Runtime control: you have runtime__status, runtime__cancel, runtime__kill and runtime__enqueue. When the user asks to stop, remove, clean or kill the current run, its jobs or the queue ("supprime le job et la queue", "arr\u00eate tout"), call runtime__kill (or runtime__cancel for a soft stop of just the run) and confirm what was stopped. When the user explicitly asks to delete, reset, abandon or replace the current plan, call runtime__kill with purge=true; never set purge=true for a simple stop. For questions about what is running or queued, call runtime__status and answer from its data. You have no approval tool: a pending approval is granted only by the user through the approval button or the /approve command. Never grant, claim or report an approval yourself; when the user asks to proceed with pending mutations, tell them to use those controls. A request to approve, validate, confirm or accept a pending run is a human control action: NEVER call runtime__delegate (or any capability) for it — answer with the control to use and nothing else. When the user asks for a NEW action while a run is active, do not execute it: propose runtime__enqueue (run it after) or, if they insist it replaces the current work, runtime__kill then the new action.',
     'When the user asks to refresh, show, or update the displayed plan or status, call runtime__status. This is a state refresh request, not a new business capability, and must never be delegated.',
     'Report every runtime control outcome exactly as the tool returned it \u2014 never embellish. If runtime__kill reports 0 run(s)/0 task(s)/0 purged, say there was nothing active to stop or purge; do NOT claim a run, plan, pending approval or queue item was removed. If runtime__status returns an error or could not be read, say the runtime state could not be retrieved and do not describe a state you never obtained. Never assert that something was cleaned, cancelled, approved or purged unless that specific tool result confirms it.',
     'Durable profile updates are actions in this stabilized version: delegate them instead of writing directly.',
@@ -1751,7 +1752,7 @@ export function createAgentGraph(options = {}) {
             forceDelegation: canDelegate,
           };
         }
-        const failure = 'Réponse rejetée : Donna a exposé une instruction interne ou une procédure manuelle incorrecte.';
+        const failure = 'Response rejected: Donna exposed an internal instruction or an incorrect manual procedure.';
         emitAgentEvent(state.session, 'assistant_message', 'agent_guard', { content: failure });
         return { response: failure, pendingToolCalls: null, readyToStream: false };
       }

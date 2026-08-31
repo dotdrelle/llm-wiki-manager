@@ -49,6 +49,10 @@ export function managerMcpEndpointsFile() {
   return join(managerStateDir(), 'mcp.endpoints.json');
 }
 
+export function managerAgentRuntimesFile() {
+  return join(managerStateDir(), 'agent-runtimes.json');
+}
+
 // User-owned compose overrides, one per stack. `.wiki/compose` is persistent
 // operator configuration; `.wiki/runtime` is generated state rewritten by
 // compose commands. Keeping those directories separate makes the lifecycle
@@ -163,6 +167,16 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
         // Unreadable or invalid JSON: leave the operator's file strictly alone.
       }
     }
+  }
+  // External agent runtimes (RFC § 37) are optional and DISABLED in the
+  // packaged example: seeding a live endpoint would make every fresh install
+  // probe a runtime that does not ship. Copy once, never rewrite — an existing
+  // file is the operator's.
+  const runtimesFile = managerAgentRuntimesFile();
+  const runtimesExample = join(packageRoot, 'agent-runtimes.example.json');
+  if (existsSync(runtimesExample) && !existsSync(runtimesFile)) {
+    copyFileSync(runtimesExample, runtimesFile);
+    created.push('agent-runtimes.json');
   }
   const envFile = managerEnvFile();
   const envExample = join(packageRoot, '.env.example');

@@ -214,6 +214,11 @@ export function mergePolledActivity(tracked, polled) {
     // Identity: keep the tracked source/id so activityKey() stays stable.
     id: tracked.id ?? polled.id,
     source: tracked.source ?? polled.source,
+    // A later poll often reports only {status, progress} with no phase/type,
+    // and activityFromStatusPayload then falls back to the generic 'job' —
+    // spreading that over the tracked value degraded a real kind (e.g.
+    // 'knowledge.update') to 'job' on the very next poll tick.
+    kind: tracked.kind ?? polled.kind,
     // Keep polling with the descriptor that worked when the agent's answer
     // does not carry one of its own.
     poll: polled.poll ?? tracked.poll,

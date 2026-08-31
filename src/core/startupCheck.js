@@ -8,6 +8,7 @@ import { resolveAgentsComposeContext } from './agentsCompose.js';
 import { buildMcpStatus, discoverMcpTools } from './mcp.js';
 import { listWikircProfiles, loadWikircProfile, summarizeWikircConfig } from './wikirc.js';
 import { listWorkspaces, managerRoot, workspacesDir } from './workspaces.js';
+import { loadAgentRuntimesConfig, resolveRuntimeProviders } from '../orchestrator/providers/runtimeProviders.js';
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_CONNECTIVITY_URL = 'https://registry.npmjs.org/-/ping';
@@ -326,6 +327,58 @@ export async function checkMcpConnections(workspace, {
   };
 }
 
+// Agentic runtime gateway (GATEWAY_ENABLED / agent-runtimes.json). HTTP
+// probe, independent of Docker: the gateway may be a host-native service.
+// Nothing declared or enabled = skipped, never degraded — an optional engine
+// must not gate the startup of the manager it complements.
+export async function checkAgenticRuntimes({
+  loadConfig = loadAgentRuntimesConfig,
+  resolve = resolveRuntimeProviders,
+  env = process.env,
+} = {}) {
+  let config;
+  try {
+    config = loadConfig({ env });
+  } catch (err) {
+    return {
+      ok: false,
+      detail: 'Agentic runtime configuration invalid',
+      context: { error: commandError(err), runtimes: [] },
+    };
+  }
+  const { providers, skipped } = resolve(config);
+  if (providers.length === 0 && skipped.length === 0) {
+    return { ok: true, skipped: true, detail: 'No agentic runtime enabled', context: { runtimes: [] } };
+  }
+  const runtimes = [];
+  for (const item of skipped) {
+    runtimes.push({ name: item.id || '(unnamed)', status: 'skipped', reason: item.reason });
+  }
+  for (const { id, provider } of providers) {
+    try {
+      const description = await provider.describe();
+      runtimes.push({
+        name: id,
+        status: description.health === 'unavailable' ? 'failed' : 'connected',
+        capabilities: (description.capabilities ?? [])
+          .map((capability) => capability?.name ?? capability?.id ?? '')
+          .filter(Boolean),
+        reason: description.health === 'unavailable' ? (description.error ?? 'unavailable') : null,
+      });
+    } catch (err) {
+      runtimes.push({ name: id, status: 'failed', reason: commandError(err) });
+    }
+  }
+  const connected = runtimes.filter((runtime) => runtime.status === 'connected');
+  const failed = runtimes.filter((runtime) => runtime.status === 'failed');
+  return {
+    ok: failed.length === 0,
+    pending: failed.length > 0,
+    detail: `${connected.length} connected${failed.length ? `, ${failed.length} pending` : ''}`,
+    context: { runtimes, command: '/status' },
+  };
+}
+
 function preflightStatus(gaps, checks) {
   const setupRequired = gaps.some((gap) => gap.kind === 'workspace' || gap.kind === 'llm');
   if (setupRequired) return 'setup_required';
@@ -360,6 +413,7 @@ export async function runChecks({
   dockerCheck = checkDockerAvailability,
   internetCheck = checkInternetConnectivity,
   agentsCheck = checkAgents,
+  agenticRuntimesCheck = checkAgenticRuntimes,
   workspaceContainersCheck = checkWorkspaceContainers,
   mcpCheck = checkMcpConnections,
   onCheck = () => {},
@@ -398,6 +452,10 @@ export async function runChecks({
           : 'Running',
     context: { ...(agents?.context ?? {}), command: 'wiki-workspace agents up' },
   });
+  // The gateway is an HTTP probe, independent of Docker: it may be a
+  // host-native service. Nothing enabled = skipped, never degraded.
+  const agenticRuntimes = await agenticRuntimesCheck();
+  onCheck({ kind: 'agentic', ...agenticRuntimes });
   const workspaceGap = checkWorkspace(workspaces);
   if (workspaceGap) {
     gaps.push(workspaceGap);

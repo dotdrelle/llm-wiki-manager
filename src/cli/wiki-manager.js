@@ -30,6 +30,7 @@ import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../core
 import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
 import { resolveCapabilityConcurrency } from '../orchestrator/scheduler.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
+import { CapabilityUnavailableError, resolve as resolveCapability } from '../orchestrator/capabilityResolver.js';
 import { listWorkspaces } from '../core/workspaces.js';
 import { findSkill } from '../core/skills.js';
 import { rememberArtifact } from '../core/currentArtifact.js';
@@ -67,6 +68,20 @@ function errorDiagnostic(err) {
 function unavailableRuntime(err) {
   const reason = err instanceof Error ? err.message : String(err);
   return { url: null, error: reason };
+}
+
+// The user-facing reason a capability cannot start — one sentence, the likely
+// cause, and the fix. The raw registry goes to the logs, never to the chat.
+function capabilityUnavailableMessage(capabilityId, seen = []) {
+  const agentic = String(capabilityId).startsWith('agent.');
+  const servicesDown = seen.some((entry) => /\[none\]$/.test(entry));
+  if (agentic) {
+    return `No agent provides capability ${capabilityId} — the agentic runtime is not enabled or not reachable. Enable it (GATEWAY_ENABLED=true + wiki-workspace agents up) and check /status.`;
+  }
+  if (servicesDown) {
+    return `No agent provides capability ${capabilityId} — the workspace services are not running. Start them (wiki-workspace up <workspace>), then retry.`;
+  }
+  return `No agent provides capability ${capabilityId} — no connected agent declares it. Check /status.`;
 }
 
 export function buildExecutorOnlyFragment({ objective, workspace, selection }) {
@@ -923,6 +938,7 @@ async function runRuntime(argv, agent) {
   const { startRuntimeServer } = await import('../runtime/server.js');
   const { recoverActiveRuns } = await import('../runtime/recoveryManager.js');
   const { emitRuntimeLog, startActivitySupervisor, cancelActiveActivityJobs, discoverAgentsOnce } = await import('../runtime/supervisor.js');
+  const { discoverRuntimeProvidersOnce } = await import('../orchestrator/providers/runtimeProviders.js');
   const { resolveRuntimeAuthToken } = await import('../runtime/auth.js');
   const { createSqliteQueueStore } = await import('../runtime/queueStore.js');
   const { createApprovalManager } = await import('../runtime/approvals.js');
@@ -950,6 +966,7 @@ async function runRuntime(argv, agent) {
     await Promise.all(resolved.map(async (context) => {
       await refreshMcpRuntimeStatus(context.session);
       await discoverAgentsOnce(context.session);
+      await discoverRuntimeProvidersOnce(context.session);
     }));
   }
 
@@ -1137,6 +1154,14 @@ async function runRuntime(argv, agent) {
     try {
       const context = await getWorkspaceContext(workspace);
       await refreshMcpRuntimeStatus(context.session);
+      // The supervisor kicks off agent + runtime-provider discovery fire-and-
+      // forget, so at boot `session.runtimeProviderAgents` is usually still
+      // undefined here. recoverActiveRuns resolves an external-runtime task by
+      // finding its synthetic agent in that list; without it the task falls to
+      // the MCP path, calls a non-existent server named after the capability,
+      // throws, and the run is interrupted instead of recovered. Await the same
+      // discovery the /run path already awaits (wiki-manager.js's turn setup).
+      await discoverRuntimeProvidersOnce(context.session);
       const gaps = recoveryMcpGaps(context);
       if (gaps.length > 0) {
         const interrupted = store.interruptRuns({ workspace: context.workspace });
@@ -1243,6 +1268,7 @@ async function runRuntime(argv, agent) {
     // live endpoints and await one discovery pass before resolving.
     await refreshMcpRuntimeStatus(session);
     await discoverAgentsOnce(session, { registry: session.agentRegistry });
+    await discoverRuntimeProvidersOnce(session);
     let selection;
     try {
       selection = await resolveObjective(objective, session);
@@ -1457,11 +1483,37 @@ async function runRuntime(argv, agent) {
       if (body.capabilityPlan?.capability) {
         const { validateFragment } = await import('../orchestrator/planValidator.js');
         const { integrate } = await import('../orchestrator/planIntegrator.js');
+        // Same boot-race guard as prepareDelegation below: discovery is
+        // asynchronous at startup, so a structured capability run submitted
+        // right after boot must not observe the transient empty registry and
+        // fail while the provider is already healthy (first E2E run of the
+        // day did exactly that: "No agent provides capability agent.review"
+        // while the gateway answered /health).
+        await refreshMcpRuntimeStatus(session);
+        await discoverAgentsOnce(session, { registry: session.agentRegistry });
+        await discoverRuntimeProvidersOnce(session);
         const registry = capabilityRegistryForSession(session);
-        const agents = session.agentRegistry?.snapshot?.() ?? session.agentRegistrySnapshot ?? [];
-        const provider = agents.find((item) => (item.description?.capabilities ?? [])
-          .some((capability) => capability.id === body.capabilityPlan.capability));
-        if (!provider?.serverName) {
+        const capabilityId = String(body.capabilityPlan.capability);
+        const candidates = registry.providersFor(capabilityId) ?? [];
+        // Route through the same resolver every other task assignment uses
+        // (assignmentManager.js, resultAggregator.js), instead of a bespoke
+        // "prefer external-runtime, else any with serverName" chain that
+        // ignored the workspace's own capabilityRouting config (preferred/
+        // allowed/fallback agents) and never checked health/availability at
+        // all — this could hand a direct /run capability request to a
+        // disallowed or unhealthy agent while every other entry point honors
+        // the routing config.
+        const workspaceConfig = session?.wikircConfig ?? session?.wikirc?.config ?? {};
+        let provider = null;
+        let resolutionReason = null;
+        try {
+          const resolved = resolveCapability(capabilityId, { workspaceConfig, registry });
+          provider = candidates.find((item) => item.agentInstanceId === resolved.agentInstanceId) ?? null;
+        } catch (error) {
+          if (!(error instanceof CapabilityUnavailableError)) throw error;
+          resolutionReason = error.reason;
+        }
+        if (!provider) {
           /*
            Say what WAS seen, not only what was missing.
 
@@ -1471,38 +1523,60 @@ async function runRuntime(argv, agent) {
            PRODUCTION_ALLOWED_STEPS drops its whole capability from
            agent_describe, silently), or a name mismatch. Listing the registry
            turns the next occurrence into its own diagnosis instead of a guess.
-          */
-          const seen = agents.map((item) => {
-            const ids = (item.description?.capabilities ?? []).map((capability) => capability.id);
-            return `${item.serverName ?? '?'}[${ids.join(', ') || 'none'}]`;
-          });
-          throw new Error(
-            `No agent provides capability ${body.capabilityPlan.capability}. `
-            + (seen.length
-              ? `Registered agents: ${seen.join('; ')}.`
-              : 'No agent is registered: none answered agent_describe.'),
-          );
+           */
+          const seen = [
+            ...(session.agentRegistry?.snapshot?.() ?? session.agentRegistrySnapshot ?? []),
+            ...(session.runtimeProviderAgents ?? []),
+          ].map((item) => {
+              const ids = (item.description?.capabilities ?? []).map((capability) => capability.id);
+              return `${item.serverName ?? item.runtimeId ?? '?'}[${ids.join(', ') || 'none'}]`;
+            });
+          // The raw registry stays for diagnosis, in the LOGS — never in the
+          // user-facing message, which explains the likely cause instead.
+          emitRuntimeLog(session, `capability-plan: ${capabilityId} unresolvable (${resolutionReason ?? 'no_candidate'}) — registry: ${seen.join('; ') || 'no agent answered agent_describe'}`);
+          const error = new Error(capabilityUnavailableMessage(capabilityId, seen));
+          error.code = 'capability_unavailable';
+          throw error;
         }
-        const fragment = parseJsonText(formatMcpToolResult(await callMcpTool(session.mcp, provider.serverName, 'agent_plan', {
-          capability: body.capabilityPlan.capability,
-          operation: body.capabilityPlan.operation ?? undefined,
-          workspace: { revision: String(Date.now()) },
-          constraints: {
-            // The agent declares its capacity. Request/env values are only
-            // constraints: they may lower that capacity, never raise it.
-            maxConcurrency: resolveCapabilityConcurrency(
-              provider,
-              body.capabilityPlan.maxConcurrency,
-              process.env.WIKI_MANAGER_CAPABILITY_CONCURRENCY,
-            ),
-            requireApprovalForMutations: body.capabilityPlan.requireApproval !== false,
-          },
-          ...(body.capabilityPlan.arguments && typeof body.capabilityPlan.arguments === 'object'
-            ? { arguments: body.capabilityPlan.arguments }
-            : Array.isArray(body.capabilityPlan.inputs) && body.capabilityPlan.inputs.length > 0
-              ? { arguments: { inputs: body.capabilityPlan.inputs } }
-              : {}),
-        })));
+        const operation = body.capabilityPlan.operation
+          ?? provider.capability?.supportedOperations?.[0]
+          ?? 'run';
+        const canPlan = provider.description?.orchestration?.canPlan !== false;
+        const fragment = canPlan
+          ? parseJsonText(formatMcpToolResult(await callMcpTool(session.mcp, provider.serverName, 'agent_plan', {
+              capability: capabilityId,
+              operation,
+              workspace: { revision: String(Date.now()) },
+              constraints: {
+                // The agent declares its capacity. Request/env values are only
+                // constraints: they may lower that capacity, never raise it.
+                maxConcurrency: resolveCapabilityConcurrency(
+                  provider,
+                  body.capabilityPlan.maxConcurrency,
+                  process.env.WIKI_MANAGER_CAPABILITY_CONCURRENCY,
+                ),
+                requireApprovalForMutations: body.capabilityPlan.requireApproval !== false,
+              },
+              ...(body.capabilityPlan.arguments && typeof body.capabilityPlan.arguments === 'object'
+                ? { arguments: body.capabilityPlan.arguments }
+                : Array.isArray(body.capabilityPlan.inputs) && body.capabilityPlan.inputs.length > 0
+                  ? { arguments: { inputs: body.capabilityPlan.inputs } }
+                  : {}),
+            })))
+          : buildExecutorOnlyFragment({
+              objective: `Capability run ${capabilityId}`,
+              workspace: session.workspace ?? 'workspace',
+              selection: {
+                capability: capabilityId,
+                operation,
+                provider,
+                arguments: body.capabilityPlan.arguments && typeof body.capabilityPlan.arguments === 'object'
+                  ? body.capabilityPlan.arguments
+                  : Array.isArray(body.capabilityPlan.inputs) && body.capabilityPlan.inputs.length > 0
+                    ? { inputs: body.capabilityPlan.inputs }
+                    : {},
+              },
+            });
         if (!Array.isArray(fragment?.tasks) || fragment.tasks.length === 0) {
           dispatchAgentEvent(session, createAgentEvent('assistant_message', {
             origin: 'runtime',
@@ -1534,7 +1608,18 @@ async function runRuntime(argv, agent) {
         if (!integrated.ok) {
           throw new Error(`Capability plan integration failed: ${(integrated.errors ?? []).map((error) => error.message ?? error.code ?? String(error)).join('; ')}`);
         }
-        emitRuntimeLog(session, `capability-plan: ${fragment.tasks.length} task(s) integrated from ${provider.serverName}.agent_plan (${body.capabilityPlan.capability}); approvals: ${(session.agentProjection?.approvals ?? []).filter((approval) => approval.status === 'pending_approval').length} pending`);
+        // The structured path integrates the plan directly, so it must honor
+        // the same explicit opt-in as the delegation path (delegation.js
+        // `resolvePreparedDelegationApproval`): autoApprove grants one
+        // run-scoped approval right after integration. Without it, a
+        // headless/CI caller with autoApprove:true deadlocks on the
+        // scheduler's approval gate until the timeout — first E2E research
+        // run did exactly that.
+        if (body.autoApprove === true) {
+          const { resolvePreparedDelegationApproval } = await import('../runtime/delegation.js');
+          resolvePreparedDelegationApproval({ autoApprove: true, approvalManager: context.approvalManager, runId });
+        }
+        emitRuntimeLog(session, `capability-plan: ${fragment.tasks.length} task(s) integrated${provider.serverName ? ` from ${provider.serverName}.agent_plan` : ''} (${body.capabilityPlan.capability}); approvals: ${(session.agentProjection?.approvals ?? []).filter((approval) => approval.status === 'pending_approval').length} pending`);
       }
       await runRuntimeAgenticWorkflow(agent, session, input, {
         signal,
@@ -1568,6 +1653,9 @@ async function runRuntime(argv, agent) {
         payload: {
           runId,
           message: err instanceof Error ? err.message : String(err),
+          // UIs map this to amber ("service not available") instead of red
+          // ("the run failed"): the run could not START, it did not crash.
+          ...(err?.code === 'capability_unavailable' ? { kind: 'capability_unavailable' } : {}),
         },
       }));
     } finally {

@@ -9,7 +9,7 @@ connection method depends on the transport each server uses.
 |---|---|---|
 | `llm-wiki mcp` | stdio | — |
 | `llm-wiki mcp-http` | Streamable HTTP | 3101 |
-| `agent-wiki-production` | Streamable HTTP | 3102 |
+| `agent-production` | Streamable HTTP | 3102 |
 | `agent-cme` | Streamable HTTP | 3336 |
 | `agent-external/documents` | Streamable HTTP | 3337 |
 

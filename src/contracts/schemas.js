@@ -330,6 +330,71 @@ const patchTaskSchema = {
   },
 };
 
+const runtimeCapabilitySchema = {
+  type: 'object',
+  required: ['name'],
+  additionalProperties: true,
+  properties: {
+    name: { type: 'string', minLength: 1 },
+    description: { type: 'string' },
+    operations: stringArraySchema,
+    aliases: stringArraySchema,
+    aliasOperations: { type: 'object', additionalProperties: true },
+    mutationClass: { type: 'string' },
+    defaultRequiresApproval: { type: 'boolean' },
+  },
+};
+
+const runtimeDescriptionSchema = {
+  $id: 'https://dotdrelle.dev/wiki-manager/contracts/runtime-description/v1',
+  title: 'RuntimeDescription',
+  schemaVersion: '1',
+  type: 'object',
+  required: ['runtime', 'version', 'protocolVersion'],
+  additionalProperties: true,
+  properties: {
+    runtime: { type: 'string', minLength: 1 },
+    version: { type: 'string', minLength: 1 },
+    protocolVersion: { type: 'string', minLength: 1 },
+    health: { type: 'string' },
+    capabilities: { type: 'array', items: runtimeCapabilitySchema },
+  },
+};
+
+const runtimeEventSchema = {
+  $id: 'https://dotdrelle.dev/wiki-manager/contracts/runtime-event/v1',
+  title: 'RuntimeEvent',
+  schemaVersion: '1',
+  type: 'object',
+  required: ['type'],
+  additionalProperties: true,
+  properties: {
+    type: {
+      type: 'string',
+      enum: [
+        'run_created',
+        'run_started',
+        'agent_thinking',
+        'tool_started',
+        'tool_finished',
+        'subagent_started',
+        'subagent_finished',
+        'message',
+        'approval_required',
+        'run_completed',
+        'run_failed',
+        'run_cancelled',
+      ],
+    },
+    runId: { type: 'string' },
+    tool: { type: 'string' },
+    durationMs: { type: 'number' },
+    resultSummary: { type: 'string' },
+    error: nullableString,
+    args: nullableObject,
+  },
+};
+
 export const contractSchemas = {
   activity: {
     $id: 'https://dotdrelle.dev/wiki-manager/contracts/activity/v1',
@@ -462,6 +527,8 @@ export const contractSchemas = {
   plannedTask: plannedTaskSchema,
   taskGraphFragment: taskGraphFragmentSchema,
   planExpansionRequest: planExpansionRequestSchema,
+  runtimeDescription: runtimeDescriptionSchema,
+  runtimeEvent: runtimeEventSchema,
 };
 
 export function validateContract(name, value) {

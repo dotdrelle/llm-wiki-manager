@@ -54,9 +54,9 @@ test('the selection reason is humanized, not leaked as an audit enum', () => {
   assert.equal(selectionKindLabel('description_match'), 'description match');
   assert.equal(selectionKindLabel(null), null);
   const [chain] = projectSkillChains([
-    { id: 'c0', chainId: 'k', chainSequence: 0, skillName: 'wiki-taxonomy', selectionKind: 'explicit_name', status: 'running', input: '/wiki-taxonomy' },
+    { id: 'c0', chainId: 'k', chainSequence: 0, skillName: 'wiki-build', selectionKind: 'explicit_name', status: 'running', input: '/wiki-build' },
   ]);
   assert.equal(chain.selectionKind, 'explicit_name');
   assert.equal(chain.selectionLabel, 'explicit name');
-  assert.equal(renderSkillChain(chain).split('\n')[0], 'wiki-taxonomy · explicit name');
+  assert.equal(renderSkillChain(chain).split('\n')[0], 'wiki-build · explicit name');
 });

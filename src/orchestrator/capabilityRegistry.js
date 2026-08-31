@@ -19,6 +19,11 @@ export function createCapabilityRegistry({ agents = [], compatibleContractVersio
         capability,
         description: agent.description,
         lastSeenAt: agent.lastSeenAt ?? null,
+        // External runtime providers (RFC § 8) ride the same registry as MCP
+        // agents. These fields are null for every ordinary MCP agent.
+        providerKind: agent.providerKind ?? null,
+        runtimeId: agent.runtimeId ?? null,
+        runtimeProvider: agent.runtimeProvider ?? null,
       };
       const list = providers.get(key) ?? [];
       list.push(entry);
@@ -54,7 +59,9 @@ export function capabilityRegistryForSession(session) {
     ?? session?.agentRegistrySnapshot
     ?? session?.agents
     ?? [];
-  if (agents.length > 0) return createCapabilityRegistry({ agents });
+  const runtimeAgents = session?.runtimeProviderAgents ?? [];
+  const merged = [...agents, ...runtimeAgents];
+  if (merged.length > 0) return createCapabilityRegistry({ agents: merged });
   if (session?.capabilityRegistry?.providersFor) return session.capabilityRegistry;
   return createCapabilityRegistry();
 }

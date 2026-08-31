@@ -1,0 +1,68 @@
+{
+  "_comment": "Agentic runtimes for this manager (RFC § 37), seeded to agent-runtimes.json on first scaffold — enabled by default, matching the scaffold's GATEWAY_ENABLED=true (set GATEWAY_ENABLED=false in .env, or enabled:false here, to opt out). Rules: (1) a capability is read-only unless it declares mutationClass or defaultRequiresApproval; (2) the 'plan' operation is always a dry-run and never pauses for approval; (3) read/write pairs are TWO capabilities, not two operations, so the approval class stays per-capability; (4) the runtime has eyes (read tools), ideas (free reasoning) and a mouth (gated side-effects), but no hands on the workspace — the hands are the DAG. See llm-wiki-manager/docs/agentic-runtime.md.",
+  "runtimes": [
+    {
+      "id": "deepagents",
+      "type": "deepagents",
+      "endpoint": "http://localhost:7789",
+      "enabled": true,
+      "capabilities": [
+        {
+          "name": "agent.review",
+          "operations": ["run"],
+          "description": "Read-only audit of a wiki workspace: compare source documents against the existing concept pages, identify missing or under-covered classes, and produce a structured gap report. No mutation.",
+          "aliases": ["audit", "review", "analyze", "compare", "check"]
+        },
+        {
+          "name": "agent.consistency",
+          "operations": ["run"],
+          "description": "Read-only detection of contradictions and inconsistencies between wiki pages and their sources, citing the conflicting passages. No mutation.",
+          "aliases": ["consistency", "coherence", "contradictions", "conflicts"]
+        },
+        {
+          "name": "agent.synthesize",
+          "operations": ["run"],
+          "description": "Read-only cross-source synthesis: build a structured summary of several documents on one subject, using web search tools when available to complement the sources. No mutation.",
+          "aliases": ["synthesize", "summarize", "synthesis"]
+        },
+        {
+          "_comment": "operations: 'plan' reports the proposal only (no pause, dry-run); 'run' integrates it and waits for human approval (defaultRequiresApproval).",
+          "name": "agent.plan",
+          "operations": ["plan", "run"],
+          "description": "Given an analysis, propose a deterministic DAG plan (ingest, build, sync) as a validated fragment. The 'plan' operation only reports the proposal; 'run' integrates it and waits for human approval.",
+          "aliases": ["plan", "propose"],
+          "aliasOperations": { "plan": "plan", "propose": "plan", "apply": "run", "execute": "run" },
+          "defaultRequiresApproval": true
+        },
+        {
+          "name": "agent.answer",
+          "operations": ["run"],
+          "description": "Read-only research answer: investigate a question using the wiki sources and web search, and reply with a grounded answer. No mutation.",
+          "aliases": ["answer", "question", "explain"]
+        },
+        {
+          "_comment": "mutationClass 'ingest': writes the findings into the workspace inbox, approval required.",
+          "name": "agent.research",
+          "operations": ["run"],
+          "description": "Web research grounded in the wiki: answer a complex question using wiki sources and web search, then write the findings into the workspace inbox. Mutation, approval required.",
+          "aliases": ["research", "investigate"],
+          "mutationClass": "ingest"
+        },
+        {
+          "name": "agent.preview",
+          "operations": ["run"],
+          "description": "Compose the notification report from the workspace profile and show it, without sending. No mutation.",
+          "aliases": ["preview", "draft", "compose"]
+        },
+        {
+          "_comment": "defaultRequiresApproval: sending the mail pauses for human approval.",
+          "name": "agent.notify",
+          "operations": ["run"],
+          "description": "Read the workspace profile for the notification recipient, then send the report by email. Mutation, approval required.",
+          "aliases": ["notify", "send", "email", "report"],
+          "defaultRequiresApproval": true
+        }
+      ]
+    }
+  ]
+}

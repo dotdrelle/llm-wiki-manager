@@ -122,53 +122,52 @@ test('resolveObjective resolves diagnose via alias despite the notification "sen
   assert.equal(result.operation, 'doctor');
 });
 
-const concepts = makeCapability('knowledge.concepts', {
-  operations: ['concepts', 'reclassify-concepts'],
-  aliases: ['concept grid', 'reclassify concepts', 'file unclassified concepts'],
+const snapshot = makeCapability('data.snapshot', {
+  operations: ['snapshot', 'prune'],
+  aliases: ['take a snapshot', 'prune snapshots', 'clean old snapshots'],
   aliasOperations: {
-    'concept grid': 'concepts',
-    'reclassify concepts': 'reclassify-concepts',
-    'file unclassified concepts': 'reclassify-concepts',
+    'take a snapshot': 'snapshot',
+    'prune snapshots': 'prune',
+    'clean old snapshots': 'prune',
   },
-  description: 'Synthesize the concept grid or file unclassified pages into it.',
+  description: 'Take a snapshot of the workspace or prune old snapshots.',
 });
 
 /*
  Regression: with two operations, [...new Set(supportedOperations)].sort()
- alphabetizes to ["concepts", "reclassify-concepts"], so a naive alias hit
- defaulting to operations[0] would ALWAYS resolve to "concepts" — the
- destructive grid rebuild — even for aliases explicitly authored to reach the
- safe "reclassify-concepts" operation. aliasOperations must be consulted
- first.
+ alphabetizes to ["prune", "snapshot"], so a naive alias hit defaulting to
+ operations[0] would ALWAYS resolve to "prune" — the destructive operation —
+ even for aliases explicitly authored to reach the safe "snapshot" one.
+ aliasOperations must be consulted first.
 */
-test('resolveObjective routes "reclassify concepts" to reclassify-concepts, not operations[0]', async () => {
-  const session = sessionWith([provider('production-1', concepts)]);
+test('resolveObjective routes "prune snapshots" to prune, not operations[0]', async () => {
+  const session = sessionWith([provider('production-1', snapshot)]);
   session.llm.completeWithTools = async () => {
     throw new Error('the aliased operation must not depend on LLM selection');
   };
-  const result = await resolveObjective('Please reclassify concepts in the workspace', session);
-  assert.equal(result.capability, 'knowledge.concepts');
-  assert.equal(result.operation, 'reclassify-concepts');
+  const result = await resolveObjective('Please prune the old snapshots', session);
+  assert.equal(result.capability, 'data.snapshot');
+  assert.equal(result.operation, 'prune');
 });
 
-test('resolveObjective routes "file unclassified concepts" to reclassify-concepts', async () => {
-  const session = sessionWith([provider('production-1', concepts)]);
+test('resolveObjective routes "clean old snapshots" to prune', async () => {
+  const session = sessionWith([provider('production-1', snapshot)]);
   session.llm.completeWithTools = async () => {
     throw new Error('the aliased operation must not depend on LLM selection');
   };
-  const result = await resolveObjective('File unclassified concepts into the grid', session);
-  assert.equal(result.capability, 'knowledge.concepts');
-  assert.equal(result.operation, 'reclassify-concepts');
+  const result = await resolveObjective('Clean old snapshots of the workspace', session);
+  assert.equal(result.capability, 'data.snapshot');
+  assert.equal(result.operation, 'prune');
 });
 
-test('resolveObjective routes "concept grid" to the concepts operation', async () => {
-  const session = sessionWith([provider('production-1', concepts)]);
+test('resolveObjective routes "take a snapshot" to the snapshot operation', async () => {
+  const session = sessionWith([provider('production-1', snapshot)]);
   session.llm.completeWithTools = async () => {
     throw new Error('the aliased operation must not depend on LLM selection');
   };
-  const result = await resolveObjective('Rebuild the concept grid', session);
-  assert.equal(result.capability, 'knowledge.concepts');
-  assert.equal(result.operation, 'concepts');
+  const result = await resolveObjective('Take a snapshot of the workspace', session);
+  assert.equal(result.capability, 'data.snapshot');
+  assert.equal(result.operation, 'snapshot');
 });
 
 test('resolveObjective falls back to operations[0] when a matched alias has no aliasOperations entry', async () => {

@@ -18,16 +18,16 @@ jobs:
           path: llm-wiki
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/agent-wiki-production
-          path: agent-wiki-production
+          repository: ${{ github.repository_owner }}/agent-production
+          path: agent-external/agent-production
       - uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/agent-cme
           path: agent-external/agent-cme
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/agent-wiki-documents
-          path: agent-external/agent-wiki-documents
+          repository: ${{ github.repository_owner }}/agent-documents
+          path: agent-external/agent-documents
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.2.0

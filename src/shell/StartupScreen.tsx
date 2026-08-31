@@ -238,9 +238,36 @@ export function StartupScreen(props: {
   });
 
   const preflightChecks = createMemo(() => props.preflight?.checks ?? []);
+  const checkByKind = createMemo(() => {
+    const map = new Map<string, any>();
+    for (const check of preflightChecks()) map.set(check.kind, check);
+    return map;
+  });
+  // Docker and Internet leave the check list: they are ambient state, shown in
+  // the header (top right), not among the startup rows.
+  const dockerCheck = createMemo(() => checkByKind().get('docker'));
+  const internetCheck = createMemo(() => checkByKind().get('internet'));
+  const listChecks = createMemo(() => {
+    const order = ['workspace', 'runtime', 'agentic', 'agents', 'containers', 'mcp'];
+    const seen = new Set<string>(['docker', 'internet']);
+    const ordered: Array<{ kind: string; ok?: boolean; skipped?: boolean; pending?: boolean; detail?: string }> = [];
+    for (const kind of order) {
+      const check = checkByKind().get(kind);
+      if (!check) continue;
+      // An optional engine is not part of the startup story: when nothing is
+      // enabled, its row disappears instead of showing a misleading green ✓.
+      if (kind === 'agentic' && check.skipped) continue;
+      ordered.push(check);
+      seen.add(kind);
+    }
+    for (const check of preflightChecks()) {
+      if (!seen.has(check.kind)) ordered.push(check);
+    }
+    return ordered;
+  });
   const checkLabel = (kind: string) => ({
     docker: 'Docker', internet: 'Internet', agents: 'Agents', workspace: 'Workspaces',
-    containers: 'Containers', mcp: 'MCP', runtime: 'Runtime',
+    containers: 'Containers', mcp: 'MCP', agentic: 'Agentic runtime', runtime: 'Runtime',
   } as Record<string, string>)[kind] ?? kind;
 
   const subtitle = createMemo(() => {
@@ -281,10 +308,20 @@ export function StartupScreen(props: {
         overflow="hidden"
       >
         <box height={1} flexDirection="row">
-          <text fg="#8BD5CA" content={fit(`DONNA v${props.version}`, Math.floor(innerWidth() * 0.5))} />
-          <text fg={statusColor()} content={fit(` ${props.preflightBusy ? '◐' : statusDot(props.preflight?.status === 'ready')} ${status()}`, Math.floor(innerWidth() * 0.45))} />
+          <text fg="#8BD5CA" content={fit(`DONNA v${props.version}`, Math.floor(innerWidth() * 0.4))} />
+          <text fg={statusColor()} content={fit(` ${props.preflightBusy ? '◐' : statusDot(props.preflight?.status === 'ready')} ${status()}`, Math.floor(innerWidth() * 0.32))} />
+          <box flexGrow={1} />
+          <text fg="#7F8C8D" content={dockerCheck() ? fit(`Docker — ${dockerCheck()?.detail ?? '—'}`, Math.floor(innerWidth() * 0.28)) : ''} />
         </box>
-        <text height={1} fg="#7F8C8D" content={fit(subtitle(), innerWidth())} />
+        <box height={1} flexDirection="row">
+          <text height={1} fg="#7F8C8D" content={fit(subtitle(), Math.floor(innerWidth() * 0.6))} />
+          <box flexGrow={1} />
+          <text
+            height={1}
+            fg={internetCheck() ? (internetCheck()?.ok ? '#8BD5CA' : '#FBBF24') : '#7F8C8D'}
+            content={internetCheck() ? fit(`Internet — ${internetCheck()?.ok ? 'OK' : 'KO'}`, Math.floor(innerWidth() * 0.28)) : ''}
+          />
+        </box>
         <text height={1}>{''}</text>
         <box
           height={8}
@@ -295,7 +332,7 @@ export function StartupScreen(props: {
           overflow="hidden"
         >
           <text fg="#d6a85f">{DONNA_LOGO}</text>
-          <text fg="#888888">Intelligent workspace</text>
+          <text fg="#888888">Intelligent Agentic workspace(s)</text>
         </box>
         <text height={1}>{''}</text>
         <text height={1} fg="#7F8C8D" content={menuTitle()} />
@@ -320,8 +357,8 @@ export function StartupScreen(props: {
           </For>
         </box>
         <text height={1}>{''}</text>
-        <box height={Math.max(3, preflightChecks().length)} flexDirection="column" border={['left']} borderStyle="heavy" borderColor="#5DADE2" paddingX={1} overflow="hidden">
-          <For each={preflightChecks().length ? preflightChecks() : [
+        <box height={Math.max(3, listChecks().length)} flexDirection="column" border={['left']} borderStyle="heavy" borderColor="#5DADE2" paddingX={1} overflow="hidden">
+          <For each={listChecks().length ? listChecks() : [
             { kind: 'workspace', ok: props.wikiReady, detail: props.wikiReady ? 'default profile ready' : 'init required' },
             { kind: 'mcp', ok: props.connectedMcpServers > 0, detail: `${props.connectedMcpServers} server(s) configured` },
             { kind: 'llm', ok: Boolean(props.model), detail: props.model || 'not configured' },

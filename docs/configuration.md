@@ -287,7 +287,7 @@ the amber banner in the Shell, the Approve button in `serve`. Leaving the
 tool-level guard on adds a **second** prompt for the same decision, which
 teaches operators to confirm without reading.
 
-Set it to `true` only if you drive `agent-wiki-production` **outside** Donna's
+Set it to `true` only if you drive `agent-production` **outside** Donna's
 orchestration, where no approval gate exists to protect you.
 
 ### Document handoff: `DOCUMENT_INPUT_DIR`, `DOCUMENT_UPLOADS_DIR`, `DOCUMENT_OUTPUT_DIR`

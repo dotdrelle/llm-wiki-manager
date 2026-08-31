@@ -98,21 +98,22 @@ test('borne la profondeur même sans cycle', async () => {
 });
 
 /*
- Cascade observée sur un `/wiki-ingest` : deux `/wiki-rebuild-concepts`, puis
- `/wiki-reclassify`, puis `/wiki-taxonomy`. Aucun cycle — trois compétences
- distinctes — mais la grille de concepts et la taxonomie reconstruites
- plusieurs fois pour une seule demande. La deuxième intention compilée de
- `/wiki-ingest` est mot pour mot le corps de `/wiki-rebuild-concepts` : le
- sélecteur par description la reconnaissait légitimement.
+ Cascade observée à l'époque des compétences concepts : un `/wiki-ingest`
+ relançait les compétences voisines plusieurs fois pour une seule demande,
+ parce que la deuxième intention compilée était mot pour mot le corps d'une
+ compétence sœur et que le sélecteur par description la reconnaissait
+ légitimement. Ces compétences (rebuild-concepts/reclassify/taxonomy) ont
+ disparu avec la simplification 0.15.66 ; la garde contre la récursion, elle,
+ reste — c'est elle que ces tests verrouillent.
 */
 const callWithObjective = (state, skillName, objective) =>
   handleRuntimeControlTool(state, 'run_skill', { skillName, _userInput: objective })
     .then((raw) => JSON.parse(raw));
 
 test('refuse une compétence voisine que l’intention décrit sans la nommer', async () => {
-  const objective = 'Run the production pipeline steps concepts, reclassify-concepts and taxonomy, in that order.';
+  const objective = 'Run the production pipeline steps ingest, build, export and polish, in that order.';
   const ran = [];
-  const result = await callWithObjective(session(['wiki-ingest'], ran), 'wiki-rebuild-concepts', objective);
+  const result = await callWithObjective(session(['wiki-ingest'], ran), 'wiki-build', objective);
 
   assert.equal(result.ok, false);
   assert.equal(result.code, 'nested_skill_match_blocked');
@@ -145,20 +146,20 @@ test('un chemin de fichier commençant par un nom de compétence ne vaut pas inv
 });
 
 test('hors de toute chaîne, la sélection par description reste permise', async () => {
-  const result = await callWithObjective(session(undefined), 'wiki-taxonomy', 'republish the graph taxonomy');
+  const result = await callWithObjective(session(undefined), 'wiki-build', 'regenerate the deliverables from the templates');
 
   assert.equal(result.ok, true);
 });
 
 /*
  Le nom seul ne prouve rien. Plusieurs compétences du scaffold portent un nom
- qui est aussi un mot courant : « Run the production pipeline steps concepts,
- reclassify-concepts and taxonomy » nomme `pipeline`, dont le lancement rejoue
+ qui est aussi un mot courant : « Run the production pipeline steps ingest,
+ build, export and polish » nomme `pipeline`, dont le lancement rejoue
  ingest + build + export + polish. Une intention doit citer sa cible EN TANT QUE
  compétence, pas l'employer comme mot.
 */
 test('un nom employé comme mot courant ne vaut pas invocation', async () => {
-  const objective = 'Run the production pipeline steps concepts, reclassify-concepts and taxonomy, in that order.';
+  const objective = 'Run the production pipeline steps ingest, build, export and polish, in that order.';
   const ran = [];
   const result = await callWithObjective(session(['wiki-ingest'], ran), 'pipeline', objective);
 

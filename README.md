@@ -120,6 +120,59 @@ in isolated workspaces.
 
 ![wikiLLM functional diagram — inputs, MCP calls and outputs around the agentic orchestrator and workspaces](https://raw.githubusercontent.com/dotdrelle/llm-wiki-manager/main/docs/architecture.png)
 
+## How wikiLLM compares
+
+Several open projects now build a Markdown wiki with an LLM. They target
+**different problems** — the useful questions are *what goes in, what comes out,
+and who operates it*. Snapshot as of 2026; all of these move quickly.
+
+Each cell keeps its detail and carries a score — ✅ first-class · 🟡 partial or
+indirect · ❌ not a goal — and the last column names the project that **covers
+that need best**.
+
+| Dimension / need | **wikiLLM** (this project) | **OpenWiki** — `langchain-ai/openwiki` | **DeepWiki-Open** — `asyncfuncai/deepwiki-open` | **GraphRAG** — `microsoft/graphrag` | Best coverage |
+| --- | --- | --- | --- | --- | --- |
+| Built for | Turning scattered **business documents** into a team wiki, then regenerating deliverables from it | Giving **coding agents** a readable map of a codebase | Auto-documenting a **code repository** with diagrams | Answering **global questions** over a large text corpus | *depends on your goal* |
+| Ingest arbitrary business documents (Confluence, PDF, Office, SaaS) | ✅ Confluence exports, PDF/Office files, notes, SaaS connectors | 🟡 personal-mode connectors only — Notion, Gmail, Slack | ❌ code repos only | 🟡 plain-text files only, and no wiki as output | **wikiLLM** |
+| Document a source-code repository | ❌ nothing to ingest from a repo | ✅ *code mode*, with claims linked to source evidence (OKF) | ✅ repo → interactive wiki + Mermaid diagrams | ❌ not a goal | **OpenWiki / DeepWiki-Open** |
+| Primary output | ✅ Maintained wiki **+ regenerated deliverables** from your templates (reports, pages, exports) | 🟡 A wiki about the codebase, for agents to read | 🟡 An interactive wiki + architecture diagrams | ❌ An entity graph + community summaries (Parquet), not a wiki | **wikiLLM** (only one producing deliverables) |
+| Keep the wiki current over time | ✅ Re-ingest on demand or on a schedule | ✅ `--update` flag / CI action | 🟡 Regenerated per run | ✅ `graphrag update` (delta merge) | **wikiLLM / OpenWiki** |
+| Knowledge structure | Deterministic concept folders + a derived community graph | Linked pages + evidence-grounded claims | LLM-generated pages + diagrams | Leiden communities over an entity/relationship graph | *task-dependent* |
+| Browsable wiki UI for a team | ✅ Web UI: wiki browser, dependency graph, chat, run/execution view (single-user today) | 🟡 Local-only browser visualiser (127.0.0.1) + CLI chat | ✅ Self-hostable web app (Next.js + Python) with RAG chat | ❌ Library / CLI — no UI | **DeepWiki-Open / wikiLLM** |
+| Evidence-grounded claims & citations | 🟡 Cites retrieved context, never invents facts | ✅ Grounded claims tied to versioned source | 🟡 RAG-cited answers | ✅ Citations to source text units | **OpenWiki / GraphRAG** |
+| Corpus-wide graph Q&A over the knowledge | 🟡 BM25 + vector retrieval feeding generation | ❌ not a goal | 🟡 RAG chat scoped to one repo | ✅ Entity graph + local/global community search | **GraphRAG** |
+| Multiple isolated projects on one install | ✅ Workspaces, each with its own services, ports and secrets | ❌ one wiki per run | ❌ one wiki per repo | ❌ one index per corpus | **wikiLLM** |
+| Orchestration & governance | ✅ Capability-based dispatcher (**Donna**): human approval by default, per-run budgets, idempotent writes, crash recovery | ❌ One Deep Agent loop (LangGraph) | ❌ One generation pipeline | ❌ Deterministic indexing pipeline | **wikiLLM** |
+| Durable runs — crash recovery, queued work | ✅ Boot-time re-attachment + extra runs queued | 🟡 Resumable page-job queue (`.run.json`) | ❌ regenerate from scratch | ❌ re-run the index | **wikiLLM** |
+| Source connectors as separate services | ✅ Confluence, document conversion, e-mail — each an independent MCP agent | 🟡 Built-in connector set | ❌ | ❌ | **wikiLLM** |
+| Run fully offline with local models | ✅ Per-workspace provider config, OpenAI-compatible or a gateway (Ollama, vLLM, MLX…) | ✅ 13+ providers incl. Ollama / LM Studio | ✅ incl. Ollama | ✅ any OpenAI-compatible endpoint | *any* |
+| License | ❌ PolyForm **Noncommercial** | ✅ MIT | ✅ MIT | ✅ MIT | **OpenWiki / DeepWiki-Open / GraphRAG** |
+
+**The short version:**
+
+- **OpenWiki** and **DeepWiki-Open** document *source code*. Point wikiLLM at a
+  repository and there is nothing for it to ingest; point either of them at a
+  stack of Confluence pages and a Word document and that is not their job.
+- **GraphRAG** builds *retrieval structure*, not a wiki you read or deliverables
+  you ship — it is a strong back end for corpus-wide Q&A, and complementary
+  rather than competing.
+- **wikiLLM** is the only one of the four whose output is *both* a browsable wiki
+  *and* regenerated business documents, and the only one with the operational
+  layer — isolated projects, bounded approvals, automatic recovery, a web
+  console — that a shared internal tool needs.
+
+**What wikiLLM does *not* try to do (today):**
+
+- Document a codebase for coding agents — that is OpenWiki / DeepWiki-Open
+  territory.
+- Serve a true multi-user instance with per-user identity and an attributed
+  audit trail. This is a single-user deployment baseline (see the scope note
+  above); multi-user is specified and planned next.
+- Expose a graph-query API over the corpus the way GraphRAG does; retrieval is
+  BM25 plus a vector index feeding generation.
+- Ship or host the multi-provider AI gateway — routing to several providers is
+  supported, the gateway itself is infrastructure you bring.
+
 ## Quick start — your first wiki in ~5 minutes
 
 The fastest way in: a **browsable wiki, its dependency graph, and a grounded
@@ -402,6 +455,7 @@ answer "what is this and how do I start it", and stop there.
 | [`docs/configuration.md`](docs/configuration.md) | Every configuration key: root `.env`, Compose overrides, `mcp.endpoints.json`, workspace `.env`, `.wikirc.yaml`, parallelism |
 | [`docs/technical-reference.md`](docs/technical-reference.md) | Workspace model, services, the `donna` shell, agent tooling, orchestration and activity contracts, security model |
 | [`docs/authoring-skills.md`](docs/authoring-skills.md) | Writing a workspace skill: what splits a body into runs, chains, concurrency, parameters, and the interpretation rules |
+| [`docs/agentic-runtime.md`](docs/agentic-runtime.md) | The external agentic runtime: `agent-runtimes.json`, the `RuntimeProvider` contract, the gateway, and governance |
 | [`docs/claude-desktop.md`](docs/claude-desktop.md) | Using a workspace from Claude Desktop |
 | [`CLAUDE.md`](CLAUDE.md) | Repository guidance: invariants to preserve when changing this code |
 

@@ -1,7 +1,10 @@
 import { normalizeActivity, parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
+import { loadWorkspaceProfile } from '../core/profile.js';
+import { mapRuntimeEvent } from '../core/runtimeEventAdapter.js';
 import { emitRuntimeLog, pollActivitiesOnce } from '../runtime/supervisor.js';
+import { APPROVAL_DEFAULT_CLASS, approvalCovered } from './approvalPolicy.js';
 import { isSuccessful, isTerminal } from './taskStatuses.js';
 
 
@@ -32,6 +35,16 @@ export async function execute(task, assignment, {
   pollBusy = new Set(),
   pollIntervalMs = 2500,
 } = {}) {
+  if (isExternalRuntimeAssignment(assignment)) {
+    return executeExternalRuntime(task, assignment, {
+      session,
+      signal,
+      runId,
+      attempt,
+      timeoutMs,
+      pollIntervalMs,
+    });
+  }
   if (!session) throw new Error('dispatcher.execute requires session.');
   if (!assignment?.serverName) throw new Error(`No MCP server found for agent ${assignment?.agentInstanceId ?? '(unknown)'}.`);
   const serverName = assignment.serverName;
@@ -157,6 +170,243 @@ export async function execute(task, assignment, {
   }
 }
 
+function isExternalRuntimeAssignment(assignment) {
+  return assignment?.providerKind === 'external-runtime'
+    && typeof assignment?.runtimeProvider?.execute === 'function';
+}
+
+// A proposal without mutations still waits for a human grant: the request is
+// treated as the default approval class, covered by a run-scope grant like
+// any other. Every announced class must be covered — the "global" approval is
+// bounded by the proposal.
+function pendingApprovalCovered(classes, approvals, context) {
+  const list = Array.isArray(classes) && classes.length > 0
+    ? classes
+    : [APPROVAL_DEFAULT_CLASS];
+  return list.every((approvalClass) => approvalCovered(
+    {
+      // Without an id, grantCoversTask's task/tool-scope match (which keys
+      // off task.id/localId/taskId) can never succeed, so a per-task
+      // `/approve item <id>` grant silently fails to cover this task and only
+      // a run-scope "approve all" can ever unblock it.
+      id: context?.taskId ?? null,
+      taskId: context?.taskId ?? null,
+      groupId: context?.groupId ?? null,
+      requiresApproval: true,
+      approvalClass: String(approvalClass),
+    },
+    approvals,
+    context,
+  ));
+}
+
+async function executeExternalRuntime(task, assignment, {
+  session,
+  signal = null,
+  runId = null,
+  attempt = null,
+  timeoutMs = null,
+  pollIntervalMs = 2500,
+} = {}) {
+  if (!session) throw new Error('dispatcher.execute requires session.');
+  const runtimeProvider = assignment.runtimeProvider;
+  const taskId = String(task.id ?? task.step);
+  const taskTimeoutMs = resolvedTimeoutMs(assignment, timeoutMs);
+  let deadline = Date.now() + taskTimeoutMs;
+  let runtimeRunId = null;
+  let unsubscribe = null;
+  let pendingApproval = null;
+  try {
+    emitRuntimeLog(session, taskLogPayload('runtime.execute', task, assignment, {
+      runId,
+      attempt,
+      detail: 'external-runtime',
+    }));
+    const mcpPool = activeProfileMcp(session);
+    if (!mcpPool) {
+      // A degradation must announce itself. The runtime's whole value is its
+      // eyes: dispatched without the workspace wiki MCP, the Deep Agent
+      // improvises with its built-in backend (it ran `ls /` on the gateway
+      // container and answered "the workspace is empty" — a plausible,
+      // confident, entirely wrong answer). Say it in the journal, keep the
+      // run (the objective may still be answerable from the model alone),
+      // but never let blindness pass silently.
+      emitRuntimeLog(session, taskLogPayload('runtime.blind', task, assignment, {
+        runId,
+        attempt,
+        detail: 'no workspace wiki MCP pool — the endpoint is down or declares no read tools; the runtime will run without its eyes',
+      }));
+    }
+    const accepted = await runtimeProvider.execute({
+      objective: task.label ?? task.description ?? taskId,
+      operation: task.operation ?? null,
+      capability: task.requiredCapability ?? null,
+      arguments: task.arguments && typeof task.arguments === 'object' ? task.arguments : {},
+      workspace: workspaceRequest(session),
+      model: activeProfileModel(session),
+      language: session?.language ?? session?.wikircConfig?.language ?? null,
+      mcp: mcpPool,
+      systemPrompt: activeRuntimeSystemPrompt(session, task, assignment),
+    });
+    runtimeRunId = String(accepted?.runId ?? '');
+    if (!runtimeRunId) throw new Error('runtime.execute did not return runId.');
+    emitRuntimeLog(session, taskLogPayload('runtime.accepted', task, assignment, {
+      runId,
+      attempt,
+      jobId: runtimeRunId,
+      detail: String(accepted?.status ?? 'running'),
+    }));
+    dispatchAgentEvent(session, createAgentEvent('task.started', {
+      origin: 'dispatcher',
+      runId,
+      taskId,
+      payload: {
+        runId,
+        taskId,
+        attemptId: attempt?.attemptId ?? null,
+        agentInstanceId: assignment.agentInstanceId,
+        jobId: runtimeRunId,
+        startedAt: new Date().toISOString(),
+      },
+    }));
+    dispatchExternalRuntimeActivity(session, task, assignment, runtimeRunId, 'running', runId);
+    if (typeof runtimeProvider.subscribe === 'function') {
+      unsubscribe = runtimeProvider.subscribe(runtimeRunId, (event) => {
+        for (const mapped of mapRuntimeEvent(event)) {
+          dispatchAgentEvent(session, createAgentEvent(mapped.type, {
+            origin: 'runtime_provider',
+            runId,
+            taskId,
+            payload: mapped.payload,
+          }));
+          if (mapped.type === 'approval.requested') {
+            pendingApproval = {
+              approvalId: mapped.payload?.approvalId ?? null,
+              approvalClasses: Array.isArray(mapped.payload?.approvalClasses)
+                ? mapped.payload.approvalClasses
+                : [],
+            };
+            const summary = String(mapped.payload?.proposal?.summary ?? mapped.payload?.reason ?? '').trim();
+            dispatchAgentEvent(session, createAgentEvent('assistant_message', {
+              origin: 'runtime_provider',
+              runId,
+              payload: {
+                content: [
+                  '⏸ Approval required before execution:',
+                  ...(summary ? [`  ${summary}`] : []),
+                  'Type /approve (or click "Approve") to proceed, "cancel" to abandon.',
+                ].filter(Boolean).join('\n'),
+              },
+            }));
+          }
+        }
+      });
+    }
+    let approvalWaitStartedAt = null;
+    while (true) {
+      throwIfAborted(signal);
+      // While a proposal waits for a human decision, the task timeout does
+      // not tick — the human decides, not the clock (the scheduler applies
+      // the same rule to its approval waits). The elapsed wait is credited
+      // back onto the deadline once the gate clears (below), rather than
+      // merely skipped from this check, so a late approval does not
+      // immediately expire the task on the very next iteration.
+      if (!pendingApproval && Date.now() > deadline) {
+        await runtimeProvider.cancel(runtimeRunId).catch(() => null);
+        throw new Error(`Task timed out after ${taskTimeoutMs}ms.`);
+      }
+      if (pendingApproval) {
+        approvalWaitStartedAt ??= Date.now();
+        const approvalBeingChecked = pendingApproval;
+        const approvals = session.agentProjection?.approvals ?? session.approvals ?? [];
+        const covered = pendingApprovalCovered(approvalBeingChecked.approvalClasses, approvals, {
+          runId,
+          taskId,
+          groupId: task.groupId ?? null,
+          workspaceId: session.workspace ?? null,
+          planRevision: session.planRevision ?? session.agentProjection?.planRevision ?? null,
+        });
+        if (covered && typeof runtimeProvider.approve === 'function') {
+          emitRuntimeLog(session, taskLogPayload('runtime.approval_granted', task, assignment, {
+            runId,
+            attempt,
+            jobId: runtimeRunId,
+            detail: 'unblocking runtime HITL',
+          }));
+          await runtimeProvider.approve(runtimeRunId, { approved: true, scope: approvalBeingChecked.approvalClasses });
+          // Only clear the approval just resolved: the runtime's event stream
+          // may have raised a second, unrelated one while the approve() round
+          // trip above was in flight.
+          if (pendingApproval === approvalBeingChecked) {
+            pendingApproval = null;
+            deadline += Date.now() - approvalWaitStartedAt;
+            approvalWaitStartedAt = null;
+          }
+        } else {
+          await delay(pollIntervalMs, signal);
+          continue;
+        }
+      }
+      const lastStatus = await runtimeProvider.status(runtimeRunId);
+      if (isTerminal(lastStatus?.status)) {
+        const refusedParams = Array.isArray(lastStatus?.result?.refusedParams)
+          ? lastStatus.result.refusedParams
+          : [];
+        if (refusedParams.length > 0) {
+          emitRuntimeLog(session, taskLogPayload('runtime.params_refused', task, assignment, {
+            runId,
+            attempt,
+            jobId: runtimeRunId,
+            detail: `model refused sampling parameters (${refusedParams.join(', ')}) — remove them from the workspace .wikirc (llm.<key>) so they are no longer sent`,
+          }));
+        }
+        emitRuntimeLog(session, taskLogPayload('runtime.result_returned', task, assignment, {
+          runId,
+          attempt,
+          jobId: runtimeRunId,
+          status: lastStatus.status,
+          detail: 'terminal status',
+        }));
+        dispatchExternalRuntimeActivity(session, task, assignment, runtimeRunId, lastStatus.status, runId);
+        return taskResultFromStatus(task, assignment, runtimeRunId, lastStatus, attempt);
+      }
+      await delay(pollIntervalMs, signal);
+    }
+  } catch (error) {
+    if (isAbortError(error) && runtimeRunId) {
+      await runtimeProvider.cancel(runtimeRunId).catch(() => null);
+    }
+    throw error;
+  } finally {
+    unsubscribe?.();
+    emitRuntimeLog(session, taskLogPayload('lock.released', task, assignment, {
+      runId,
+      attempt,
+      jobId: runtimeRunId,
+      detail: attempt?.locks?.join(',') || 'no locks',
+    }));
+    attempt?.release?.();
+  }
+}
+
+function dispatchExternalRuntimeActivity(session, task, assignment, runtimeRunId, status, runId) {
+  const activity = normalizeActivity({
+    id: runtimeRunId,
+    source: assignment.runtimeId ?? 'external-runtime',
+    kind: task.operation ?? task.requiredCapability ?? 'task',
+    label: task.label ?? task.description ?? String(task.id ?? task.step),
+    status,
+    progress: { percent: isTerminal(status) ? 100 : 0, stepId: String(task.id ?? task.step) },
+    outputRefs: [],
+  });
+  dispatchAgentEvent(session, createAgentEvent('activity_upserted', {
+    origin: 'dispatcher',
+    runId,
+    taskId: String(task.id ?? task.step),
+    payload: { activity },
+  }));
+}
+
 function executeRequest(task, session, runId) {
   return {
     taskId: String(task.id ?? task.step),
@@ -165,7 +415,20 @@ function executeRequest(task, session, runId) {
     idempotencyKey: task.idempotencyKey ?? undefined,
     operation: task.operation,
     workspace: workspaceRequest(session),
-    arguments: task.arguments && typeof task.arguments === 'object' ? task.arguments : {},
+    arguments: {
+      ...(task.arguments && typeof task.arguments === 'object' ? task.arguments : {}),
+      // The production agent's confirmation guard
+      // (PRODUCTION_REQUIRE_CONFIRMATION=true) has one contract: "only an
+      // approved task may run a mutating operation — Donna passes
+      // confirm=true after the run-scope approval". The scheduler never
+      // dispatches a requiresApproval task before coverage
+      // (dependencyResolver.readyTasks), so reaching dispatch IS the
+      // approval. Without this, an operator who enables the guard sees every
+      // mutating production job fail with "requires confirm=true" — the
+      // first E2E ingest plan dispatched by the deep agent's
+      // planExpansionRequest failed exactly that way, 19 tasks in one batch.
+      ...(task.requiresApproval === true ? { confirm: true } : {}),
+    },
     constraints: {
       requireApprovalForMutations: task.requiresApproval === true,
     },
@@ -176,6 +439,93 @@ function workspaceRequest(session) {
   const workspace = session.workspace ?? session._currentRunIdentity?.workspace;
   if (workspace && typeof workspace === 'object' && !Array.isArray(workspace)) return { ...workspace };
   return { name: String(workspace ?? 'workspace') };
+}
+
+// The model travels WITH the run: the runtime is workspace-agnostic and must
+// follow the active profile — default or `/config use` — without a config
+// sync. Numeric LLM parameters declared by the profile (temperature, …) ride
+// along too: nothing is hardcoded here, the workspace config is the source.
+function activeProfileModel(session) {
+  const llm = session?.wikircConfig?.llm ?? {};
+  const model = {
+    ...(llm.baseUrl ? { baseUrl: String(llm.baseUrl) } : {}),
+    ...(llm.model ? { model: String(llm.model) } : {}),
+    ...(llm.apiKey ? { apiKey: String(llm.apiKey) } : {}),
+  };
+  for (const key of ['temperature', 'maxTokens', 'topP', 'seed']) {
+    const value = Number(llm[key]);
+    if (Number.isFinite(value)) model[key] = value;
+  }
+  return Object.keys(model).length > 0 ? model : null;
+}
+
+// The read-only wiki MCP tools the runtime is allowed to see. An explicit
+// allow-list, not a denylist: the runtime has eyes (read tools) and a mouth
+// (gated side-effects through the DAG), never hands on the workspace. A denylist
+// keyed on "write_page|add_source|…" already silently let build_context_write
+// and template_write through, and would leak any future wiki_delete_page /
+// wiki_move_page / wiki_rename the moment it is added upstream.
+const READ_ONLY_WIKI_TOOLS = new Set([
+  'help_list', 'help_read', 'help_search',
+  'profile_read', 'template_read',
+  'wiki_collect_context', 'wiki_list_ingested_sources', 'wiki_list_pages',
+  'wiki_outline', 'wiki_read_deliverable', 'wiki_read_ingested_source',
+  'wiki_read_page', 'wiki_read_pages', 'wiki_search_context',
+  'wiki_workspace_status',
+]);
+
+// The runtime's EYES, per run: the active workspace's wiki MCP, read tools
+// only. Workspace-scoped endpoints are per-run by nature — they cannot live
+// in a static gateway file. The allow-list here is the authority: nothing
+// else reaches the runtime.
+export function activeProfileMcp(session) {
+  const wiki = session?.mcp?.wiki;
+  if (!wiki?.url || wiki.status !== 'connected') return null;
+  const tools = (wiki.tools ?? [])
+    .map((tool) => String(tool.name ?? ''))
+    .filter((name) => {
+      if (!name) return false;
+      const base = name.includes('__') ? name.slice(name.lastIndexOf('__') + 2) : name;
+      return READ_ONLY_WIKI_TOOLS.has(base);
+    });
+  if (tools.length === 0) return null;
+  // Same credential contract as the manager's own MCP client (mcp.js
+  // `authorization: Bearer ${endpoint.token}`): the wiki detail carries
+  // `token`, not `headers` — without it the gateway's MCP connection is
+  // rejected by the workspace MCP server ("invalid or missing bearer token")
+  // and the Deep Agent runs blind.
+  const headers = {
+    ...(wiki.headers && typeof wiki.headers === 'object' ? wiki.headers : {}),
+    ...(wiki.token ? { Authorization: `Bearer ${wiki.token}` } : {}),
+  };
+  return [{
+    name: 'wiki',
+    url: String(wiki.url),
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    tools,
+  }];
+}
+
+// The Deep Agent's system prompt, built per run from the same ingredients
+// Donna uses: role, the ONE capability being executed (with its declared
+// description), the eyes/bouche/mains boundary, the workspace profile and the
+// reply language. Without it, the runtime falls back to deepagents' generic
+// assistant prompt — which is exactly the "upload your project" hallucination.
+function activeRuntimeSystemPrompt(session, task, assignment) {
+  const capability = assignment?.capability ?? null;
+  const description = String(capability?.description ?? '').trim();
+  const language = session?.language ?? session?.wikircConfig?.language ?? null;
+  const profile = loadWorkspaceProfile(session?.workspacePath);
+  return [
+    'You are the agentic analysis engine of a knowledge workspace (wikiLLM), executed behind the manager Donna.',
+    `Execute exactly ONE capability: ${task?.requiredCapability ?? 'unknown'}${description ? ` — ${description}` : ''}.`,
+    `Operation: ${task?.operation ?? 'run'}.`,
+    'Boundary: you have READ tools only (the workspace wiki). You never modify the workspace — structural changes are proposals you return in your final answer (a planExpansionRequest), the manager integrates them under human approval. Side-effects on the outside world are gated by approval.',
+    'Ground every claim in what the read tools return. Never invent pages, names, facts, jobs or results.',
+    'Tool discipline: discover real page paths with the list/search tools BEFORE reading. Never guess a path — a read refused for "path not allowed" means the path was invented, so list/search first, then read exactly what exists.',
+    ...(language ? [`Reply in the workspace language: ${language}.`] : []),
+    ...(profile ? [`Workspace preferences — apply them to every reply:\n${profile}`] : []),
+  ].join('\n');
 }
 
 function dispatchTaskActivity(session, task, assignment, jobId, statusTool, runId) {
@@ -215,7 +565,16 @@ function taskResultFromStatus(task, assignment, jobId, statusPayload, attempt = 
     status: result.status ?? statusPayload?.status,
     outputRefs: Array.isArray(result.outputRefs) ? result.outputRefs : [],
     metrics: result.metrics ?? {},
-    error: normalizeTaskError(result.error),
+    // The gateway reports its failure at the TOP level of the status payload
+    // ({ runId, status, error }), not inside `result`. Reading only
+    // `result.error` dropped the only actionable sentence ("no model…") and
+    // left Donna to invent a cause.
+    error: normalizeTaskError(result.error ?? statusPayload.error),
+    // Agent -> DAG (RFC § 30/31/41): a result may request the execution of a
+    // deterministic capability. Propagated here so resultAggregator.maybeExpandPlan
+    // picks it up and routes it through the manager's own resolution + approval
+    // — never a direct scheduler call by the runtime.
+    ...(result.planExpansionRequest ? { planExpansionRequest: result.planExpansionRequest } : {}),
     rawStatus: statusPayload,
   };
 }

@@ -1,7 +1,7 @@
 import { parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { formatMcpToolResult, callMcpTool as defaultCallMcpTool } from '../core/mcp.js';
-import { createCapabilityRegistry } from '../orchestrator/capabilityRegistry.js';
+import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
 import { accept as acceptResult } from '../orchestrator/resultAggregator.js';
 import { isSuccessful, isTerminal } from '../orchestrator/taskStatuses.js';
 
@@ -100,6 +100,9 @@ async function recoverTask({ store, session, run, task, callTool, resultAggregat
   }
 
   const agent = agentFor(session, assignment.agentInstanceId);
+  if (agent?.providerKind === 'external-runtime' && typeof agent?.runtimeProvider?.status === 'function') {
+    return recoverExternalRuntimeTask({ store, session, run, task, attempt, assignment, agent, resultAggregator });
+  }
   const serverName = agent?.serverName ?? assignment.agentId ?? assignment.agentInstanceId;
   const statusTool = toolNameFor(session, serverName, 'agent_status');
   const status = parseToolPayload(await callTool(session.mcp, serverName, statusTool, { jobId: attempt.jobId }));
@@ -146,6 +149,70 @@ async function recoverTask({ store, session, run, task, callTool, resultAggregat
   return interruptTask({ store, session, run, task, reason: 'active job is non-terminal and task has no idempotencyKey' });
 }
 
+// An MCP job survives a manager restart on the agent's own side and reports
+// its status through agent_status. An external-runtime job has no such
+// side-channel here: the only way to check on it, or to give it up, is the
+// same RuntimeProvider the dispatcher used to start it, re-resolved by
+// agentInstanceId from the live registry rather than replayed from storage.
+async function recoverExternalRuntimeTask({ store, session, run, task, attempt, assignment, agent, resultAggregator }) {
+  const runtimeProvider = agent.runtimeProvider;
+  let status;
+  try {
+    status = await runtimeProvider.status(attempt.jobId);
+  } catch (error) {
+    return interruptTask({
+      store,
+      session,
+      run,
+      task,
+      reason: `external runtime status check failed: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
+
+  if (isTerminal(status?.status)) {
+    const result = {
+      ok: isSuccessful(String(status?.status ?? '').toLowerCase()),
+      taskId: task.id,
+      attemptId: attempt.attemptId ?? null,
+      jobId: attempt.jobId,
+      agentInstanceId: assignment.agentInstanceId,
+      status: status?.status,
+      outputRefs: Array.isArray(status?.result?.outputRefs) ? status.result.outputRefs : [],
+      metrics: status?.result?.metrics ?? {},
+      // The gateway reports its failure at the TOP level of the status
+      // payload ({ runId, status, error }), not inside `result` — same fix
+      // already applied in dispatcher.js's taskResultFromStatus and
+      // deepAgentsProvider.js's status().
+      error: status?.result?.error ?? status?.error ?? null,
+      rawStatus: status,
+    };
+    await resultAggregator(result, {
+      session,
+      runId: run.id,
+      task,
+      assignment: { agentInstanceId: assignment.agentInstanceId, serverName: null, agent },
+      store,
+      registry: capabilityRegistryForSession(session),
+      workspaceConfig: session.wikircConfig ?? session.wikirc?.config ?? {},
+    });
+    return { status: 'recovered', runId: run.id, taskId: task.id, jobId: attempt.jobId };
+  }
+
+  // The runtime declares supportsIdempotency: false (runtimeProviders.js), so
+  // a fresh invocation cannot be deduped against the one still running on the
+  // external side. Requeuing it to `pending` like the MCP path below would
+  // start a duplicate while the orphaned original keeps running/billing.
+  // Cancel it explicitly instead of leaving it to run unattended.
+  await runtimeProvider.cancel(attempt.jobId).catch(() => null);
+  return interruptTask({
+    store,
+    session,
+    run,
+    task,
+    reason: 'active external-runtime job cancelled on recovery (no idempotency support)',
+  });
+}
+
 function interruptTask({ store, session, run, task, reason }) {
   dispatch(session, store, 'runtime_log', {
     origin: 'recovery_manager',
@@ -171,10 +238,7 @@ function latestAssignment(assignments, attemptId) {
 
 
 function capabilityResolvable(session, capability) {
-  const registry = session.capabilityRegistry
-    ?? ((session.agentRegistrySnapshot ?? []).length > 0
-      ? createCapabilityRegistry({ agents: session.agentRegistrySnapshot })
-      : null);
+  const registry = capabilityRegistryForSession(session);
   if (!registry || typeof registry.providersFor !== 'function') return true;
   // Only trust a registry that actually knows about capabilities. An empty
   // one (discovery not finished, or agents described without capability
@@ -211,6 +275,7 @@ function agentFor(session, agentInstanceId) {
   return [
     ...(session.agentRegistrySnapshot ?? []),
     ...(session.agents ?? []),
+    ...(session.runtimeProviderAgents ?? []),
   ].find((agent) => agent?.agentInstanceId === agentInstanceId) ?? null;
 }
 

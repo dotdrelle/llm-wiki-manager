@@ -29,8 +29,8 @@ function matchVersion(relativePath, pattern, label) {
 
 // Optional siblings: agent-mailer-api and agent-connectors are built and pushed
 // by build-and-push.sh but are NOT checked out by llm-wiki-manager's CI, which
-// only clones llm-wiki, agent-wiki-production, agent-cme and
-// agent-wiki-documents. A hard check would turn every CI run red, so an absent
+// only clones llm-wiki, agent-production, agent-cme and
+// agent-documents. A hard check would turn every CI run red, so an absent
 // repository is skipped and reported as such; when it IS present — locally and
 // in the release script — it is checked like any other.
 const skipped = [];
@@ -62,9 +62,9 @@ addCheck('llm-wiki-manager package', targetVersion, targetVersion);
 addCheck('llm-wiki package', readJson('llm-wiki/package.json').version, targetVersion);
 
 for (const [relativePath, label] of [
-  ['agent-wiki-production/production_mcp_server.py', 'production agent'],
+  ['agent-external/agent-production/production_mcp_server.py', 'production agent'],
   ['agent-external/agent-cme/cme_mcp_server.py', 'cme agent'],
-  ['agent-external/agent-wiki-documents/document_mcp_server.py', 'documents agent'],
+  ['agent-external/agent-documents/document_mcp_server.py', 'documents agent'],
 ]) {
   matchVersion(relativePath, /_AGENT_VERSION\s*=\s*"([^"]+)"/, label);
 }
@@ -89,6 +89,25 @@ optionalMatchVersion(
   'mailer agent',
 );
 optionalJsonVersion('agent-external/agent-connectors/package.json', 'connectors package');
+optionalJsonVersion(
+  'agent-external/wiki-agentic-gateway/package.json',
+  'gateway package',
+);
+optionalJsonVersion(
+  'agent-external/wiki-agentic-gateway/package-lock.json',
+  'gateway package-lock',
+  (json) => json.version,
+);
+optionalJsonVersion(
+  'agent-external/wiki-agentic-gateway/package-lock.json',
+  'gateway package-lock root package',
+  (json) => json.packages?.['']?.version ?? '<missing>',
+);
+optionalMatchVersion(
+  'agent-external/wiki-agentic-gateway/src/config.js',
+  /GATEWAY_VERSION\s*\?\?\s*'([^']+)'/,
+  'gateway GATEWAY_VERSION default',
+);
 optionalJsonVersion(
   'agent-external/agent-connectors/package-lock.json',
   'connectors package-lock',
@@ -124,8 +143,8 @@ if (process.env.CHECK_DOCKER_IMAGES === '1') {
     'llm-wiki',
     'llm-wiki-manager',
     'agent-cme',
-    'agent-wiki-documents',
-    'agent-wiki-production',
+    'agent-documents',
+    'agent-production',
     'agent-mailer-api',
     'agent-connectors',
   ];

@@ -4,7 +4,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { checkAgents, checkInternetConnectivity, checkMcpConnections, runChecks, runPreflightChecks, withRuntimePreflight } from './startupCheck.js';
+import { checkAgents, checkAgenticRuntimes, checkInternetConnectivity, checkMcpConnections, runChecks, runPreflightChecks, withRuntimePreflight } from './startupCheck.js';
 
 async function withWorkspace(wikircLines, fn) {
   const root = await mkdtemp(join(tmpdir(), 'wiki-manager-startup-check-'));
@@ -298,4 +298,32 @@ test('checkInternetConnectivity uses a fresh Node process with proxy and CA envi
     if (previousProxyFlag === undefined) delete process.env.NODE_USE_ENV_PROXY;
     else process.env.NODE_USE_ENV_PROXY = previousProxyFlag;
   }
+});
+
+test('checkAgenticRuntimes skips when nothing is enabled', async () => {
+  const result = await checkAgenticRuntimes({ loadConfig: () => [], env: {} });
+  assert.equal(result.ok, true);
+  assert.equal(result.skipped, true);
+  assert.equal(result.context.runtimes.length, 0);
+});
+
+test('checkAgenticRuntimes reports a healthy runtime as connected', async () => {
+  const result = await checkAgenticRuntimes({
+    loadConfig: () => [{ id: 'fake', type: 'fake', enabled: true }],
+    env: {},
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.pending, false);
+  assert.equal(result.context.runtimes[0].status, 'connected');
+});
+
+test('checkAgenticRuntimes reports a down runtime as failed', async () => {
+  const result = await checkAgenticRuntimes({
+    loadConfig: () => [{ id: 'down', type: 'fake', available: false, enabled: true }],
+    env: {},
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.pending, true);
+  assert.equal(result.context.runtimes[0].status, 'failed');
+  assert.match(result.detail, /pending/);
 });

@@ -77,7 +77,7 @@
 <!-- internal -->
 <text x="244" y="313" class="sub" font-size="9.5" fill="#9334e6">INTERNAL MCP · engine, per workspace</text>
 <rect x="244" y="319" width="486" height="62" rx="9" class="box"/><rect x="244" y="319" width="5" height="62" rx="2.5" fill="#9334e6"/>
-<text x="261" y="340" class="t" font-size="12.5">agent-wiki-production — llm-wiki jobs</text>
+<text x="261" y="340" class="t" font-size="12.5">agent-production — llm-wiki jobs</text>
 <text x="261" y="356" class="s" font-size="10">consumes sources + template + build-context → produces the wiki</text>
 <g font-size="9.5" class="s">
 <rect x="261" y="362" width="54" height="14" rx="7" class="pill"/><text x="270" y="372">ingest</text>
@@ -92,7 +92,7 @@
 <rect x="244" y="409" width="486" height="27" rx="7" class="box"/><rect x="244" y="409" width="5" height="27" rx="2.5" fill="#0f9d8f"/>
 <text x="261" y="426" class="t" font-size="11">agent-cme<tspan class="s" font-size="10"> — Confluence → Markdown</tspan></text>
 <rect x="244" y="439" width="486" height="27" rx="7" class="box"/><rect x="244" y="439" width="5" height="27" rx="2.5" fill="#0f9d8f"/>
-<text x="261" y="456" class="t" font-size="11">agent-wiki-documents<tspan class="s" font-size="10"> — pdf / office / images → Markdown</tspan></text>
+<text x="261" y="456" class="t" font-size="11">agent-documents<tspan class="s" font-size="10"> — pdf / office / images → Markdown</tspan></text>
 <rect x="244" y="469" width="486" height="27" rx="7" class="box"/><rect x="244" y="469" width="5" height="27" rx="2.5" fill="#0f9d8f"/>
 <text x="261" y="486" class="t" font-size="11">optional connector<tspan class="s" font-size="10"> — external MCP integration</tspan></text>
 <rect x="244" y="499" width="486" height="27" rx="7" class="box"/><rect x="244" y="499" width="5" height="27" rx="2.5" fill="#0f9d8f"/>

@@ -273,7 +273,7 @@ test('finalizeCreatedWorkspace seeds a new workspace from the one in use', async
     return workspacePath;
   };
 
-  makeWorkspace('acpi', [
+  makeWorkspace('acme', [
     'language: en',
     'llm:',
     '  provider: ai-gateway',
@@ -287,7 +287,7 @@ test('finalizeCreatedWorkspace seeds a new workspace from the one in use', async
   ].join('\n'));
 
   // Exactly what the scaffold writes: placeholders everywhere.
-  const targetPath = makeWorkspace('nouveau', [
+  const targetPath = makeWorkspace('fresh', [
     'language: en',
     'llm:',
     '  provider: openai-compatible',
@@ -300,15 +300,15 @@ test('finalizeCreatedWorkspace seeds a new workspace from the one in use', async
     '',
   ].join('\n'));
 
-  mkdirSync(join(agentsData, 'cme', 'acpi', 'cme'), { recursive: true });
-  writeFileSync(join(agentsData, 'cme', 'acpi', 'cme', 'app_data.json'), '{"pat":"x"}', 'utf8');
+  mkdirSync(join(agentsData, 'cme', 'acme', 'cme'), { recursive: true });
+  writeFileSync(join(agentsData, 'cme', 'acme', 'cme', 'app_data.json'), '{"pat":"x"}', 'utf8');
 
   const previousDir = process.env.WIKI_WORKSPACES_DIR;
   const previousData = process.env.AGENTS_DATA_DIR;
   process.env.WIKI_WORKSPACES_DIR = registryRoot;
   process.env.AGENTS_DATA_DIR = agentsData;
   try {
-    const { inherited } = await finalizeCreatedWorkspace('nouveau', { inheritFrom: 'acpi' });
+    const { inherited } = await finalizeCreatedWorkspace('fresh', { inheritFrom: 'acme' });
     const parsed = YAML.parse(readFileSync(join(targetPath, '.wikirc.yaml'), 'utf8'));
 
     assert.equal(parsed.llm.baseUrl, 'https://itsdonna.events/v1');
@@ -320,7 +320,7 @@ test('finalizeCreatedWorkspace seeds a new workspace from the one in use', async
     assert.ok(inherited.includes('llm.baseUrl'));
     assert.ok(inherited.includes('cme.app_data.json'));
     assert.equal(
-      readFileSync(join(agentsData, 'cme', 'nouveau', 'cme', 'app_data.json'), 'utf8'),
+      readFileSync(join(agentsData, 'cme', 'fresh', 'cme', 'app_data.json'), 'utf8'),
       '{"pat":"x"}',
     );
   } finally {

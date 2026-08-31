@@ -18,7 +18,7 @@ test('matchSkillInvocation resolves only a real workspace skill', () => {
 
 test('parseSkillArguments preserves one free-form argument and parses quoted multi params', () => {
   assert.deepEqual(parseSkillArguments({ params: ['files'] }, 'document A.md document B.md'), { files: 'document A.md document B.md' });
-  assert.deepEqual(parseSkillArguments({ params: ['deliverable', 'polish'] }, '"architecture-juno" "améliorer la sécurité réseau"'), { deliverable: 'architecture-juno', polish: 'améliorer la sécurité réseau' });
+  assert.deepEqual(parseSkillArguments({ params: ['deliverable', 'polish'] }, '"architecture-demo" "improve the network security"'), { deliverable: 'architecture-demo', polish: 'improve the network security' });
 });
 
 test('legacy placeholders remain supported and are reported', () => {

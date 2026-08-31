@@ -343,6 +343,24 @@ agents_compose() {
       if [[ -n "$CACERT_PATH" ]]; then
         up_args+=(--force-recreate)
       fi
+      # Same lifecycle as the 7788 runtime: an agentic gateway already serving
+      # on the port is REUSED — a container started over it cannot bind, and
+      # the whole `up` would fail. Reuse applies only when the serving process
+      # is EXTERNAL to this compose project (a native runner): if the compose
+      # gateway container is the one running, the normal `up` leaves it alone.
+      # Only an EXPLICIT `agents up gateway` asks for the container; then a
+      # bind conflict is the honest answer.
+      local gateway_scale=()
+      local requested_list="${only_services[*]:-}"
+      local gateway_container_running=false
+      if _agents_dc ps --format '{{.Service}}' 2>/dev/null | grep -qx 'gateway'; then
+        gateway_container_running=true
+      fi
+      if gateway_enabled && ! $gateway_container_running && ! [[ " $requested_list " == *" gateway "* ]] && gateway_serving; then
+        printf 'Agentic gateway: already serving on :%s — reusing the existing runner (no container started).\n' "${GATEWAY_PORT:-7789}"
+        gateway_scale=(--scale gateway=0)
+      fi
+      up_args+=(${gateway_scale[@]+"${gateway_scale[@]}"})
       up_args+=(${only_services[@]+"${only_services[@]}"})
       _agents_dc "${up_args[@]}"
       printf 'Workspaces root: %s\n' "$workspaces_root"
@@ -572,6 +590,22 @@ gateway_enabled() {
     1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# Same lifecycle discipline as the 7788 runtime: an agentic gateway ALREADY
+# serving on the port is REUSED, never shadowed by a container that cannot
+# bind. A native `node bin/wiki-agentic-gateway.js` answers without auth
+# (dev); a token-configured gateway (the container, or a native one with
+# GATEWAY_AUTH_TOKEN) answers only to the Bearer — probe both.
+gateway_serving() {
+  local port="${GATEWAY_PORT:-7789}"
+  local token url
+  url="http://localhost:${port}/health"
+  token="$(env_value "$MANAGER_ENV_FILE" GATEWAY_AUTH_TOKEN "")"
+  if [[ -n "$token" ]]; then
+    curl -fsS -m 3 -H "Authorization: Bearer $token" "$url" >/dev/null 2>&1 && return 0
+  fi
+  curl -fsS -m 3 "$url" >/dev/null 2>&1
 }
 
 ensure_endpoints_file() {

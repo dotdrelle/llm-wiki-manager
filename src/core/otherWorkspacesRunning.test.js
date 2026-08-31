@@ -27,25 +27,25 @@ function workspaceEntry(root, name) {
 
 test('the current workspace is never counted as another one', async () => {
   const root = mkdtempSync(join(tmpdir(), 'ws-running-self-'));
-  const acpi = workspaceEntry(root, 'acpi');
+  const acme = workspaceEntry(root, 'acme');
 
-  const busy = await otherWorkspacesRunning({ workspace: 'acpi' }, [acpi]);
+  const busy = await otherWorkspacesRunning({ workspace: 'acme' }, [acme]);
 
   assert.deepEqual(busy, [], 'stopping a workspace must not be blocked by itself');
 });
 
 test('an unqueryable workspace does not hold the shared agents hostage', async () => {
   const root = mkdtempSync(join(tmpdir(), 'ws-running-unknown-'));
-  const workspaces = [workspaceEntry(root, 'acpi'), workspaceEntry(root, 'stale')];
+  const workspaces = [workspaceEntry(root, 'acme'), workspaceEntry(root, 'stale')];
 
-  const busy = await otherWorkspacesRunning({ workspace: 'acpi' }, workspaces);
+  const busy = await otherWorkspacesRunning({ workspace: 'acme' }, workspaces);
 
   assert.deepEqual(busy, []);
 });
 
 test('a single workspace, or none at all, never blocks', async () => {
-  assert.deepEqual(await otherWorkspacesRunning({ workspace: 'acpi' }, []), []);
+  assert.deepEqual(await otherWorkspacesRunning({ workspace: 'acme' }, []), []);
   assert.deepEqual(await otherWorkspacesRunning({}, []), []);
   // Entries without a name are registry noise, not workspaces.
-  assert.deepEqual(await otherWorkspacesRunning({ workspace: 'acpi' }, [{}, null]), []);
+  assert.deepEqual(await otherWorkspacesRunning({ workspace: 'acme' }, [{}, null]), []);
 });

@@ -720,7 +720,7 @@ test('run_error names the failure so the essential journal cannot filter it out'
 
   assert.equal(state.status, 'error');
   const line = state.logs.at(-1);
-  assert.match(line, /^Run failed: /);
+  assert.match(line, /^\d{2}:\d{2}:\d{2} Run failed: /);
   assert.match(line, /workspace\.restore/);
   // Le mot qui rend l'entrée « essentielle » pour le journal serve.
   assert.match(line, /failed/i);

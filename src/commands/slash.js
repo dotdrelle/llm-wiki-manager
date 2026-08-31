@@ -674,10 +674,14 @@ function runtimeProvidersSection(session) {
   for (const [runtimeId, list] of byRuntime) {
     const health = list[0]?.health ?? 'unknown';
     const capabilities = list
-      .map((agent) => agent.description?.capabilities?.[0]?.id ?? agent.agentInstanceId)
-      .join(', ');
+      .map((agent) => agent.description?.capabilities?.[0]?.id ?? agent.agentInstanceId);
     lines.push(`${runtimeId}: ${health}`);
-    lines.push(`capabilities: ${capabilities}`);
+    // One capability per line: the status pane is a fixed-width box that
+    // TRUNCATES long lines, and a joined list ended mid-word
+    // ("capabilities: agent.review, agent.research, agent"). A per-line list
+    // never truncates and stays scannable.
+    lines.push('capabilities:');
+    for (const capability of capabilities) lines.push(`    ${capability}`);
   }
   return sectionBlock('Agentic runtime', lines);
 }
@@ -882,12 +886,13 @@ function componentInstallAction(missingImages) {
   return missingImages.length > 0 ? 'downloaded-and-installed-missing-components' : null;
 }
 
-export function localizedOperationResult({ operation, target, status = 'succeeded', componentAction = null, images = [] }) {
+export function localizedOperationResult({ operation, target, status = 'succeeded', componentAction = null, images = [], detail = null }) {
   const facts = JSON.stringify({
     operation,
     target,
     status,
     ...(componentAction ? { componentAction, images } : {}),
+    ...(detail ? { detail } : {}),
   });
   return {
     output: facts,
@@ -969,7 +974,10 @@ export async function handleSlashCommand(line, context) {
   const runAgentCommand = async (fn, verb) => {
     try {
       step(`Agents: ${verb}ing external agents…`);
-      const missingImages = await collectMissingImages(step, fn);
+      let outcome = null;
+      const missingImages = await collectMissingImages(step, async (options) => {
+        outcome = await fn(options);
+      });
       if (verb === 'start') {
         // `wiki-workspace agents up` generates the agent tokens into the
         // manager .env and adds the profiled entries to mcp.endpoints.json.
@@ -982,6 +990,17 @@ export async function handleSlashCommand(line, context) {
         // the stale process value and defeat the refresh.
         loadManagerEnv({ override: true });
         await refreshMcpRuntimeStatus(context.session);
+      }
+      if (outcome?.degraded) {
+        step('Agents: stack started degraded — one optional agent failed; the base agents are up.');
+        return localizedOperationResult({
+          operation: verb,
+          target: 'agents',
+          status: 'degraded',
+          componentAction: componentInstallAction(missingImages),
+          images: missingImages,
+          detail: rawFailureText(outcome.degradedError),
+        });
       }
       return localizedOperationResult({
         operation: verb,

@@ -144,12 +144,12 @@ test('aggregateActivity keeps a healthy active task out of the error color when 
       key: 'activity-b',
       status: 'running',
       terminal: false,
-      progress: { percent: 35, stepId: 'running-b', label: 'Ingest application-orea.md', detail: 'LLM running' },
+      progress: { percent: 35, stepId: 'running-b', label: 'Ingest sample-application.md', detail: 'LLM running' },
     }],
   }, []);
 
   const line = aggregated.lines[0];
   assert.equal(line.status, '35 %');
   assert.match(line.label, /^\[\.\.\.\]/);
-  assert.equal(line.progress.label, 'Ingest application-orea.md');
+  assert.equal(line.progress.label, 'Ingest sample-application.md');
 });

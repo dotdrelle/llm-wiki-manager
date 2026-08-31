@@ -112,7 +112,9 @@ test('long UUIDs collapse to a short prefix so log lines stay on one line', () =
   }, '2026-07-08T14:42:18.000Z');
 
   assert.match(line, /run=7fadad27…/);
-  assert.match(line, /task=7fadad27…:taxonomy-synthesis/);
+  // The taskId's UUID prefix and hash suffix are dropped entirely: the field
+  // names the work ("taxonomy synthesis"), not an opaque id.
+  assert.match(line, /task="taxonomy synthesis"/);
   assert.match(line, /attempt=attempt-7fadad27…/);
   assert.match(line, /agentInstance=production-7fadad27…/);
   assert.doesNotMatch(line, /7fadad27-0be6-4d08-96e5-664fe7ee841e/);

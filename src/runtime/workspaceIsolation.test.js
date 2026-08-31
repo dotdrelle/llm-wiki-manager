@@ -34,39 +34,39 @@ test('a session stamps its workspace on every event it dispatches', () => {
   // ne le retrouverait jamais. La plan/activité d'un run serait perdue au
   // redémarrage, pour tout le monde.
   const store = freshStore();
-  const acpi = sessionFor(store, 'acpi');
+  const acmeSession = sessionFor(store, 'acme');
 
-  dispatchAgentEvent(acpi, createAgentEvent('user_message', {
+  dispatchAgentEvent(acmeSession, createAgentEvent('user_message', {
     origin: 'user',
     payload: { content: 'ingest démarré' },
   }));
 
-  const [event] = store.listEvents({ workspace: 'acpi' });
-  assert.equal(event.workspace, 'acpi', "l'événement doit porter son workspace");
+  const [event] = store.listEvents({ workspace: 'acme' });
+  assert.equal(event.workspace, 'acme', "l'événement doit porter son workspace");
 });
 
 test('two workspaces writing at the same time never see each other', () => {
   const store = freshStore();
-  const acpi = sessionFor(store, 'acpi');
+  const acmeSession = sessionFor(store, 'acme');
   const demo = sessionFor(store, 'demo');
 
   // Entrelacé volontairement : c'est la situation réelle de deux `serve`
   // ouverts côte à côte, pas deux runs successifs.
   for (let i = 0; i < 5; i += 1) {
-    dispatchAgentEvent(acpi, createAgentEvent('user_message', {
-      origin: 'user', payload: { content: `acpi-${i}` },
+    dispatchAgentEvent(acmeSession, createAgentEvent('user_message', {
+      origin: 'user', payload: { content: `acme-${i}` },
     }));
     dispatchAgentEvent(demo, createAgentEvent('user_message', {
       origin: 'user', payload: { content: `demo-${i}` },
     }));
   }
 
-  const acpiEvents = store.listEvents({ workspace: 'acpi' });
+  const acmeEvents = store.listEvents({ workspace: 'acme' });
   const demoEvents = store.listEvents({ workspace: 'demo' });
 
-  assert.equal(acpiEvents.length, 5);
+  assert.equal(acmeEvents.length, 5);
   assert.equal(demoEvents.length, 5);
-  assert.ok(acpiEvents.every((event) => event.payload.content.startsWith('acpi-')));
+  assert.ok(acmeEvents.every((event) => event.payload.content.startsWith('acme-')));
   assert.ok(demoEvents.every((event) => event.payload.content.startsWith('demo-')));
 });
 
@@ -74,32 +74,32 @@ test('a conversation is rebuilt from its own workspace only', () => {
   // C'est ce qui décide de ce qu'affiche un `serve` au chargement. Un mélange
   // ici afficherait les échanges du voisin dans sa fenêtre de chat.
   const store = freshStore();
-  const acpi = sessionFor(store, 'acpi');
+  const acmeSession = sessionFor(store, 'acme');
   const demo = sessionFor(store, 'demo');
 
-  dispatchAgentEvent(acpi, createAgentEvent('user_message', { origin: 'user', payload: { content: 'question acpi' } }));
+  dispatchAgentEvent(acmeSession, createAgentEvent('user_message', { origin: 'user', payload: { content: 'acme question' } }));
   dispatchAgentEvent(demo, createAgentEvent('user_message', { origin: 'user', payload: { content: 'question demo' } }));
-  dispatchAgentEvent(acpi, createAgentEvent('assistant_message', { origin: 'runtime', payload: { content: 'réponse acpi' } }));
+  dispatchAgentEvent(acmeSession, createAgentEvent('assistant_message', { origin: 'runtime', payload: { content: 'acme answer' } }));
 
-  const projection = reduceAgentEvents(store.listEvents({ workspace: 'acpi' }));
+  const projection = reduceAgentEvents(store.listEvents({ workspace: 'acme' }));
 
   assert.deepEqual(projection.conversation.map((entry) => entry.content), [
-    'question acpi',
-    'réponse acpi',
+    'acme question',
+    'acme answer',
   ]);
 });
 
 test('purging one workspace leaves the others intact', () => {
   // `/clear --all` depuis un `serve` ne doit pas vider le runtime du voisin.
   const store = freshStore();
-  const acpi = sessionFor(store, 'acpi');
+  const acmeSession = sessionFor(store, 'acme');
   const demo = sessionFor(store, 'demo');
-  dispatchAgentEvent(acpi, createAgentEvent('user_message', { origin: 'user', payload: { content: 'a' } }));
+  dispatchAgentEvent(acmeSession, createAgentEvent('user_message', { origin: 'user', payload: { content: 'a' } }));
   dispatchAgentEvent(demo, createAgentEvent('user_message', { origin: 'user', payload: { content: 'd' } }));
 
-  store.clearWorkspaceState({ workspace: 'acpi' });
+  store.clearWorkspaceState({ workspace: 'acme' });
 
-  assert.equal(store.listEvents({ workspace: 'acpi' }).length, 0);
+  assert.equal(store.listEvents({ workspace: 'acme' }).length, 0);
   assert.equal(store.listEvents({ workspace: 'demo' }).length, 1);
 });
 
@@ -119,12 +119,12 @@ test('a purge without a workspace wipes EVERY workspace', () => {
    où on décide de refuser plutôt que d'élargir, ce soit un choix explicite.
   */
   const store = freshStore();
-  dispatchAgentEvent(sessionFor(store, 'acpi'), createAgentEvent('user_message', { origin: 'user', payload: { content: 'a' } }));
+  dispatchAgentEvent(sessionFor(store, 'acme'), createAgentEvent('user_message', { origin: 'user', payload: { content: 'a' } }));
   dispatchAgentEvent(sessionFor(store, 'demo'), createAgentEvent('user_message', { origin: 'user', payload: { content: 'd' } }));
 
   store.clearWorkspaceState({ workspace: null });
 
-  assert.equal(store.listEvents({ workspace: 'acpi' }).length, 0);
+  assert.equal(store.listEvents({ workspace: 'acme' }).length, 0);
   assert.equal(store.listEvents({ workspace: 'demo' }).length, 0);
 });
 
@@ -135,11 +135,11 @@ test('the SSE publisher delivers an event only to its own workspace', () => {
   const deliver = (clientWorkspace, eventWorkspace) =>
     !(clientWorkspace && eventWorkspace !== clientWorkspace);
 
-  assert.equal(deliver('acpi', 'acpi'), true);
-  assert.equal(deliver('acpi', 'demo'), false, 'un client scopé ne doit rien recevoir du voisin');
-  assert.equal(deliver('acpi', null), false);
+  assert.equal(deliver('acme', 'acme'), true);
+  assert.equal(deliver('acme', 'demo'), false, 'un client scopé ne doit rien recevoir du voisin');
+  assert.equal(deliver('acme', null), false);
   // Le cas qui fuit : un abonné SANS workspace reçoit tout.
-  assert.equal(deliver(null, 'acpi'), true);
+  assert.equal(deliver(null, 'acme'), true);
   assert.equal(deliver(null, 'demo'), true);
 });
 

@@ -164,7 +164,11 @@ services:
       # One file, two readers: the manager routes on agent-runtimes.json, the
       # gateway serves the capabilities of its own entry from the same file.
       # Absolute path, computed by wiki-workspace from the manager state dir.
-      - ${AGENT_RUNTIMES_FILE:?Set AGENT_RUNTIMES_FILE}:/config/agent-runtimes.json:ro
+      # Declared AFTER the /config data mount: for overlapping bind mounts the
+      # child mount wins, and the reverse order silently hid the file under
+      # the directory — the gateway degraded to its built-in default
+      # capabilities on every start.
       - ${AGENTS_DATA_DIR:-./.agents-data}/gateway:/config
+      - ${AGENT_RUNTIMES_FILE:?Set AGENT_RUNTIMES_FILE}:/config/agent-runtimes.json:ro
       - ${WORKSPACES_ROOT:?Set WORKSPACES_ROOT to the directory containing all workspace folders}:/workspaces
     restart: unless-stopped

@@ -3,19 +3,21 @@ import { createInterface } from 'node:readline';
 import { emitKeypressEvents } from 'node:readline';
 import { Transform } from 'node:stream';
 import { execFileSync } from 'node:child_process';
+import { statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
 import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
 import { buildAgentSystemPrompt, formatLlmUnavailableMessage, isOrchestrationBypassTool } from '../agent/graph.js';
-import { handleSlashCommand, rawCommandAgentPrompt } from '../commands/slash.js';
+import { handleSlashCommand, rawCommandAgentPrompt, refreshMcpRuntimeStatus } from '../commands/slash.js';
 import { serviceChoices as composeServiceChoices, serviceDescription } from '../core/compose.js';
 import { extractActivity, mergePolledActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { syncActivitiesToPlan } from '../core/plan.js';
 import { buildLlmTools, callMcpTool, formatMcpToolResult, parseToolCallName, resolveToolCallName } from '../core/mcp.js';
 import { runBoundedToolLoop } from '../core/toolLoop.js';
-import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
+import { createAgentEvent, dispatchAgentEvent, dispatchRuntimeLog } from '../core/agentEvents.js';
+import { managerMcpEndpointsFile } from '../core/env.js';
 import { togglableAgentNames } from '../core/agentsCompose.js';
 import { loadWorkspaceProfile } from '../core/profile.js';
 import { artifactFromToolCall, currentArtifactFor, currentArtifactPromptLine, rememberArtifact } from '../core/currentArtifact.js';
@@ -1922,6 +1924,25 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
     void subscribeRuntimeEvents();
   }
 
+  // Connectors added from the serve panel land in mcp.endpoints.json while the
+  // shell keeps running. Without a re-read, the new server stays invisible in
+  // /chat and /agent until a restart — the operator had to delete and re-add
+  // the connector and still saw nothing. Watch the file's mtime: a change
+  // refreshes MCP status and tools IN PLACE, no restart.
+  let endpointsMtimeMs = null;
+  const endpointsWatchInterval = setInterval(async () => {
+    if (runtimePollingActive) return;
+    try {
+      const mtime = statSync(managerMcpEndpointsFile()).mtimeMs;
+      if (endpointsMtimeMs === null) { endpointsMtimeMs = mtime; return; }
+      if (mtime === endpointsMtimeMs) return;
+      endpointsMtimeMs = mtime;
+      await refreshMcpRuntimeStatus(session);
+      dispatchRuntimeLog(session, 'mcp: endpoints file changed — connectors refreshed in place');
+      rerender();
+    } catch { /* file absent or mid-write: try again next tick */ }
+  }, 3000);
+
   const pollBusy = new Set();
   const productionPollInterval = setInterval(async () => {
     if (runtimePollingActive) return;
@@ -2259,6 +2280,7 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
     clearTimeout(runtimeReconnectTimer);
     clearTimeout(runtimeSyncTimer);
     clearInterval(productionPollInterval);
+    clearInterval(endpointsWatchInterval);
     clearTimeout(ctrlCTimer);
     clearTimeout(mouseSelectionTimer);
     output.off('resize', onResize);

@@ -243,13 +243,13 @@ test('normalizeTaskError keeps the agent reason as the message, never the fallba
   // Regression: the fallback describes only WHERE the failure was seen
   // ("agent_execute rejected task"). Letting it win discarded the one
   // actionable sentence — and left Donna to invent a cause.
-  const error = normalizeTaskError("Error: source 'acpi' not found", {
+  const error = normalizeTaskError("Error: source 'acme' not found", {
     fallbackCode: 'execution_rejected',
     fallbackMessage: 'agent_execute rejected task',
   });
 
-  assert.equal(error.code, "Error: source 'acpi' not found");
-  assert.equal(error.message, "Error: source 'acpi' not found");
+  assert.equal(error.code, "Error: source 'acme' not found");
+  assert.equal(error.message, "Error: source 'acme' not found");
 });
 
 test('normalizeTaskError falls back only when the agent reports no reason at all', () => {

@@ -144,7 +144,7 @@ test('a failed re-discovery keeps the orchestrator agent, never erases its capab
   */
   const events = [];
   const session = {
-    workspace: 'acpi',
+    workspace: 'acme',
     mcp: {
       production: { status: 'connected', tools: [{ name: 'agent_describe' }] },
     },
@@ -216,7 +216,7 @@ test('a stopped agent is reported once, not on every re-scan', async () => {
   // until it answers again.
   const events = [];
   const session = {
-    workspace: 'acpi',
+    workspace: 'acme',
     mcp: { production: { status: 'connected', tools: [{ name: 'agent_describe' }] } },
     _onAgentEvent: (event) => events.push(event),
   };
@@ -260,7 +260,7 @@ test('discovery sends the workspace only to agents whose schema declares it', as
   });
 
   await registry.discover({
-    workspace: 'acpi',
+    workspace: 'acme',
     mcp: {
       // Declares workspace: gets it, and can scope its vocabulary.
       cme: {
@@ -293,9 +293,9 @@ test('discovery sends the workspace only to agents whose schema declares it', as
     },
   });
 
-  assert.deepEqual(seen.cme, { workspace: 'acpi' });
+  assert.deepEqual(seen.cme, { workspace: 'acme' });
   assert.deepEqual(seen.production, {});
-  assert.deepEqual(seen.connectors, { workspace: 'acpi' });
+  assert.deepEqual(seen.connectors, { workspace: 'acme' });
   assert.deepEqual(seen.legacyish, {});
 });
 
@@ -374,7 +374,7 @@ test('markPersistedAgentsStale invalide aussi l’instantané routable', () => {
 
 test('un agent redevient sélectionnable après un agent_describe réussi', async () => {
   const session = {
-    workspace: 'juno',
+    workspace: 'demo',
     agentEvents: [],
     agents: [{ agentInstanceId: 'production-main', serverName: 'production', health: 'available', description: { contractVersion: '1', capabilities: [{ id: 'knowledge.update', version: '1' }] } }],
     mcp: {

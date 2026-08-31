@@ -38,10 +38,10 @@ test('artifactFromToolCall ignores read tools and tools without a path', () => {
 });
 
 test('currentArtifactFor is workspace-scoped', () => {
-  const artifact = { workspace: 'acpi', path: 'templates/notes/basic.md', kind: 'template' };
-  assert.equal(currentArtifactFor({ workspace: 'acpi', currentArtifact: artifact }), artifact);
+  const artifact = { workspace: 'acme', path: 'templates/notes/basic.md', kind: 'template' };
+  assert.equal(currentArtifactFor({ workspace: 'acme', currentArtifact: artifact }), artifact);
   assert.equal(currentArtifactFor({ workspace: 'other', currentArtifact: artifact }), null);
-  assert.equal(currentArtifactFor({ workspace: 'acpi' }), null);
+  assert.equal(currentArtifactFor({ workspace: 'acme' }), null);
 });
 
 test('currentArtifactPromptLine names the artifact for follow-up edits', () => {
@@ -52,10 +52,10 @@ test('currentArtifactPromptLine names the artifact for follow-up edits', () => {
 });
 
 test('rememberArtifact records a workspace-scoped artifact and ignores empty paths', () => {
-  const session = { workspace: 'acpi' };
+  const session = { workspace: 'acme' };
   rememberArtifact(session, { path: 'templates/notes/basic.md', kind: 'template' });
   assert.equal(session.currentArtifact.path, 'templates/notes/basic.md');
-  assert.equal(session.currentArtifact.workspace, 'acpi');
+  assert.equal(session.currentArtifact.workspace, 'acme');
   assert.equal(session.currentArtifact.kind, 'template');
   rememberArtifact(session, { path: '   ', kind: 'template' });
   assert.equal(session.currentArtifact.path, 'templates/notes/basic.md');

@@ -2154,7 +2154,7 @@ test('runtime health reports active runs across workspaces', async (t) => {
       session: {},
       // The shell reads this at exit: shutting down its own runtime must not
       // kill a run that is supposed to survive the shell.
-      listActiveRuns: () => [{ workspace: 'juno', runId: 'run-1234abcd' }],
+      listActiveRuns: () => [{ workspace: 'demo', runId: 'run-1234abcd' }],
     });
   } catch (err) {
     if (err?.code === 'EPERM') {
@@ -2166,7 +2166,7 @@ test('runtime health reports active runs across workspaces', async (t) => {
 
   try {
     const health = await (await fetch(`http://127.0.0.1:${handle.port}/health`)).json();
-    assert.deepEqual(health.activeRuns, [{ workspace: 'juno', runId: 'run-1234abcd' }]);
+    assert.deepEqual(health.activeRuns, [{ workspace: 'demo', runId: 'run-1234abcd' }]);
   } finally {
     await handle.close();
   }

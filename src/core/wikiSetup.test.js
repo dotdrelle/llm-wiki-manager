@@ -85,3 +85,38 @@ test('the manager .env values override stale blank process values for agents up'
   }));
   assert.equal(childEnv.GOOGLE_OAUTH_CLIENT_SECRET, 'fresh-secret');
 });
+
+test('an optional agent that refuses to start degrades instead of failing /start all', async () => {
+  // The gateway image not being pulled yet makes `docker compose up` exit
+  // non-zero while the base stack still comes up. Aborting there made
+  // `/start all` stop before the workspace services — the optional tail
+  // wagging the whole dog. With the base agents verified up, the start
+  // returns a degraded result the caller can continue from.
+  const result = await startAgents(startOptions({
+    exec: async () => {
+      const err = new Error('pull access denied for dotdrelle/wiki-agentic-gateway:latest');
+      err.code = 1;
+      throw err;
+    },
+    agentsCheck: async () => null,
+  }));
+
+  assert.equal(result.degraded, true);
+  assert.match(result.output, /started degraded/);
+  assert.match(result.output, /wiki-agentic-gateway/);
+  assert.deepEqual(result.profiles, ['connectors']);
+});
+
+test('a docker failure that leaves the base agents down still fails the start', async () => {
+  await assert.rejects(
+    startAgents(startOptions({
+      exec: async () => {
+        const err = new Error('Cannot connect to the Docker daemon');
+        err.code = 1;
+        throw err;
+      },
+      agentsCheck: async () => ({ kind: 'agents', context: { downServices: ['cme', 'documents'] } }),
+    })),
+    /Docker daemon is not running/,
+  );
+});

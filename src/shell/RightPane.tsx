@@ -344,6 +344,11 @@ type LogSegment = { text: string; fg: string };
 // Continuation lines of a wrapped entry are indented and dimmed so each
 // entry reads as one visual block instead of an undifferentiated wall.
 function logMessageColor(message: string): string {
+  // Task-lifecycle glyphs win outright: ✓ done (green), ✗ failed (red),
+  // ▸ started / ↻ retry keep the neutral/amber tone the keyword rules below
+  // would give them anyway.
+  if (/^\s*✓/.test(message)) return '#A6E3A1';
+  if (/^\s*✗/.test(message)) return '#F38BA8';
   // A doctor summary with ZERO errors is a warning by construction
   // ("⚠ 0 error(s), 2 warning(s)") — amber, never red, even though it
   // mentions the word "error".
@@ -393,10 +398,17 @@ function logEntryLines(raw: string, width: number): LogSegment[][] {
   return out;
 }
 
+// "Agent status" collects the dispatch plumbing — capability resolution, agent
+// selection, agent_execute/agent_status polling, job acceptance — so the
+// "Runtime" tab is left with the readable business flow (plan + the ▸/✓/✗/↻
+// task lines). Match the formatted event token, not a loose substring: the old
+// /agent[_ -]?status/ also swallowed "agent.selected".
+const AGENT_IO_RE = /\b(?:AGENT_STATUS|AGENT_EXECUTE|AGENT_SELECTED|JOB_ACCEPTED|CAPABILITY_RESOLVING|RUNTIME_ACCEPTED)\b/i;
+
 export function LogPanel(props: { logs: string[]; width: number; filter?: string }) {
   const [activeLogTab, setActiveLogTab] = createSignal<'flow' | 'agent-status'>('flow');
   const lineWidth = () => Math.max(8, props.width - 2);
-  const isAgentStatus = (line: string) => /agent[_ -]?status/i.test(line);
+  const isAgentStatus = (line: string) => AGENT_IO_RE.test(line);
   // Filtering preserves the runtime history order. logRenderLines performs
   // the single block-level reversal shared by both tabs.
   const filteredLogs = () => filterRuntimeLogs(props.logs, props.filter ?? '')

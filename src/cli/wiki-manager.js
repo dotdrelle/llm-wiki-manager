@@ -170,7 +170,7 @@ export async function resolveExecutorArguments({
     'Only fill a field when the objective explicitly states or clearly implies its value.',
     'Omit every field that is not stated. Never invent identifiers, queries, filters or counts.',
     // The objective almost always names the workspace ("export the pages of
-    // workspace acpi"), and the orchestrator already binds it out of band. With
+    // workspace acme"), and the orchestrator already binds it out of band. With
     // one free-text field in the schema and no field for the workspace, a model
     // reliably misbinds the two — that is how a workspace name ended up as a
     // source name and failed the task.

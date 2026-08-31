@@ -115,6 +115,31 @@ export async function startAgents(options = {}) {
       profiles: composeContext.profiles,
     };
   } catch (err) {
+    // One optional agent failing to start (today: the agentic gateway, whose
+    // image is not pulled yet) makes `docker compose up` exit non-zero — but
+    // the base stack usually DID come up. Aborting here turned `/start all`
+    // into "gateway image missing ⇒ workspace never starts", which is the
+    // optional tail wagging the whole dog. If the base agents are up, degrade
+    // loudly instead of failing: the caller continues, and the absent agent
+    // announces itself through its own check (/status, preflight, discovery).
+    const verification = await verifyAgentsStarted({
+      context: composeContext,
+      agentsCheck: options.agentsCheck,
+    }).catch(() => null);
+    if (verification?.ok) {
+      return {
+        output: [
+          (options.services ?? []).length > 0
+            ? 'A requested agent failed to start — the rest of the stack is up.'
+            : 'The agents stack started degraded — one optional agent failed (see /status).',
+          err instanceof Error ? (err.message ?? String(err)) : String(err),
+        ].filter(Boolean).join('\n').trim(),
+        missingImages: [],
+        profiles: composeContext.profiles,
+        degraded: true,
+        degradedError: wrapDockerError(err),
+      };
+    }
     throw wrapDockerError(err);
   }
 }

@@ -246,7 +246,7 @@ function task(id, overrides = {}) {
 }
 
 /*
-  Cas observé le 2026-08-22 (workspace acpi) : `/wiki-ingest` planifie 13
+  Cas observé le 2026-08-22 (workspace acme) : `/wiki-ingest` planifie 13
   ingest_plan (groupe `ingest`) + 13 ingest_apply (groupe `apply`, sérialisés
   sur le lock `workspace-write`, derrière la barrière `ingest`) + 1 taxonomy
   (barrière `apply`). Le grant run-scope émis par le bouton Approve est « nu » :
@@ -260,7 +260,7 @@ function task(id, overrides = {}) {
 test('un grant run-scope « nu » (sans classes ni révision) débloque les apply derrière une barrière', () => {
   const plan = {
     runId: 'run-1',
-    workspace: 'acpi',
+    workspace: 'acme',
     planRevision: 1,
     tasks: [
       // 13 ingest_plan du groupe ingest, tous done.
@@ -307,7 +307,7 @@ test('un grant run-scope « nu » (sans classes ni révision) débloque les appl
       status: 'approved',
       scope: 'run',
       runId: 'run-1',
-      workspaceId: 'acpi',
+      workspaceId: 'acme',
       planRevision: null,
       approvalClasses: [],
     }],
@@ -322,7 +322,7 @@ test('un grant run-scope « nu » (sans classes ni révision) débloque les appl
 });
 
 /*
- Cas observé le 2026-08-04 (workspace juno) : une ingestion de dix fichiers,
+ Cas observé le 2026-08-04 (workspace demo) : une ingestion de dix fichiers,
  neuf réussis, le dixième en échec sur du JSON malformé. La barrière de groupe
  exigeait que TOUS les membres soient `done` : elle ne s'est jamais ouverte, le
  planificateur n'a plus trouvé de tâche prête, et le run est resté `running`

@@ -474,36 +474,61 @@ const READ_ONLY_WIKI_TOOLS = new Set([
   'wiki_workspace_status',
 ]);
 
-// The runtime's EYES, per run: the active workspace's wiki MCP, read tools
-// only. Workspace-scoped endpoints are per-run by nature — they cannot live
-// in a static gateway file. The allow-list here is the authority: nothing
+// The runtime's EYES, per run: the active workspace's wiki MCP (read tools
+// only) PLUS the declared external MCP endpoints that are safe to hand over
+// (connected, no approval-gated tools, not a workspace-mutating server) —
+// typically web search (exa). The allow-list here is the authority: nothing
 // else reaches the runtime.
 export function activeProfileMcp(session) {
+  const blocks = [];
   const wiki = session?.mcp?.wiki;
-  if (!wiki?.url || wiki.status !== 'connected') return null;
-  const tools = (wiki.tools ?? [])
-    .map((tool) => String(tool.name ?? ''))
-    .filter((name) => {
-      if (!name) return false;
-      const base = name.includes('__') ? name.slice(name.lastIndexOf('__') + 2) : name;
-      return READ_ONLY_WIKI_TOOLS.has(base);
+  if (wiki?.url && wiki.status === 'connected') {
+    const tools = (wiki.tools ?? [])
+      .map((tool) => String(tool.name ?? ''))
+      .filter((name) => {
+        if (!name) return false;
+        const base = name.includes('__') ? name.slice(name.lastIndexOf('__') + 2) : name;
+        return READ_ONLY_WIKI_TOOLS.has(base);
+      });
+    if (tools.length > 0) {
+      // Same credential contract as the manager's own MCP client (mcp.js
+      // `authorization: Bearer ${endpoint.token}`): the wiki detail carries
+      // `token`, not `headers` — without it the gateway's MCP connection is
+      // rejected by the workspace MCP server ("invalid or missing bearer token")
+      // and the Deep Agent runs blind.
+      const headers = {
+        ...(wiki.headers && typeof wiki.headers === 'object' ? wiki.headers : {}),
+        ...(wiki.token ? { Authorization: `Bearer ${wiki.token}` } : {}),
+      };
+      blocks.push({
+        name: 'wiki',
+        url: String(wiki.url),
+        ...(Object.keys(headers).length > 0 ? { headers } : {}),
+        tools,
+      });
+    }
+  }
+  // External connectors ride along ONLY when the operator declared them safe
+  // for the runtime's eyes. A connector added from the serve panel lands here
+  // too — without this, exa was offered in chat but the agentic path
+  // delegated to the gateway and the Deep Agent answered it had no web tools.
+  const EXCLUDED_EXTERNAL_SERVERS = new Set(['cme', 'documents', 'connectors', 'production']);
+  for (const [name, entry] of Object.entries(session?.mcp ?? {})) {
+    if (!entry?.external || entry.status !== 'connected') continue;
+    if (EXCLUDED_EXTERNAL_SERVERS.has(name)) continue;
+    if (Array.isArray(entry.requireApproval) && entry.requireApproval.length > 0) continue;
+    const tools = (entry.tools ?? [])
+      .map((tool) => String(tool.name ?? ''))
+      .filter((toolName) => toolName && !/(write|send|modify|create|delete|update|add|remove)/i.test(toolName));
+    if (tools.length === 0) continue;
+    blocks.push({
+      name,
+      url: String(entry.url),
+      ...(entry.headers && typeof entry.headers === 'object' ? { headers: entry.headers } : {}),
+      tools,
     });
-  if (tools.length === 0) return null;
-  // Same credential contract as the manager's own MCP client (mcp.js
-  // `authorization: Bearer ${endpoint.token}`): the wiki detail carries
-  // `token`, not `headers` — without it the gateway's MCP connection is
-  // rejected by the workspace MCP server ("invalid or missing bearer token")
-  // and the Deep Agent runs blind.
-  const headers = {
-    ...(wiki.headers && typeof wiki.headers === 'object' ? wiki.headers : {}),
-    ...(wiki.token ? { Authorization: `Bearer ${wiki.token}` } : {}),
-  };
-  return [{
-    name: 'wiki',
-    url: String(wiki.url),
-    ...(Object.keys(headers).length > 0 ? { headers } : {}),
-    tools,
-  }];
+  }
+  return blocks.length > 0 ? blocks : null;
 }
 
 // The Deep Agent's system prompt, built per run from the same ingredients

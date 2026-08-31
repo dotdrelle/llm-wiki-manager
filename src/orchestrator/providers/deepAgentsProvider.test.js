@@ -93,7 +93,7 @@ test('execute POSTs /runs and returns the runId', async () => {
   const provider = createDeepAgentsProvider({ endpoint: 'http://agent-runtime:8080', fetchImpl });
 
   const run = await provider.execute({
-    objective: 'analyse JUNO',
+    objective: 'analyze the demo workspace',
     operation: 'run',
     arguments: {},
     model: { baseUrl: 'http://llm:11434/v1', model: 'qwen3:14b', apiKey: 'secret' },
@@ -101,7 +101,7 @@ test('execute POSTs /runs and returns the runId', async () => {
   assert.deepEqual(run, { runId: 'run-1', status: 'running' });
   assert.equal(fetchImpl.calls[0].path, '/runs');
   const sent = JSON.parse(fetchImpl.calls[0].body);
-  assert.equal(sent.objective, 'analyse JUNO');
+  assert.equal(sent.objective, 'analyze the demo workspace');
   assert.deepEqual(sent.model, { baseUrl: 'http://llm:11434/v1', model: 'qwen3:14b', apiKey: 'secret' });
 });
 

@@ -830,7 +830,7 @@ test('callMcpTool re-negotiates and replays once when the agent drops the sessio
 
   try {
     const endpoint = { status: 'connected', url: 'http://127.0.0.1:3336/mcp/' };
-    const result = await callMcpTool({ cme: endpoint }, 'cme', 'cme_status', { workspace: 'juno' });
+    const result = await callMcpTool({ cme: endpoint }, 'cme', 'cme_status', { workspace: 'demo' });
 
     assert.equal(result.content[0].text, 'status: configured');
     assert.deepEqual(requests, [

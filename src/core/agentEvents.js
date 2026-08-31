@@ -1,7 +1,7 @@
 import { normalizeActivity } from './activity.js';
 import { attachActivityToExistingPlan, syncActivitiesToPlan } from './plan.js';
 import { applyPlanPatch, normalizePlanPatch, normalizePlanRevision, rebasePlanPatch } from './planPatch.js';
-import { formatRuntimeLogPayload, normalizeRuntimeLog } from './runtimeLog.js';
+import { formatRuntimeLogPayload, normalizeRuntimeLog, shortTaskLabel } from './runtimeLog.js';
 import { projectSkillChains, TERMINAL as CONTROL_TERMINAL_STATUSES } from './skillChainView.js';
 import { projectWorkflow } from './workflow.js';
 import { validateContractInDev } from '../contracts/schemas.js';
@@ -329,16 +329,13 @@ function applyEvent(state, event) {
         : state.planRevision + 1;
       return;
     case 'plan.received':
-      state.logs.push(`Plan received for run ${String(event.runId ?? event.payload?.runId ?? '')}`.trim());
-      state.logs = state.logs.slice(-200);
+      appendLog(state, `${logTime(event.ts)} Plan received for run ${String(event.runId ?? event.payload?.runId ?? '')}`.trim());
       return;
     case 'plan.validated':
-      state.logs.push(`Plan validated for run ${String(event.runId ?? event.payload?.runId ?? '')}`.trim());
-      state.logs = state.logs.slice(-200);
+      appendLog(state, `${logTime(event.ts)} Plan validated for run ${String(event.runId ?? event.payload?.runId ?? '')}`.trim());
       return;
     case 'plan.rejected':
-      state.logs.push(`Plan rejected: ${formatPlanErrors(event.payload?.errors)}`);
-      state.logs = state.logs.slice(-200);
+      appendLog(state, `${logTime(event.ts)} Plan rejected: ${formatPlanErrors(event.payload?.errors)}`.trim());
       return;
     case 'task_group.created':
       return;
@@ -346,28 +343,24 @@ function applyEvent(state, event) {
       appendCreatedTask(state, event.payload?.task);
       return;
     case 'task.assigned':
-      state.logs.push(`Task assigned: ${String(event.taskId ?? event.payload?.taskId ?? '')}`.trim());
-      state.logs = state.logs.slice(-200);
+      appendLog(state, taskLogLine(state, event, 'assigned'));
       return;
     case 'task.started':
-      state.logs.push(`Task started: ${String(event.taskId ?? event.payload?.taskId ?? '')}`.trim());
-      state.logs = state.logs.slice(-200);
+      // Silent: always follows `task.assigned` (same task, milliseconds apart),
+      // which already printed the "started" line.
       return;
     case 'task.retry_scheduled':
-      state.logs.push(`Task retry scheduled: ${String(event.taskId ?? event.payload?.taskId ?? '')}`.trim());
-      state.logs = state.logs.slice(-200);
+      appendLog(state, taskLogLine(state, event, 'retry'));
       return;
     case 'task.result_returned':
-      state.logs.push(`Task result returned: ${String(event.taskId ?? event.payload?.taskId ?? '')}`.trim());
-      state.logs = state.logs.slice(-200);
+      // Silent: an internal transition immediately followed by
+      // `task.completed`/`task.failed`, which carry the same result.
       return;
     case 'task.completed':
-      state.logs.push(`Task completed: ${String(event.taskId ?? event.payload?.taskId ?? '')}`.trim());
-      state.logs = state.logs.slice(-200);
+      appendLog(state, taskLogLine(state, event, 'completed'));
       return;
     case 'task.failed':
-      state.logs.push(`Task failed: ${String(event.taskId ?? event.payload?.taskId ?? '')}`.trim());
-      state.logs = state.logs.slice(-200);
+      appendLog(state, taskLogLine(state, event, 'failed'));
       return;
     case 'plan.revision_changed':
       if (Array.isArray(event.payload?.tasks)) {
@@ -381,12 +374,11 @@ function applyEvent(state, event) {
         // référence au state : `updatePlanStep` reste une fonction sur un
         // plan, et le journal reste la responsabilité de l'appelant.
         const anomaly = updatePlanStep(state.plan, event.payload ?? {});
-        if (anomaly) state.logs.push(anomaly);
+        if (anomaly) appendLog(state, `${logTime(event.ts)} ${anomaly}`.trim());
       }
       return;
     case 'control_message_received':
-      state.logs.push(`Control message: ${String(event.payload?.input ?? '')}`);
-      state.logs = state.logs.slice(-200);
+      appendLog(state, `${logTime(event.ts)} Control message: ${String(event.payload?.input ?? '')}`.trim());
       return;
     case 'plan_patch_proposed':
       upsertPlanPatch(state, {
@@ -568,7 +560,7 @@ function applyEvent(state, event) {
       return;
     case 'run_cancelled':
       state.status = 'cancelled';
-      state.logs.push(String(event.payload?.message ?? 'Agent run cancelled.'));
+      appendLog(state, `${logTime(event.ts)} ${String(event.payload?.message ?? 'Agent run cancelled.')}`.trim());
       // A cancelled run must not leave its plan steps "running/pending" and
       // its activities spinning in the panels: mark every non-terminal one
       // cancelled so the display reflects reality immediately.
@@ -590,7 +582,7 @@ function applyEvent(state, event) {
        already in hand. What ends a run is essential by construction; the
        prefix states that instead of hoping the wording says so.
       */
-      state.logs.push(`Run failed: ${String(event.payload?.message ?? 'Agent run failed.')}`);
+      appendLog(state, `${logTime(event.ts)} Run failed: ${String(event.payload?.message ?? 'Agent run failed.')}`.trim());
       // A dead run must not leave "pending" plan steps and spinning
       // activities in the persisted projection: they reappeared as ghosts
       // at every relaunch ("des trucs dans le plan qui n'existent pas") and
@@ -667,7 +659,7 @@ function applyEvent(state, event) {
       }, event.ts);
       return;
     case 'runtime_log':
-      state.logs.push(formatRuntimeLogPayload(event.payload ?? {}, event.ts));
+      appendLog(state, formatRuntimeLogPayload(event.payload ?? {}, event.ts));
       return;
     default:
       return;
@@ -1050,6 +1042,106 @@ function formatPlanErrors(errors) {
   return Array.isArray(errors) && errors.length > 0
     ? errors.map((error) => error.code ?? error.message ?? String(error)).join(', ')
     : 'unknown';
+}
+
+const LOG_TIME_PREFIX = /^\d{2}:\d{2}:\d{2}\s+/;
+const LOG_REPEAT_SUFFIX = / \(×\d+\)$/;
+
+/*
+ The single writer into `state.logs` — every push goes through here.
+
+ Two jobs the ad-hoc `push(...); logs = logs.slice(-200)` pairs did unevenly:
+ the 200-entry cap is now applied on every path (the `runtime_log` case never
+ capped and grew without bound during a long run), and an entry identical to
+ the one before it — once the HH:MM:SS prefix is dropped — is collapsed into a
+ `(×N)` counter instead of being printed again. `agent_status` polling and
+ repeated progress ticks otherwise bury every readable event under dozens of
+ identical rows.
+*/
+function appendLog(state, line) {
+  const text = String(line ?? '').trim();
+  if (!text) return;
+  const bare = (value) => String(value).replace(LOG_TIME_PREFIX, '').replace(LOG_REPEAT_SUFFIX, '');
+  const last = state.logs.at(-1);
+  if (last != null && bare(last) === bare(text)) {
+    const count = Number(String(last).match(/ \(×(\d+)\)$/)?.[1] ?? '1') + 1;
+    state.logs[state.logs.length - 1] = `${String(last).replace(LOG_REPEAT_SUFFIX, '')} (×${count})`;
+    return;
+  }
+  state.logs.push(text);
+  if (state.logs.length > 200) state.logs = state.logs.slice(-200);
+}
+
+function logTime(ts) {
+  const date = ts ? new Date(ts) : new Date();
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(11, 19);
+}
+
+function planTaskById(state, taskId) {
+  const id = String(taskId ?? '');
+  if (!id) return null;
+  return (state.plan ?? []).find((step) => String(step.id ?? step.step) === id) ?? null;
+}
+
+/*
+ The persisted taskId is `<runId-uuid>:<slug>-<hash8>` — neither the UUID nor
+ the trailing hash means anything to a reader. Prefer the plan step's business
+ label ("Polish deliverable: proposition/presentation"), then its description,
+ and only fall back to a de-slugified task name when the plan carries neither.
+*/
+function taskLabelFor(state, taskId) {
+  const step = planTaskById(state, taskId);
+  const label = step?.label ?? step?.description ?? null;
+  if (label && !/^Step \d+$/.test(label)) return label;
+  return shortTaskLabel(taskId) || String(taskId ?? '') || 'task';
+}
+
+// One readable line per real task transition. `task.started` and
+// `task.result_returned` are deliberately silent in the reducer — each is an
+// internal step between two lines this function already prints (`assigned`
+// then `completed`/`failed`), and printing them doubled every task in the
+// Runtime panel.
+function taskLogLine(state, event, kind) {
+  const payload = event.payload ?? {};
+  const taskId = event.taskId ?? payload.taskId ?? '';
+  const label = taskLabelFor(state, taskId);
+  const time = logTime(event.ts);
+  const step = planTaskById(state, taskId);
+  const capability = payload.assignment?.capability ?? step?.requiredCapability ?? null;
+  const agent = payload.assignment?.agentInstanceId
+    ?? payload.agentInstanceId
+    ?? payload.result?.assignment?.agentInstanceId
+    ?? payload.assignment?.agentId
+    ?? null;
+
+  if (kind === 'assigned') {
+    const context = [capability, agent && `→ ${agent}`].filter(Boolean).join('  ');
+    return `${time} ▸ ${label} — started${context ? `  (${context})` : ''}`.trim();
+  }
+  if (kind === 'retry') {
+    const attempt = payload.attempts ?? payload.attempt ?? null;
+    const max = payload.maxAttempts ?? null;
+    const reason = payload.reason
+      ?? payload.error?.code
+      ?? payload.error?.message
+      ?? 'retryable error';
+    const nth = attempt != null ? ` ${attempt}${max ? `/${max}` : ''}` : '';
+    return `${time} ↻ ${label} — retry${nth} (${reason})`.trim();
+  }
+
+  const result = payload.result ?? {};
+  if (kind === 'failed') {
+    const error = result.error?.code
+      ?? result.error?.message
+      ?? payload.error?.code
+      ?? payload.error?.message
+      ?? (result.status && result.status !== 'succeeded' ? result.status : null);
+    return `${time} ✗ ${label} — failed${error ? `: ${error}` : ''}`.trim();
+  }
+  // completed
+  const outputs = result.outputRefs ?? result.result?.outputRefs ?? [];
+  const count = Array.isArray(outputs) ? outputs.length : 0;
+  return `${time} ✓ ${label} — done${count ? ` (${count} output${count > 1 ? 's' : ''})` : ''}`.trim();
 }
 
 function cloneRef(value) {

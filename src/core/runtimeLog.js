@@ -70,7 +70,9 @@ export function formatRuntimeLogPayload(payload = {}, ts = null) {
   const time = timeLabel(ts);
   const event = eventLabel(payload.event);
   const fields = ORDERED_FIELDS
-    .map((key) => formatField(FIELD_ALIASES[key], payload[key]))
+    .map((key) => (key === 'taskId'
+      ? formatField(FIELD_ALIASES[key], shortTaskLabel(payload[key]))
+      : formatField(FIELD_ALIASES[key], payload[key])))
     .filter(Boolean);
   if (payload.status != null) fields.push(formatField('status', payload.status));
   if (payload.percent != null) fields.push(formatField('percent', payload.percent));
@@ -88,6 +90,23 @@ const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\
 
 function shortenUuids(text) {
   return String(text ?? '').replace(UUID_RE, (uuid) => `${uuid.slice(0, 8)}…`);
+}
+
+// A structured taskId is `<runId-uuid>:<slug>-<hash8>`. The UUID and the hash
+// carry no meaning for a reader; keep the human-readable slug in between so
+// `task=…` in a runtime log line names the work instead of an opaque id. A
+// plain id that is neither prefixed nor hash-suffixed (`task-build`, `a`, a
+// legacy step number) is left exactly as it is — only the UUID is collapsed.
+const TASK_HASH_SUFFIX = /-[0-9a-f]{8,}$/i;
+
+export function shortTaskLabel(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return raw;
+  const hasColon = raw.includes(':');
+  if (!hasColon && !TASK_HASH_SUFFIX.test(raw)) return shortenUuids(raw);
+  const tail = hasColon ? raw.slice(raw.indexOf(':') + 1) : raw;
+  const pretty = tail.replace(TASK_HASH_SUFFIX, '').replace(/[-_]+/g, ' ').trim();
+  return pretty || shortenUuids(raw);
 }
 
 export function shortLogId(value, { maxLength = 40 } = {}) {

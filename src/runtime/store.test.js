@@ -216,7 +216,10 @@ test('runtime store persists task assignments attempts and results from events',
   const reopened = openRuntimeStore({ stateDir });
   const session = { activities: {}, headlessPlan: null };
   reopened.hydrateSession(session, { workspace: 'docs' });
-  assert.ok(reopened.getState(session, { workspace: 'docs' }).logs.some((line) => line === `Task assigned: ${taskId}`));
+  const assignedLine = reopened.getState(session, { workspace: 'docs' }).logs.find((line) => /▸ Build A — started/.test(line));
+  assert.ok(assignedLine, 'expected a readable task-started line carrying the plan label');
+  assert.match(assignedLine, /document\.build/);
+  assert.match(assignedLine, /production-main/);
   assert.equal(reopened.listTaskAttempts({ taskId })[0].jobId, 'job-1');
   assert.equal(reopened.getTaskResult({ taskId }).status, 'succeeded');
   reopened.close();
@@ -1131,10 +1134,10 @@ test('un agent restauré par hydrateSession n’est plus routable tant qu’aucu
    premiers.
   */
   const store = openRuntimeStore({ stateDir: mkdtempSync(join(tmpdir(), 'wiki-manager-agent-staleness-')) });
-  const writer = { agentEvents: [], workspace: 'juno' };
+  const writer = { agentEvents: [], workspace: 'demo' };
   dispatchAgentEvent(writer, createAgentEvent('agent.registered', {
     origin: 'runtime',
-    workspace: 'juno',
+    workspace: 'demo',
     payload: {
       agent: {
         agentInstanceId: 'cme-main',
@@ -1152,8 +1155,8 @@ test('un agent restauré par hydrateSession n’est plus routable tant qu’aucu
   for (const event of writer.agentEvents) store.persistEvent(event);
 
   // Redémarrage : une session neuve, aucun scan encore effectué.
-  const rebooted = { agentEvents: [], workspace: 'juno' };
-  store.hydrateSession(rebooted, { workspace: 'juno' });
+  const rebooted = { agentEvents: [], workspace: 'demo' };
+  store.hydrateSession(rebooted, { workspace: 'demo' });
 
   const restored = [...(rebooted.agents ?? []), ...(rebooted.agentRegistrySnapshot ?? [])];
   assert.ok(restored.length > 0, 'the agent must be restored, only not trusted');

@@ -66,7 +66,7 @@ test('interactive runtime refreshes configured MCP endpoints that started late',
 test('executor-only capabilities receive one manager-authored executable task', () => {
   const fragment = buildExecutorOnlyFragment({
     objective: 'donne-moi mes derniers mails',
-    workspace: 'juno',
+    workspace: 'demo',
     selection: {
       capability: 'external-source.collect',
       operation: 'collect',
@@ -91,7 +91,7 @@ test('executor-only capabilities receive one manager-authored executable task', 
   assert.equal(fragment.tasks[0].requiredCapability, 'external-source.collect');
   assert.equal(fragment.tasks[0].operation, 'collect');
   assert.deepEqual(fragment.tasks[0].arguments, { maxMessages: 10 });
-  assert.deepEqual(fragment.tasks[0].locks, ['external-source.collect:juno']);
+  assert.deepEqual(fragment.tasks[0].locks, ['external-source.collect:demo']);
   assert.equal(fragment.tasks[0].requiresApproval, true);
   assert.equal(fragment.tasks[0].approvalClass, 'external-source');
   assert.match(fragment.tasks[0].idempotencyKey, /^[0-9a-f-]{36}$/);
@@ -263,14 +263,14 @@ const EXPORT_CAPABILITY = {
 };
 
 test('argument extraction drops a value that only echoes the active workspace', async () => {
-  // Regression: "exporter les pages Confluence du workspace acpi" against a
+  // Regression: "export the Confluence pages of the acme workspace" against a
   // schema whose single free-text field is source_name. The model binds the
-  // workspace name to it, and the executor fails with "source 'acpi' not
+  // workspace name to it, and the executor fails with "source 'acme' not
   // found". The workspace is already bound out of band, so the echo is noise.
   const llm = {
     completeWithTools: async () => ({
       tool_calls: [{
-        function: { name: 'set_task_arguments', arguments: JSON.stringify({ source_name: 'acpi' }) },
+        function: { name: 'set_task_arguments', arguments: JSON.stringify({ source_name: 'acme' }) },
       }],
     }),
   };
@@ -278,9 +278,9 @@ test('argument extraction drops a value that only echoes the active workspace', 
   assert.deepEqual(
     await resolveExecutorArguments({
       llm,
-      objective: 'exporter les pages Confluence du workspace acpi',
+      objective: 'export the Confluence pages of the acme workspace',
       capability: EXPORT_CAPABILITY,
-      workspace: 'acpi',
+      workspace: 'acme',
     }),
     {},
   );
@@ -303,7 +303,7 @@ test('argument extraction keeps a real value that is not the workspace name', as
       llm,
       objective: 'exporter la source EAS_Avant_projet_ACPI',
       capability: EXPORT_CAPABILITY,
-      workspace: 'acpi',
+      workspace: 'acme',
     }),
     { source_name: 'EAS_Avant_projet_ACPI' },
   );
@@ -320,17 +320,17 @@ test('argument extraction tells the model the workspace is already bound', async
 
   await resolveExecutorArguments({
     llm,
-    objective: 'exporter les pages du workspace acpi',
+    objective: 'export the pages of the acme workspace',
     capability: EXPORT_CAPABILITY,
-    workspace: 'acpi',
+    workspace: 'acme',
   });
 
-  assert.match(seenSystem, /already runs against workspace "acpi"/);
+  assert.match(seenSystem, /already runs against workspace "acme"/);
 });
 
 test('argument extraction rejects a value outside the closed vocabulary', async () => {
-  // Regression: "exporter les pages Confluence du workspace juno" — the
-  // workspace guard removes "juno", so the model reaches for the next noun and
+  // Regression: "export the Confluence pages of the demo workspace" — the
+  // workspace guard removes "demo", so the model reaches for the next noun and
   // emits "Confluence". Only the agent knows the valid names; once it publishes
   // them as an enum, the orchestrator can check without guessing at meaning.
   const capability = {
@@ -354,9 +354,9 @@ test('argument extraction rejects a value outside the closed vocabulary', async 
   assert.deepEqual(
     await resolveExecutorArguments({
       llm,
-      objective: 'exporter les pages Confluence du workspace juno',
+      objective: 'export the Confluence pages of the demo workspace',
       capability,
-      workspace: 'juno',
+      workspace: 'demo',
     }),
     {},
   );
@@ -389,7 +389,7 @@ test('argument extraction keeps a value the vocabulary allows', async () => {
       llm,
       objective: 'exporter la source EAS_Avant_projet_ACPI',
       capability,
-      workspace: 'acpi',
+      workspace: 'acme',
     }),
     { source_name: 'EAS_Avant_projet_ACPI' },
   );

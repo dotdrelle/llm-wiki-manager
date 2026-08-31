@@ -146,36 +146,36 @@ test('nothing to inherit yields an empty patch', () => {
 
 test('CME credentials are copied, and the source manifest is not', async () => {
   const root = mkdtempSync(join(tmpdir(), 'cme-inherit-'));
-  const sourceDir = join(root, 'cme', 'acpi', 'cme');
+  const sourceDir = join(root, 'cme', 'acme', 'cme');
   mkdirSync(sourceDir, { recursive: true });
   writeFileSync(join(sourceDir, 'app_data.json'), '{"auth":{"pat":"secret"}}', 'utf8');
   // Export scope is what makes a workspace different — it must NOT travel.
-  writeFileSync(join(root, 'cme', 'acpi', 'sources-manifest.yaml'), 'sources: []\n', 'utf8');
+  writeFileSync(join(root, 'cme', 'acme', 'sources-manifest.yaml'), 'sources: []\n', 'utf8');
 
-  const copied = await copyCmeCredentials(root, 'acpi', 'nouveau');
+  const copied = await copyCmeCredentials(root, 'acme', 'fresh');
 
-  assert.equal(copied, cmeCredentialsPath(root, 'nouveau'));
+  assert.equal(copied, cmeCredentialsPath(root, 'fresh'));
   assert.equal(readFileSync(copied, 'utf8'), '{"auth":{"pat":"secret"}}');
-  assert.equal(existsSync(join(root, 'cme', 'nouveau', 'sources-manifest.yaml')), false);
+  assert.equal(existsSync(join(root, 'cme', 'fresh', 'sources-manifest.yaml')), false);
 });
 
 test('existing CME credentials on the target are never clobbered', async () => {
   const root = mkdtempSync(join(tmpdir(), 'cme-inherit-keep-'));
-  mkdirSync(join(root, 'cme', 'acpi', 'cme'), { recursive: true });
-  mkdirSync(join(root, 'cme', 'nouveau', 'cme'), { recursive: true });
-  writeFileSync(join(root, 'cme', 'acpi', 'cme', 'app_data.json'), '{"from":"source"}', 'utf8');
-  writeFileSync(join(root, 'cme', 'nouveau', 'cme', 'app_data.json'), '{"from":"target"}', 'utf8');
+  mkdirSync(join(root, 'cme', 'acme', 'cme'), { recursive: true });
+  mkdirSync(join(root, 'cme', 'fresh', 'cme'), { recursive: true });
+  writeFileSync(join(root, 'cme', 'acme', 'cme', 'app_data.json'), '{"from":"source"}', 'utf8');
+  writeFileSync(join(root, 'cme', 'fresh', 'cme', 'app_data.json'), '{"from":"target"}', 'utf8');
 
-  assert.equal(await copyCmeCredentials(root, 'acpi', 'nouveau'), null);
+  assert.equal(await copyCmeCredentials(root, 'acme', 'fresh'), null);
   assert.equal(
-    readFileSync(cmeCredentialsPath(root, 'nouveau'), 'utf8'),
+    readFileSync(cmeCredentialsPath(root, 'fresh'), 'utf8'),
     '{"from":"target"}',
   );
 });
 
 test('copying is a no-op without a source, a target, or a source file', async () => {
   const root = mkdtempSync(join(tmpdir(), 'cme-inherit-noop-'));
-  assert.equal(await copyCmeCredentials(root, 'absent', 'nouveau'), null);
-  assert.equal(await copyCmeCredentials(root, null, 'nouveau'), null);
-  assert.equal(await copyCmeCredentials(root, 'acpi', 'acpi'), null);
+  assert.equal(await copyCmeCredentials(root, 'absent', 'fresh'), null);
+  assert.equal(await copyCmeCredentials(root, null, 'fresh'), null);
+  assert.equal(await copyCmeCredentials(root, 'acme', 'acme'), null);
 });

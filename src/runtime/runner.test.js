@@ -829,7 +829,7 @@ test('runRuntimeParallelPlan fails cleanly when scheduler budget is exceeded', a
  laissait le run « stalled ». Ne pas attendre d'approbation était déjà acquis,
  mais s'arrêter là déclenchait une replanification et laissait le run vivant.
 
- Cas observé le 2026-08-04 (workspace juno) : dix fichiers à ingérer, neuf
+ Cas observé le 2026-08-04 (workspace demo) : dix fichiers à ingérer, neuf
  réussis, un en échec sur du JSON malformé — le run n'est jamais retombé.
  Une tâche qui ne deviendra jamais exécutable est donc marquée `skipped` avec
  le nom de la dépendance fautive, et le run se termine sur un résultat partiel.

@@ -47,11 +47,11 @@ function preparedDelegation(taskId) {
 
 function runningSession(runId = 'run-conversational') {
   return {
-    workspace: 'juno',
+    workspace: 'demo',
     activities: {},
     agentEvents: [],
     headlessPlan: null,
-    _currentRunIdentity: { runId, workspace: 'juno' },
+    _currentRunIdentity: { runId, workspace: 'demo' },
   };
 }
 
@@ -98,9 +98,9 @@ test('une demande de build délègue dans le run courant, sans en démarrer un s
   const session = runningSession('run-fr-build');
   const started = [];
 
-  const result = await delegateWithinRun(session, 'construis les livrables du workspace juno', {
+  const result = await delegateWithinRun(session, 'build the deliverables of the demo workspace', {
     prepare: async ({ objective }) => {
-      assert.match(objective, /construis les livrables/);
+      assert.match(objective, /build the deliverables/);
       return preparedDelegation('build-fr');
     },
     registry: registryDouble(),
@@ -118,10 +118,10 @@ test('une demande de build délègue dans le run courant, sans en démarrer un s
 test('la délégation interne exige un run actif', async () => {
   // Hors run, il n'y a pas d'exécution à transformer : c'est un vrai démarrage
   // de run, et il doit passer par le chemin normal plutôt que par ici.
-  const session = { workspace: 'juno', agentEvents: [] };
+  const session = { workspace: 'demo', agentEvents: [] };
 
   await assert.rejects(
-    () => delegateWithinRun(session, 'construis les livrables', {
+    () => delegateWithinRun(session, 'build the deliverables', {
       prepare: async () => preparedDelegation(),
       registry: registryDouble(),
     }),
@@ -184,12 +184,12 @@ test('une demande française délègue une fois et bascule, sans jamais duplique
   const { runRuntimeAgenticWorkflow } = await import('./runner.js');
   const runId = 'run-fr-integration';
   const session = {
-    workspace: 'juno',
+    workspace: 'demo',
     activities: {},
     agentEvents: [],
     headlessPlan: null,
     // Posée par executeRun avant l'appel au workflow, comme en production.
-    _currentRunIdentity: { runId, workspace: 'juno' },
+    _currentRunIdentity: { runId, workspace: 'demo' },
     llm: { async completeWithTools() { assert.fail('aucune évaluation ne doit avoir lieu ici'); } },
   };
   const fiveTasks = {
@@ -205,7 +205,7 @@ test('une demande française délègue une fois et bascule, sans jamais duplique
     async invoke({ session: turnSession }) {
       conversationalTurns += 1;
       // Le tour conversationnel appelle l'outil de délégation, comme Donna.
-      const result = await delegateWithinRun(turnSession, 'construis les livrables du workspace juno', {
+      const result = await delegateWithinRun(turnSession, 'build the deliverables of the demo workspace', {
         prepare: async () => {
           delegations += 1;
           return { ...preparedDelegation(), fragment: fiveTasks };
@@ -242,7 +242,7 @@ test('une demande française délègue une fois et bascule, sans jamais duplique
   // Borne l'attente d'approbation comme en headless : un test ne doit jamais
   // pouvoir se figer sur une décision humaine qui ne viendra pas.
   session._approvalTimeoutMs = 200;
-  await runRuntimeAgenticWorkflow(agent, session, 'construis les livrables du workspace juno', {
+  await runRuntimeAgenticWorkflow(agent, session, 'build the deliverables of the demo workspace', {
     runId,
     timeoutMs: 2000,
     maxTurns: 4,
@@ -272,7 +272,7 @@ test('un run qui porte déjà un plan validé refuse une seconde délégation', 
   session.headlessPlan = [task('build-a')];
 
   await assert.rejects(
-    () => delegateWithinRun(session, 'construis les livrables', {
+    () => delegateWithinRun(session, 'build the deliverables', {
       prepare: async () => preparedDelegation(),
       registry: registryDouble(),
     }),

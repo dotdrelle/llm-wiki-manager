@@ -28,7 +28,7 @@ test('the fallback hint drops the command echo, compose warnings and host paths'
     message: [
       COMPOSE_COMMAND,
       'time="2026-07-28T11:37:41+02:00" level=warning msg="The \\"CONNECTORS_MCP_PORT\\" variable is not set."',
-      'error while creating mount source path /mnt/c/Users/p/Documents/docker/llm-wiki/workspaces/juno: denied',
+      'error while creating mount source path /mnt/c/Users/p/Documents/docker/llm-wiki/workspaces/demo: denied',
     ].join('\n'),
   };
 
@@ -39,7 +39,7 @@ test('the fallback hint drops the command echo, compose warnings and host paths'
   // Only the basename survives: absolute paths describe this machine's install
   // layout and mean nothing to the person reading the answer.
   assert.doesNotMatch(hint, /\/mnt\/c/);
-  assert.match(hint, /juno/);
+  assert.match(hint, /demo/);
 });
 
 test('a failed operation reaches Donna as facts, never as docker output', () => {

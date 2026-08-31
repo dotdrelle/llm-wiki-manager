@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { dispatchRuntimeLog } from '../../core/agentEvents.js';
-import { managerStateDir } from '../../core/env.js';
+import { managerEnvFile, managerStateDir, readEnvFile } from '../../core/env.js';
 import { createDeepAgentsProvider } from './deepAgentsProvider.js';
 import { createFakeRuntimeProvider } from './fakeRuntimeProvider.js';
 import { assertRuntimeProvider } from './runtimeProvider.js';
@@ -65,7 +65,23 @@ export async function discoverRuntimeProviderAgents(runtimeProviders) {
  *
  * Entrée : `{ id, type, endpoint?, enabled?, capabilities?, limits? }`.
  */
-export function loadAgentRuntimesConfig({ stateDir = managerStateDir(), log = () => {}, env = process.env } = {}) {
+export function loadAgentRuntimesConfig({
+  stateDir = managerStateDir(),
+  log = () => {},
+  env = null,
+} = {}) {
+  // GATEWAY_ENABLED / GATEWAY_AUTH_TOKEN live in the manager .env FILE, not in
+  // the process environment (the runtime child is spawned without them). The
+  // manager's canonical policy is the same as resolvedManagerEnv: the file
+  // wins over stale process values, so a token generated later by `agents up`
+  // is honoured without a restart.
+  const resolvedEnv = env ?? (() => {
+    try {
+      return { ...process.env, ...readEnvFile(managerEnvFile()) };
+    } catch {
+      return process.env;
+    }
+  })();
   const file = join(stateDir, 'agent-runtimes.json');
   let entries = [];
   if (existsSync(file)) {
@@ -78,7 +94,7 @@ export function loadAgentRuntimesConfig({ stateDir = managerStateDir(), log = ()
       log(`agent-runtimes.json unreadable: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  return withImpliedGateway(entries, env, log);
+  return withImpliedGateway(entries, resolvedEnv, log);
 }
 
 // One switch: when the operator starts the gateway container
@@ -90,6 +106,21 @@ export function loadAgentRuntimesConfig({ stateDir = managerStateDir(), log = ()
 // case worth stating, not assuming: an operator who wrote `enabled: false`
 // deliberately would otherwise have no way to learn why deepagents ran anyway.
 function withImpliedGateway(entries, env = process.env, log = () => {}) {
+  const token = String(env.GATEWAY_AUTH_TOKEN ?? '').trim();
+  if (isTruthy(env.GATEWAY_ENABLED) && token) {
+    // The manager owns this gateway: its bearer token must reach the EXPLICIT
+    // entry too. The scaffolded agent-runtimes.json declares the capabilities
+    // but no headers, so discovery probed /health without the token and the
+    // gateway answered 401 forever — "enabled by default" plus "explicit
+    // entry" must not combine into a permanently unavailable runtime. An
+    // operator who pinned explicit headers keeps them.
+    for (const entry of entries) {
+      if (entry?.type !== 'deepagents' || entry?.enabled === false) continue;
+      const headers = entry.headers && typeof entry.headers === 'object' ? entry.headers : {};
+      if ('Authorization' in headers || 'authorization' in headers) continue;
+      entry.headers = { ...headers, Authorization: `Bearer ${token}` };
+    }
+  }
   if (!isTruthy(env.GATEWAY_ENABLED)) return entries;
   const explicitEnabled = entries.some((entry) =>
     entry?.type === 'deepagents' && entry?.enabled !== false);
@@ -99,7 +130,6 @@ function withImpliedGateway(entries, env = process.env, log = () => {}) {
     log('agent-runtimes: GATEWAY_ENABLED=true implies a "deepagents" runtime despite an explicit enabled:false entry in agent-runtimes.json');
   }
   const port = String(env.GATEWAY_PORT ?? '7789');
-  const token = String(env.GATEWAY_AUTH_TOKEN ?? '').trim();
   // The implied entry inherits the disabled entry's declared capability shape
   // (approval classes, alias operations, descriptions): the scaffolded
   // agent-runtimes.json ships the full list with enabled:false, and dropping it

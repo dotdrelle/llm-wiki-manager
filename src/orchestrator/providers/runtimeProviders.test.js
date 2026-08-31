@@ -194,6 +194,29 @@ test('GATEWAY_ENABLED implies the deepagents runtime with the bearer token (one 
   }
 });
 
+test('the local gateway bearer is injected only into the manager-owned host-local entry', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-runtimes-'));
+  try {
+    writeFileSync(join(dir, 'agent-runtimes.json'), JSON.stringify({
+      runtimes: [
+        { id: 'local', type: 'deepagents', endpoint: 'http://127.0.0.1:7789', enabled: true },
+        { id: 'shared', type: 'deepagents', endpoint: 'https://gateway.partner.example', enabled: true },
+        { id: 'otherport', type: 'deepagents', endpoint: 'http://localhost:9999', enabled: true },
+      ],
+    }));
+    const config = loadAgentRuntimesConfig({
+      stateDir: dir,
+      env: { GATEWAY_ENABLED: 'true', GATEWAY_PORT: '7789', GATEWAY_AUTH_TOKEN: 'tok-local' },
+    });
+    const byId = Object.fromEntries(config.map((entry) => [entry.id, entry]));
+    assert.deepEqual(byId.local.headers, { Authorization: 'Bearer tok-local' });
+    assert.equal(byId.shared.headers, undefined, 'a foreign gateway host must never receive the local token');
+    assert.equal(byId.otherport.headers, undefined, 'a non-gateway port is not the manager-owned gateway');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('an explicit enabled deepagents entry wins over the implied one', () => {
   const dir = mkdtempSync(join(tmpdir(), 'agent-runtimes-'));
   try {

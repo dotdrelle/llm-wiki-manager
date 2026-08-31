@@ -474,6 +474,25 @@ const READ_ONLY_WIKI_TOOLS = new Set([
   'wiki_workspace_status',
 ]);
 
+// An arbitrary external connector's tool names cannot be enumerated ahead of
+// time the way READ_ONLY_WIKI_TOOLS can, so this stays a denylist — but a
+// word-boundary one. The old test was a raw substring match
+// (/write|send|create|update|add|remove/), which dropped safe reads whose name
+// merely contained a mutating verb (`list_recent_updates`, `get_created_at`,
+// `search_addresses`) and missed side-effecting tools that use another verb
+// (`crawl_site`, `post_message`, `run_report`, `publish_draft`). The real
+// guardrails against "hands on the workspace" are elsewhere —
+// EXCLUDED_EXTERNAL_SERVERS covers every workspace-writing agent, and a
+// per-tool `requireApproval` entry drops the whole server — this filter only
+// keeps an obviously-mutating tool of an otherwise-safe connector out of the
+// runtime's eyes.
+const EXTERNAL_MUTATING_VERB = /(?:^|[_-])(?:write|send|post|create|delete|destroy|remove|drop|modify|edit|update|patch|put|upload|publish|submit|execute|run|crawl|trigger|cancel|approve|move|rename|set|add|insert|append|archive)(?:[_-]|$)/i;
+
+function isReadOnlyExternalTool(toolName) {
+  const base = toolName.includes('__') ? toolName.slice(toolName.lastIndexOf('__') + 2) : toolName;
+  return !EXTERNAL_MUTATING_VERB.test(base);
+}
+
 // The runtime's EYES, per run: the active workspace's wiki MCP (read tools
 // only) PLUS the declared external MCP endpoints that are safe to hand over
 // (connected, no approval-gated tools, not a workspace-mutating server) —
@@ -519,7 +538,7 @@ export function activeProfileMcp(session) {
     if (Array.isArray(entry.requireApproval) && entry.requireApproval.length > 0) continue;
     const tools = (entry.tools ?? [])
       .map((tool) => String(tool.name ?? ''))
-      .filter((toolName) => toolName && !/(write|send|modify|create|delete|update|add|remove)/i.test(toolName));
+      .filter((toolName) => toolName && isReadOnlyExternalTool(toolName));
     if (tools.length === 0) continue;
     blocks.push({
       name,

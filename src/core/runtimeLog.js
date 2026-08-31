@@ -114,6 +114,21 @@ export function shortLogId(value, { maxLength = 40 } = {}) {
   return shortened.length > maxLength ? `${shortened.slice(0, maxLength - 1)}…` : shortened;
 }
 
+// A line emitted by formatRuntimeLogPayload for a structured event: optional
+// HH:MM:SS, then the ALL-CAPS event token eventLabel() produces from the LAST
+// dotted segment ('job.accepted' → 'ACCEPTED', 'capability.resolving' →
+// 'RESOLVING', 'agent_status' → 'AGENT_STATUS'). These are the dispatch
+// plumbing. A business line the reducer writes starts with a ▸/✓/✗/↻ glyph or
+// a capitalised word ("Plan received", "Run failed:") — never an all-caps
+// token — so this one shape separates the two without an event-name list
+// (which is what an earlier enumeration got wrong: it only ever matched the
+// two underscore-form events and missed every dotted one).
+const DISPATCH_PLUMBING_LINE = /^(?:\d{1,2}:\d{2}(?::\d{2})?\s+)?[A-Z][A-Z0-9_]{2,}(?:\s|$)/;
+
+export function isDispatchPlumbingLine(line) {
+  return DISPATCH_PLUMBING_LINE.test(String(line ?? ''));
+}
+
 export function runtimeLogMatchesFilter(line, filter = '') {
   const query = String(filter ?? '').trim();
   if (!query) return true;

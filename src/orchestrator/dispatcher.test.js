@@ -35,6 +35,49 @@ test('activeProfileMcp forwards only the read-only wiki tools to the external ru
   );
 });
 
+test('activeProfileMcp hands the external runtime a safe connector\'s read tools by word-boundary verb', () => {
+  const session = {
+    mcp: {
+      wiki: {
+        url: 'http://wiki:3000/mcp', status: 'connected',
+        tools: [{ name: 'wiki_read_page' }],
+      },
+      exa: {
+        url: 'https://exa/mcp', status: 'connected', external: true,
+        tools: [
+          { name: 'web_search_exa' },
+          { name: 'research_paper_search' },
+          // a raw substring denylist wrongly dropped these safe reads:
+          { name: 'list_recent_updates' },
+          { name: 'get_created_items' },
+          // …and wrongly kept these, which use a verb it did not enumerate:
+          { name: 'crawl_site' },
+          { name: 'post_message' },
+          { name: 'run_report' },
+          { name: 'send_email' },
+        ],
+      },
+    },
+  };
+  const exaBlock = activeProfileMcp(session).find((block) => block.name === 'exa');
+  assert.deepEqual(
+    [...exaBlock.tools].sort(),
+    ['get_created_items', 'list_recent_updates', 'research_paper_search', 'web_search_exa'],
+  );
+});
+
+test('activeProfileMcp drops an external connector that is approval-gated or workspace-mutating', () => {
+  const session = {
+    mcp: {
+      wiki: { url: 'http://wiki:3000/mcp', status: 'connected', tools: [{ name: 'wiki_read_page' }] },
+      gated: { url: 'https://g/mcp', status: 'connected', external: true, requireApproval: ['search'], tools: [{ name: 'search' }] },
+      documents: { url: 'https://d/mcp', status: 'connected', external: true, tools: [{ name: 'get_document' }] },
+    },
+  };
+  const names = activeProfileMcp(session).map((block) => block.name);
+  assert.deepEqual(names, ['wiki']);
+});
+
 test('activeProfileMcp tolerates namespaced tool names', () => {
   const session = {
     mcp: {

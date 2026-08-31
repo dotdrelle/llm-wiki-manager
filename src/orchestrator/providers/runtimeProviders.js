@@ -107,15 +107,19 @@ export function loadAgentRuntimesConfig({
 // deliberately would otherwise have no way to learn why deepagents ran anyway.
 function withImpliedGateway(entries, env = process.env, log = () => {}) {
   const token = String(env.GATEWAY_AUTH_TOKEN ?? '').trim();
+  const gatewayPort = String(env.GATEWAY_PORT ?? '7789');
   if (isTruthy(env.GATEWAY_ENABLED) && token) {
-    // The manager owns this gateway: its bearer token must reach the EXPLICIT
-    // entry too. The scaffolded agent-runtimes.json declares the capabilities
-    // but no headers, so discovery probed /health without the token and the
-    // gateway answered 401 forever — "enabled by default" plus "explicit
-    // entry" must not combine into a permanently unavailable runtime. An
-    // operator who pinned explicit headers keeps them.
+    // The manager owns THIS gateway (host-local, GATEWAY_PORT): its bearer
+    // token must reach the EXPLICIT entry too. The scaffolded
+    // agent-runtimes.json declares the capabilities but no headers, so
+    // discovery probed /health without the token and the gateway answered 401
+    // forever — "enabled by default" plus "explicit entry" must not combine
+    // into a permanently unavailable runtime. An operator who pinned explicit
+    // headers keeps them; a `deepagents` entry pointing at a foreign or shared
+    // host gets NOTHING — the local gateway secret must never leave the box.
     for (const entry of entries) {
       if (entry?.type !== 'deepagents' || entry?.enabled === false) continue;
+      if (!isManagerOwnedGatewayEndpoint(entry.endpoint, gatewayPort)) continue;
       const headers = entry.headers && typeof entry.headers === 'object' ? entry.headers : {};
       if ('Authorization' in headers || 'authorization' in headers) continue;
       entry.headers = { ...headers, Authorization: `Bearer ${token}` };
@@ -129,7 +133,7 @@ function withImpliedGateway(entries, env = process.env, log = () => {}) {
   if (disabledEntry) {
     log('agent-runtimes: GATEWAY_ENABLED=true implies a "deepagents" runtime despite an explicit enabled:false entry in agent-runtimes.json');
   }
-  const port = String(env.GATEWAY_PORT ?? '7789');
+  const port = gatewayPort;
   // The implied entry inherits the disabled entry's declared capability shape
   // (approval classes, alias operations, descriptions): the scaffolded
   // agent-runtimes.json ships the full list with enabled:false, and dropping it
@@ -161,6 +165,25 @@ function withImpliedGateway(entries, env = process.env, log = () => {}) {
 
 function isTruthy(value) {
   return /^(1|true|yes|on)$/i.test(String(value ?? '').trim());
+}
+
+// The manager-owned gateway is the one the manager itself starts: host-local,
+// on GATEWAY_PORT. An entry with no endpoint relies on the implied host-local
+// one, so it counts too. Anything else — a shared or third-party gateway host
+// an operator pointed a second `deepagents` entry at — must not be handed the
+// manager's local GATEWAY_AUTH_TOKEN.
+function isManagerOwnedGatewayEndpoint(endpoint, gatewayPort) {
+  if (!endpoint) return true;
+  let url;
+  try {
+    url = new URL(String(endpoint));
+  } catch {
+    return false;
+  }
+  const localHosts = new Set(['localhost', '127.0.0.1', '::1', '[::1]', 'host.docker.internal']);
+  if (!localHosts.has(url.hostname)) return false;
+  const entryPort = url.port || (url.protocol === 'https:' ? '443' : '80');
+  return entryPort === String(gatewayPort);
 }
 
 /**

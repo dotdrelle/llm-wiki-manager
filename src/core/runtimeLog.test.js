@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createAgentEvent, dispatchAgentEvent } from './agentEvents.js';
-import { compactRuntimeLogForDisplay, formatRuntimeLogPayload, shortLogId } from './runtimeLog.js';
+import { compactRuntimeLogForDisplay, formatRuntimeLogPayload, isDispatchPlumbingLine, shortLogId } from './runtimeLog.js';
 import { emitRuntimeLog } from '../runtime/supervisor.js';
 
 const CYCLE_EVENTS = [
@@ -118,6 +118,29 @@ test('long UUIDs collapse to a short prefix so log lines stay on one line', () =
   assert.match(line, /attempt=attempt-7fadad27…/);
   assert.match(line, /agentInstance=production-7fadad27…/);
   assert.doesNotMatch(line, /7fadad27-0be6-4d08-96e5-664fe7ee841e/);
+});
+
+test('isDispatchPlumbingLine recognises every formatted event token, dotted ones included', () => {
+  // eventLabel() keeps only the last dotted segment, so these are the tokens
+  // that actually reach the panel — an event-name enumeration missed them.
+  for (const event of ['job.accepted', 'agent.selected', 'capability.resolving', 'runtime.accepted', 'agent_status', 'agent_execute', 'task.result_returned']) {
+    const line = formatRuntimeLogPayload({ event, runId: 'r1', taskId: 't1' }, '2026-07-08T14:42:18.000Z');
+    assert.equal(isDispatchPlumbingLine(line), true, `expected plumbing: ${line}`);
+  }
+});
+
+test('isDispatchPlumbingLine leaves the business flow lines for the Runtime tab', () => {
+  for (const line of [
+    '14:42:18 ▸ Polish proposition — started  (knowledge.polish  → agent-production)',
+    '14:42:19 ✓ Polish proposition — done (1 output)',
+    '14:42:19 ✗ Ingest DSI — failed: dependency_failed',
+    '14:42:20 ↻ Build overview — retry 2/3 (rate_limit)',
+    '14:42:21 Run failed: No agent provides capability workspace.restore.',
+    '14:42:22 Plan validated for run r1',
+    '14:42:23 Control message: où en est le build ?',
+  ]) {
+    assert.equal(isDispatchPlumbingLine(line), false, `expected business flow: ${line}`);
+  }
 });
 
 test('shortLogId caps an over-long task slug while shortening embedded UUIDs', () => {

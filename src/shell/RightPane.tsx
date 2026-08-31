@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { createMemo, createSignal, Index, Show } from 'solid-js';
-import { compactRuntimeLogForDisplay, filterRuntimeLogs } from '../core/runtimeLog.js';
+import { compactRuntimeLogForDisplay, filterRuntimeLogs, isDispatchPlumbingLine } from '../core/runtimeLog.js';
 import { fit } from './textFit';
 
 type PlanStep = { step: number; description: string; status: string };
@@ -398,17 +398,17 @@ function logEntryLines(raw: string, width: number): LogSegment[][] {
   return out;
 }
 
-// "Agent status" collects the dispatch plumbing — capability resolution, agent
-// selection, agent_execute/agent_status polling, job acceptance — so the
-// "Runtime" tab is left with the readable business flow (plan + the ▸/✓/✗/↻
-// task lines). Match the formatted event token, not a loose substring: the old
-// /agent[_ -]?status/ also swallowed "agent.selected".
-const AGENT_IO_RE = /\b(?:AGENT_STATUS|AGENT_EXECUTE|AGENT_SELECTED|JOB_ACCEPTED|CAPABILITY_RESOLVING|RUNTIME_ACCEPTED)\b/i;
-
 export function LogPanel(props: { logs: string[]; width: number; filter?: string }) {
   const [activeLogTab, setActiveLogTab] = createSignal<'flow' | 'agent-status'>('flow');
   const lineWidth = () => Math.max(8, props.width - 2);
-  const isAgentStatus = (line: string) => AGENT_IO_RE.test(line);
+  // "Agent status" collects the dispatch plumbing — capability resolution,
+  // agent selection, agent_execute/agent_status polling, job acceptance — so
+  // the "Runtime" tab is left with the readable business flow (plan + the
+  // ▸/✓/✗/↻ task lines). isDispatchPlumbingLine (shared with agentEvents'
+  // dedup) recognises the formatRuntimeLogPayload shape structurally; the old
+  // token enumeration only ever matched agent_status/agent_execute and missed
+  // every dotted event ('job.accepted' → 'ACCEPTED', …).
+  const isAgentStatus = (line: string) => isDispatchPlumbingLine(line);
   // Filtering preserves the runtime history order. logRenderLines performs
   // the single block-level reversal shared by both tabs.
   const filteredLogs = () => filterRuntimeLogs(props.logs, props.filter ?? '')

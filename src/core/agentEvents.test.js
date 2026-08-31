@@ -725,3 +725,28 @@ test('run_error names the failure so the essential journal cannot filter it out'
   // Le mot qui rend l'entrée « essentielle » pour le journal serve.
   assert.match(line, /failed/i);
 });
+
+test('appendLog collapses repeated dispatch plumbing but never a repeated business failure', () => {
+  const ev = (type, payload, ts, taskId = null) => ({ id: `${type}-${ts}`, ts, type, payload, taskId });
+  // Two identical agent_status polls, seconds apart → one (×2) row.
+  const polling = reduceAgentEvents([
+    ev('runtime_log', { event: 'agent_status', runId: 'r', taskId: 't', detail: 'production_status' }, '2026-07-08T14:00:01.000Z'),
+    ev('runtime_log', { event: 'agent_status', runId: 'r', taskId: 't', detail: 'production_status' }, '2026-07-08T14:00:04.000Z'),
+  ]);
+  assert.equal(polling.logs.length, 1);
+  assert.match(polling.logs[0], / \(×2\)$/);
+  assert.match(polling.logs[0], /^14:00:04 /, 'the counter keeps the most recent timestamp');
+
+  // A retry that fails the SAME way twice produces two byte-identical failure
+  // lines (bar the timestamp) — both must stay visible, a degradation must
+  // announce itself (root CLAUDE.md). The guard is that ✗ lines are not
+  // plumbing, not that the text differs.
+  const failPayload = { taskId: 'a', result: { status: 'failed', error: { code: 'rate_limit' } } };
+  const failures = reduceAgentEvents([
+    ev('task.failed', failPayload, '2026-07-08T14:00:01.000Z', 'a'),
+    ev('task.failed', failPayload, '2026-07-08T14:05:09.000Z', 'a'),
+  ]);
+  const failLines = failures.logs.filter((l) => /✗ a — failed: rate_limit/.test(l));
+  assert.equal(failLines.length, 2);
+  assert.equal(failLines.some((l) => / \(×\d+\)$/.test(l)), false);
+});

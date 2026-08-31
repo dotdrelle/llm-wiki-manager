@@ -1,7 +1,7 @@
 import { normalizeActivity } from './activity.js';
 import { attachActivityToExistingPlan, syncActivitiesToPlan } from './plan.js';
 import { applyPlanPatch, normalizePlanPatch, normalizePlanRevision, rebasePlanPatch } from './planPatch.js';
-import { formatRuntimeLogPayload, normalizeRuntimeLog, shortTaskLabel } from './runtimeLog.js';
+import { formatRuntimeLogPayload, isDispatchPlumbingLine, normalizeRuntimeLog, shortTaskLabel } from './runtimeLog.js';
 import { projectSkillChains, TERMINAL as CONTROL_TERMINAL_STATUSES } from './skillChainView.js';
 import { projectWorkflow } from './workflow.js';
 import { validateContractInDev } from '../contracts/schemas.js';
@@ -1052,21 +1052,26 @@ const LOG_REPEAT_SUFFIX = / \(×\d+\)$/;
 
  Two jobs the ad-hoc `push(...); logs = logs.slice(-200)` pairs did unevenly:
  the 200-entry cap is now applied on every path (the `runtime_log` case never
- capped and grew without bound during a long run), and an entry identical to
- the one before it — once the HH:MM:SS prefix is dropped — is collapsed into a
- `(×N)` counter instead of being printed again. `agent_status` polling and
- repeated progress ticks otherwise bury every readable event under dozens of
- identical rows.
+ capped and grew without bound during a long run), and a *plumbing* entry
+ (isDispatchPlumbingLine) identical to the one before it — once the HH:MM:SS
+ prefix is dropped — is collapsed into a `(×N)` counter instead of being
+ printed again. `agent_status` polling and repeated progress ticks otherwise
+ bury every readable event under dozens of identical rows. A business line (a
+ ▸/✓/✗/↻ transition, "Run failed:", a control message) is never collapsed, so
+ a second genuine failure and its timing are never folded away.
 */
 function appendLog(state, line) {
   const text = String(line ?? '').trim();
   if (!text) return;
-  const bare = (value) => String(value).replace(LOG_TIME_PREFIX, '').replace(LOG_REPEAT_SUFFIX, '');
   const last = state.logs.at(-1);
-  if (last != null && bare(last) === bare(text)) {
-    const count = Number(String(last).match(/ \(×(\d+)\)$/)?.[1] ?? '1') + 1;
-    state.logs[state.logs.length - 1] = `${String(last).replace(LOG_REPEAT_SUFFIX, '')} (×${count})`;
-    return;
+  if (last != null && isDispatchPlumbingLine(text) && isDispatchPlumbingLine(last)) {
+    const bare = (value) => String(value).replace(LOG_TIME_PREFIX, '').replace(LOG_REPEAT_SUFFIX, '');
+    if (bare(last) === bare(text)) {
+      const count = Number(String(last).match(/ \(×(\d+)\)$/)?.[1] ?? '1') + 1;
+      // Keep the LATEST timestamp so the panel shows when it last repeated.
+      state.logs[state.logs.length - 1] = `${text.replace(LOG_REPEAT_SUFFIX, '')} (×${count})`;
+      return;
+    }
   }
   state.logs.push(text);
   if (state.logs.length > 200) state.logs = state.logs.slice(-200);

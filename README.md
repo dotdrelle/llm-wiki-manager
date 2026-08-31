@@ -126,27 +126,25 @@ Several open projects now build a Markdown wiki with an LLM. They target
 **different problems** — the useful questions are *what goes in, what comes out,
 and who operates it*. Snapshot as of 2026; all of these move quickly.
 
-Each cell keeps its detail and carries a score — ✅ first-class · 🟡 partial or
-indirect · ❌ not a goal — and the last column names the project that **covers
-that need best**.
+✅ first-class · 🟡 partial or indirect · ❌ not a goal
 
-| Dimension / need | **wikiLLM** (this project) | **OpenWiki** — `langchain-ai/openwiki` | **DeepWiki-Open** — `asyncfuncai/deepwiki-open` | **GraphRAG** — `microsoft/graphrag` | Best coverage |
-| --- | --- | --- | --- | --- | --- |
-| Built for | Turning scattered **business documents** into a team wiki, then regenerating deliverables from it | Giving **coding agents** a readable map of a codebase | Auto-documenting a **code repository** with diagrams | Answering **global questions** over a large text corpus | *depends on your goal* |
-| Ingest arbitrary business documents (Confluence, PDF, Office, SaaS) | ✅ Confluence exports, PDF/Office files, notes, SaaS connectors | 🟡 personal-mode connectors only — Notion, Gmail, Slack | ❌ code repos only | 🟡 plain-text files only, and no wiki as output | **wikiLLM** |
-| Document a source-code repository | ❌ nothing to ingest from a repo | ✅ *code mode*, with claims linked to source evidence (OKF) | ✅ repo → interactive wiki + Mermaid diagrams | ❌ not a goal | **OpenWiki / DeepWiki-Open** |
-| Primary output | ✅ Maintained wiki **+ regenerated deliverables** from your templates (reports, pages, exports) | 🟡 A wiki about the codebase, for agents to read | 🟡 An interactive wiki + architecture diagrams | ❌ An entity graph + community summaries (Parquet), not a wiki | **wikiLLM** (only one producing deliverables) |
-| Keep the wiki current over time | ✅ Re-ingest on demand or on a schedule | ✅ `--update` flag / CI action | 🟡 Regenerated per run | ✅ `graphrag update` (delta merge) | **wikiLLM / OpenWiki** |
-| Knowledge structure | Deterministic concept folders + a derived community graph | Linked pages + evidence-grounded claims | LLM-generated pages + diagrams | Leiden communities over an entity/relationship graph | *task-dependent* |
-| Browsable wiki UI for a team | ✅ Web UI: wiki browser, dependency graph, chat, run/execution view (single-user today) | 🟡 Local-only browser visualiser (127.0.0.1) + CLI chat | ✅ Self-hostable web app (Next.js + Python) with RAG chat | ❌ Library / CLI — no UI | **DeepWiki-Open / wikiLLM** |
-| Evidence-grounded claims & citations | 🟡 Cites retrieved context, never invents facts | ✅ Grounded claims tied to versioned source | 🟡 RAG-cited answers | ✅ Citations to source text units | **OpenWiki / GraphRAG** |
-| Corpus-wide graph Q&A over the knowledge | 🟡 BM25 + vector retrieval feeding generation | ❌ not a goal | 🟡 RAG chat scoped to one repo | ✅ Entity graph + local/global community search | **GraphRAG** |
-| Multiple isolated projects on one install | ✅ Workspaces, each with its own services, ports and secrets | ❌ one wiki per run | ❌ one wiki per repo | ❌ one index per corpus | **wikiLLM** |
-| Orchestration & governance | ✅ Capability-based dispatcher (**Donna**): human approval by default, per-run budgets, idempotent writes, crash recovery | ❌ One Deep Agent loop (LangGraph) | ❌ One generation pipeline | ❌ Deterministic indexing pipeline | **wikiLLM** |
-| Durable runs — crash recovery, queued work | ✅ Boot-time re-attachment + extra runs queued | 🟡 Resumable page-job queue (`.run.json`) | ❌ regenerate from scratch | ❌ re-run the index | **wikiLLM** |
-| Source connectors as separate services | ✅ Confluence, document conversion, e-mail — each an independent MCP agent | 🟡 Built-in connector set | ❌ | ❌ | **wikiLLM** |
-| Run fully offline with local models | ✅ Per-workspace provider config, OpenAI-compatible or a gateway (Ollama, vLLM, MLX…) | ✅ 13+ providers incl. Ollama / LM Studio | ✅ incl. Ollama | ✅ any OpenAI-compatible endpoint | *any* |
-| License | ❌ PolyForm **Noncommercial** | ✅ MIT | ✅ MIT | ✅ MIT | **OpenWiki / DeepWiki-Open / GraphRAG** |
+Projects compared: [OpenWiki](https://github.com/langchain-ai/openwiki),
+[DeepWiki-Open](https://github.com/asyncfuncai/deepwiki-open),
+[GraphRAG](https://github.com/microsoft/graphrag).
+
+| Need | **wikiLLM** | **OpenWiki** | **DeepWiki-Open** | **GraphRAG** |
+| --- | --- | --- | --- | --- |
+| Input | ✅ Business docs — Confluence, PDF, Office, SaaS | ✅ Codebase (code mode) | ✅ Code repo → diagrams | 🟡 Plain-text corpus only |
+| Output | ✅ Maintained wiki **+ deliverables** from your templates | 🟡 Wiki about the code, for agents | 🟡 Interactive wiki + diagrams | ❌ Entity graph + summaries — no wiki |
+| Keep current | ✅ Re-ingest / scheduled | ✅ `--update`, CI action | 🟡 Regenerated per run | ✅ `graphrag update` (delta) |
+| Evidence & citations | 🟡 Cites retrieved context | ✅ Claims tied to versioned source | 🟡 RAG-cited answers | ✅ Citations to text units |
+| Corpus-wide Q&A | 🟡 BM25 + vector feeding generation | ❌ | 🟡 Repo-scoped RAG chat | ✅ Local/global community search |
+| Team UI | ✅ Web console — wiki, graph, chat, runs (single-user today) | 🟡 Local viewer + CLI chat | ✅ Self-hosted web app + RAG | ❌ Library / CLI |
+| Multi-project isolation | ✅ Workspaces, own services, ports, secrets | ❌ One wiki per run | ❌ One wiki per repo | ❌ One index per corpus |
+| Orchestration & governance | ✅ Approval-gated dispatcher, budgets, idempotent writes, crash recovery | ❌ One agent loop | ❌ One generation pipeline | ❌ Indexing pipeline |
+| Connectors as services | ✅ Independent MCP agents (Confluence, docs, e-mail…) | 🟡 Built-in connector set | ❌ | ❌ |
+| Offline / local models | ✅ Per-workspace OpenAI-compatible or gateway (Ollama, vLLM, MLX…) | ✅ 13+ providers | ✅ Ollama | ✅ Any OpenAI-compatible |
+| License | ❌ PolyForm **Noncommercial** | ✅ MIT | ✅ MIT | ✅ MIT |
 
 **The short version:**
 

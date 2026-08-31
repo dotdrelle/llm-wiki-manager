@@ -132,19 +132,24 @@ Projects compared: [OpenWiki](https://github.com/langchain-ai/openwiki),
 [DeepWiki-Open](https://github.com/asyncfuncai/deepwiki-open),
 [GraphRAG](https://github.com/microsoft/graphrag).
 
-| Need | **wikiLLM** | **OpenWiki** | **DeepWiki-Open** | **GraphRAG** |
-| --- | --- | --- | --- | --- |
-| Input | ✅ Business docs — Confluence, PDF, Office, SaaS | ✅ Codebase (code mode) | ✅ Code repo → diagrams | 🟡 Plain-text corpus only |
-| Output | ✅ Maintained wiki **+ deliverables** from your templates | 🟡 Wiki about the code, for agents | 🟡 Interactive wiki + diagrams | ❌ Entity graph + summaries — no wiki |
-| Keep current | ✅ Re-ingest / scheduled | ✅ `--update`, CI action | 🟡 Regenerated per run | ✅ `graphrag update` (delta) |
-| Evidence & citations | 🟡 Cites retrieved context | ✅ Claims tied to versioned source | 🟡 RAG-cited answers | ✅ Citations to text units |
-| Corpus-wide Q&A | 🟡 BM25 + vector feeding generation | ❌ | 🟡 Repo-scoped RAG chat | ✅ Local/global community search |
-| Team UI | ✅ Web console — wiki, graph, chat, runs (single-user today) | 🟡 Local viewer + CLI chat | ✅ Self-hosted web app + RAG | ❌ Library / CLI |
-| Multi-project isolation | ✅ Workspaces, own services, ports, secrets | ❌ One wiki per run | ❌ One wiki per repo | ❌ One index per corpus |
-| Orchestration & governance | ✅ Approval-gated dispatcher, budgets, idempotent writes, crash recovery | ❌ One agent loop | ❌ One generation pipeline | ❌ Indexing pipeline |
-| Connectors as services | ✅ Independent MCP agents (Confluence, docs, e-mail…) | 🟡 Built-in connector set | ❌ | ❌ |
-| Offline / local models | ✅ Per-workspace OpenAI-compatible or gateway (Ollama, vLLM, MLX…) | ✅ 13+ providers | ✅ Ollama | ✅ Any OpenAI-compatible |
-| License | ❌ PolyForm **Noncommercial** | ✅ MIT | ✅ MIT | ✅ MIT |
+<table>
+<thead>
+<tr><th><small>Need</small></th><th><small><strong>wikiLLM</strong></small></th><th><small><strong>OpenWiki</strong></small></th><th><small><strong>DeepWiki-Open</strong></small></th><th><small><strong>GraphRAG</strong></small></th></tr>
+</thead>
+<tbody>
+<tr><td><small>Input</small></td><td><small>✅ Business docs — Confluence, PDF, Office, SaaS</small></td><td><small>✅ Codebase (code mode)</small></td><td><small>✅ Code repo → diagrams</small></td><td><small>🟡 Plain-text corpus only</small></td></tr>
+<tr><td><small>Output</small></td><td><small>✅ Maintained wiki <strong>+ deliverables</strong> from your templates</small></td><td><small>🟡 Wiki about the code, for agents</small></td><td><small>🟡 Interactive wiki + diagrams</small></td><td><small>❌ Entity graph + summaries — no wiki</small></td></tr>
+<tr><td><small>Keep current</small></td><td><small>✅ Re-ingest / scheduled</small></td><td><small>✅ <code>--update</code>, CI action</small></td><td><small>🟡 Regenerated per run</small></td><td><small>✅ <code>graphrag update</code> (delta)</small></td></tr>
+<tr><td><small>Evidence &amp; citations</small></td><td><small>🟡 Cites retrieved context</small></td><td><small>✅ Claims tied to versioned source</small></td><td><small>🟡 RAG-cited answers</small></td><td><small>✅ Citations to text units</small></td></tr>
+<tr><td><small>Corpus-wide Q&amp;A</small></td><td><small>🟡 BM25 + vector feeding generation</small></td><td><small>❌</small></td><td><small>🟡 Repo-scoped RAG chat</small></td><td><small>✅ Local/global community search</small></td></tr>
+<tr><td><small>Team UI</small></td><td><small>✅ Web console — wiki, graph, chat, runs (single-user today)</small></td><td><small>🟡 Local viewer + CLI chat</small></td><td><small>✅ Self-hosted web app + RAG</small></td><td><small>❌ Library / CLI</small></td></tr>
+<tr><td><small>Multi-project isolation</small></td><td><small>✅ Workspaces, own services, ports, secrets</small></td><td><small>❌ One wiki per run</small></td><td><small>❌ One wiki per repo</small></td><td><small>❌ One index per corpus</small></td></tr>
+<tr><td><small>Orchestration &amp; governance</small></td><td><small>✅ Approval-gated dispatcher, budgets, idempotent writes, crash recovery</small></td><td><small>❌ One agent loop</small></td><td><small>❌ One generation pipeline</small></td><td><small>❌ Indexing pipeline</small></td></tr>
+<tr><td><small>Connectors as services</small></td><td><small>✅ Independent MCP agents (Confluence, docs, e-mail…)</small></td><td><small>🟡 Built-in connector set</small></td><td><small>❌</small></td><td><small>❌</small></td></tr>
+<tr><td><small>Offline / local models</small></td><td><small>✅ Per-workspace OpenAI-compatible or gateway (Ollama, vLLM, MLX…)</small></td><td><small>✅ 13+ providers</small></td><td><small>✅ Ollama</small></td><td><small>✅ Any OpenAI-compatible</small></td></tr>
+<tr><td><small>License</small></td><td><small>❌ PolyForm <strong>Noncommercial</strong></small></td><td><small>✅ MIT</small></td><td><small>✅ MIT</small></td><td><small>✅ MIT</small></td></tr>
+</tbody>
+</table>
 
 **The short version:**
 

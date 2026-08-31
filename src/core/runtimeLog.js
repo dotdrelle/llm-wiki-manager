@@ -32,6 +32,29 @@ const ORDERED_FIELDS = [
   'error',
 ];
 
+// The dispatch events whose payload is routing plumbing, not business content:
+// rendered compactly (see formatRuntimeLogPayload). Business events keep the
+// full field=value form.
+const COMPACT_EVENTS = new Set([
+  'agent_status',
+  'agent_execute',
+  'job.accepted',
+  'task.ready',
+  'task.starting',
+  'task.started',
+  'task.completed',
+  'task.failed',
+  'attempt.created',
+  'lock.acquired',
+  'lock.released',
+  'runtime.execute',
+  'runtime.accepted',
+  'runtime.result_returned',
+  'task.result_returned',
+  'runtime.params_refused',
+  'runtime.blind',
+]);
+
 export function normalizeRuntimeLog(input, { session = null } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     return { message: String(input ?? '') };
@@ -69,6 +92,28 @@ export function formatRuntimeLogPayload(payload = {}, ts = null) {
   }
   const time = timeLabel(ts);
   const event = eventLabel(payload.event);
+  // Dispatch plumbing is rendered as a readable sentence, not a field dump:
+  // `AGENT_STATUS run=… plan=… group=… attempt=… agentType=… workspace=…`
+  // buried the one thing the reader wants — WHO does WHAT on WHICH task, on
+  // WHICH job. The verbosity is kept for business payloads, where fields are
+  // the content.
+  if (COMPACT_EVENTS.has(String(payload.event ?? ''))) {
+    const parts = [time, event];
+    const who = payload.agentInstanceId ?? payload.agentId ?? payload.agentType;
+    if (who) parts.push(shortenUuids(String(who)));
+    const what = [payload.capability, payload.operation].filter(Boolean).join('/');
+    if (what) parts.push(what);
+    const task = shortTaskLabel(payload.taskId);
+    if (task) parts.push(task);
+    if (payload.jobId) parts.push(shortenUuids(String(payload.jobId)));
+    if (payload.status != null) parts.push(String(payload.status));
+    if (payload.error) parts.push(shortenUuids(String(payload.error)).slice(0, 120));
+    if (payload.detail != null && payload.detail !== ''
+      && String(payload.detail).toUpperCase() !== event) {
+      parts.push(shortenUuids(String(payload.detail)));
+    }
+    return parts.join(' · ');
+  }
   const fields = ORDERED_FIELDS
     .map((key) => (key === 'taskId'
       ? formatField(FIELD_ALIASES[key], shortTaskLabel(payload[key]))
@@ -123,7 +168,7 @@ export function shortLogId(value, { maxLength = 40 } = {}) {
 // token — so this one shape separates the two without an event-name list
 // (which is what an earlier enumeration got wrong: it only ever matched the
 // two underscore-form events and missed every dotted one).
-const DISPATCH_PLUMBING_LINE = /^(?:\d{1,2}:\d{2}(?::\d{2})?\s+)?[A-Z][A-Z0-9_]{2,}(?:\s|$)/;
+const DISPATCH_PLUMBING_LINE = /^(?:\d{1,2}:\d{2}(?::\d{2})?\s*(?:·\s*)?)?[A-Z][A-Z0-9_]{2,}(?:\s|$)/;
 
 export function isDispatchPlumbingLine(line) {
   return DISPATCH_PLUMBING_LINE.test(String(line ?? ''));

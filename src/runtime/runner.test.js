@@ -786,14 +786,14 @@ test('runRuntimeParallelPlan dispatches orchestrated tasks without child LLM loo
   for (const label of ['READY', 'RESOLVING', 'SELECTED', 'ASSIGNED', 'CREATED', 'ACQUIRED', 'AGENT_EXECUTE', 'ACCEPTED', 'AGENT_STATUS', 'RESULT_RETURNED', 'RELEASED', 'COMPLETED']) {
     assert.match(logs, new RegExp(`\\b${label}\\b`));
   }
-  assert.match(logs, /run=run-dispatch/);
+  // Compact dispatch plumbing: the routing fields ride the line as a sentence
+  // (who · what · task · job), no run=/plan=/attempt= soup.
+  assert.match(logs, /AGENT_EXECUTE · production-main · workspace\.diagnose\/doctor · a\b/);
+  assert.match(logs, /ACCEPTED · production-main · workspace\.diagnose\/doctor · a · job-a · queued/);
   assert.match(logs, /task=a/);
-  assert.match(logs, /attempt=a:attempt-1/);
-  assert.match(logs, /agentInstance=production-main/);
-  assert.match(logs, /job=job-a/);
+  // Business events keep the full field=value form.
+  assert.match(logs, /run=run-dispatch/);
   assert.match(logs, /workspace=demo-workspace/);
-  assert.match(logs, /capability=workspace\.diagnose/);
-  assert.match(logs, /operation=doctor/);
 });
 
 test('runRuntimeParallelPlan fails cleanly when scheduler budget is exceeded', async () => {

@@ -1044,7 +1044,7 @@ function formatPlanErrors(errors) {
     : 'unknown';
 }
 
-const LOG_TIME_PREFIX = /^\d{2}:\d{2}:\d{2}\s+/;
+const LOG_TIME_PREFIX = /^\d{2}:\d{2}:\d{2}(?:\s+|\s*·\s*)/;
 const LOG_REPEAT_SUFFIX = / \(×\d+\)$/;
 
 /*

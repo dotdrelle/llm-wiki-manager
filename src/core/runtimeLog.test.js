@@ -39,22 +39,27 @@ function payload(event) {
   };
 }
 
-test('formatRuntimeLogPayload formats every dispatcher cycle event with required ids', () => {
+test('formatRuntimeLogPayload renders dispatch plumbing as a compact sentence, business events keep their fields', () => {
+  // Dispatch plumbing: who · what · task · job — no run/plan/group/attempt
+  // soup. Business events (capability.resolving, agent.selected,
+  // task.assigned) keep the full field=value form: those fields ARE the
+  // content.
   for (const event of CYCLE_EVENTS) {
     const line = formatRuntimeLogPayload(payload(event), '2026-07-08T14:42:18.000Z');
-    assert.match(line, /^14:42:18 [A-Z_]+ /);
-    assert.match(line, /run=run-123/);
-    assert.match(line, /plan=4/);
-    assert.match(line, /group=group-build/);
-    assert.match(line, /task=task-build/);
-    assert.match(line, /attempt=attempt-1/);
-    assert.match(line, /agentType=production/);
-    assert.match(line, /agentInstance=production-main/);
-    assert.match(line, /agent=worker-02/);
-    assert.match(line, /job=job-789/);
-    assert.match(line, /workspace=docs/);
-    assert.match(line, /capability=document\.build/);
-    assert.match(line, /operation=build/);
+    if (['capability.resolving', 'agent.selected', 'task.assigned'].includes(event)) {
+      assert.match(line, /run=run-123/);
+      assert.match(line, /workspace=docs/);
+      assert.match(line, /capability=document\.build/);
+      assert.match(line, /operation=build/);
+      continue;
+    }
+    assert.match(line, /^14:42:18 · [A-Z_]+ · /);
+    assert.match(line, /production-main/);
+    assert.match(line, /document\.build\/build/);
+    assert.match(line, /task-build/);
+    assert.match(line, /job-789/);
+    assert.match(line, /cycle detail/);
+    assert.doesNotMatch(line, /run=|plan=|group=|attempt=|agentType=|agent=|workspace=|capability=|operation=/);
   }
 });
 
@@ -111,12 +116,10 @@ test('long UUIDs collapse to a short prefix so log lines stay on one line', () =
     operation: 'build',
   }, '2026-07-08T14:42:18.000Z');
 
-  assert.match(line, /run=7fadad27…/);
-  // The taskId's UUID prefix and hash suffix are dropped entirely: the field
+  assert.match(line, /production-7fadad27…/);
+  // The taskId's UUID prefix and hash suffix are dropped entirely: the line
   // names the work ("taxonomy synthesis"), not an opaque id.
-  assert.match(line, /task="taxonomy synthesis"/);
-  assert.match(line, /attempt=attempt-7fadad27…/);
-  assert.match(line, /agentInstance=production-7fadad27…/);
+  assert.match(line, /taxonomy synthesis/);
   assert.doesNotMatch(line, /7fadad27-0be6-4d08-96e5-664fe7ee841e/);
 });
 

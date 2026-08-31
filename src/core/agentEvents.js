@@ -342,9 +342,20 @@ function applyEvent(state, event) {
     case 'task.created':
       appendCreatedTask(state, event.payload?.task);
       return;
-    case 'task.assigned':
+    case 'task.assigned': {
+      // The plan step stays the only place the UIs read WHO runs a task. The
+      // workflow projection (workflow.js taskNode) exposes step.executor, and
+      // serve's run-graph inspector renders it as the "Agent" row — without
+      // this mutation that row stayed empty ("—") while the agent was only
+      // visible in the run journal, under Runtime.
+      const assignedStep = planTaskById(state, event.taskId ?? event.payload?.taskId ?? '');
+      const assignedAgent = event.payload?.assignment?.agentInstanceId ?? event.payload?.agentInstanceId ?? null;
+      if (assignedStep && assignedAgent && !assignedStep.executor) {
+        assignedStep.executor = String(assignedAgent);
+      }
       appendLog(state, taskLogLine(state, event, 'assigned'));
       return;
+    }
     case 'task.started':
       // Silent: always follows `task.assigned` (same task, milliseconds apart),
       // which already printed the "started" line.

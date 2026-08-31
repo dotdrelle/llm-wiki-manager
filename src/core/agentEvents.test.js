@@ -750,3 +750,20 @@ test('appendLog collapses repeated dispatch plumbing but never a repeated busine
   assert.equal(failLines.length, 2);
   assert.equal(failLines.some((l) => / \(×\d+\)$/.test(l)), false);
 });
+
+test('task.assigned records the executor on the plan step for the UIs', () => {
+  const session = { workspace: 'w', agentEvents: [] };
+  dispatchAgentEvent(session, createAgentEvent('plan_set', {
+    origin: 'tool',
+    payload: { steps: [{ id: 't1', description: 'Ingest', status: 'pending' }] },
+  }));
+  dispatchAgentEvent(session, createAgentEvent('task.assigned', {
+    origin: 'assignment_manager',
+    runId: 'r1',
+    taskId: 't1',
+    payload: { taskId: 't1', assignment: { agentInstanceId: 'production-main', capability: 'knowledge.update' } },
+  }));
+  const step = (session.agentProjection.plan ?? []).find((candidate) => candidate.id === 't1' || candidate.step === 't1');
+  assert.ok(step, 'plan step exists');
+  assert.equal(step.executor, 'production-main');
+});

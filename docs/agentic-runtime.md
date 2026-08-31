@@ -124,7 +124,16 @@ exist (`{ "plan": "plan", "apply": "run" }`); it is propagated like
 `mutationClass`. Without it, the deterministic resolver falls back to
 `operations[0]`.
 
+## Memory
+
+The runtime keeps a **conversation memory per workspace**: the manager sends
+the workspace with every run and the gateway checkpoints each thread under
+`thread_id = workspace` (`memory.sqlite` in its config dir, SqliteSaver). A
+run therefore resumes its workspace's previous thread across runs and across
+gateway restarts; a request without a workspace lands on `default`.
+
 ## Governance
+
 
 - Read-only analysis: free, no approval.
 - Direct side-effects (email): the runtime emits `approval_required` with a

@@ -86,7 +86,7 @@ test('resolveObjective disambiguates "export" of a Confluence source via alias, 
   session.llm.completeWithTools = async () => {
     throw new Error('the explicit alias must not depend on LLM selection');
   };
-  const result = await resolveObjective('Export the requested Confluence source', session);
+  const result = await resolveObjective('Export every configured Confluence source exactly as the connector is currently configured', session);
   assert.equal(result.capability, 'external-source.export');
   assert.equal(result.operation, 'export');
   assert.equal(result.provider.agentInstanceId, 'cme-1');

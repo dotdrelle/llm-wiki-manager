@@ -40,7 +40,7 @@ runtime as the Shell and the web interface:
 
 ```bash
 wiki-manager --headless --workspace my-project --skill pipeline
-wiki-manager --headless --workspace my-project --skill "wiki-sync team-space"
+wiki-manager --headless --workspace my-project --skill wiki-sync
 ```
 
 The first command produces one runtime run because the production capability

@@ -5,7 +5,7 @@ import { chainStepLabel, projectSkillChains, renderSkillChain, selectionKindLabe
 const WIKI_SYNC = [
   {
     id: 'c0', chainId: 'chain-1', chainSequence: 0, skillName: 'wiki-sync', selectionKind: 'description_match', status: 'done',
-    input: 'Export the requested Confluence source, or all configured sources when none is specified. Check configuration first.\n\nUser parameters:\nsource: docs',
+    input: 'Export every configured Confluence source exactly as the connector is currently configured. Check configuration first.',
   },
   {
     id: 'c1', chainId: 'chain-1', chainSequence: 1, skillName: 'wiki-sync', status: 'running', runId: 'run-b',

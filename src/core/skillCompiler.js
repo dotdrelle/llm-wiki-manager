@@ -7,10 +7,11 @@ export async function compileSkillObjectives(skill, args = {}, { llmFallback = n
   const body = String(skill?.body ?? '').trim();
   if (!body) throw compileError('Skill body is empty.');
   // Splitting must happen on the body alone. Appending the parameters first
-  // makes them part of the last objective only — `/wiki-sync ESPACE` would hand
-  // `source: ESPACE` to the ingest step and leave the export step, the one that
-  // actually needs it, exporting everything. The compiler cannot know which
-  // step consumes which parameter, so every objective carries them.
+  // makes them part of the last objective only — a skill that compiles into
+  // several steps would hand its arguments to the final step and leave the
+  // earlier ones, the ones that actually consume them, without them. The
+  // compiler cannot know which step consumes which parameter, so every
+  // objective carries them.
   const deterministic = deterministicObjectives(body);
   if (!deterministic.ambiguous) {
     return withNaturalArguments(validateCompiledObjectives(deterministic.objectives), args);

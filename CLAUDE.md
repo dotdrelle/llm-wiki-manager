@@ -298,10 +298,10 @@ or is cancelled marks the rest `skipped` with a `skipReason`. Skill items never
 carry a `capabilityPlan` — a structured enqueue still does, untouched.
 
 Parameters are appended as a `User parameters:` block to **every** objective of
-the chain, after validation. Not before the split: `/wiki-sync ESPACE` would
-otherwise hand `source` to the ingest step and leave the export step, the one
-that consumes it, exporting everything. Legacy `{param}` placeholders are still
-substituted when a body contains them.
+the chain, after validation. Not before the split: a skill that compiles into
+several objectives would otherwise hand its argument to every step at once —
+the block is built per objective so each consumer reads only what concerns it.
+Legacy `{param}` placeholders are still substituted when a body contains them.
 
 Those natural-language parameters are turned back into structured arguments at
 delegation time: `prepareDelegation` runs `resolveExecutorArguments` against the

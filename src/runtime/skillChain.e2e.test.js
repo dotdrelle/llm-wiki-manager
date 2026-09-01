@@ -136,22 +136,40 @@ test('E2E-002 wiki-sync: two objectives, two ordered runs, one chainId', async (
   const env = await harness(t, { skills: { 'wiki-sync': null } });
   if (!env) return;
 
-  const { body } = await env.post('/run?workspace=acme', { input: '/wiki-sync docs' });
+  const { body } = await env.post('/run?workspace=acme', { input: '/wiki-sync' });
   await env.settle();
 
   assert.equal(body.objectives, 2);
   assert.equal(env.runs.length, 2, 'the second objective must run after the first');
-  assert.match(env.runs[0].input, /^Export the requested Confluence source/);
+  assert.match(env.runs[0].input, /^Export every configured Confluence source/);
   assert.match(env.runs[1].input, /^Run the production pipeline step ingest over the newly exported Markdown/);
-  // CME first, Production second — and the parameter reaches the step that
-  // consumes it, not only the last objective.
-  for (const run of env.runs) assert.match(run.input, /User parameters:\nsource: docs/);
+  // CME first, Production second — the skill carries no source parameter, so
+  // no run may receive a source selector (the export step must stay "all").
+  for (const run of env.runs) assert.doesNotMatch(run.input, /User parameters:/);
   const items = env.chain();
   assert.equal(items.length, 2);
   assert.equal(items[0].chainId, items[1].chainId);
   assert.equal(items[0].chainId, body.chainId);
   assert.deepEqual(items.map((item) => item.status), ['done', 'done']);
   assert.deepEqual(items.map((item) => item.skillName), ['wiki-sync', 'wiki-sync']);
+});
+
+test('E2E-002b parameters reach every objective of a multi-step skill', async (t) => {
+  const env = await harness(t, {
+    skills: {
+      'two-step': '---\nname: two-step\nparams:\n  - source\n---\nCollect the sources.\n\nThen ingest them.',
+    },
+  });
+  if (!env) return;
+
+  const { body } = await env.post('/run?workspace=acme', { input: '/two-step docs' });
+  await env.settle();
+
+  assert.equal(body.objectives, 2);
+  assert.equal(env.runs.length, 2);
+  // The parameter reaches every step that consumes it, not only the last
+  // objective of the chain.
+  for (const run of env.runs) assert.match(run.input, /User parameters:\nsource: docs/);
 });
 
 test('E2E-003 cancel: the running step and its chain stop, unrelated queue survives', async (t) => {
@@ -308,7 +326,7 @@ test('E2E-010 skill stack: every run receives the ancestors of its chain', async
   const env = await harness(t, { skills: { 'wiki-sync': null } });
   if (!env) return;
 
-  await env.post('/run?workspace=acme', { input: '/wiki-sync docs' });
+  await env.post('/run?workspace=acme', { input: '/wiki-sync' });
   await env.settle();
 
   assert.ok(env.runs.length >= 1);

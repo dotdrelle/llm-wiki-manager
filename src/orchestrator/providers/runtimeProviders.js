@@ -311,12 +311,17 @@ export async function discoverRuntimeProvidersOnce(session, {
     currentDown.add(key);
     if (!session._runtimeProviderDown.has(key)) {
       const kept = preservedByRuntime.get(item.runtimeId)?.length ?? 0;
-      // HTTP 401 on /health is the gateway answering BEFORE its agents are
-      // loaded (workspace switch, boot order) — a transient state, not a
-      // failure. It is announced with the ⚠ glyph, which both UIs render in
-      // blue instead of the red reserved for genuine unavailability.
-      const authNotReady = /\bHTTP 401\b/i.test(String(item.error ?? ''));
-      if (authNotReady) {
+      // Transient states get the ⚠ glyph, which both UIs render in blue: the
+      // gateway answering HTTP 401 before its agents are loaded (workspace
+      // switch, boot order), or not listening yet (fetch failed, refused,
+      // timeout). An HTTP 4xx/5xx other than 401 — the server answers but is
+      // broken — stays a red "unavailable", like the non-HTTP agent contract
+      // errors.
+      const errorText = String(item.error ?? '');
+      const httpMatch = errorText.match(/\bHTTP (\d{3})\b/);
+      const connectionFailure = /\b(fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|connection refused|network error|timeout|timed out)\b/i.test(errorText);
+      const notReady = (httpMatch != null && httpMatch[1] === '401') || (httpMatch == null && connectionFailure);
+      if (notReady) {
         dispatchRuntimeLog(session, `⚠ agent-runtimes: ${item.runtimeId} not ready yet (${item.error})${kept > 0 ? ` — keeping ${kept} last-known capabilit${kept === 1 ? 'y' : 'ies'} until it recovers` : ''} — retrying on the next scan`);
         continue;
       }

@@ -80,6 +80,14 @@ wiki-workspace agents up          # start the packaged external agents
 wiki-workspace agents status      # ✅ each agent should report healthy
 ```
 
+One command starts the whole deployment — agent-runtime, agents and every
+configured workspace — and is safe to repeat while things are already up:
+
+```bash
+wiki-workspace start              # runtime + agents + all workspaces
+wiki-workspace start --open       # …and open the first workspace chat
+```
+
 From the `donna` shell you can confirm the same from the orchestrator's side:
 
 ```text

@@ -310,6 +310,14 @@ wiki-workspace agents up        # start cme, documents…
 wiki-workspace agents status    # check they respond
 ```
 
+One command starts the whole deployment — agent-runtime, agents and every
+configured workspace — and is safe to repeat while things are already up:
+
+```bash
+wiki-workspace start            # runtime + agents + all workspaces
+wiki-workspace start --open     # …and open the first workspace chat
+```
+
 **Step 4 — Move to `wiki-manager` or `serve`.**
 Two entry doors, your choice:
 

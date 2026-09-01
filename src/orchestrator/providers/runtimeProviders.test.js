@@ -289,6 +289,46 @@ test('an HTTP 401 gateway probe is announced as not-ready with the ⚠ glyph, no
   assert.doesNotMatch(message, /unavailable/, 'a gateway answering before its agents load is not a failure');
 });
 
+test('a gateway that is not listening yet (fetch failed) is also announced as not-ready', async () => {
+  const session = sessionWithEvents();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new TypeError('fetch failed');
+  };
+  try {
+    await discoverRuntimeProvidersOnce(session, {
+      config: [{ id: 'deepagents', type: 'deepagents', endpoint: 'http://127.0.0.1:7789', enabled: true }],
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const logs = (session.agentEvents ?? []).filter((event) => event.type === 'runtime_log'
+    && String(event.payload?.message ?? '').includes('deepagents'));
+  assert.equal(logs.length, 1);
+  const message = String(logs[0].payload?.message ?? '');
+  assert.match(message, /^⚠ agent-runtimes: deepagents not ready yet \(fetch failed\)/);
+  assert.doesNotMatch(message, /unavailable/);
+});
+
+test('an HTTP 500 gateway probe stays a red unavailable announcement', async () => {
+  const session = sessionWithEvents();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('{}', { status: 500 });
+  try {
+    await discoverRuntimeProvidersOnce(session, {
+      config: [{ id: 'deepagents', type: 'deepagents', endpoint: 'http://127.0.0.1:7789', enabled: true }],
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const logs = (session.agentEvents ?? []).filter((event) => event.type === 'runtime_log'
+    && String(event.payload?.message ?? '').includes('deepagents'));
+  assert.equal(logs.length, 1);
+  assert.match(String(logs[0].payload?.message ?? ''), /^agent-runtimes: deepagents unavailable \(HTTP 500/);
+});
+
 test('a transient probe failure keeps the last-known capability set (a failed probe is not a lost agent)', async () => {
   const session = sessionWithEvents();
   const up = [{ id: 'gw', type: 'fake', capabilities: [{ name: 'agent.review', operations: ['run'] }] }];

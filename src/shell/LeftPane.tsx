@@ -830,14 +830,21 @@ export function LeftPane(props: {
         to the foot of the pane: they are an ambient state one glances at, not
         something read before every message, and at the top they pushed the
         conversation down by a line for standing information.
+
+        The hint row exists only while there is a hint. It is null almost
+        always, so reserving a blank line for it left a dead gap between the
+        mode bar and the thread once the standing info moved to the foot;
+        `conversationRows` in tui.tsx adds the row back only when it shows.
       */}
-      <box height={2} flexDirection="column">
+      <box height={props.hintLine ? 2 : 1} flexDirection="column">
         <box height={1} flexDirection="row" backgroundColor={modeColor()} paddingX={1}>
           <text fg="#0B1020">{modeLabel()}</text>
         </box>
-        <box height={1} flexDirection="row">
-          {props.hintLine ? <text fg="#FBBF24">[ {props.hintLine} ]</text> : null}
-        </box>
+        {props.hintLine ? (
+          <box height={1} flexDirection="row">
+            <text fg="#FBBF24">[ {props.hintLine} ]</text>
+          </box>
+        ) : null}
       </box>
       {showWelcome() ? (
         <WelcomeHelpPanels width={props.conversationColumns} />
@@ -875,9 +882,9 @@ export function LeftPane(props: {
         onHeightChange={props.onInputHeightChange}
       />
       {/*
-        Status foot. One line, as in the header before it, so the row budget of
-        `conversationRows` (height - 5 - input) is unchanged: the line moved,
-        it was not added.
+        Status foot. One line: it replaced the standing header line rather than
+        adding one. `conversationRows` (tui.tsx) counts padding (2) + mode bar
+        (1) + this foot (1), plus the hint row only when it is present.
       */}
       <box height={1} flexDirection="row">
         <text fg="#D6DEE8">{props.title}</text>

@@ -352,8 +352,10 @@ function logMessageColor(message: string): string {
   // ⚠ announces a state the reader should know about, not an error: the
   // gateway answering 401 before its agents are loaded, a re-scan retry.
   // Blue, with the glyph carrying the warning — the red rules below must not
-  // claim it (the text may still contain "HTTP 401").
-  if (/^\s*⚠/.test(message) || /\bnot ready\b/i.test(message)) return '#89B4FA';
+  // claim it (the text may still contain "HTTP 401"). Keyed on the glyph
+  // alone: every legitimate "not ready" line already carries it, whereas a
+  // genuine failure ("Run failed: agent X not ready") must stay red.
+  if (/^\s*⚠/.test(message)) return '#89B4FA';
   // A doctor summary with ZERO errors is a warning by construction
   // ("⚠ 0 error(s), 2 warning(s)") — amber, never red, even though it
   // mentions the word "error".

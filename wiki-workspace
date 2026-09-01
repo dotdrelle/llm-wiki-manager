@@ -97,6 +97,8 @@ Usage:
 Commands:
   config <workspace> [path]         Create workspace folder, auto-select ports, run wiki init
   up <workspace> [--open]           Start workspace stack: wiki + production
+  start [--open]                    Start everything: agent-runtime, agents and every
+                                    configured workspace (--open opens the first chat)
   list                              List configured workspaces
   refresh                           Stop runtime/stacks and remove their Compose images
 
@@ -1438,6 +1440,49 @@ wait_and_open() {
   open_app_mode "${url}"
 }
 
+# `start` — the whole deployment in one command: the host agent-runtime, the
+# external agents, then every configured workspace stack. Each step is the
+# same idempotent command the operator would run by hand, so `start` is safe
+# to repeat while things are already up. A workspace failure stops the run —
+# the failing compose command already says why.
+start_all() {
+  local open_browser="${1:-0}"
+
+  printf -- '── agent-runtime ──\n'
+  runtime_command up
+  printf '\n'
+
+  printf -- '── external agents ──\n'
+  agents_compose up
+  printf '\n'
+
+  mkdir -p "$WORKSPACES_DIR"
+  local found=0 first_name="" entry file name
+  for entry in "$WORKSPACES_DIR"/*; do
+    [[ -d "$entry" ]] || continue
+    file="$entry/.env"
+    [[ -f "$file" ]] || continue
+    name="$(env_value "$file" WORKSPACE_NAME "$(basename "$entry")")"
+    found=1
+    [[ -n "$first_name" ]] || first_name="$name"
+    printf -- '── workspace: %s ──\n' "$name"
+    up_workspace "$name"
+    printf '\n'
+  done
+
+  if [[ "$found" -eq 0 ]]; then
+    printf 'No workspaces configured in %s\n' "$WORKSPACES_DIR"
+    printf 'Create one with: wiki-workspace config <name>\n'
+    return 0
+  fi
+
+  if [[ "$open_browser" == "1" ]]; then
+    local serve_port
+    serve_port="$(workspace_value "$first_name" WIKI_SERVE_PORT 3100)"
+    wait_and_open "http://localhost:${serve_port}/chat" &
+  fi
+}
+
 ensure_workspace_dirs() {
   local ws_path="$1"
   mkdir -p "$ws_path/.wiki/vector-index"
@@ -1572,6 +1617,16 @@ main() {
     else
       config_workspace "$cfg_workspace"
     fi
+    exit 0
+  fi
+
+  # start [--open] — everything: runtime, agents, every configured workspace
+  if [[ $# -ge 1 && "$1" == "start" ]]; then
+    [[ $# -le 2 ]] || die "start takes at most --open"
+    [[ "${2:-}" == "" || "${2:-}" == "--open" ]] || die "start takes at most --open"
+    local start_open=0
+    [[ "${2:-}" == "--open" ]] && start_open=1
+    start_all "$start_open"
     exit 0
   fi
 

@@ -141,12 +141,16 @@ phantom service — don't. See `docs/configuration.md` § "Compose overrides".
 ## Shell Model
 
 The left pane keeps in its **header** only what changes the meaning of what is
-typed — the mode bar and the transient hint — and carries workspace, version and
-connection states in a **status foot** under the composer: ambient state one
-glances at, not something read before every message. Both are one line, so the
-row budget in `tui.tsx` (`height - 5 - chatInputHeight()`) is unchanged; that
-constant counts the header, and moving a line between header and foot is the only
-way to touch this layout without touching it.
+typed — the mode bar, always one line, and the transient hint, a second line
+that exists only while a hint is showing (exit / copy / runtime prompts) — and
+carries workspace, version and connection states in a **status foot** under the
+composer: ambient state one glances at, not something read before every message.
+The foot replaced a standing header line rather than adding one. `conversationRows`
+in `tui.tsx` (`height - 4 - (hint ? 1 : 0) - chatInputHeight() - 4`) counts the
+outer padding (2), the mode bar (1) and the foot (1), plus the hint row only when
+it is present, plus the Activity strip (4). Keep that arithmetic in step with the
+boxes in `LeftPane` — a row reserved unconditionally is a dead gap once the
+standing info lives in the foot.
 
 Interactive ShellUI startup runs ordered infrastructure preflight checks before
 workspace configuration: `docker info` first, then an HTTPS connectivity probe,
@@ -814,6 +818,7 @@ Common commands:
 
 ```bash
 wiki-workspace config <workspace> [path]
+wiki-workspace start [--open]
 wiki-workspace up <workspace>
 wiki-workspace wiki <workspace> doctor
 wiki-workspace wiki <workspace> reset [--dry-run] [--yes]

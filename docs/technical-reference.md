@@ -314,6 +314,13 @@ Start CME and documents once for all workspaces:
 wiki-workspace agents up
 ```
 
+Or start the whole deployment at once — agent-runtime, agents and every
+configured workspace, safe to repeat:
+
+```bash
+wiki-workspace start [--open]
+```
+
 This uses the packaged `agents.docker-compose.yml` (it lives inside the npm
 package — never edit it, updates overwrite it). On first run, `agents up`
 generates the missing agent auth tokens into your manager `.env` and seeds
@@ -379,8 +386,12 @@ commands work in both the Shell UI and the `llm-wiki serve` chat:
 /connector auth google
 ```
 
-The first reports the Gmail read-only authorization state for the active
-workspace. The second opens Google's OAuth page in the browser. Asking Donna
+The first reports the Gmail authorization state for the active workspace. The
+second opens Google's OAuth page in the browser. Authorization through the
+serve proxy asks for the `read` **and** `send` grants by default; when the
+deployment disabled send (`CONNECTORS_SEND_ENABLED=false`), the proxy retries
+read-only so the flow never fails because of it. The agent's callback page
+links "back to the workspace" at the serve origin. Asking Donna
 to configure or check Google remains supported through the direct connector
 tools above.
 
@@ -400,7 +411,8 @@ curl -X POST https://wiki.example.com/api/connectors/google/oauth/start \
 ```
 
 Open the returned `authorizationUrl`. The workspace is injected by serve and
-cannot be selected by the browser request.
+cannot be selected by the browser request. Grants default to `read` + `send`;
+an explicit `grants` array is forwarded as-is.
 
 Donna discovers the agent contract automatically from the `connectors` MCP
 endpoint. With only one provider, no routing entry is required. To pin it
@@ -471,10 +483,12 @@ Create a workspace:
 wiki-workspace config my-project [path]
 ```
 
-Start it:
+Start it — or start the whole deployment in one command (agent-runtime, agents
+and every configured workspace; safe to repeat):
 
 ```bash
 wiki-workspace up my-project
+wiki-workspace start [--open]
 ```
 
 Run wiki commands:

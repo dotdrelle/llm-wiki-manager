@@ -175,9 +175,22 @@ function App(props: {
   let lastCopiedSelection = '';
   const state = useSession(props);
   const startup = createMemo(() => startupInfo(props.packageJson, props.initialWorkspaceName));
-  // The Activity strip (4 rows) now sits above the composer, so it costs the
-  // conversation exactly those 4 rows.
-  const conversationRows = createMemo(() => Math.max(4, dimensions().height - 5 - chatInputHeight() - 4));
+  // Header line that changes the meaning of what is typed. Null most of the
+  // time — a transient exit/copy/runtime prompt only — so the header collapses
+  // to the single mode-bar row when it is absent (see LeftPane).
+  const hintLine = () => {
+    if (exitStatus()) return exitStatus();
+    if (copyHint()) return copyHint();
+    if (exitHint()) return 'Press Ctrl+C again to exit.';
+    if (state.runtimeHint()) return state.runtimeHint();
+    return null;
+  };
+  // Non-conversation rows: outer padding (2) + mode bar (1) + status foot (1),
+  // plus the hint row only when a hint is showing, plus the composer height and
+  // the Activity strip (4 rows, now above the composer).
+  const conversationRows = createMemo(() =>
+    Math.max(4, dimensions().height - 4 - (hintLine() ? 1 : 0) - chatInputHeight() - 4),
+  );
   const rightColumns = createMemo(() => {
     const width = dimensions().width;
     // 38% + 2 columns: the Plan/Activity/Logs panes carry job labels, file
@@ -358,14 +371,6 @@ function App(props: {
       else state.setInput('');
     }
   });
-
-  const hintLine = () => {
-    if (exitStatus()) return exitStatus();
-    if (copyHint()) return copyHint();
-    if (exitHint()) return 'Press Ctrl+C again to exit.';
-    if (state.runtimeHint()) return state.runtimeHint();
-    return null;
-  };
 
   return (
     <Show

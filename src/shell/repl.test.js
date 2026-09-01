@@ -199,6 +199,15 @@ test('a ⚠ not-ready announcement is blue, even when its text mentions HTTP 401
   assert.match(colorFn, /\/\^\\s\*⚠\//);
 });
 
+test('local log lines carry a fixed 24h timestamp like the runtime lines', async () => {
+  const source = await readFile(new URL('./useSession.ts', import.meta.url), 'utf8');
+  // A locale default rendered "9:50:37 PM" on some machines while runtime
+  // lines read "21:50:37" — two time dialects in one panel, and the
+  // Runtime/Agent-status classification reads the time prefix structurally.
+  assert.match(source, /toLocaleTimeString\('en-GB', \{ hour12: false \}\)/);
+  assert.doesNotMatch(source, /toLocaleTimeString\(\)/);
+});
+
 test('runtime logs have a separator and a concise Runtime tab label', async () => {
   const source = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
   const logPanel = source.slice(

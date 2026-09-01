@@ -82,7 +82,10 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     setActiveEditor(editor);
   };
   const addLog = (line: string) => {
-    setLogs((items) => [...items, `${new Date().toLocaleTimeString()} ${line}`].slice(-200));
+    // Fixed 24h HH:MM:SS, like the runtime's own log lines: a locale default
+    // rendered "9:50:37 PM" on some machines, and the Runtime/Agent-status
+    // split classifies lines structurally from that time prefix.
+    setLogs((items) => [...items, `${new Date().toLocaleTimeString('en-GB', { hour12: false })} ${line}`].slice(-200));
   };
   const runtimeUnavailableReason = createMemo(() => {
     if (props.runtime?.url) return null;

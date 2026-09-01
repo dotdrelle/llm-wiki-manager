@@ -186,6 +186,19 @@ test('a doctor summary with a nonzero error count is colored as an error, not a 
   assert.doesNotMatch(colorFn, /\/0 error\\\(s\\\)\/i\.test/);
 });
 
+test('a ⚠ not-ready announcement is blue, even when its text mentions HTTP 401', async () => {
+  const source = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
+  const colorFn = source.slice(
+    source.indexOf('function logMessageColor'),
+    source.indexOf('function logRenderLines'),
+  );
+  const blueRule = colorFn.indexOf("return '#89B4FA'");
+  const redRule = colorFn.indexOf('HTTP 4\\d\\d');
+  assert.ok(blueRule !== -1 && redRule !== -1, 'the blue and red rules both exist');
+  assert.ok(blueRule < redRule, 'the ⚠ rule must win over the HTTP 4xx red rule');
+  assert.match(colorFn, /\/\^\\s\*⚠\//);
+});
+
 test('runtime logs have a separator and a concise Runtime tab label', async () => {
   const source = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
   const logPanel = source.slice(
@@ -195,6 +208,11 @@ test('runtime logs have a separator and a concise Runtime tab label', async () =
   assert.match(logPanel, /content=\{'─'\.repeat\(lineWidth\(\)\)\}/);
   assert.match(logPanel, /content=" Runtime "/);
   assert.doesNotMatch(logPanel, /Flow \/ Trace/);
+  // The panel keeps a floor so a long plan running above it cannot shrink it
+  // to zero rows — the Queue tab's fixed height is what used to keep it
+  // visible, and a treatment must not make the tabs vanish.
+  assert.match(logPanel, /flexGrow=\{2\} minHeight=\{10\}/);
+  assert.match(logPanel, /minHeight=\{4\}/);
 });
 
 test('ShellUI turns HTTP URLs into valid links without trailing punctuation', () => {

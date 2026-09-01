@@ -349,6 +349,11 @@ function logMessageColor(message: string): string {
   // would give them anyway.
   if (/^\s*✓/.test(message)) return '#A6E3A1';
   if (/^\s*✗/.test(message)) return '#F38BA8';
+  // ⚠ announces a state the reader should know about, not an error: the
+  // gateway answering 401 before its agents are loaded, a re-scan retry.
+  // Blue, with the glyph carrying the warning — the red rules below must not
+  // claim it (the text may still contain "HTTP 401").
+  if (/^\s*⚠/.test(message) || /\bnot ready\b/i.test(message)) return '#89B4FA';
   // A doctor summary with ZERO errors is a warning by construction
   // ("⚠ 0 error(s), 2 warning(s)") — amber, never red, even though it
   // mentions the word "error".
@@ -419,7 +424,11 @@ export function LogPanel(props: { logs: string[]; width: number; filter?: string
     // above the Runtime/Agent status tabs left a dead gap under a short Plan
     // and made the two panels look detached. The Plan/Queue panel now grows
     // into that space instead, so its bottom edge meets this panel's header.
-    <box flexGrow={2} flexDirection="column" paddingX={1} focusable={false}>
+    // minHeight keeps this panel on screen while a long plan is running: with
+    // no floor the flex column shrank it to zero rows during a treatment — the
+    // plan grew, the Runtime/Agent status tabs vanished — while the Queue tab
+    // (fixed height, no shrink) kept them visible.
+    <box flexGrow={2} minHeight={10} flexDirection="column" paddingX={1} focusable={false}>
       <text width={lineWidth()} fg="#4B5563" content={'─'.repeat(lineWidth())} />
       <box height={1} flexDirection="row">
         <text
@@ -438,6 +447,7 @@ export function LogPanel(props: { logs: string[]; width: number; filter?: string
       </box>
       <scrollbox
         flexGrow={1}
+        minHeight={4}
         focusable={false}
         scrollY={true}
         scrollX={false}

@@ -146,6 +146,16 @@ test('isDispatchPlumbingLine leaves the business flow lines for the Runtime tab'
   }
 });
 
+test('isDispatchPlumbingLine recognises the shell-tagged "runtime " lines for the Agent status tab', () => {
+  // The Shell prepends "runtime " to every runtime line (useSession
+  // visibleLogs): AGENT_STATUS rows must still classify as plumbing, or they
+  // end up in the Runtime tab instead of Agent status.
+  const tagged = `runtime ${formatRuntimeLogPayload({ event: 'agent_status', runId: 'r1', taskId: 't1' }, '2026-07-08T14:42:18.000Z')}`;
+  assert.equal(isDispatchPlumbingLine(tagged), true, 'a tagged AGENT_STATUS line is dispatch plumbing');
+  assert.equal(isDispatchPlumbingLine('runtime 14:42:21 Run failed: No agent provides capability workspace.restore.'), false);
+  assert.equal(isDispatchPlumbingLine('runtime 14:42:22 Plan validated for run r1'), false);
+});
+
 test('shortLogId caps an over-long task slug while shortening embedded UUIDs', () => {
   const long = `${'x'.repeat(48)}-deadbeef`;
   assert.match(shortLogId(long), /…$/);

@@ -311,6 +311,15 @@ export async function discoverRuntimeProvidersOnce(session, {
     currentDown.add(key);
     if (!session._runtimeProviderDown.has(key)) {
       const kept = preservedByRuntime.get(item.runtimeId)?.length ?? 0;
+      // HTTP 401 on /health is the gateway answering BEFORE its agents are
+      // loaded (workspace switch, boot order) — a transient state, not a
+      // failure. It is announced with the ⚠ glyph, which both UIs render in
+      // blue instead of the red reserved for genuine unavailability.
+      const authNotReady = /\bHTTP 401\b/i.test(String(item.error ?? ''));
+      if (authNotReady) {
+        dispatchRuntimeLog(session, `⚠ agent-runtimes: ${item.runtimeId} not ready yet (${item.error})${kept > 0 ? ` — keeping ${kept} last-known capabilit${kept === 1 ? 'y' : 'ies'} until it recovers` : ''} — retrying on the next scan`);
+        continue;
+      }
       dispatchRuntimeLog(session, kept > 0
         ? `agent-runtimes: ${item.runtimeId} unavailable (${item.error}) — keeping ${kept} last-known capabilit${kept === 1 ? 'y' : 'ies'} until it recovers`
         : `agent-runtimes: ${item.runtimeId} unavailable (${item.error})`);

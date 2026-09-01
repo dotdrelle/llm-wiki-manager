@@ -171,7 +171,10 @@ export function shortLogId(value, { maxLength = 40 } = {}) {
 const DISPATCH_PLUMBING_LINE = /^(?:\d{1,2}:\d{2}(?::\d{2})?\s*(?:·\s*)?)?[A-Z][A-Z0-9_]{2,}(?:\s|$)/;
 
 export function isDispatchPlumbingLine(line) {
-  return DISPATCH_PLUMBING_LINE.test(String(line ?? ''));
+  // The Shell tags every runtime line with a "runtime " prefix before it
+  // reaches the Log panel; classification must look past it, or AGENT_STATUS
+  // rows land in the Runtime tab instead of Agent status.
+  return DISPATCH_PLUMBING_LINE.test(String(line ?? '').replace(/^runtime\s+/, ''));
 }
 
 export function runtimeLogMatchesFilter(line, filter = '') {

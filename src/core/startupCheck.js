@@ -357,13 +357,22 @@ export async function checkAgenticRuntimes({
   for (const { id, provider } of providers) {
     try {
       const description = await provider.describe();
+      const down = description.health === 'unavailable';
+      // Ask the runtime what it serves — describe() alone reflects /health,
+      // not the capability set, and a gateway that lost its config answers
+      // healthy with one default capability.
+      const capabilities = down ? [] : await provider.discoverCapabilities();
+      const missing = provider?.lastDiscovery?.missing ?? [];
       runtimes.push({
         name: id,
-        status: description.health === 'unavailable' ? 'failed' : 'connected',
-        capabilities: (description.capabilities ?? [])
+        status: down ? 'failed' : 'connected',
+        capabilities: (capabilities ?? [])
           .map((capability) => capability?.name ?? capability?.id ?? '')
           .filter(Boolean),
-        reason: description.health === 'unavailable' ? (description.error ?? 'unavailable') : null,
+        ...(missing.length > 0 ? { missingCapabilities: [...missing] } : {}),
+        reason: down
+          ? (description.error ?? 'unavailable')
+          : (missing.length > 0 ? `does not serve configured: ${missing.join(', ')}` : null),
       });
     } catch (err) {
       runtimes.push({ name: id, status: 'failed', reason: commandError(err) });

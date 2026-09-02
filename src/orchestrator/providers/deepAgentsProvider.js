@@ -56,7 +56,10 @@ export function createDeepAgentsProvider({
     }
   }
 
-  return {
+  const provider = {
+    // Filled by discoverCapabilities: what the gateway served vs what the
+    // config declares. `null` until the first discovery.
+    lastDiscovery: null,
     async describe() {
       let health = 'available';
       let runtimeVersion = version ?? null;
@@ -77,10 +80,33 @@ export function createDeepAgentsProvider({
         ...(lastError ? { error: lastError } : {}),
       };
     },
+    // The gateway is ALWAYS asked what it serves. The static config (the
+    // manager's agent-runtimes.json entry) carries the richer metadata the
+    // resolver routes on — mutationClass, aliases, aliasOperations — but it is
+    // a declaration, not an observation: a gateway that lost its /config
+    // mount degrades to its built-in default and the manager, trusting the
+    // config alone, kept listing eight capabilities it could not govern.
+    // Only the capabilities BOTH declare are offered; the difference is
+    // exposed as `lastDiscovery` so /status and the runtime log can say why a
+    // configured capability is missing.
     async discoverCapabilities() {
-      if (Array.isArray(capabilities)) return capabilities;
       const list = await httpJson('/capabilities');
-      return Array.isArray(list) ? list : [];
+      const served = (Array.isArray(list) ? list : [])
+        .filter((item) => item && typeof item === 'object' && typeof item.name === 'string' && item.name.trim());
+      const servedNames = served.map((item) => item.name);
+      if (!Array.isArray(capabilities)) {
+        provider.lastDiscovery = { served: servedNames, configured: null, missing: [], extra: [] };
+        return served;
+      }
+      const configuredNames = capabilities.map((item) => String(item?.name ?? ''));
+      const offered = capabilities.filter((item) => servedNames.includes(String(item?.name ?? '')));
+      provider.lastDiscovery = {
+        served: servedNames,
+        configured: configuredNames,
+        missing: configuredNames.filter((name) => !servedNames.includes(name)),
+        extra: servedNames.filter((name) => !configuredNames.includes(name)),
+      };
+      return offered;
     },
     async execute(request = {}) {
       const accepted = await httpJson('/runs', {
@@ -165,4 +191,5 @@ export function createDeepAgentsProvider({
       return () => controller.abort();
     },
   };
+  return provider;
 }

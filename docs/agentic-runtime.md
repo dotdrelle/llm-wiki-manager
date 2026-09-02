@@ -87,6 +87,17 @@ agent so `buildExecutorOnlyFragment` produces approval-gated tasks like any
 other executor. The verbs of a read-only analysis are **aliases of one
 capability**; a capability is split only when the governance profile changes.
 
+The declaration is what the manager *routes on*; what the runtime *serves* is
+observed, never assumed. Discovery always calls `GET /capabilities` and offers
+only the capabilities **both** declare (the configured entry's metadata wins,
+so `mutationClass` / aliases stay authoritative). A configured capability the
+gateway does not serve is a **drift**: it is not routable (`capability_not_found`
+rather than an ungoverned run), `/status` lists it under "not served by the
+gateway", and the runtime log announces it once — the usual cause is the
+gateway's `/config` mount hiding `agent-runtimes.json`. Symmetrically the
+gateway refuses (`400`) any `POST /runs` naming a capability or operation it
+does not serve, so a run can never fall outside the approval gate by name.
+
 ## Operations
 
 A capability's `operations` is its closed vocabulary of machine verbs —

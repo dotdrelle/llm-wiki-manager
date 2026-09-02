@@ -265,6 +265,54 @@ test('discoverRuntimeProvidersOnce announces a down runtime only once across re-
   assert.equal(logs.length, 1, 'the degradation is announced once, not on every re-scan');
 });
 
+test('a gateway serving fewer capabilities than configured is a drift: offered = intersection, announced once, cleared on recovery', async () => {
+  const session = sessionWithEvents();
+  const config = [{
+    id: 'deepagents', type: 'deepagents', endpoint: 'http://127.0.0.1:7789', enabled: true,
+    capabilities: [
+      { name: 'agent.review', operations: ['run'] },
+      { name: 'agent.research', operations: ['run'], mutationClass: 'ingest' },
+      { name: 'agent.notify', operations: ['run'], defaultRequiresApproval: true },
+    ],
+  }];
+  const originalFetch = globalThis.fetch;
+  let served = [{ name: 'agent.review', operations: ['run'] }];
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/health')) return new Response(JSON.stringify({ ok: true, version: 't' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    if (String(url).includes('/capabilities')) return new Response(JSON.stringify(served), { status: 200, headers: { 'content-type': 'application/json' } });
+    throw new Error('unexpected probe ' + String(url));
+  };
+  try {
+    await discoverRuntimeProvidersOnce(session, { config });
+    await discoverRuntimeProvidersOnce(session, { config });
+    const driftLogs = () => (session.agentEvents ?? []).filter((event) => event.type === 'runtime_log'
+      && String(event.payload?.message ?? '').includes('does not serve'));
+
+    // Only what the gateway serves is routable — a governed capability the
+    // gateway would run ungoverned is not offered at all.
+    assert.deepEqual(session.runtimeProviderAgents.map((agent) => agent.agentInstanceId), ['deepagents::agent.review']);
+    assert.deepEqual(session.runtimeProviderDrift, [{
+      runtimeId: 'deepagents', missing: ['agent.research', 'agent.notify'], served: ['agent.review'],
+    }]);
+    assert.equal(driftLogs().length, 1, 'announced once across re-scans');
+    assert.match(String(driftLogs()[0].payload.message), /does not serve 2 configured capabilities \(agent\.research, agent\.notify\)/);
+    assert.match(String(driftLogs()[0].payload.message), /\/config mount/);
+
+    // The gateway recovers its config: no drift, all three routable.
+    served = config[0].capabilities.map(({ name, operations }) => ({ name, operations }));
+    await discoverRuntimeProvidersOnce(session, { config });
+    assert.equal(session.runtimeProviderAgents.length, 3);
+    assert.deepEqual(session.runtimeProviderDrift, []);
+
+    // …and a later drift is announced again.
+    served = [{ name: 'agent.review', operations: ['run'] }];
+    await discoverRuntimeProvidersOnce(session, { config });
+    assert.equal(driftLogs().length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('an HTTP 401 gateway probe is announced as not-ready with the ⚠ glyph, not as a failure', async () => {
   const session = sessionWithEvents();
   const originalFetch = globalThis.fetch;

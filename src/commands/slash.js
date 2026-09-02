@@ -682,6 +682,14 @@ function runtimeProvidersSection(session) {
     // never truncates and stays scannable.
     lines.push('capabilities:');
     for (const capability of capabilities) lines.push(`    ${capability}`);
+    // Configured in agent-runtimes.json but not served by the gateway (the
+    // list above is the intersection): say so, one per line, or the operator
+    // reads a shorter list without knowing the gateway lost its /config.
+    const drift = (session.runtimeProviderDrift ?? []).find((item) => item.runtimeId === runtimeId);
+    if (drift && drift.missing.length > 0) {
+      lines.push('not served by the gateway:');
+      for (const capability of drift.missing) lines.push(`    ${capability}`);
+    }
   }
   return sectionBlock('Agentic runtime', lines);
 }

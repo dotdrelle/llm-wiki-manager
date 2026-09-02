@@ -327,3 +327,31 @@ test('checkAgenticRuntimes reports a down runtime as failed', async () => {
   assert.equal(result.context.runtimes[0].status, 'failed');
   assert.match(result.detail, /pending/);
 });
+
+test('checkAgenticRuntimes asks the runtime what it serves and reports configured capabilities it does not', async () => {
+  const provider = {
+    runtime: 'deepagents',
+    lastDiscovery: null,
+    async describe() { return { runtime: 'deepagents', health: 'available', version: 't', protocolVersion: '1' }; },
+    async discoverCapabilities() {
+      this.lastDiscovery = { served: ['agent.review'], configured: ['agent.review', 'agent.notify'], missing: ['agent.notify'], extra: [] };
+      return [{ name: 'agent.review', operations: ['run'] }];
+    },
+    async execute() { throw new Error('unused'); },
+    async status() { throw new Error('unused'); },
+    async cancel() {},
+    async approve() {},
+    subscribe() { return () => {}; },
+  };
+  const result = await checkAgenticRuntimes({
+    loadConfig: () => [{ id: 'deepagents', type: 'deepagents', enabled: true }],
+    resolve: () => ({ providers: [{ id: 'deepagents', type: 'deepagents', provider }], skipped: [] }),
+    env: {},
+  });
+  assert.equal(result.ok, true);
+  const runtime = result.context.runtimes[0];
+  assert.equal(runtime.status, 'connected');
+  assert.deepEqual(runtime.capabilities, ['agent.review'], 'the served set, not the configured one');
+  assert.deepEqual(runtime.missingCapabilities, ['agent.notify']);
+  assert.match(runtime.reason, /does not serve configured: agent\.notify/);
+});

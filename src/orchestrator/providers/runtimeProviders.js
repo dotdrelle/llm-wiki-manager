@@ -24,6 +24,11 @@ export async function discoverRuntimeProviderAgents(runtimeProviders) {
     : (runtimeProviders?.list?.() ?? []);
   const agents = [];
   const unavailable = [];
+  // Configured-but-not-served capabilities, per runtime (deepagents providers
+  // fill `lastDiscovery`). A drift is not an outage: the runtime stays
+  // available with the capabilities it really serves, and the difference is
+  // reported so an operator can see WHY agent.research is not routable.
+  const drift = [];
 
   for (const entry of providers) {
     const provider = entry?.provider ?? entry;
@@ -53,9 +58,13 @@ export async function discoverRuntimeProviderAgents(runtimeProviders) {
     for (const capability of capabilities ?? []) {
       agents.push(runtimeProviderAgent(runtimeId, provider, description, capability, health));
     }
+    const discovery = provider?.lastDiscovery;
+    if (discovery && Array.isArray(discovery.missing) && discovery.missing.length > 0) {
+      drift.push({ runtimeId, missing: [...discovery.missing], served: [...(discovery.served ?? [])] });
+    }
   }
 
-  return { agents, unavailable };
+  return { agents, unavailable, drift };
 }
 
 /**
@@ -254,7 +263,10 @@ export async function discoverRuntimeProvidersOnce(session, {
     },
   });
   const resolved = resolveRuntimeProviders(entries);
-  const { agents, unavailable } = await discoverRuntimeProviderAgents(resolved.providers);
+  const { agents, unavailable, drift } = await discoverRuntimeProviderAgents(resolved.providers);
+  // Exposed for /status: which configured capabilities the runtime does not
+  // serve right now. Replaced on every scan — a recovered gateway clears it.
+  session.runtimeProviderDrift = drift;
 
   // A failed probe is not a lost agent (same rule as agentRegistry): a runtime
   // that reported unavailable this round but for which we hold a last-known-good
@@ -330,6 +342,20 @@ export async function discoverRuntimeProvidersOnce(session, {
         : `agent-runtimes: ${item.runtimeId} unavailable (${item.error})`);
     }
   }
+  // Same edge-triggered rule for a capability drift: announced when it
+  // appears (or changes), silent while it persists, announced again after a
+  // recovery.
+  session._runtimeProviderDriftAnnounced ??= new Map();
+  const announced = session._runtimeProviderDriftAnnounced;
+  const currentDrift = new Map(drift.map((item) => [item.runtimeId, item.missing.join(',')]));
+  for (const item of drift) {
+    if (announced.get(item.runtimeId) === currentDrift.get(item.runtimeId)) continue;
+    dispatchRuntimeLog(session, `agent-runtimes: ${item.runtimeId} does not serve ${item.missing.length} configured capabilit${item.missing.length === 1 ? 'y' : 'ies'} (${item.missing.join(', ')}) — it serves ${item.served.join(', ') || 'nothing'}; check the gateway's /config mount (agent-runtimes.json)`);
+  }
+  for (const id of [...announced.keys()]) {
+    if (!currentDrift.has(id)) announced.delete(id);
+  }
+  for (const [id, key] of currentDrift) announced.set(id, key);
   session._runtimeProviderDown = currentDown;
   return effectiveAgents;
 }

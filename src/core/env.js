@@ -11,6 +11,13 @@ const TEMPLATE_AUTHORING_CHAT_TOOLS = [
   'wiki_outline', 'template_read', 'template_write', 'build_context_write',
   'wiki_read_deliverable',
 ];
+// Same additive rule for the packaged cme allow-list: an install scaffolded
+// before the live search tools existed keeps the three legacy reads forever,
+// and /chat can never call cme_confluence_search — the LLM is offered a
+// server with no search and loops. A hand-edited list (not a superset of the
+// legacy default) is the operator's and stays untouched.
+const LEGACY_DEFAULT_CME_CHAT_TOOLS = ['cme_status', 'cme_sources_list', 'cme_export_status'];
+const CME_SEARCH_CHAT_TOOLS = ['cme_confluence_search', 'cme_wiki_search'];
 
 export function userManagerDir() {
   return process.cwd();
@@ -148,17 +155,25 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
           const missingWikiChatTools = migrateWikiChatTools
             ? TEMPLATE_AUTHORING_CHAT_TOOLS.filter((tool) => !wikiAllow.includes(tool))
             : [];
+          const cmeAllow = current.chatAccess?.servers?.cme?.allow;
+          const migrateCmeChatTools = Array.isArray(cmeAllow)
+            && LEGACY_DEFAULT_CME_CHAT_TOOLS.every((tool) => cmeAllow.includes(tool));
+          const missingCmeChatTools = migrateCmeChatTools
+            ? CME_SEARCH_CHAT_TOOLS.filter((tool) => !cmeAllow.includes(tool))
+            : [];
           if (missing.length > 0) {
             for (const key of missing) current[key] = example[key];
           }
           for (const key of missingServers) currentServers[key] = exampleServers[key];
           wikiAllow?.push(...missingWikiChatTools);
-          if (missing.length > 0 || missingServers.length > 0 || missingWikiChatTools.length > 0) {
+          cmeAllow?.push(...missingCmeChatTools);
+          const missingChatTools = [...missingWikiChatTools, ...missingCmeChatTools];
+          if (missing.length > 0 || missingServers.length > 0 || missingChatTools.length > 0) {
             writeFileSync(endpointsFile, `${JSON.stringify(current, null, 2)}\n`);
             const changes = [
               missing.length > 0 ? `keys: ${missing.join(', ')}` : '',
               missingServers.length > 0 ? `servers: ${missingServers.join(', ')}` : '',
-              missingWikiChatTools.length > 0 ? `chat tools: ${missingWikiChatTools.join(', ')}` : '',
+              missingChatTools.length > 0 ? `chat tools: ${missingChatTools.join(', ')}` : '',
             ].filter(Boolean).join('; ');
             created.push(`mcp.endpoints.json ${changes}`);
           }

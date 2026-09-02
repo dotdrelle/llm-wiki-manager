@@ -74,16 +74,44 @@ test('discoverCapabilities fetches /capabilities', async () => {
   assert.deepEqual(await provider.discoverCapabilities(), [{ name: 'agent.review', operations: ['run'] }]);
 });
 
-test('discoverCapabilities uses the static config when provided', async () => {
-  const fetchImpl = mockFetch({});
+test('discoverCapabilities keeps the configured metadata but only for capabilities the gateway serves', async () => {
+  const fetchImpl = mockFetch({
+    'GET /capabilities': () => jsonResponse(200, [
+      { name: 'agent.review', operations: ['run'] },
+      { name: 'agent.notify', operations: ['run'] },
+    ]),
+  });
   const provider = createDeepAgentsProvider({
     endpoint: 'http://agent-runtime:8080',
-    capabilities: [{ name: 'agent.review', operations: ['run'] }],
+    capabilities: [
+      { name: 'agent.review', operations: ['run'], aliases: ['audit'] },
+      { name: 'agent.research', operations: ['run'], mutationClass: 'ingest' },
+      { name: 'agent.notify', operations: ['run'], defaultRequiresApproval: true },
+    ],
     fetchImpl,
   });
 
+  const offered = await provider.discoverCapabilities();
+  assert.equal(fetchImpl.calls.length, 1, 'the gateway is always asked what it serves');
+  assert.deepEqual(offered.map((item) => item.name), ['agent.review', 'agent.notify']);
+  assert.equal(offered[0].aliases[0], 'audit', 'the configured metadata is what the resolver routes on');
+  assert.deepEqual(provider.lastDiscovery, {
+    served: ['agent.review', 'agent.notify'],
+    configured: ['agent.review', 'agent.research', 'agent.notify'],
+    missing: ['agent.research'],
+    extra: [],
+  });
+});
+
+test('discoverCapabilities with no static config serves the gateway list as-is', async () => {
+  const fetchImpl = mockFetch({
+    'GET /capabilities': () => jsonResponse(200, [{ name: 'agent.review', operations: ['run'] }]),
+  });
+  const provider = createDeepAgentsProvider({ endpoint: 'http://agent-runtime:8080', fetchImpl });
+
   assert.deepEqual(await provider.discoverCapabilities(), [{ name: 'agent.review', operations: ['run'] }]);
-  assert.equal(fetchImpl.calls.length, 0, 'no HTTP call when capabilities are static');
+  assert.deepEqual(provider.lastDiscovery.missing, []);
+  assert.equal(provider.lastDiscovery.configured, null);
 });
 
 test('execute POSTs /runs and returns the runId', async () => {

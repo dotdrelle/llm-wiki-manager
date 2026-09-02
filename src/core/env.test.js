@@ -141,6 +141,37 @@ test('scaffold upgrades the packaged wiki chat allow-list with template authorin
   });
 });
 
+test('scaffold upgrades the packaged cme chat allow-list with the live search tools', () => {
+  withTempManagerDir((dir) => {
+    const endpointsFile = join(dir, 'mcp.endpoints.json');
+    const example = JSON.parse(readFileSync('mcp.endpoints.example.json', 'utf8'));
+    example.chatAccess.servers.cme.allow = ['cme_status', 'cme_sources_list', 'cme_export_status'];
+    writeFileSync(endpointsFile, JSON.stringify(example, null, 2));
+
+    const changes = ensureManagerScaffold();
+    const after = JSON.parse(readFileSync(endpointsFile, 'utf8'));
+
+    assert.ok(changes.some((item) => item.includes('cme_confluence_search')));
+    assert.deepEqual(after.chatAccess.servers.cme.allow, [
+      'cme_status', 'cme_sources_list', 'cme_export_status', 'cme_confluence_search', 'cme_wiki_search',
+    ]);
+  });
+});
+
+test('scaffold leaves a custom cme chat allow-list untouched', () => {
+  withTempManagerDir((dir) => {
+    const endpointsFile = join(dir, 'mcp.endpoints.json');
+    writeFileSync(endpointsFile, JSON.stringify({
+      mcpServers: {},
+      chatAccess: { servers: { cme: { allow: ['cme_status'] } } },
+    }, null, 2));
+
+    ensureManagerScaffold();
+    const after = JSON.parse(readFileSync(endpointsFile, 'utf8'));
+    assert.deepEqual(after.chatAccess.servers.cme.allow, ['cme_status']);
+  });
+});
+
 test('scaffold leaves a custom wiki chat allow-list untouched', () => {
   withTempManagerDir((dir) => {
     const endpointsFile = join(dir, 'mcp.endpoints.json');

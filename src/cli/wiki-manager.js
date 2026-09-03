@@ -702,8 +702,8 @@ async function runHeadless(argv, agent) {
     session._onStep = step;
 
     let input = prompt;
-    // Plan §24: headless must resolve executable skills through the same
-    // runtime resolver as the Shell and serve. Injecting the skill body into a
+    // Headless must resolve executable skills through the same runtime resolver
+    // as the Shell and serve. Injecting the skill body into a
     // local prompt bypasses the compiler, so a multi-capability skill such as
     // wiki-sync would collapse into a single run here while producing two
     // everywhere else — and the rewritten bodies are business intentions, not

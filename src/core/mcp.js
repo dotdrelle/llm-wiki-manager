@@ -756,8 +756,7 @@ export function parseToolCallName(name) {
 // tool name, route to it and report `normalized: true`; otherwise return
 // `server: null` with the list of candidate servers so the caller can raise
 // an explicit error. This is name normalization, never fuzzy matching — do
-// not extend it to description/similarity-based selection (plan directeur
-// §20 forbids that).
+// not extend it to description/similarity-based selection.
 export function resolveToolCallName(mcpStatus, name, extraServers = {}) {
   const parsed = parseToolCallName(name);
   if (parsed.server) return { ...parsed, normalized: false, candidates: [] };

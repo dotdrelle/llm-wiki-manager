@@ -1422,9 +1422,8 @@ function rejectPlanPatch(context, store, patchId, reason) {
   };
 }
 
-// Classifier for control §4.2 of the plan directeur. The plan expects an
-// LLM-backed classification — "the classification LLM se trompera" — and this
-// is that, now: the only deterministic matches left are the runtime's own
+// Classifier for the control lane's free-text messages. The classification is
+// LLM-backed: the only deterministic matches left are the runtime's own
 // control verbs (cancel, an explicit "later/queue", status and plan-change
 // wording). Deciding "is this a NEW task to queue vs plain conversation" is a
 // semantic judgement about the workspace's domain, so it is never a keyword

@@ -14,13 +14,11 @@ import { isTerminal } from '../orchestrator/taskStatuses.js';
 
 const RUNNING_STATUSES = new Set(['running', 'starting', 'queued', 'waiting', 'pending_approval']);
 
-// Canonical workflow projection for 0.9.6.
+// Canonical workflow projection.
 //
-// Decision: projectWorkflow consumes the existing event-sourced agentProjection
-// instead of replacing it in this release. agentProjection remains the
-// compatibility reducer/hydration format; workflow is the canonical read model
-// for Serve and ShellTUI. Future releases can move the reducer internals behind
-// this module without changing UI contracts.
+// projectWorkflow consumes the existing event-sourced agentProjection instead
+// of replacing it: agentProjection remains the compatibility reducer/hydration
+// format; workflow is the canonical read model for Serve and ShellTUI.
 export function projectWorkflow(state = {}, events = []) {
   const run = currentRun(state, events);
   const plan = Array.isArray(state.plan) ? state.plan : [];

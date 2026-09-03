@@ -23,11 +23,10 @@ deterministic dispatcher executes bounded tasks with idempotency, bounded
 approvals, per-run budgets and automatic recovery after restart. The chat
 stays available while runs execute; additional requests are queued.
 
-Scope note: this is a single-user deployment baseline. The multi-user model is
-specified in `llm-wiki/docs/industrialisation.md` and planned next. Until
-then, do not expose the runtime as a shared write surface; it binds to
-`127.0.0.1` by default, and `--host 0.0.0.0` must be an explicit deployment
-choice with bearer-token and network protection.
+Scope note: this is a single-user deployment baseline. Do not expose the
+runtime as a shared write surface; it binds to `127.0.0.1` by default, and
+`--host 0.0.0.0` must be an explicit deployment choice with bearer-token and
+network protection.
 
 ---
 
@@ -170,7 +169,7 @@ Projects compared: [OpenWiki](https://github.com/langchain-ai/openwiki),
   territory.
 - Serve a true multi-user instance with per-user identity and an attributed
   audit trail. This is a single-user deployment baseline (see the scope note
-  above); multi-user is specified and planned next.
+  above).
 - Expose a graph-query API over the corpus the way GraphRAG does; retrieval is
   BM25 plus a vector index feeding generation.
 - Ship or host the multi-provider AI gateway — routing to several providers is

@@ -894,7 +894,7 @@ function componentInstallAction(missingImages) {
   return missingImages.length > 0 ? 'downloaded-and-installed-missing-components' : null;
 }
 
-export function localizedOperationResult({ operation, target, status = 'succeeded', componentAction = null, images = [], detail = null }) {
+export function localizedOperationResult({ operation, target, status = 'succeeded', componentAction = null, images = [], detail = null, style = 'compact' }) {
   const facts = JSON.stringify({
     operation,
     target,
@@ -902,15 +902,21 @@ export function localizedOperationResult({ operation, target, status = 'succeede
     ...(componentAction ? { componentAction, images } : {}),
     ...(detail ? { detail } : {}),
   });
+  const instructions = style === 'report'
+    ? [
+        'Formule le résultat structuré suivant dans la langue et le ton demandés par le profil du workspace.',
+        "Décris ce qui a été fait : ce qui a été démarré, et l'état actuel de chaque service (en marche, en échec ou inconnu).",
+        'Réponds en deux ou trois phrases. Ne cite aucune commande, syntaxe shell, chemin de fichier, sortie docker ou identifiant.',
+      ]
+    : [
+        'Formule le résultat structuré suivant dans la langue et le ton demandés par le profil du workspace.',
+        'Réponds par une seule phrase humaine et naturelle.',
+        'Ne mentionne aucune commande, syntaxe shell, étape suivante ou détail technique.',
+      ];
   return {
     output: facts,
     rawOutput: true,
-    agentTrigger: [
-      'Formule le résultat structuré suivant dans la langue et le ton demandés par le profil du workspace.',
-      'Réponds par une seule phrase humaine et naturelle.',
-      'Ne mentionne aucune commande, syntaxe shell, étape suivante ou détail technique.',
-      `Résultat: ${facts}`,
-    ].join('\n'),
+    agentTrigger: [...instructions, `Résultat: ${facts}`].join('\n'),
   };
 }
 
@@ -1197,6 +1203,7 @@ export async function handleSlashCommand(line, context) {
       const startsAgents = service === 'all';
       const target = service === 'services' ? undefined : service;
       try {
+        let agentsResult = null;
         if (startsAgents) {
           // Validate the workspace half before mutating the global agents
           // stack. Otherwise `/start all` with no active workspace starts the
@@ -1204,18 +1211,48 @@ export async function handleSlashCommand(line, context) {
           if (!context.session.workspace || !context.session.workspacePath || !context.session.workspaceEnv?.WORKSPACE_NAME) {
             throw new Error('No workspace loaded. Use /use <workspace>.');
           }
-          const agentsResult = await runAgentCommand(startAgents, 'start');
+          agentsResult = await runAgentCommand(startAgents, 'start');
           if (agentsResult?.failed) return agentsResult;
         }
         step(`Services: starting ${target ?? 'workspace services'}…`);
-        const missingImages = await collectMissingImages(step, (opts) => startService(context.session, target, opts));
+        const started = [];
+        const missingImages = await collectMissingImages(step, async (opts) => {
+          const result = await startService(context.session, target, opts);
+          if (Array.isArray(result?.targets)) started.push(...result.targets);
+        });
         step('Services: refreshing MCP runtime…');
         await refreshMcpRuntimeStatus(context.session);
+        // The report is about what was done, so it names what started and how
+        // each service ended up. A failed state check says so instead of
+        // leaving every state "unknown" without a word.
+        let states = null;
+        try {
+          states = await serviceStates(context.session);
+        } catch (err) {
+          step(`Services: state check after start unavailable — ${rawFailureText(err)}`);
+        }
+        const agentsFacts = agentsResult ? parseJsonText(agentsResult.output) : null;
+        const detail = {
+          ...(agentsFacts && typeof agentsFacts === 'object' && !Array.isArray(agentsFacts) ? { agents: agentsFacts } : {}),
+          ...(started.length > 0
+            ? {
+                services: {
+                  started,
+                  states: started.map((name) => ({
+                    service: name,
+                    running: states?.[name] ? states[name].running : null,
+                  })),
+                },
+              }
+            : {}),
+        };
         return localizedOperationResult({
           operation: 'start',
           target: startsAgents ? 'all-services-and-agents' : (target || 'workspace-services'),
           componentAction: componentInstallAction(missingImages),
           images: missingImages,
+          detail: Object.keys(detail).length > 0 ? detail : null,
+          style: 'report',
         });
       } catch (err) {
         step(formatActivityError('services', 'start', err));

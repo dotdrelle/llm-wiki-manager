@@ -128,6 +128,34 @@ test('a started agent stack reloads the env and the MCP endpoints the script rew
   assert.match(runAgent, /await refreshMcpRuntimeStatus\(context\.session\)/);
 });
 
+test('start report style asks Donna to describe what was done, not a bare sentence', () => {
+  const result = localizedOperationResult({
+    operation: 'start',
+    target: 'wiki',
+    style: 'report',
+    detail: { services: { started: ['wiki'], states: [{ service: 'wiki', running: true }] } },
+  });
+  assert.deepEqual(JSON.parse(result.output).detail, {
+    services: { started: ['wiki'], states: [{ service: 'wiki', running: true }] },
+  });
+  assert.match(result.agentTrigger, /Décris ce qui a été fait/);
+  assert.match(result.agentTrigger, /en marche, en échec ou inconnu/);
+  assert.doesNotMatch(result.agentTrigger, /une seule phrase/);
+  assert.doesNotMatch(result.agentTrigger, /\/start|Docker|compose/);
+});
+
+test('/start captures what actually started and their resulting states', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('./slash.js', import.meta.url), 'utf8');
+  const start = source.slice(source.indexOf("case 'start': {"), source.indexOf("case 'stop': {"));
+
+  assert.match(start, /const started = \[\];/);
+  assert.match(start, /result\?\.targets/);
+  assert.match(start, /states = await serviceStates\(context\.session\)/);
+  assert.match(start, /running: states\?\.\[name\] \? states\[name\]\.running : null/);
+  assert.match(start, /style: 'report'/);
+});
+
 test('/start completes to the three documented targets', async () => {
   const { completionDescription } = await import('../shell/repl.js');
   const { matches } = completionContext('/start ', {});

@@ -43,11 +43,12 @@ wiki-manager --headless --workspace my-project --skill pipeline
 wiki-manager --headless --workspace my-project --skill wiki-sync
 ```
 
-The first command produces one runtime run because the production capability
-owns its internal DAG. The second produces a sequential chain (source export,
-then ingest). Headless waits for every item carrying the returned `chainId`,
-returns non-zero if one fails, and reports a pending approval immediately rather
-than waiting for the general timeout. Use `--auto-approve` only for an explicitly
+Each shipped skill produces one runtime run: `pipeline` because the production
+capability owns its internal DAG, `wiki-sync` because it only exports Confluence
+into `raw/untracked/`. A sequential chain appears only for a user-authored
+multi-step body; headless then waits for every item carrying the returned
+`chainId`, returns non-zero if one fails, and reports a pending approval
+immediately rather than waiting for the general timeout. Use `--auto-approve` only for an explicitly
 trusted unattended workflow.
 
 ### 3. The driver assistant (shell) — to talk in plain language

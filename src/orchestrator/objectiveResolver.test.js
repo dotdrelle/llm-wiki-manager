@@ -92,7 +92,7 @@ test('resolveObjective disambiguates "export" of a Confluence source via alias, 
   assert.equal(result.provider.agentInstanceId, 'cme-1');
 });
 
-test('resolveObjective resolves the ingest step of wiki-sync deterministically despite notification and guardrails', async () => {
+test('resolveObjective resolves an ingest objective deterministically despite notification and guardrails', async () => {
   const session = sessionWith([
     provider('production-1', knowledge),
     provider('production-2', publish),

@@ -744,12 +744,13 @@ edited skill cannot change permissions halfway through an existing chain.
 The runtime compiles a skill into natural-language objectives. Paragraphs alone
 do not split work: an existing complex capability such as `knowledge.pipeline`
 stays one objective, one capability resolution and one run. Strong workflow
-boundaries create a sequential execution chain instead. In the shipped
-scaffold, `pipeline`, `wiki-ingest`, `wiki-build`, `deliver`, `diagnose`,
-`status` and `new-template` each compile to one run; `wiki-sync` compiles to an
-export run followed by an ingest run. Chain items contain `chainId`, sequence,
-optionality and continuation policy, but never a precomputed `capabilityPlan`.
-Each item is resolved only when its run starts.
+boundaries create a sequential execution chain instead. Every shipped scaffold
+skill (`wiki-sync`, `wiki-ingest`, `wiki-build`, `deliver`, `pipeline`,
+`diagnose`, `status`, `new-template`) compiles to a single run; a sequential
+chain only appears when a user-authored body opens a paragraph on a strong
+connector (`Then`, `Puis`, `if available`…). Chain items contain `chainId`,
+sequence, optionality and continuation policy, but never a precomputed
+`capabilityPlan`. Each item is resolved only when its run starts.
 
 Writing a skill body is a contract with that compiler: its markdown shape decides
 the number of runs, the approval boundaries and whether a capability keeps its

@@ -30,8 +30,8 @@ test('validation rejects technical routing details', () => {
   assert.throws(() => validateCompiledObjectives([{ text: 'agent: cme' }]), { code: 'skill_compile_failed' });
 });
 
-test('scaffold skills preserve existing capabilities and split only wiki-sync', async () => {
-  const expected = { pipeline: 1, 'wiki-ingest': 1, 'wiki-build': 1, deliver: 1, diagnose: 1, status: 1, 'new-template': 1, 'wiki-sync': 2 };
+test('every shipped scaffold skill compiles to a single intention', async () => {
+  const expected = { pipeline: 1, 'wiki-sync': 1, 'wiki-ingest': 1, 'wiki-build': 1, deliver: 1, diagnose: 1, status: 1, 'new-template': 1 };
   for (const [name, count] of Object.entries(expected)) {
     const raw = readFileSync(resolve('../llm-wiki/scaffold/workspace/.wiki/skills', `${name}.md`), 'utf8');
     const { meta, body } = parseFrontmatter(raw);
@@ -53,7 +53,7 @@ test('every objective of a chain carries the user parameters, not just the last'
   // Appending the parameters before splitting attached `source` to the ingest
   // step and left the export step — the one that consumes it — without it.
   const skill = {
-    name: 'wiki-sync',
+    name: 'collect-then-ingest',
     params: ['source'],
     body: 'Export the requested source.\n\nThen ingest what was exported.',
   };

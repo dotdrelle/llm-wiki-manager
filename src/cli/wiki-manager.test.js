@@ -396,8 +396,8 @@ test('argument extraction keeps a value the vocabulary allows', async () => {
 });
 
 test('headless waits for every run of a skill chain, not just the first', async () => {
-  // wiki-sync compiles into two sequential runs: returning as soon as the
-  // export finishes would report success before the ingest had started.
+  // A multi-step user skill compiles into sequential runs: returning as soon as
+  // the first finishes would report success before the rest had started.
   const client = chainClient([
     { controlQueue: [chainItem(0, 'running', { runId: 'run-a' }), chainItem(1, 'queued')] },
     { controlQueue: [chainItem(0, 'done'), chainItem(1, 'running', { runId: 'run-b' })] },

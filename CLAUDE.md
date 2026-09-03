@@ -856,8 +856,8 @@ serve, so a multi-capability skill produces the same chain everywhere. Its value
 carries the arguments inline (`--skill "deliver rapport polish"`); `--prompt` is
 ignored on that path and says so. The wait is chain-scoped, not run-scoped —
 `waitForRuntimeChain` follows every step of the `chainId` and exits non-zero if
-any of them failed, so `wiki-sync` cannot report success when only the export
-finished. A chain blocked on approval returns immediately with an explicit
+any of them failed, so a multi-step user skill cannot report success when only
+its first step finished. A chain blocked on approval returns immediately with an explicit
 message unless `--auto-approve` is passed, which grants one run-scoped approval
 per plan revision. `--no-runtime` keeps the legacy agentic loop: run a turn,
 wait for active MCP activities, then re-invoke until the skill is done or limits

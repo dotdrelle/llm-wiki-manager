@@ -1606,7 +1606,7 @@ test('runtime server handle drains a pre-existing hydrated control request', asy
 test('POST /run compiles a workspace skill into a sequential runtime chain', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'runtime-skill-'));
   mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
-  writeFileSync(join(root, '.wiki', 'skills', 'wiki-sync.md'), '---\nname: wiki-sync\nparams:\n  - source\n---\nExport the source.\n\nThen ingest the files.');
+  writeFileSync(join(root, '.wiki', 'skills', 'sync-ingest.md'), '---\nname: sync-ingest\nparams:\n  - source\n---\nExport the source.\n\nThen ingest the files.');
   const session = { workspace: 'acme', workspacePath: root, controlQueue: [] };
   const context = { workspace: 'acme', session, running: false, currentAbortController: null };
   let startedBody = null;
@@ -1623,7 +1623,7 @@ test('POST /run compiles a workspace skill into a sequential runtime chain', asy
     throw err;
   }
   try {
-    const response = await fetch(`http://127.0.0.1:${handle.port}/run?workspace=acme`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ input: '/wiki-sync docs' }) });
+    const response = await fetch(`http://127.0.0.1:${handle.port}/run?workspace=acme`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ input: '/sync-ingest docs' }) });
     const body = await response.json();
     assert.equal(response.status, 202);
     assert.equal(body.kind, 'skill_chain');
@@ -1633,15 +1633,15 @@ test('POST /run compiles a workspace skill into a sequential runtime chain', asy
     assert.equal(session.controlQueue[1].status, 'queued');
     assert.equal(session.controlQueue[0].chainId, session.controlQueue[1].chainId);
     assert.equal('capabilityPlan' in session.controlQueue[0], false);
-    assert.equal(session.controlQueue[0].input, '/wiki-sync source="docs"');
+    assert.equal(session.controlQueue[0].input, '/sync-ingest source="docs"');
     assert.equal(session.controlQueue[0].skillExecution, 'orchestrated');
     assert.match(startedBody.input, /Export the source/);
-    assert.equal(startedBody.publicInput, '/wiki-sync source="docs"');
+    assert.equal(startedBody.publicInput, '/sync-ingest source="docs"');
     assert.equal(startedBody.skillChain.execution, 'orchestrated');
     assert.equal(startedBody.requireApproval, true);
     assert.notEqual(startedBody.autoApprove, true);
     assert.deepEqual(session.agentProjection.conversation, [
-      { role: 'user', content: '/wiki-sync docs' },
+      { role: 'user', content: '/sync-ingest docs' },
     ]);
     assert.doesNotMatch(JSON.stringify(session.agentEvents), /Export the source|Then ingest the files/);
   } finally {

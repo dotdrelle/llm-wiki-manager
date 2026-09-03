@@ -132,26 +132,31 @@ test('E2E-001 pipeline: one objective, one run, internal plan left untouched', a
   assert.equal(env.chain().length, 1);
 });
 
-test('E2E-002 wiki-sync: two objectives, two ordered runs, one chainId', async (t) => {
-  const env = await harness(t, { skills: { 'wiki-sync': null } });
+test('E2E-002 multi-step skill: two objectives, two ordered runs, one chainId', async (t) => {
+  // No shipped skill splits any more (each is one intention); a user-authored
+  // body with a strong connector still must.
+  const env = await harness(t, {
+    skills: {
+      'sync-ingest': '---\nname: sync-ingest\nparams: []\n---\nExport every configured Confluence source.\n\nThen ingest the exported Markdown into the wiki.',
+    },
+  });
   if (!env) return;
 
-  const { body } = await env.post('/run?workspace=acme', { input: '/wiki-sync' });
+  const { body } = await env.post('/run?workspace=acme', { input: '/sync-ingest' });
   await env.settle();
 
   assert.equal(body.objectives, 2);
   assert.equal(env.runs.length, 2, 'the second objective must run after the first');
   assert.match(env.runs[0].input, /^Export every configured Confluence source/);
-  assert.match(env.runs[1].input, /^Run the production pipeline step ingest over the newly exported Markdown/);
-  // CME first, Production second — the skill carries no source parameter, so
-  // no run may receive a source selector (the export step must stay "all").
+  assert.match(env.runs[1].input, /^Ingest the exported Markdown/);
+  // The skill carries no parameter, so no run may receive a selector.
   for (const run of env.runs) assert.doesNotMatch(run.input, /User parameters:/);
   const items = env.chain();
   assert.equal(items.length, 2);
   assert.equal(items[0].chainId, items[1].chainId);
   assert.equal(items[0].chainId, body.chainId);
   assert.deepEqual(items.map((item) => item.status), ['done', 'done']);
-  assert.deepEqual(items.map((item) => item.skillName), ['wiki-sync', 'wiki-sync']);
+  assert.deepEqual(items.map((item) => item.skillName), ['sync-ingest', 'sync-ingest']);
 });
 
 test('E2E-002b parameters reach every objective of a multi-step skill', async (t) => {
@@ -220,13 +225,13 @@ test('E2E-003 cancel: the running step and its chain stop, unrelated queue survi
 // that silently fragments would show up as extra runs, not as extra objectives.
 const PERFORMANCE_TABLE = {
   pipeline: 1,
+  'wiki-sync': 1,
   'wiki-ingest': 1,
   'wiki-build': 1,
   deliver: 1,
   diagnose: 1,
   status: 1,
   'new-template': 1,
-  'wiki-sync': 2,
 };
 
 for (const [name, expected] of Object.entries(PERFORMANCE_TABLE)) {

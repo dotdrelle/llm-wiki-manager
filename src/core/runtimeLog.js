@@ -177,6 +177,17 @@ export function isDispatchPlumbingLine(line) {
   return DISPATCH_PLUMBING_LINE.test(String(line ?? '').replace(/^runtime\s+/, ''));
 }
 
+// The agent's own reasoning traces — "Agent: planning next action…",
+// "Agent: classified input as …", "Agent: streaming final answer…" — describe
+// how the agent works, not what the business run does. They belong with the
+// dispatch plumbing in the Agent status tab; the Runtime tab keeps the
+// business flow (plan, task transitions, failures).
+const AGENT_TRACE_LINE = /^(?:runtime\s+)?(?:\d{1,2}:\d{2}(?::\d{2})?\s*(?:·\s*)?)?Agent:\s/;
+
+export function isAgentTraceLine(line) {
+  return AGENT_TRACE_LINE.test(String(line ?? ''));
+}
+
 export function runtimeLogMatchesFilter(line, filter = '') {
   const query = String(filter ?? '').trim();
   if (!query) return true;

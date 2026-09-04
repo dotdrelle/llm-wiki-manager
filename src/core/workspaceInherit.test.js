@@ -1,14 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   PLACEHOLDER_VALUE_RE,
   buildInheritedWikircPatch,
-  cmeCredentialsPath,
-  copyCmeCredentials,
   isRealValue,
 } from './workspaceInherit.js';
 
@@ -144,38 +140,14 @@ test('nothing to inherit yields an empty patch', () => {
   assert.deepEqual(inherited, []);
 });
 
-test('CME credentials are copied, and the source manifest is not', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'cme-inherit-'));
-  const sourceDir = join(root, 'cme', 'acme', 'cme');
-  mkdirSync(sourceDir, { recursive: true });
-  writeFileSync(join(sourceDir, 'app_data.json'), '{"auth":{"pat":"secret"}}', 'utf8');
-  // Export scope is what makes a workspace different — it must NOT travel.
-  writeFileSync(join(root, 'cme', 'acme', 'sources-manifest.yaml'), 'sources: []\n', 'utf8');
-
-  const copied = await copyCmeCredentials(root, 'acme', 'fresh');
-
-  assert.equal(copied, cmeCredentialsPath(root, 'fresh'));
-  assert.equal(readFileSync(copied, 'utf8'), '{"auth":{"pat":"secret"}}');
-  assert.equal(existsSync(join(root, 'cme', 'fresh', 'sources-manifest.yaml')), false);
-});
-
-test('existing CME credentials on the target are never clobbered', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'cme-inherit-keep-'));
-  mkdirSync(join(root, 'cme', 'acme', 'cme'), { recursive: true });
-  mkdirSync(join(root, 'cme', 'fresh', 'cme'), { recursive: true });
-  writeFileSync(join(root, 'cme', 'acme', 'cme', 'app_data.json'), '{"from":"source"}', 'utf8');
-  writeFileSync(join(root, 'cme', 'fresh', 'cme', 'app_data.json'), '{"from":"target"}', 'utf8');
-
-  assert.equal(await copyCmeCredentials(root, 'acme', 'fresh'), null);
-  assert.equal(
-    readFileSync(cmeCredentialsPath(root, 'fresh'), 'utf8'),
-    '{"from":"target"}',
+test('Confluence credentials are not part of workspace inheritance', () => {
+  // agent-cme stores credentials agent-wide since the shared-config change:
+  // a new workspace sees them without any copy. Inheritance must not smuggle
+  // an app_data.json (or a sources manifest) into per-workspace state.
+  const { patch, inherited } = buildInheritedWikircPatch(
+    { llm: WORKING_LLM },
+    { llm: SCAFFOLD_LLM },
   );
-});
-
-test('copying is a no-op without a source, a target, or a source file', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'cme-inherit-noop-'));
-  assert.equal(await copyCmeCredentials(root, 'absent', 'fresh'), null);
-  assert.equal(await copyCmeCredentials(root, null, 'fresh'), null);
-  assert.equal(await copyCmeCredentials(root, 'acme', 'acme'), null);
+  assert.equal(patch['cme.app_data.json'], undefined);
+  assert.ok(!inherited.some((key) => key.toLowerCase().includes('cme')));
 });

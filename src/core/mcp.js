@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
 
-const WIKI_MANAGER_VERSION = '0.15.76';
+const WIKI_MANAGER_VERSION = '0.15.77';
 
 function envValue(key) {
   const filePath = managerEnvFile();
@@ -272,7 +272,14 @@ function clarifyToolDescription(_serverName, _toolName, description) {
 
 async function listMcpTools(endpoint) {
   if (!endpoint.url) throw new Error('missing endpoint URL');
-  const payload = await mcpRequest(endpoint, 'tools/list', {});
+  // Opt-in only, unlike callMcpTool: this probe runs inside discoverMcpTools's
+  // Promise.all on every re-scan/delegation, so an endpoint with no explicit
+  // `retry` in mcp.endpoints.json must keep costing exactly one 8s timeout
+  // when unreachable, not silently inherit the global 2-attempt default and
+  // double that cost for every unconfigured server. Only an endpoint that
+  // explicitly declares `retry` gets more than one attempt here.
+  const retry = endpoint.retry ? resolveRetryPolicy(endpoint) : { maxAttempts: 1, backoffMs: 0 };
+  const payload = await withRetry(() => mcpRequest(endpoint, 'tools/list', {}), retry);
   return payload?.result?.tools ?? [];
 }
 

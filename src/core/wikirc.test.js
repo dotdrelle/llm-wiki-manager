@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -300,6 +300,9 @@ test('finalizeCreatedWorkspace seeds a new workspace from the one in use', async
     '',
   ].join('\n'));
 
+  // Confluence credentials are agent-wide now — a stale per-workspace
+  // app_data.json from a legacy layout must NOT be copied into the new
+  // workspace, and must not be reported as inherited.
   mkdirSync(join(agentsData, 'cme', 'acme', 'cme'), { recursive: true });
   writeFileSync(join(agentsData, 'cme', 'acme', 'cme', 'app_data.json'), '{"pat":"x"}', 'utf8');
 
@@ -318,11 +321,8 @@ test('finalizeCreatedWorkspace seeds a new workspace from the one in use', async
     // The workspace keeps ITS own MCP credential, written just before.
     assert.equal(parsed.mcp.accessKey, token);
     assert.ok(inherited.includes('llm.baseUrl'));
-    assert.ok(inherited.includes('cme.app_data.json'));
-    assert.equal(
-      readFileSync(join(agentsData, 'cme', 'fresh', 'cme', 'app_data.json'), 'utf8'),
-      '{"pat":"x"}',
-    );
+    assert.ok(!inherited.includes('cme.app_data.json'));
+    assert.equal(existsSync(join(agentsData, 'cme', 'fresh', 'cme', 'app_data.json')), false);
   } finally {
     if (previousDir === undefined) delete process.env.WIKI_WORKSPACES_DIR;
     else process.env.WIKI_WORKSPACES_DIR = previousDir;

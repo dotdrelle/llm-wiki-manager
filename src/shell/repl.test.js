@@ -101,6 +101,13 @@ test('ShellUI renders newest-first order in both Runtime and Agent status', asyn
   assert.match(filteredLogs, /activeLogTab\(\) === 'agent-status'/);
   assert.match(filteredLogs, /isAgentStatus\(line\)/);
   assert.doesNotMatch(filteredLogs, /\.reverse\(\)/);
+  const logPanelBody = source.slice(
+    source.indexOf('export function LogPanel'),
+    source.indexOf('const filteredLogs ='),
+  );
+  // Agent reasoning traces route to the Agent status tab with the dispatch
+  // plumbing — the Runtime tab keeps the business flow.
+  assert.match(logPanelBody, /isDispatchPlumbingLine\(line\) \|\| isAgentTraceLine\(line\)/);
   const renderedLogs = source.slice(
     source.indexOf('function logRenderLines'),
     source.indexOf('function logEntryLines'),

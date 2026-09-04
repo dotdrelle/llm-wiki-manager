@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { createMemo, createSignal, Index, Show } from 'solid-js';
-import { compactRuntimeLogForDisplay, filterRuntimeLogs, isDispatchPlumbingLine } from '../core/runtimeLog.js';
+import { compactRuntimeLogForDisplay, filterRuntimeLogs, isAgentTraceLine, isDispatchPlumbingLine } from '../core/runtimeLog.js';
 import { fit } from './textFit';
 
 type PlanStep = { step: number; description: string; status: string };
@@ -409,13 +409,14 @@ export function LogPanel(props: { logs: string[]; width: number; filter?: string
   const [activeLogTab, setActiveLogTab] = createSignal<'flow' | 'agent-status'>('flow');
   const lineWidth = () => Math.max(8, props.width - 2);
   // "Agent status" collects the dispatch plumbing — capability resolution,
-  // agent selection, agent_execute/agent_status polling, job acceptance — so
-  // the "Runtime" tab is left with the readable business flow (plan + the
-  // ▸/✓/✗/↻ task lines). isDispatchPlumbingLine (shared with agentEvents'
-  // dedup) recognises the formatRuntimeLogPayload shape structurally; the old
-  // token enumeration only ever matched agent_status/agent_execute and missed
-  // every dotted event ('job.accepted' → 'ACCEPTED', …).
-  const isAgentStatus = (line: string) => isDispatchPlumbingLine(line);
+  // agent selection, agent_execute/agent_status polling, job acceptance — and
+  // the agent's own reasoning traces ("Agent: …"), so the "Runtime" tab is
+  // left with the readable business flow (plan + the ▸/✓/✗/↻ task lines).
+  // isDispatchPlumbingLine (shared with agentEvents' dedup) recognises the
+  // formatRuntimeLogPayload shape structurally; the old token enumeration
+  // only ever matched agent_status/agent_execute and missed every dotted
+  // event ('job.accepted' → 'ACCEPTED', …).
+  const isAgentStatus = (line: string) => isDispatchPlumbingLine(line) || isAgentTraceLine(line);
   // Filtering preserves the runtime history order. logRenderLines performs
   // the single block-level reversal shared by both tabs.
   const filteredLogs = () => filterRuntimeLogs(props.logs, props.filter ?? '')

@@ -99,13 +99,15 @@ From the `donna` shell you can confirm the same from the orchestrator's side:
 
 ### CME — Confluence → Markdown export
 
-CME exports Confluence spaces and pages into Markdown for ingestion. Credentials,
-sources, and output are **isolated per workspace**:
+CME exports Confluence spaces and pages into Markdown for ingestion.
+Confluence credentials and connection settings are **agent-wide** (shared
+across all workspaces, keyed by Confluence base URL); sources and output are
+**isolated per workspace**:
 
 ```text
-.agents-data/cme/<workspace>/cme/app_data.json     # Confluence credentials
+.agents-data/cme/app_data.json                     # Confluence credentials — agent-wide
 .agents-data/cme/<workspace>/sources-manifest.yaml # export sources
-workspaces/<workspace>/raw/untracked/               # exported Markdown
+workspaces/<workspace>/raw/untracked/              # exported Markdown
 ```
 
 Configure and use CME through Donna in Agent mode. For example: *"Configure

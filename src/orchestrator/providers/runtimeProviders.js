@@ -22,35 +22,37 @@ export async function discoverRuntimeProviderAgents(runtimeProviders) {
   const providers = Array.isArray(runtimeProviders)
     ? runtimeProviders
     : (runtimeProviders?.list?.() ?? []);
-  const agents = [];
-  const unavailable = [];
-  // Configured-but-not-served capabilities, per runtime (deepagents providers
-  // fill `lastDiscovery`). A drift is not an outage: the runtime stays
-  // available with the capabilities it really serves, and the difference is
-  // reported so an operator can see WHY agent.research is not routable.
-  const drift = [];
 
-  for (const entry of providers) {
+  // One provider's describe()/discoverCapabilities() never reads another
+  // provider's result, so probe them concurrently (same reasoning as
+  // agentRegistry.discover()) instead of paying the sum of every runtime's
+  // latency in sequence. Each entry still produces its own ordered
+  // {agents, unavailable, drift} slice, flattened below in the original
+  // `providers` order so output ordering is unchanged.
+  const results = await Promise.all(providers.map(async (entry) => {
     const provider = entry?.provider ?? entry;
     const runtimeId = String(entry?.id ?? provider?.runtime ?? 'external-runtime');
+    const agents = [];
+    const unavailable = [];
+    const drift = [];
     let description;
     try {
       assertRuntimeProvider(provider);
       description = await provider.describe();
     } catch (error) {
       unavailable.push({ runtimeId, error: error instanceof Error ? error.message : String(error) });
-      continue;
+      return { agents, unavailable, drift };
     }
     if (description?.health === 'unavailable') {
       unavailable.push({ runtimeId, error: description?.error ?? 'runtime reports unavailable' });
-      continue;
+      return { agents, unavailable, drift };
     }
     let capabilities;
     try {
       capabilities = await provider.discoverCapabilities();
     } catch (error) {
       unavailable.push({ runtimeId, error: error instanceof Error ? error.message : String(error) });
-      continue;
+      return { agents, unavailable, drift };
     }
     const health = ['available', 'degraded'].includes(description?.health)
       ? description.health
@@ -62,7 +64,16 @@ export async function discoverRuntimeProviderAgents(runtimeProviders) {
     if (discovery && Array.isArray(discovery.missing) && discovery.missing.length > 0) {
       drift.push({ runtimeId, missing: [...discovery.missing], served: [...(discovery.served ?? [])] });
     }
-  }
+    return { agents, unavailable, drift };
+  }));
+
+  // Configured-but-not-served capabilities, per runtime (deepagents providers
+  // fill `lastDiscovery`). A drift is not an outage: the runtime stays
+  // available with the capabilities it really serves, and the difference is
+  // reported so an operator can see WHY agent.research is not routable.
+  const agents = results.flatMap((r) => r.agents);
+  const unavailable = results.flatMap((r) => r.unavailable);
+  const drift = results.flatMap((r) => r.drift);
 
   return { agents, unavailable, drift };
 }

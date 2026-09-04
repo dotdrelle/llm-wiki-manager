@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createAgentEvent, dispatchAgentEvent } from './agentEvents.js';
-import { compactRuntimeLogForDisplay, formatRuntimeLogPayload, isDispatchPlumbingLine, shortLogId } from './runtimeLog.js';
+import { compactRuntimeLogForDisplay, formatRuntimeLogPayload, isAgentTraceLine, isDispatchPlumbingLine, shortLogId } from './runtimeLog.js';
 import { emitRuntimeLog } from '../runtime/supervisor.js';
 
 const CYCLE_EVENTS = [
@@ -154,6 +154,34 @@ test('isDispatchPlumbingLine recognises the shell-tagged "runtime " lines for th
   assert.equal(isDispatchPlumbingLine(tagged), true, 'a tagged AGENT_STATUS line is dispatch plumbing');
   assert.equal(isDispatchPlumbingLine('runtime 14:42:21 Run failed: No agent provides capability workspace.restore.'), false);
   assert.equal(isDispatchPlumbingLine('runtime 14:42:22 Plan validated for run r1'), false);
+});
+
+test('isAgentTraceLine recognises the "Agent:" traces for the Agent status tab', () => {
+  // The agent's own reasoning traces were rendered in the Runtime tab,
+  // indistinguishable from the business flow. They describe the agent's
+  // working, so the Agent status tab shows them with the dispatch plumbing.
+  for (const line of [
+    '14:42:18 Agent: planning next action…',
+    '14:42:19 Agent: classified input as enqueue',
+    '14:42:20 Agent: streaming final answer…',
+    'runtime 14:42:18 Agent: planning next action…',
+  ]) {
+    assert.equal(isAgentTraceLine(line), true, `expected an agent trace: ${line}`);
+  }
+});
+
+test('isAgentTraceLine leaves every other line for the Runtime tab', () => {
+  for (const line of [
+    '14:42:18 ▸ Polish proposition — started  (knowledge.polish  → agent-production)',
+    '14:42:19 ✓ Polish proposition — done (1 output)',
+    '14:42:21 Run failed: No agent provides capability workspace.restore.',
+    '14:42:22 Plan validated for run r1',
+    '14:42:23 Agentic runtime: no capabilities available',
+    '14:42:24 Plan: 3 task(s) declared from production fragment',
+    'runtime 14:42:21 Run failed: Agent was not ready',
+  ]) {
+    assert.equal(isAgentTraceLine(line), false, `expected business flow: ${line}`);
+  }
 });
 
 test('shortLogId caps an over-long task slug while shortening embedded UUIDs', () => {

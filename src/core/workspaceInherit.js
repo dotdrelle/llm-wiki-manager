@@ -1,5 +1,3 @@
-import { copyFile, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -120,30 +118,4 @@ export function buildInheritedWikircPatch(sourceConfig, targetConfig) {
   if (Object.keys(llm).length > 0) patch.llm = llm;
   if (Object.keys(vector).length > 0) patch.retrieval = { vector };
   return { patch, inherited };
-}
-
-export function cmeCredentialsPath(agentsDataDir, workspaceName) {
-  return join(agentsDataDir, 'cme', workspaceName, 'cme', 'app_data.json');
-}
-
-/**
- * Carry the Confluence credentials of an existing workspace over to a new one.
- *
- * `app_data.json` only — NOT `sources-manifest.yaml`. The credentials are a
- * property of the operator's Confluence account and are identical everywhere;
- * which spaces and pages a workspace exports is precisely what makes it a
- * different workspace, and copying that would silently re-export someone
- * else's scope on the first run.
- */
-export async function copyCmeCredentials(agentsDataDir, sourceWorkspace, targetWorkspace) {
-  if (!agentsDataDir || !sourceWorkspace || !targetWorkspace) return null;
-  if (sourceWorkspace === targetWorkspace) return null;
-  const from = cmeCredentialsPath(agentsDataDir, sourceWorkspace);
-  const to = cmeCredentialsPath(agentsDataDir, targetWorkspace);
-  if (!existsSync(from)) return null;
-  // An existing target file is a real configuration; never clobber it.
-  if (existsSync(to)) return null;
-  await mkdir(join(agentsDataDir, 'cme', targetWorkspace, 'cme'), { recursive: true });
-  await copyFile(from, to);
-  return to;
 }

@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import YAML from 'yaml';
 import { checkMissingDockerImages } from './dockerImages.js';
 import { loadWikircProfile, patchWikircProfile } from './wikirc.js';
-import { buildInheritedWikircPatch, copyCmeCredentials } from './workspaceInherit.js';
+import { buildInheritedWikircPatch } from './workspaceInherit.js';
 import { resolveAgentsComposeContext } from './agentsCompose.js';
 import { managerEnvFile, managerMcpEndpointsFile, resolveAgentsDataDir } from './env.js';
 import { createWorkspace, findWorkspace, isValidWorkspaceName, listWorkspaces, managerRoot, workspacesDir } from './workspaces.js';
@@ -245,9 +245,11 @@ export async function createNewWorkspace(name, targetPath, options = {}) {
 }
 
 /**
- * @param options.inheritFrom name of the workspace to copy LLM config and CME
- *   credentials from — normally the session's current workspace. Omitted, or
- *   unknown, means "scaffold defaults only", the previous behaviour.
+ * @param options.inheritFrom name of the workspace to copy LLM config from —
+ *   normally the session's current workspace. Omitted, or unknown, means
+ *   "scaffold defaults only", the previous behaviour. Confluence credentials
+ *   are NOT inherited: agent-cme stores them agent-wide (shared across all
+ *   workspaces), so a new workspace already sees them.
  */
 export async function finalizeCreatedWorkspace(name, options = {}) {
   const workspace = findWorkspace(name);
@@ -280,13 +282,6 @@ export async function inheritWorkspaceSetup(workspace, sourceName) {
     }
   } catch {
     // Unreadable or absent profile on either side — nothing to inherit.
-  }
-
-  try {
-    const copied = await copyCmeCredentials(resolveAgentsDataDir(), source.name, workspace.name);
-    if (copied) inherited.push('cme.app_data.json');
-  } catch {
-    // Credentials are a convenience, not a prerequisite.
   }
 
   return inherited;

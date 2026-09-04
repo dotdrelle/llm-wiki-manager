@@ -469,12 +469,12 @@ each workspace `.env`. External agents are workspace-agnostic: the active
 `/use <workspace>` is injected automatically on every CME and documents tool
 call — no need to pass `workspace` explicitly.
 
-CME data is isolated per workspace:
+CME credentials are agent-wide, sources are per workspace:
 
 ```text
-.agents-data/cme/<workspace>/cme/app_data.json     # Confluence credentials
+.agents-data/cme/app_data.json                     # Confluence credentials — agent-wide (keyed by base_url)
 .agents-data/cme/<workspace>/sources-manifest.yaml # export sources
-workspaces/<workspace>/raw/untracked/               # exported Markdown
+workspaces/<workspace>/raw/untracked/              # exported Markdown
 ```
 
 Create a workspace:

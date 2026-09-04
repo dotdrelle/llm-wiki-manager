@@ -72,8 +72,19 @@ export function createAgentRegistry({
       const discovered = [];
       const endpoints = Object.entries(session?.mcp ?? {});
       const activeServers = new Set(endpoints.map(([serverName]) => serverName));
-      for (const [serverName, endpoint] of endpoints) {
-        const agent = await discoverServerAgent(session, serverName, endpoint, { callTool, signal, now });
+      // Each probe is an independent network call (agent_describe against one
+      // server); none reads another server's result. Probing them concurrently
+      // turns the wall-clock cost from the SUM of every server's probe latency
+      // into the latency of the SLOWEST one — the sequential version made every
+      // delegation get linearly slower as more MCP servers were connected.
+      // registerAgent still runs afterward in the original endpoint order, one
+      // at a time, so event ordering and the shared-map mutations it performs
+      // are unchanged.
+      const probed = await Promise.all(
+        endpoints.map(([serverName, endpoint]) =>
+          discoverServerAgent(session, serverName, endpoint, { callTool, signal, now })),
+      );
+      for (const agent of probed) {
         discovered.push(registerAgent(session, agent, { agentsByInstance, instanceByServer, lastProbeFailed }));
       }
       for (const [serverName, instanceId] of instanceByServer) {

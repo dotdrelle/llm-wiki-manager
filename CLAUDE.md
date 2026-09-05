@@ -808,9 +808,14 @@ Invariants, in order of importance:
 - **It refuses while services run** (`ps --status running --services`): a
   container writing into the bind mount recreates part of what was erased and
   leaves files owned by another UID.
-- The scaffold's `raw/untracked/demo-project-brief.md` is deleted after the
-  re-init. Reappearing in an existing project it would not read as a sample but
-  as a pending source, and the next ingest would file it into the wiki.
+- The scaffold's `raw/untracked/demo-*.md` sources (a project brief plus a
+  vendor comparison, a security-requirements note and an open-source note —
+  chosen to classify into different concepts with overlapping subjects/tags,
+  so a first ingest already produces a non-trivial graph) are deleted after
+  the re-init, by glob rather than by a single hardcoded name so a new
+  scaffolded demo file is covered automatically. Reappearing in an existing
+  project they would not read as samples but as pending sources, and the next
+  ingest would file them into the wiki.
 
 ## Commands And Validation
 

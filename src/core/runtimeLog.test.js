@@ -170,6 +170,20 @@ test('isAgentTraceLine recognises the "Agent:" traces for the Agent status tab',
   }
 });
 
+test('isAgentTraceLine also recognises the plural "Agents:" lifecycle lines', () => {
+  // The `agents up`/`agents down` slash-command lines are written in the
+  // plural ("Agents: reloading manager environment…") and were falling
+  // through the singular-only pattern into the Runtime tab.
+  for (const line of [
+    '13:55:25 Agents: reloading manager environment and MCP endpoints…',
+    '13:55:26 Agents: stack started degraded — one optional agent failed; the base agents are up.',
+    '13:55:27 Agents: docker output — exit code 1',
+    'runtime 13:55:25 Agents: starting external agents…',
+  ]) {
+    assert.equal(isAgentTraceLine(line), true, `expected an agent trace: ${line}`);
+  }
+});
+
 test('isAgentTraceLine leaves every other line for the Runtime tab', () => {
   for (const line of [
     '14:42:18 ▸ Polish proposition — started  (knowledge.polish  → agent-production)',

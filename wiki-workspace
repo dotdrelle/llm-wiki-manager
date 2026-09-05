@@ -140,7 +140,6 @@ wiki CLI commands reachable through `wiki <workspace> run`:
   lint                              Static checks: dead links, orphans, stale deliverables
   add-skill <source>                Install a workspace method (directory, .zip, HTTPS .zip)
   config                            Show the effective .wikirc.yaml
-  group-concepts                    Regroup wiki concepts
   doctor, ingest, build, export     Also available directly: wiki <workspace> <command>
 
   History is versioned for wiki/, templates/, build-context/, deliverables/,
@@ -1352,10 +1351,13 @@ reset_workspace() {
   # `.wikirc*`, templates/ and build-context/ come through untouched.
   run_wiki "$workspace" init
 
-  # The scaffold ships a demo brief in raw/untracked/. Reappearing here it would
-  # not read as a sample but as a pending source, and the next ingest would file
-  # it into the wiki as if the user had provided it.
-  rm -f -- "$ws_path/raw/untracked/demo-project-brief.md"
+  # The scaffold ships a handful of demo-*.md sources in raw/untracked/ (a
+  # project brief plus a few notes chosen to classify into different concepts
+  # with overlapping subjects/tags, so a first ingest already produces a
+  # non-trivial graph). Reappearing here they would not read as samples but as
+  # pending sources, and the next ingest would file them into the wiki as if
+  # the user had provided them.
+  rm -f -- "$ws_path"/raw/untracked/demo-*.md
 
   printf 'Reset done: %s\n' "$workspace"
   printf 'Kept: %s\n' "${kept[*]:-(nothing)}"

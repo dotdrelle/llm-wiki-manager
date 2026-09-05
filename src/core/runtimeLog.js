@@ -181,8 +181,11 @@ export function isDispatchPlumbingLine(line) {
 // "Agent: classified input as …", "Agent: streaming final answer…" — describe
 // how the agent works, not what the business run does. They belong with the
 // dispatch plumbing in the Agent status tab; the Runtime tab keeps the
-// business flow (plan, task transitions, failures).
-const AGENT_TRACE_LINE = /^(?:runtime\s+)?(?:\d{1,2}:\d{2}(?::\d{2})?\s*(?:·\s*)?)?Agent:\s/;
+// business flow (plan, task transitions, failures). "Agents: …" (plural — the
+// slash-command lifecycle lines from `agents up`/`agents down`, e.g. "Agents:
+// reloading manager environment…") is the same category and must match too:
+// the singular-only pattern let those lines fall through to the Runtime tab.
+const AGENT_TRACE_LINE = /^(?:runtime\s+)?(?:\d{1,2}:\d{2}(?::\d{2})?\s*(?:·\s*)?)?Agents?:\s/;
 
 export function isAgentTraceLine(line) {
   return AGENT_TRACE_LINE.test(String(line ?? ''));

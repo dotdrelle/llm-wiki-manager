@@ -434,6 +434,7 @@ function App(props: {
             logFilter={state.runtimeLogFilter()}
             pendingApprovals={state.pendingApprovals()}
             onApprove={() => { void state.submitInput('/approve'); }}
+            onReject={() => { void state.submitInput('/cancel'); }}
             onTabClick={state.selectRightTab}
             spinnerFrame={SPINNER_FRAMES[spinnerIndex()] ?? SPINNER_FRAMES[0]}
           />

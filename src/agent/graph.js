@@ -27,6 +27,7 @@ import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy }
 import { loadWorkspaceProfile, updateWorkspaceProfilePreference } from '../core/profile.js';
 import { artifactFromToolCall, currentArtifactFor, currentArtifactPromptLine, rememberArtifact } from '../core/currentArtifact.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
+import { objectiveForResolution } from '../orchestrator/objectiveResolver.js';
 import { fetchRuntimeState, postRuntimeCancel, postRuntimeControl, postRuntimeDelegate, postRuntimeKill, postRuntimeSkill } from '../runtime/client.js';
 
 const MAX_TOOL_ITERATIONS = 80;
@@ -862,7 +863,20 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
     if (tool === 'delegate') {
       const objective = String(args.objective ?? '').trim();
       if (!objective) return 'Delegation rejected: missing objective.';
-      const connectorConfig = connectorConfigurationTarget(session, objective);
+      /*
+       La garde anti-configuration est un gouvernail INTERACTIF : elle corrige
+       Donna quand une demande de chat (« configure le connecteur ») part en
+       délégation vers une capacité d'export au lieu du tool de setup. Elle
+       n'a pas sa place à l'intérieur d'un run de compétence compilée : là,
+       l'objectif est déjà le workflow autorisé (le compilateur a produit une
+       intention MÉTIER), et le résolveur du runtime est l'autorité de routage.
+       Le corps expédié de /wiki-sync en est la preuve — « Export every
+       configured Confluence source exactly as the connector is currently
+       configured » a été refusé comme « configuration du connecteur » alors
+       que l'export était la seule action demandée.
+      */
+      const compiledSkillRun = Boolean(session?._currentRunIdentity) && normalizedSkillStack(session).length > 0;
+      const connectorConfig = compiledSkillRun ? null : connectorConfigurationTarget(session, objective);
       if (connectorConfig?.setupTool) {
         return `Delegation rejected: configuring or authenticating ${connectorConfig.serverName} is not an orchestrated export. Call the offered ${connectorConfig.serverName}__${connectorConfig.setupTool} tool directly and present its authorization instructions or URL to the user.`;
       }
@@ -1048,7 +1062,6 @@ export function connectorConfigurationTarget(session, objective) {
     .filter((message) => message?.role === 'user')
     .map((message) => String(message?.content ?? ''))
     .join(' ');
-  const objectiveText = String(objective ?? '').trim().toLowerCase();
   // The configuration keyword must describe the objective being delegated NOW,
   // not something the user said earlier in the session. Matching it against
   // recent conversation context made a stale "configurer le CME" message poison
@@ -1058,7 +1071,33 @@ export function connectorConfigurationTarget(session, objective) {
   // "connector" as a substring, and production skills mention an optional
   // messaging connector; the narrowed word-boundary form keeps that from
   // misclassifying a business run as connector setup.)
-  if (!/(?:configur|\bconnect(?:ed|ing|ion|ions)?\b|authent|oauth|setup|sign[ -]?in|\bpat\b|api[ _-]?token|credential|identifiant|mot de passe|password)/i.test(objectiveText)) return null;
+  //
+  // Guardrail and notification sentences are stripped first (the same
+  // objectiveForResolution pass the runtime resolver applies): "Never
+  // reconfigure the existing credentials" inside /wiki-sync is an execution
+  // constraint on the export, not the thing being asked.
+  const objectiveText = objectiveForResolution(objective).toLowerCase();
+  /*
+   Deux familles de mots de configuration, volontairement séparées :
+
+   - « configured », « configuration » (et leurs formes françaises) sont le
+     plus souvent du CONTEXTE passif — « export every configured source »,
+     « as the connector is currently configured ». Ils ne comptent comme une
+     intention de configuration que quand l'objectif ne porte aucun verbe
+     métier : sans ce filtre, le corps expédié de /wiki-sync était refusé
+     comme « configuration du connecteur » alors que son action est l'export.
+   - le reste (configure/ing/er/ez… actifs, credentials, password, token,
+     oauth, authenticate, connect, setup…) est une intention de configuration
+     et compte toujours, même à côté d'un verbe métier (« configure the
+     export » reste une demande de configuration).
+  */
+  const weakConfigMention = /\b(?:mis|re)?configur(?:ed|é(?:e)?s?|ations?)\b/i;
+  const businessMutationVerb = /\b(?:export|ingest|build|send|collect|fetch|import|retrieve|publish|polish|deliver|sync|notify|generate|convert|review|research)\b/i;
+  const strongConfigIntent = /(?:credential|identifiant|mot de passe|password|\bpat\b|api[ _-]?token|\boauth\b|authent|sign[ -]?in|\bsetup\b|\bconnect(?:ed|ing|ion|ions)?\b|(?:^|[^a-zà-ÿ])(?:mis|re)?configur(?!ed\b|é(?:e)?s?\b|ations?\b))/i;
+  if (!strongConfigIntent.test(objectiveText)) {
+    if (!weakConfigMention.test(objectiveText)) return null;
+    if (businessMutationVerb.test(objectiveText)) return null;
+  }
   const contextText = `${recentContext} ${objectiveText}`.trim().toLowerCase();
   for (const [serverName, server] of Object.entries(session?.mcp ?? {})) {
     if (server?.status !== 'connected' || !Array.isArray(server.tools) || server.tools.length === 0) continue;

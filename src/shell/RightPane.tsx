@@ -545,6 +545,36 @@ function TabHeader(props: { active: 'plan' | 'queue'; queueCount: number; onTabC
   );
 }
 
+/*
+  Reject = cancel the run waiting for the approval, same semantics as the
+  served UI's Reject button (which also confirms before cancelling). One
+  click arms the confirmation so an accidental hit cannot silently discard a
+  pending plan; the armed state expires on its own when the second click
+  never comes.
+*/
+function RejectRunButton(props: { onReject: () => void }) {
+  const [confirming, setConfirming] = createSignal(false);
+  let resetTimer: ReturnType<typeof setTimeout> | null = null;
+  function toggle() {
+    if (resetTimer) clearTimeout(resetTimer);
+    if (confirming()) {
+      setConfirming(false);
+      props.onReject();
+      return;
+    }
+    setConfirming(true);
+    resetTimer = setTimeout(() => setConfirming(false), 4000);
+  }
+  return (
+    <text
+      fg={confirming() ? '#0B1020' : '#F38BA8'}
+      bg={confirming() ? '#F38BA8' : undefined}
+      content={confirming() ? ' Confirm cancel ' : ' Reject '}
+      onMouseUp={toggle}
+    />
+  );
+}
+
 export function RightPane(props: {
   width: number;
   activities: any[];
@@ -557,6 +587,7 @@ export function RightPane(props: {
   logFilter?: string;
   pendingApprovals: any[];
   onApprove: () => void;
+  onReject: () => void;
   onTabClick: (tab: 'plan' | 'queue') => void;
   spinnerFrame?: string;
 }) {
@@ -578,7 +609,11 @@ export function RightPane(props: {
       <Show when={props.pendingApprovals.length > 0}>
         <box height={2} flexDirection="column" border={['left']} borderStyle="heavy" borderColor="#FBBF24" paddingX={1}>
           <text fg="#FBBF24" content={`${props.pendingApprovals.length} approval(s) required`} />
-          <text fg="#0B1020" bg="#FBBF24" content=" Approve run " onMouseUp={props.onApprove} />
+          <box flexDirection="row">
+            <text fg="#0B1020" bg="#FBBF24" content=" Approve run " onMouseUp={props.onApprove} />
+            <text fg="#4B5563" content=" " />
+            <RejectRunButton onReject={props.onReject} />
+          </box>
         </box>
       </Show>
       <Show when={props.activeTab === 'queue'} fallback={(

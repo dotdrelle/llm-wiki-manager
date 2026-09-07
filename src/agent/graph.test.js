@@ -83,6 +83,103 @@ test('a stale configure-connector message does not poison a later business deleg
   assert.equal(target, null);
 });
 
+test('the shipped wiki-sync export objective is not connector setup', () => {
+  // "configured"/"configuration" here are passive context on an EXPORT
+  // objective — the exact wording that used to be rejected as connector
+  // configuration and steered the run into cme_setup.
+  const target = connectorConfigurationTarget({
+    agentProjection: { conversation: [] },
+    mcp: {
+      cme: {
+        status: 'connected',
+        tools: [
+          { name: 'cme_setup', description: 'Configure Confluence credentials.' },
+          { name: 'cme_export_run', description: 'Run export.' },
+        ],
+      },
+    },
+  }, 'Export every configured Confluence source exactly as the connector is currently configured, checking configuration and source availability first, waiting for the export to finish, and stopping without producing partial input if it fails or exports nothing. Do not build, export, polish or publish deliverables.');
+  assert.equal(target, null);
+});
+
+test('a passive configuration mention without a business verb still routes to connector setup', () => {
+  const target = connectorConfigurationTarget({
+    agentProjection: { conversation: [] },
+    mcp: {
+      cme: {
+        status: 'connected',
+        tools: [
+          { name: 'cme_setup', description: 'Configure Confluence credentials.' },
+          { name: 'cme_export_run', description: 'Run export.' },
+        ],
+      },
+    },
+  }, 'The cme connector is not configured yet.');
+  assert.deepEqual(target, { serverName: 'cme', setupTool: 'cme_setup' });
+});
+
+test('an active configuration request still wins over a business verb in the same objective', () => {
+  const target = connectorConfigurationTarget({
+    agentProjection: { conversation: [] },
+    mcp: {
+      cme: {
+        status: 'connected',
+        tools: [
+          { name: 'cme_setup', description: 'Configure Confluence credentials.' },
+          { name: 'cme_export_run', description: 'Run export.' },
+        ],
+      },
+    },
+  }, 'Configure the cme connector before the export.');
+  assert.deepEqual(target, { serverName: 'cme', setupTool: 'cme_setup' });
+});
+
+test('a compiled skill objective delegates without the connector-configuration steer', async () => {
+  const delegated = [];
+  let calls = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    _skillStack: ['wiki-sync'],
+    _currentRunIdentity: { runId: 'run-sync', turnId: 'run-sync:turn-1', workspace: 'docs', skillChain: { skillName: 'wiki-sync', execution: 'orchestrated' } },
+    _delegateWithinRun: async (objective) => { delegated.push(objective); return { runId: 'run-sync', summary: { tasks: 1, agent: 'cme' } }; },
+    mcp: {
+      cme: {
+        status: 'connected',
+        url: 'http://cme.test/mcp',
+        tools: [
+          { name: 'cme_setup', description: 'Configure Confluence credentials.' },
+          { name: 'cme_export_run', description: 'Run export.' },
+        ],
+      },
+    },
+    llm: {
+      async completeWithTools() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{
+              id: 'delegate-sync',
+              type: 'function',
+              function: {
+                name: 'runtime__delegate',
+                arguments: JSON.stringify({ objective: 'Export every configured Confluence source exactly as the connector is currently configured, checking configuration and source availability first.' }),
+              },
+            }],
+          };
+        }
+        return { content: 'Export delegated.', message: { role: 'assistant', content: 'Export delegated.' }, tool_calls: null };
+      },
+    },
+  });
+
+  const result = await createAgentGraph().invoke({ input: 'run sync', session });
+  assert.deepEqual(delegated, ['Export every configured Confluence source exactly as the connector is currently configured, checking configuration and source availability first.']);
+  assert.equal(result.response, 'Export delegated.');
+  assert.doesNotMatch(result.response, /Delegation rejected/);
+});
+
 test('Donna cannot answer an explicit action with manual instructions instead of delegating', async () => {
   const originalFetch = globalThis.fetch;
   let delegated = false;

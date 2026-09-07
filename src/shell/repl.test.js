@@ -169,6 +169,18 @@ test('ShellUI shows the canonical run summary above the plan', async () => {
   assert.match(tui, /runSummary=\{state\.runSummary\(\)\}/);
 });
 
+test('ShellUI approval banner offers a reject next to approve, armed before it cancels', async () => {
+  const pane = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
+  const tui = await readFile(new URL('./tui.tsx', import.meta.url), 'utf8');
+  // The banner no longer reduces a pending approval to "approve or nothing":
+  // reject cancels the waiting run, like the served UI's Reject button.
+  assert.match(pane, /content=" Approve run " onMouseUp=\{props\.onApprove\}/);
+  assert.match(pane, /content=\{confirming\(\) \? ' Confirm cancel ' : ' Reject '\}/);
+  assert.match(pane, /props\.onReject\(\)/);
+  assert.match(tui, /onReject=\{\(\) => \{ void state\.submitInput\('\/cancel'\); \}\}/);
+  assert.match(pane, /setTimeout\(\(\) => setConfirming\(false\), 4000\)/);
+});
+
 test('Flow/Trace does not repeat the runtime source prefix on every line', async () => {
   const source = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
   const entryRenderer = source.slice(

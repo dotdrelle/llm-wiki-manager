@@ -87,6 +87,21 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     // split classifies lines structurally from that time prefix.
     setLogs((items) => [...items, `${new Date().toLocaleTimeString('en-GB', { hour12: false })} ${line}`].slice(-200));
   };
+  // An interactive turn runs on an ephemeral runtime session: its events are
+  // published over SSE but never enter the projection /state serves, so syncing
+  // state alone leaves every panel empty for the whole turn.
+  // The sentence is taken from the event, never composed here — progressNotes.js
+  // is the single source for this lane, exactly as controlMessages.js is for the
+  // control lane ("never hardcode a message in the shell or the server").
+  // The `Agent:` prefix is the one thing added, and it is load-bearing:
+  // isAgentTraceLine routes these to the Agent status tab rather than mixing
+  // them into the business flow.
+  const logRuntimeAgentEvent = (event: { type?: string; data?: any }) => {
+    if (event?.type !== 'agent_event') return;
+    if (event.data?.type !== 'assistant_progress') return;
+    const message = String(event.data?.payload?.message ?? '').trim();
+    if (message) addLog(`Agent: ${message}`);
+  };
   const runtimeUnavailableReason = createMemo(() => {
     if (props.runtime?.url) return null;
     const reason = props.runtime?.error ?? props.runtime?.unavailableReason ?? props.runtime?.reason ?? null;
@@ -537,12 +552,13 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     if (!props.runtime?.url || runtimeStreamStopped) return;
     runtimeStreamAbort = new AbortController();
     try {
-      for await (const _event of streamRuntimeEvents({
+      for await (const event of streamRuntimeEvents({
         url: props.runtime.url,
         signal: runtimeStreamAbort.signal,
         workspace: (session as any).workspace ?? null,
       })) {
         setRuntimeStatus('connected');
+        logRuntimeAgentEvent(event);
         debouncedSyncRuntimeState();
       }
     } catch {

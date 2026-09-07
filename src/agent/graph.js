@@ -23,6 +23,7 @@ import { RESERVED_SLASH_COMMANDS, explicitSkillReference, objectiveNamesSkill } 
 import { handleSlashCommand } from '../commands/slash.js';
 import { extractActivity, formatActivitySummary, parseJsonText, sessionActivities } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
+import { toolResultNote, toolStartNote } from '../core/progressNotes.js';
 import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
 import { loadWorkspaceProfile, updateWorkspaceProfilePreference } from '../core/profile.js';
 import { artifactFromToolCall, currentArtifactFor, currentArtifactPromptLine, rememberArtifact } from '../core/currentArtifact.js';
@@ -1886,6 +1887,13 @@ export function createAgentGraph(options = {}) {
         args: call.function.arguments ?? '{}',
         summary: argsSummary || 'calling...',
       });
+      // The turn's own account of itself, in the conversation rather than in a
+      // panel: an interactive turn publishes no plan and no activity, so this
+      // is the only thing that tells the user what is running while it runs.
+      emitAgentEvent(state.session, 'assistant_progress', 'tool', {
+        callId: call.id,
+        message: toolStartNote(toolName),
+      });
       // A plan represents work, never observation. Read-only inventory/status
       // calls stay out of Plan even when Donna uses them to answer a question.
       let minimalPlanActive = false;
@@ -2073,6 +2081,13 @@ export function createAgentGraph(options = {}) {
         ok,
         result: boundedResult,
         summary: ok ? 'done' : 'failed',
+      });
+      // A failure is the return the user most needs and the one that vanishes
+      // most easily: the loop keeps going, and without this the turn ends with
+      // an answer that never mentions the step that did not work.
+      emitAgentEvent(state.session, 'assistant_progress', 'tool', {
+        callId: call.id,
+        message: toolResultNote(toolName, ok, ok ? '' : boundedResult),
       });
       toolResultMessages.push({
         role: 'tool',

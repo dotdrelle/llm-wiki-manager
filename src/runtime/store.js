@@ -20,7 +20,12 @@ import { markPersistedAgentsStale } from '../orchestrator/agentRegistry.js';
 
 export { defaultRuntimeStateDir };
 
-const NON_PERSISTED_EVENT_TYPES = new Set(['runtime_log']);
+// `assistant_progress` joins runtime_log here for a reason of its own: every
+// persisted event feeds the conversation projection, which seeds the next
+// turn's LLM context. A persisted progress note would be re-read by the model
+// on every later turn as if it were something the user said or Donna answered,
+// growing the context with commentary about work already finished.
+const NON_PERSISTED_EVENT_TYPES = new Set(['runtime_log', 'assistant_progress']);
 export const RUNTIME_STORE_SCHEMA_VERSION = 1;
 const RUNTIME_RETENTION_DAYS = 30;
 const TERMINAL_RUN_STATUSES = ['done', 'error', 'cancelled', 'interrupted'];

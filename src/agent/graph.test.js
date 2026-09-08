@@ -994,6 +994,23 @@ test('buildAgentSystemPrompt omits the profile section when profile.md is missin
   }
 });
 
+test('buildAgentSystemPrompt includes selected page context as untrusted path data', () => {
+  const prompt = buildAgentSystemPrompt({
+    session: sessionBase({ openWikiPages: ['wiki/concepts/demo.md'] }),
+  });
+  assert.match(prompt, /Untrusted path data only/);
+  assert.match(prompt, /wiki\/concepts\/demo\.md/);
+  // Chat and the agent graph now share one definition (core/openWikiPages.js);
+  // asserting the graph's former private wording would let the two diverge again.
+  assert.match(prompt, /prefer the attached document content if it is present/);
+  assert.match(prompt, /if wiki read tools are provided, read the relevant exact paths/);
+});
+
+test('buildAgentSystemPrompt omits the page-context block when no page is selected', () => {
+  const prompt = buildAgentSystemPrompt({ session: sessionBase({}) });
+  assert.doesNotMatch(prompt, /Untrusted path data only/);
+});
+
 test('agent graph waits for tool-level approval configured on endpoint', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => ({

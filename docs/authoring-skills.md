@@ -70,11 +70,20 @@ letter and contain, within the next 80 characters, one of `export`, `ingest`,
 handed to the LLM** for splitting, with an 8 s timeout and a JSON-text retry,
 degrading to a single objective only if that call fails.
 
+**Guardrails do not count.** The counting runs on `objectiveForResolution`, the
+same pass the resolver applies, so a `Do not …` / `Never …` clause and the
+notification sentence are removed before counting. Writing your boundaries
+carefully used to make a body *more* likely to be judged ambiguous: three of
+`wiki-sync`'s five triggers were guardrails, which took the best-documented
+skill in the scaffold over the threshold and handed its split to an LLM call.
+Do not add a second guardrail regex anywhere — the two definitions of "this
+clause is a constraint, not an intention" must stay one.
+
 So a skill that must stay one run, and that carries no explicit split, is one
 sentence away from a non-deterministic compilation. Two mitigations, both used
 in the scaffold:
 
-- Keep such bodies at two triggers or fewer.
+- Keep such bodies at two counted triggers or fewer (guardrails are free).
 - Put a trigger-bearing sentence **first in its section**. A sentence that
   directly follows a `##` heading is not preceded by a sentence boundary, so it
   does not count — headings reset the chain.
@@ -162,6 +171,43 @@ Two rules follow:
   non-empty `template` is a strict selector and that only a genuinely empty one
   may cover every template.
 
+## Declaring the capability (frontmatter)
+
+A skill may name the capability it targets, in the **frontmatter only**:
+
+```yaml
+---
+name: wiki-sync
+description: Export all configured Confluence sources into the pending inbox
+capability: external-source.export
+operation: export
+---
+```
+
+Without it, the capability is inferred from the body's prose by alias matching.
+That is text-similarity executor selection under another name, and the aliases
+live in `agent-runtimes.json` — user-editable config. Adding any runtime whose
+alias is a bare English word (`report`, `check`, `plan`) makes two aliases hit
+at once, and the resolver abandons its deterministic path for the LLM, silently,
+for every shipped skill at the same time. Declared, the run is routed by
+registry lookup and no text is matched at all.
+
+Rules, all enforced:
+
+- The body still names no agent, tool or server. Only the frontmatter declares.
+- `operation` requires `capability`. Both are rejected on a malformed value
+  (`invalid_capability`, `invalid_operation`, `operation_without_capability`).
+- **The declaration is dropped, with a journal line, when it cannot be honoured:**
+  a body that compiled into several objectives (each step may target a different
+  capability), or a skill declaring parameters — the declared route calls
+  `agent_plan` directly and skips the argument extraction a selector such as
+  `<template>` needs, so `/wiki-build rapport` would widen to every template.
+- **Declare only what the executor can actually plan.** `diagnose` once declared
+  `workspace.diagnose`/`doctor`; the production agent's planning allow-list has
+  no `doctor`, so the plan was refused and the skill stopped diagnosing. A
+  refusal is now surfaced instead of being reported as a completed run, but the
+  declaration still has to match what the agent accepts.
+
 ## Execution policy
 
 ```yaml
@@ -220,7 +266,8 @@ description is never obeyed.
 5. Every declared parameter is mentioned in the prose, and the empty case is
    stated.
 6. No other skill is cited unless you mean to run it.
-7. No routing details: no agent, capability, MCP or tool name.
+7. No routing details **in the body**: no agent, capability, MCP or tool name.
+   The capability goes in the frontmatter instead — see below.
 8. The notification sentence is inline, in a paragraph that does not start with
    a connector.
 

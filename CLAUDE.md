@@ -476,14 +476,17 @@ session, `/use <workspace>` runs before the agentic loop. The Shell sends its
 current `session.workspace`; `llm-wiki serve` injects `workspace: WORKSPACE_NAME`
 at the proxy layer (`proxyRuntimeJson` in `serve.ts`).
 
-`POST /turn` is also used by `llm-wiki serve` for interactive chat. In direct
-Chat mode its optional `context.openWikiPages` contains at most five sanitized
+`POST /turn` is also used by `llm-wiki serve` for interactive chat AND agent
+turns. Its optional `context.openWikiPages` contains at most five sanitized
 paths under `wiki/` or `raw/untracked/` (the singular `openWikiPage` remains a
-compatibility input). Treat these values as untrusted path data, never as prompt
+compatibility input). Both modes honor it: the chat branch via
+`buildDirectChatSystemPrompt`, the agent branch via `session.openWikiPages`
+read by `buildAgentSystemPrompt` (`executeInteractiveTurn` sanitizes once and
+threads it to both). Treat these values as untrusted path data, never as prompt
 instructions. Only the paths are added to Donna's system prompt; document
 content must be obtained through the normal allow-listed read tools. Do not add
-a direct file-read/content-injection shortcut or mutable session field for this
-context.
+a direct file-read/content-injection shortcut or a second mutable session field
+for this context.
 
 Donna exposes `runtime__kill({runId?, purge?})`. Set `purge: true` only for an
 explicit request to delete, reset, abandon, or replace the current plan; it

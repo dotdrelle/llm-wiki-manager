@@ -49,7 +49,7 @@ test('standalone control items are not chains', () => {
   assert.deepEqual(projectSkillChains(), []);
 });
 
-test('the selection reason is humanized, not leaked as an audit enum', () => {
+test('the selection reason stays an audit field, never a user-facing label', () => {
   assert.equal(selectionKindLabel('explicit_name'), 'explicit name');
   assert.equal(selectionKindLabel('description_match'), 'description match');
   assert.equal(selectionKindLabel(null), null);
@@ -58,5 +58,6 @@ test('the selection reason is humanized, not leaked as an audit enum', () => {
   ]);
   assert.equal(chain.selectionKind, 'explicit_name');
   assert.equal(chain.selectionLabel, 'explicit name');
-  assert.equal(renderSkillChain(chain).split('\n')[0], 'wiki-build · explicit name');
+  // The queue head names the skill, not how it was selected.
+  assert.equal(renderSkillChain(chain).split('\n')[0], 'wiki-build');
 });

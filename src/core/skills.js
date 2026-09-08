@@ -5,6 +5,8 @@ const SKILL_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const SKILL_PARAM_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const DANGEROUS_PARAM_NAMES = new Set(['__proto__', 'prototype', 'constructor']);
 const DEFAULT_UI_SKILL_DIR = '.wiki/skills';
+const SKILL_CAPABILITY_RE = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9_-]*)+$/;
+const SKILL_OPERATION_RE = /^[a-z][a-z0-9_-]{0,63}$/;
 // The CSI branch must come FIRST. `[` is 0x5B, inside the `[@-_]` range, so the
 // two-character alternative would otherwise consume `ESC [` alone and leave the
 // parameter bytes behind as literal text: "\x1B[31m" would become "31m".
@@ -71,6 +73,30 @@ function inspectSkillFile(filePath, fallbackName, scope, root) {
     return { rejected: { relativePath, name, reason: 'invalid_param' } };
   }
   const description = descriptionMetadata(meta.description);
+  // A skill may DECLARE the capability it targets. Without it, the capability
+  // is inferred from the body's prose by alias matching in objectiveResolver —
+  // which is text-similarity executor selection under another name, the very
+  // thing this repo removed once and must not reintroduce. Worse, the aliases
+  // come from `agent-runtimes.json`, user-editable config: adding any runtime
+  // whose alias is a bare English word ("report", "check") makes two aliases
+  // hit at once, and `aliasHits.length > 1` abandons the deterministic path for
+  // the LLM resolver — silently, for every shipped skill at once.
+  //
+  // Declaring it in FRONTMATTER, never in the body, keeps both rules intact:
+  // the body stays a business intention naming no agent, tool or server
+  // (skillCompiler's FORBIDDEN_FIELDS still enforces that), while routing
+  // targets a capability — the same abstraction plans already target.
+  const capability = String(meta.capability || '').trim();
+  if (capability && !SKILL_CAPABILITY_RE.test(capability)) {
+    return { rejected: { relativePath, name, reason: 'invalid_capability' } };
+  }
+  const operation = String(meta.operation || '').trim();
+  if (operation && !SKILL_OPERATION_RE.test(operation)) {
+    return { rejected: { relativePath, name, reason: 'invalid_operation' } };
+  }
+  if (operation && !capability) {
+    return { rejected: { relativePath, name, reason: 'operation_without_capability' } };
+  }
   const execution = String(meta.execution || 'orchestrated').trim().toLowerCase();
   if (!['orchestrated', 'direct'].includes(execution)) {
     return { rejected: { relativePath, name, reason: 'invalid_execution' } };
@@ -83,6 +109,8 @@ function inspectSkillFile(filePath, fallbackName, scope, root) {
     execution,
     scope,
     path: filePath,
+    ...(capability ? { capability } : {}),
+    ...(operation ? { operation } : {}),
   };
   const warnings = [];
   if (description.missing) warnings.push({ relativePath, name, reason: 'missing_description' });

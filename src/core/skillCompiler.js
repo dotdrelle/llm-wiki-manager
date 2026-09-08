@@ -1,3 +1,4 @@
+import { objectiveForResolution } from '../orchestrator/objectiveResolver.js';
 const OPTIONAL_RE = /^(?:si disponible|si possible|optionnellement|if available|if possible|optionally)\b[\s,:-]*/i;
 const STRONG_CONNECTOR_RE = /\n\s*(?=(?:puis|ensuite|après cela|après .{0,80}?terminé|then|next|after .{0,80}?complete|si disponible|si possible|optionnellement|if available|if possible|optionally)\b)/gi;
 const FORBIDDEN_FIELDS = /\b(?:agent|capability|capabilityPlan|MCP|tool(?: name)?)\s*:/i;
@@ -117,8 +118,25 @@ function objectiveFromText(raw) {
   };
 }
 
+// A guardrail is not an intention. "It never ingests", "Never ask which source
+// to export", "It never builds, exports or publishes" all name an action the
+// skill must NOT take — and counting them made a body MORE ambiguous the more
+// carefully its boundaries were written. Three of wiki-sync's five triggers
+// were guardrails, which is what pushed the best-documented skill in the
+// scaffold over the threshold and handed its split to the LLM.
+// objectiveResolver already strips negative guardrails before resolving; the
+// ambiguity count has to agree with it, or the two read the same sentence as
+// opposite things.
 function looksAmbiguous(text) {
-  return (text.match(/(?:^|[.!?]\s+)[A-ZÀ-Ý][^.!?]{0,80}\b(?:export|ingest|build|send|create|delete|sync|publish|diagnos|analyse|constru|envoi|cré|supprim)/gi)?.length ?? 0) > 2;
+  // Count what the resolver will actually resolve, not the raw prose. A second
+  // guardrail regex living here drifted from objectiveResolver's within one
+  // edit: "Check the sources without asking, then export and build." was
+  // dropped by one and kept whole by the other, so the two read the same
+  // sentence as opposite things. Reusing objectiveForResolution makes them
+  // agree by construction — there is one definition of "this clause is a
+  // constraint, not an intention", and it lives with the resolver.
+  const resolvable = objectiveForResolution(text);
+  return (resolvable.match(/(?:^|[.!?]\s+)[A-ZÀ-Ý][^.!?]{0,80}\b(?:export|ingest|build|send|create|delete|sync|publish|diagnos|analyse|constru|envoi|cré|supprim)/gi)?.length ?? 0) > 2;
 }
 
 function normalizeFallback(value) {

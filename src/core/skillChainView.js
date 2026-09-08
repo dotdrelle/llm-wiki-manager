@@ -16,9 +16,10 @@ const SYMBOLS = {
   skipped: '–',
 };
 
-// The selection reason is an audit enum (`explicit_name` / `description_match`);
-// leaking it verbatim into a queue label read as a broken token (`[explicit_name]`).
-// Humanize it for display; keep the raw value on `selectionKind` for audit.
+// The selection reason is an audit enum (`explicit_name` / `description_match`)
+// carried by the projection for the audit trail, never rendered in a
+// user-facing label: "wiki-build [explicit name]" read as a broken token to the
+// user whose request it was. `selectionKind` stays available to inspectors.
 const SELECTION_KIND_LABELS = {
   explicit_name: 'explicit name',
   description_match: 'description match',
@@ -92,8 +93,7 @@ function chainStatus(steps) {
 // The text form used by the Shell; serve renders the same projection as DOM.
 export function renderSkillChain(chain) {
   if (!chain?.steps?.length) return '';
-  const selection = chain.selectionLabel ? ` · ${chain.selectionLabel}` : '';
-  const lines = [`${chain.skillName ?? 'skill'}${selection}`, ''];
+  const lines = [`${chain.skillName ?? 'skill'}`, ''];
   for (const step of chain.steps) {
     lines.push(`${step.symbol} ${step.label}`);
     lines.push(`  ${step.status}${step.skipReason ? ` · ${step.skipReason}` : ''}`);

@@ -17,7 +17,7 @@ import { ensureManagerScaffold, loadManagerEnv } from '../core/env.js';
 loadManagerEnv();
 import { createAgentGraph } from '../agent/graph.js';
 import { handleSlashCommand, printHelp, printVersion, refreshMcpRuntimeStatus } from '../commands/slash.js';
-import { runShell, runHeadlessChatTurn } from '../shell/repl.js';
+import { runShell, runHeadlessChatTurn, sanitizeOpenWikiPages } from '../shell/repl.js';
 import { runPreflightChecks, withRuntimePreflight } from '../core/startupCheck.js';
 import { refreshRunningContainers } from '../core/wikiSetup.js';
 import { applySessionWikircProfile } from '../core/sessionConfig.js';
@@ -1564,7 +1564,13 @@ async function runRuntime(argv, agent) {
                   : {}),
             })))
           : buildExecutorOnlyFragment({
-              objective: `Capability run ${capabilityId}`,
+              // The objective becomes the task label AND the approval summary.
+              // A hardcoded "Capability run external-source.export" made the
+              // approval banner — the moment the user decides — read routing
+              // internals instead of the work being authorised. The request's
+              // own input is that work, stated in the user's terms; the
+              // capability id is only the fallback when there is none.
+              objective: String(body.input ?? '').trim() || `Capability run ${capabilityId}`,
               workspace: session.workspace ?? 'workspace',
               selection: {
                 capability: capabilityId,
@@ -1578,6 +1584,21 @@ async function runRuntime(argv, agent) {
               },
             });
         if (!Array.isArray(fragment?.tasks) || fragment.tasks.length === 0) {
+          // A refused plan and an empty one are not the same event, and reading
+          // only `initialSynthesis` conflated them: agent_plan answering
+          // {ok:false, error:"Unsupported planning operation: doctor"} produced
+          // "fragment vide" followed by run_done, so the capability never ran
+          // and the run reported success. The one string that explains the
+          // failure was the one string thrown away.
+          const refusal = typeof fragment?.error === 'string' && fragment.error.trim()
+            ? fragment.error.trim()
+            : null;
+          if (refusal) {
+            emitRuntimeLog(session, `capability-plan: ${body.capabilityPlan.capability} refused by ${provider.serverName ?? 'the agent'} — ${refusal}`);
+            const error = new Error(`Capability plan refused for ${body.capabilityPlan.capability}: ${refusal}`);
+            error.code = 'capability_plan_refused';
+            throw error;
+          }
           dispatchAgentEvent(session, createAgentEvent('assistant_message', {
             origin: 'runtime',
             runId,
@@ -1721,6 +1742,14 @@ async function runRuntime(argv, agent) {
     // duplicating the loop. Anything other than mode === 'chat' stays the full
     // unrestricted agent turn.
     const chatMode = String(body.mode ?? '').toLowerCase() === 'chat';
+    // UI context from `wiki serve`: up to five selected wiki or raw
+    // documents, sanitized once here and honored by BOTH branches — chat
+    // mode reads them via the chat system prompt, agent mode via
+    // buildAgentSystemPrompt. Only paths are prompted; Donna reads content
+    // through tools.
+    const openWikiPages = sanitizeOpenWikiPages(
+      body.context?.openWikiPages ?? body.context?.openWikiPage,
+    );
     let response;
     if (chatMode) {
       ephemeral.chatMode = true;
@@ -1747,11 +1776,10 @@ async function runRuntime(argv, agent) {
           workspace: context.workspace ?? null,
           payload: {},
         })),
-        // UI context from `wiki serve`: up to five selected wiki or raw
-        // documents. Only paths are prompted; Donna reads through tools.
-        openWikiPages: body.context?.openWikiPages ?? body.context?.openWikiPage,
+        openWikiPages,
       });
     } else {
+      ephemeral.openWikiPages = openWikiPages;
       response = await runAgentTurn(agent, ephemeral, input, { messages, signal });
     }
     // Persist the artifact the turn may have opened/edited (template_write,

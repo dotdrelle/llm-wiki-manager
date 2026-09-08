@@ -250,8 +250,26 @@ for (const [name, expected] of Object.entries(PERFORMANCE_TABLE)) {
     assert.equal(body.objectives, expected, 'objective count');
     assert.equal(env.runs.length, expected, 'run count');
     assert.equal(env.chain().length, expected, 'control items');
-    // One run carries one whole intention: never a pre-resolved capability plan.
-    for (const run of env.runs) assert.equal(run.capabilityPlan, undefined);
+    // One run carries one whole intention. Whether it also carries a declared
+    // capabilityPlan is pinned HERE, not read from the file under test: deriving
+    // the expectation from the input made the assertion agree with any future
+    // edit, including adding `capability:` to pipeline — the one skill this
+    // table exists to protect, since its agent must keep planning its own DAG.
+    const EXPECTED_ROUTING = {
+      pipeline: null,
+      'wiki-sync': 'external-source.export',
+      'wiki-ingest': null,
+      'wiki-build': null,
+      deliver: null,
+      diagnose: null,
+      status: null,
+      'new-template': null,
+    };
+    const declared = EXPECTED_ROUTING[name];
+    for (const run of env.runs) {
+      if (declared) assert.equal(run.capabilityPlan?.capability, declared, `${name} must route by declaration`);
+      else assert.equal(run.capabilityPlan, undefined, `${name} must keep text resolution`);
+    }
   });
 }
 

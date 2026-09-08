@@ -70,6 +70,46 @@ export async function runSkillChain(context, skill, {
   const chainId = `chain-${randomUUID()}`;
   const nestedStack = [...(Array.isArray(skillStack) ? skillStack : []), skill.name];
   const publicInput = formatPublicSkillInvocation(skill.name, resolvedArgs);
+  // A declared capability takes the deterministic route: a run carrying a
+  // capabilityPlan is resolved by looking the id up in the registry directly
+  // (cli/wiki-manager.js), with no alias matching and no LLM resolver.
+  //
+  // Only when the body stayed a single intention. A body that split may target
+  // a different capability per step, and stamping one declaration onto all of
+  // them would route the wrong work confidently. When that happens the
+  // declaration is dropped — and says so, because a skill silently losing its
+  // deterministic routing is exactly the kind of degradation that hides itself.
+  // Two conditions, each protecting something the invariant used to protect
+  // wholesale:
+  //
+  // - ONE objective. A body that split may target a different capability per
+  //   step, and stamping one declaration onto all of them would route the wrong
+  //   work confidently.
+  // - NO declared parameters. The capabilityPlan route calls agent_plan on the
+  //   resolved provider directly, skipping resolveExecutorArguments — the pass
+  //   that turns "User parameters: rapport" into structured arguments. Without
+  //   it a `/wiki-build <template>` would widen to every template, the exact
+  //   defect that pass exists to prevent. Extending the declaration to
+  //   parameterised skills means extracting the arguments here first.
+  //
+  // What the old invariant ALSO forbade, and no longer needs to: it assumed
+  // pre-resolving a capability would take planning away from the agent. It does
+  // not — the capabilityPlan route honours `canPlan` and calls agent_plan, so
+  // the production capability keeps its own DAG and its own concurrency.
+  const declaresCapability = Boolean(skill.capability);
+  const hasParams = Array.isArray(skill.params) && skill.params.length > 0;
+  const declaredPlan = declaresCapability && objectives.length === 1 && !hasParams
+    ? { capability: skill.capability, ...(skill.operation ? { operation: skill.operation } : {}) }
+    : undefined;
+  if (declaresCapability && !declaredPlan) {
+    const reason = objectives.length > 1
+      ? `the body compiled into ${objectives.length} objectives`
+      : 'the skill declares parameters, which only the text-resolution path extracts';
+    emitRuntimeLog(
+      context.session,
+      `Skill ${skill.name}: declared capability ${skill.capability} not applied — ${reason}; the objective is resolved from its text instead.`,
+    );
+  }
   const items = objectives.map((objective, chainSequence) => enqueueControlRequest(context, objective.text, {
     publicInput,
     chainId,
@@ -78,6 +118,7 @@ export async function runSkillChain(context, skill, {
     skillExecution: skill.execution === 'direct' ? 'direct' : 'orchestrated',
     skillStack: nestedStack,
     ...(selectionKind ? { selectionKind } : {}),
+    ...(declaredPlan ? { capabilityPlan: declaredPlan } : {}),
     optional: objective.optional,
     continueOnFailure: objective.continueOnFailure,
   }));

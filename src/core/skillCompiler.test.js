@@ -30,12 +30,44 @@ test('validation rejects technical routing details', () => {
   assert.throws(() => validateCompiledObjectives([{ text: 'agent: cme' }]), { code: 'skill_compile_failed' });
 });
 
-test('every shipped scaffold skill compiles to a single intention', async () => {
+test('every shipped scaffold skill compiles to a single intention, deterministically', async () => {
   const expected = { pipeline: 1, 'wiki-sync': 1, 'wiki-ingest': 1, 'wiki-build': 1, deliver: 1, diagnose: 1, status: 1, 'new-template': 1 };
+  // Passing no llmFallback used to make this test assert the one path
+  // production never takes: an ambiguous body silently returns the safe
+  // mono-intention fallback, so the count was 1 and the test was green while
+  // production called the LLM and got 3. A shipped skill reaching the LLM
+  // splitter is a build-time defect, not a runtime coin flip — so the fallback
+  // here throws, and the deterministic pass must never need it.
+  const llmFallback = () => { throw new Error('a shipped skill must not need the LLM splitter'); };
   for (const [name, count] of Object.entries(expected)) {
     const raw = readFileSync(resolve('../llm-wiki/scaffold/workspace/.wiki/skills', `${name}.md`), 'utf8');
     const { meta, body } = parseFrontmatter(raw);
-    assert.equal((await compileSkillObjectives({ ...meta, body })).length, count, name);
+    assert.equal(deterministicObjectives(body).ambiguous, false, `${name} is ambiguous for the deterministic pass`);
+    assert.equal((await compileSkillObjectives({ ...meta, body }, {}, { llmFallback })).length, count, name);
+  }
+});
+
+test('every orchestrated scaffold skill declares the capability it targets', () => {
+  // Without a declaration the capability is inferred from the body's prose by
+  // alias matching, which any runtime added to agent-runtimes.json can break by
+  // declaring a bare English word as an alias. Declared, the run is routed by
+  // registry lookup and no text is matched at all.
+  // Only the skills whose declaration is actually APPLIED, and only where the
+  // target agent accepts it. The list is deliberately short:
+  // - parameterised skills are dropped by skillRun (the capabilityPlan route
+  //   skips the argument extraction a selector like <template> needs);
+  // - pipeline keeps text resolution until an E2E test can assert its agent
+  //   still plans its own DAG;
+  // - diagnose declared `workspace.diagnose/doctor` and BROKE: agent_plan's
+  //   operation allow-list has no `doctor`, so the plan was refused, the
+  //   refusal swallowed, and the run reported done without diagnosing
+  //   anything. Declaring a capability the executor cannot plan is worse than
+  //   not declaring one.
+  const orchestrated = ['wiki-sync'];
+  for (const name of orchestrated) {
+    const raw = readFileSync(resolve('../llm-wiki/scaffold/workspace/.wiki/skills', `${name}.md`), 'utf8');
+    const { meta } = parseFrontmatter(raw);
+    assert.match(String(meta.capability ?? ''), /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9_-]*)+$/, `${name} declares no capability`);
   }
 });
 

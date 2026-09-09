@@ -93,7 +93,7 @@ src/orchestrator/           Generic, business-agnostic orchestration core
   dispatcher.js             agent_execute/agent_status/agent_cancel driver
   assignmentManager.js      Task → agent instance assignment
   attemptManager.js         Attempts, retries, agent fallback
-  resultAggregator.js       TaskResult intake, DAG update, plan expansion
+  resultAggregator.js       TaskResult intake, DAG update, plan expansion, worktree proposal persistence
   approvalPolicy.js         Bounded ApprovalGrants (run + revision + class)
 src/activity/               Aggregated activity: synthesis, weighted progress, dedup
 src/graph/                  Run/Task graph projection + visibility policy
@@ -222,6 +222,14 @@ When a capability cannot be resolved, the error lists the registry it saw
 (`Registered agents: production[knowledge.update, …]`). `production[none]` on a
 present agent points at the registry; an empty list points at discovery. Never
 reduce that message back to what was missing.
+
+A refused delegation tells the user the KIND of failure, never the raw
+internals: `DELEGATION_BLOCKERS` in `graph.js` maps the resolver's failures to
+`no_agent_connected` (nothing discovered), `agent_unavailable` (known but not
+answering) and `unsupported_action` (no connected agent covers it) — the
+difference between "retry", "start your agent" and "rephrase" that only the
+runtime can tell. The raw failure (capability + registry) goes to the journal,
+where it turns the next occurrence into its own diagnosis.
 
 ## Agent Orchestration
 
@@ -515,18 +523,24 @@ run completes.
 
 `POST /control {action:"message", input, intent?}` (added for plan directeur
 §4.2, "conversation non bloquante") classifies free-text input via
-`classifyControlMessage` — a synchronous keyword/regex classifier (interim
-stand-in for the plan's eventual LLM-backed classification; French+English
-patterns) — into `observe | converse | mutate | enqueue | ambiguous`, or trusts
+`classifyControlMessage` — keyword/regex control verbs plus a bounded LLM
+call for the action-vs-conversation judgement (French+English patterns) —
+into `observe | converse | mutate | enqueue | ambiguous`, or trusts
 an explicit `intent` when the caller already knows the answer (e.g. the
 ambiguous-choice UI resubmitting with a chosen intent). Status/explanation
 questions ("où en est le build ?") always classify `observe` and never create a
 run. `enqueue` behaves like the existing `action:"enqueue"` path above.
 `ambiguous` returns `choices` (`observe`/`mutate`/`enqueue`) instead of
-guessing — required by the plan's fallback-UX rule. ShellTUI (`repl.js`)
+guessing — required by the plan's fallback-UX rule; when the classifying LLM
+is unavailable or fails, the fallback is **`converse`** (a read-only answer),
+never a dead menu — a wrong converse only answers as chat, it can never
+mutate or queue anything. ShellTUI (`repl.js`)
 routes a busy-runtime prompt through `action:"message"` instead of
-unconditionally enqueueing; `llm-wiki`'s Agent mode chat does the same via
-`/api/runtime/control` (see `llm-wiki/CLAUDE.md`).
+unconditionally enqueueing; `llm-wiki`'s chat always posts `/turn`, and the
+`/turn` handler classifies agent-mode messages against the fresh state: control
+verbs and new tasks go to the control lane, plain conversation is answered
+read-only (mode `chat`), so the composer stays usable during runs (see
+`llm-wiki/CLAUDE.md`).
 
 `mutate` (0.10.0) is now a real, event-sourced plan-patch proposal, not a
 dead-end note: `storeControlProposal` builds a patch via
@@ -677,10 +691,18 @@ All plan/activity mutations go through `dispatchAgentEvent` and the reducer in
 - The free-text plan extraction fallback (`onPlanExtracted` /
   `startRuntimeAgenticWorkflow` text parsing) is marked `deprecated fallback`
   in its own log line; prefer structured `wiki__plan_set` or `_activity`.
+- `subagent_started` / `subagent_finished` (lot 2) track the external
+  runtime's collective as first-class state (`state.subagents`, reset per
+  run) — the workflow projection renders each subagent as a child node of the
+  run node, instead of burying the roles in log lines.
+- The in-memory event log is bounded (`MAX_SESSION_EVENTS` = 5000, oldest
+  dropped): `/state` re-projects the whole array on every call, and an
+  unbounded log made that cost grow with everything the runtime had ever
+  dispatched — a slowdown that outlived the browser and the ShellUI. The
+  durable record is SQLite; this array is the working set.
 
 **`projectWorkflow(state, events)`** (`src/core/workflow.js`, 0.9.6): the
-canonical read model consumed by both Serve (`chatHtml.ts`'s
-`runtimeTaskPanelHTML`) and ShellTUI (`useSession.ts`/`repl.js`) — do not add
+canonical read model consumed by both Serve (`chatHtml.ts`'s`runtimeTaskPanelHTML`) and ShellTUI (`useSession.ts`/`repl.js`) — do not add
 a second UI-side projection. Outputs `nodes` (`run`, `task`, `activity`,
 `queue`, `approval`, `executor`, `output`, `replan` types), `relations`
 (`contains`, `depends_on`, `executed_by`, `produces`, `approves`, `replaces`),
@@ -706,6 +728,15 @@ resolved scheduler concurrency as `state.concurrency = { limit, ceiling,
 agentLimit, cappedByCeiling }` (from `session._runConcurrency`, set once by the
 runner). Both the Shell and serve run summaries read it for the authoritative
 "max ×N" and the amber "(ceiling)" marker; never consumed by scheduling.
+The run node's label is `summary || publicInput || input`, capped at 80
+characters — a skill run's compiled objective is never dumped into the Plan
+panel.
+
+Worktree proposals (agent.curate): `resultAggregator` persists the external
+runtime's `worktreeProposal` into `<workspace>/.wiki/agent-proposals/<taskId>.json`
+and announces it in the runtime log; the served `/agent-proposals` page is the
+review surface, and the merge happens there through the engine's own write
+machinery — the manager only RECORDS, it never writes wiki content.
 
 Any MCP can opt into manager monitoring by returning additive `_activity`
 metadata with `id`, `source`, `kind`, `label`, `status`, optional `progress`,
@@ -828,6 +859,7 @@ Common commands:
 wiki-workspace config <workspace> [path]
 wiki-workspace start [--open]
 wiki-workspace up <workspace>
+wiki-workspace refresh                  # pull the images even when nothing runs (cold stack after a reboot)
 wiki-workspace wiki <workspace> doctor
 wiki-workspace wiki <workspace> reset [--dry-run] [--yes]
 wiki-workspace agents status

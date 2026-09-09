@@ -52,11 +52,8 @@ export function projectWorkflow(state = {}, events = []) {
       subagent: String(entry.subagent ?? 'subagent'),
     }));
   nodes.push(...subagentNodes);
-  if (run) {
-    for (const node of subagentNodes) relations.push({ type: 'contains', from: run.id, to: node.id });
-  }
 
-  for (const node of [...planNodes, ...activityNodes, ...queueNodes, ...approvalNodes]) {
+  for (const node of [...planNodes, ...activityNodes, ...queueNodes, ...approvalNodes, ...subagentNodes]) {
     if (run) relations.push({ type: 'contains', from: run.id, to: node.id });
   }
 

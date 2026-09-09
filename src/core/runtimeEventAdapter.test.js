@@ -26,8 +26,13 @@ test('a failed tool is reported as such, not as a success', () => {
   assert.match(mapped[0].payload.message, /wiki_read failed: permission denied/);
 });
 
-test('subagent events surface as logs', () => {
-  assert.match(mapRuntimeEvent({ type: 'subagent_started', subagent: 'reviewer' })[0].payload.message, /subagent reviewer started/);
+test('subagent events become first-class timeline events, not log lines', () => {
+  assert.deepEqual(mapRuntimeEvent({ type: 'subagent_started', subagent: 'scout' }), [
+    { type: 'subagent_started', payload: { subagent: 'scout' } },
+  ]);
+  assert.deepEqual(mapRuntimeEvent({ type: 'subagent_finished', subagent: 'scout' }), [
+    { type: 'subagent_finished', payload: { subagent: 'scout' } },
+  ]);
 });
 
 test('approval_required becomes an approval.requested with the proposal classes', () => {

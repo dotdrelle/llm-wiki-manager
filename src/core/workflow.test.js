@@ -121,3 +121,34 @@ test('projectWorkflow derives per-task timing (start, finish, duration) from lif
   assert.equal(workflow.timingByTask.ingest.finishedAt, Date.parse('2026-07-23T10:00:12.500Z'));
   assert.equal(workflow.timingByTask.ingest.durationMs, 12500);
 });
+
+test('projectWorkflow renders the collective subagents as child nodes of the run', () => {
+  const workflow = projectWorkflow({
+    status: 'running',
+    runId: 'run-1',
+    workspace: 'docs',
+    plan: [],
+    activities: [],
+    queue: [],
+    approvals: [],
+    subagents: [
+      { subagent: 'scout', status: 'done', startedAt: '2026-09-09T10:00:00.000Z', finishedAt: '2026-09-09T10:00:04.000Z' },
+      { subagent: 'critique', status: 'running', startedAt: '2026-09-09T10:00:05.000Z' },
+    ],
+  });
+
+  const subagentNodes = workflow.nodes.filter((node) => node.type === 'subagent');
+  assert.equal(subagentNodes.length, 2);
+  assert.equal(subagentNodes[0].label, 'scout');
+  assert.equal(subagentNodes[0].status, 'done');
+  assert.equal(subagentNodes[1].label, 'critique');
+  assert.equal(subagentNodes[1].status, 'running');
+
+  const run = workflow.nodes.find((node) => node.type === 'run');
+  for (const node of subagentNodes) {
+    assert.ok(
+      workflow.relations.some((rel) => rel.type === 'contains' && rel.from === run.id && rel.to === node.id),
+      `${node.label} hangs off the run node`,
+    );
+  }
+});

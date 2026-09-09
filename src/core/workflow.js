@@ -38,6 +38,24 @@ export function projectWorkflow(state = {}, events = []) {
   const approvalNodes = approvals.map(approvalNode);
   nodes.push(...planNodes, ...activityNodes, ...queueNodes, ...approvalNodes);
 
+  // The external runtime's collective (lot 2): each named subagent becomes a
+  // child node of the run node, so the Canvas shows the run's internal
+  // timeline instead of burying the roles in log lines.
+  const subagentNodes = (Array.isArray(state.subagents) ? state.subagents : [])
+    .map((entry, index) => ({
+      id: `subagent:${String(entry.subagent ?? 'subagent')}:${index}`,
+      type: 'subagent',
+      label: String(entry.subagent ?? 'subagent'),
+      status: entry.status === 'done' ? 'done' : 'running',
+      startedAt: entry.startedAt ?? null,
+      finishedAt: entry.finishedAt ?? null,
+      subagent: String(entry.subagent ?? 'subagent'),
+    }));
+  nodes.push(...subagentNodes);
+  if (run) {
+    for (const node of subagentNodes) relations.push({ type: 'contains', from: run.id, to: node.id });
+  }
+
   for (const node of [...planNodes, ...activityNodes, ...queueNodes, ...approvalNodes]) {
     if (run) relations.push({ type: 'contains', from: run.id, to: node.id });
   }

@@ -248,6 +248,9 @@ function publicProjection(state) {
       patch: patch.patch ? { ...patch.patch, operations: (patch.patch.operations ?? []).map((operation) => ({ ...operation })) } : null,
     })),
     controlQueue: state.controlQueue.map((item) => ({ ...item })),
+    // The collective's per-role timeline (lot 2): rendered by the workflow
+    // projection as child nodes of the run.
+    subagents: (state.subagents ?? []).map((entry) => ({ ...entry })),
     // LOT G: the chain is a projection, never stored state.
     skillChains: projectSkillChains(state.controlQueue),
     agents: Object.values(state.agents)
@@ -304,6 +307,7 @@ function applyEvent(state, event) {
       state.planRevision = 0;
       state.planPatches = [];
       state.summary = null;
+      state.subagents = [];
       pruneTerminalControlItems(state.controlQueue);
       return;
     case 'user_message':
@@ -331,6 +335,32 @@ function applyEvent(state, event) {
     case 'tool_call_result':
       finishToolCall(state, event.payload);
       return;
+    case 'subagent_started': {
+      // A named role of the external runtime's collective (lot 2). Tracked as
+      // first-class state so the workflow projection renders each subagent as
+      // a child node of the run — the timeline the events describe, not just
+      // one more log line.
+      const name = String(event.payload?.subagent ?? 'subagent');
+      state.subagents = [
+        ...(state.subagents ?? []),
+        { subagent: name, status: 'running', startedAt: event.ts },
+      ];
+      return;
+    }
+    case 'subagent_finished': {
+      const name = String(event.payload?.subagent ?? 'subagent');
+      const list = [...(state.subagents ?? [])];
+      const entry = list.findLast((item) => item.subagent === name && item.status === 'running')
+        ?? list.find((item) => item.subagent === name);
+      if (entry) {
+        entry.status = 'done';
+        entry.finishedAt = event.ts;
+      } else {
+        list.push({ subagent: name, status: 'done', startedAt: event.ts, finishedAt: event.ts });
+      }
+      state.subagents = list;
+      return;
+    }
     case 'activity_upserted':
       upsertActivity(state, event.payload?.activity);
       return;

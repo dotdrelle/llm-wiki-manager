@@ -169,6 +169,18 @@ gateway restarts; a request without a workspace lands on `default`.
   rejects (worktree removed). The merge IS the approval: the capability
   declares no `mutationClass`, so no pre-run pause. The manager only RECORDS
   the proposal; it never writes wiki content.
+
+  Gateway-side ceilings for the hands (all optional, defaults in
+  parentheses): `GATEWAY_RECURSION_LIMIT` (40) graph steps, `GATEWAY_TOKEN_BUDGET`
+  (500 000) estimated tokens, `GATEWAY_WORKTREE_MAX_FILES` (40) /
+  `GATEWAY_WORKTREE_MAX_DIFF_CHARS` (300 000) — beyond them the run fails
+  loudly and discards the branch instead of queueing an unreadable review —
+  and `GATEWAY_WORKTREE_MAX_AGE_MS` (7 days), after which a startup prune
+  removes worktrees nobody merged or rejected. The collective (`subagents: [...]`
+  per capability, in `agent-runtimes.json`) runs the named roles — Scout,
+  Analyst, Critique, Redactor, Archivist — as bounded sequential runs with
+  per-role tool allow-lists; the Critique's structured `[objection]` lines
+  travel with the proposal and never block it.
 - One active run per workspace (`context.running` + the control lane), and
   per-run locks, keep the deterministic path authoritative even if the runtime
   proposes and the user asks at the same time.

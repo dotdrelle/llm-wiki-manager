@@ -784,3 +784,22 @@ test('the in-memory event log is bounded, so /state projection cost stays flat',
   assert.match(session.agentEvents.at(-1).payload.message, /line 5199/);
   assert.match(session.agentEvents[0].payload.message, /line 200/);
 });
+
+test('subagent_started/finished track the collective timeline, reset per run', () => {
+  const session = { workspace: 'acme' };
+  dispatchAgentEvent(session, createAgentEvent('run_started', { origin: 'runtime', runId: 'r1', payload: {} }));
+  dispatchAgentEvent(session, createAgentEvent('subagent_started', { runId: 'r1', payload: { subagent: 'scout' } }));
+  dispatchAgentEvent(session, createAgentEvent('subagent_started', { runId: 'r1', payload: { subagent: 'critique' } }));
+  dispatchAgentEvent(session, createAgentEvent('subagent_finished', { runId: 'r1', payload: { subagent: 'scout' } }));
+
+  assert.equal(session.agentProjection.subagents.length, 2);
+  const scout = session.agentProjection.subagents.find((entry) => entry.subagent === 'scout');
+  const critique = session.agentProjection.subagents.find((entry) => entry.subagent === 'critique');
+  assert.equal(scout.status, 'done');
+  assert.ok(scout.finishedAt);
+  assert.equal(critique.status, 'running');
+  assert.ok(!critique.finishedAt);
+
+  dispatchAgentEvent(session, createAgentEvent('run_started', { origin: 'runtime', runId: 'r2', payload: {} }));
+  assert.equal(session.agentProjection.subagents.length, 0, 'a new run starts a fresh timeline');
+});

@@ -35,9 +35,12 @@ export function mapRuntimeEvent(event) {
       return log(`tool ${toolLabel(event)} done${duration}${summary ? ` — ${summary}` : ''}`);
     }
     case 'subagent_started':
-      return log(`subagent ${subagentLabel(event)} started`);
+      // First-class timeline events (lot 2): the reducer tracks them and the
+      // workflow projection renders each subagent as a child node of the run —
+      // the timeline the events describe, not just one more log line.
+      return [{ type: 'subagent_started', payload: { subagent: subagentLabel(event) } }];
     case 'subagent_finished':
-      return log(`subagent ${subagentLabel(event)} finished`);
+      return [{ type: 'subagent_finished', payload: { subagent: subagentLabel(event) } }];
     case 'approval_required': {
       // Human-in-the-loop du runtime (RFC § 14) : l'analyse pré-exécution
       // devient une demande d'approbation native. Les mutations annoncées

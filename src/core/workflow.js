@@ -191,6 +191,15 @@ function metricNumber(value) {
   return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
+
+// The Plan panel names a run; it does not reproduce it. One line, bounded.
+const RUN_LABEL_MAX = 80;
+function runLabel(value) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return 'Runtime run';
+  return text.length > RUN_LABEL_MAX ? `${text.slice(0, RUN_LABEL_MAX - 1)}…` : text;
+}
+
 function currentRun(state, events) {
   const runId = state.runId ?? state.runs?.find((run) => isActiveStatus(run.status))?.id ?? events.findLast?.((event) => event.runId)?.runId ?? null;
   if (!runId && !state.status) return null;
@@ -198,7 +207,12 @@ function currentRun(state, events) {
     id: runId ? `run:${runId}` : 'run:current',
     type: 'run',
     runId,
-    label: state.summary || state.input || 'Runtime run',
+    // A skill run's `input` is the COMPILED objective — the private body's
+    // business intention, often a full paragraph. Printing it whole turned the
+    // Plan panel into a prompt dump, where the reader wanted the run's identity
+    // and its status. Prefer the summary, then the public invocation the
+    // control item already carries, and cap whatever is left.
+    label: runLabel(state.summary || state.publicInput || state.input),
     status: normalizeStatus(state.status ?? 'idle'),
     workspace: state.workspace ?? null,
     startedAt: state.startedAt ?? state.runs?.find((run) => run.id === runId)?.createdAt ?? null,

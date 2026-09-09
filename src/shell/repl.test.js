@@ -763,6 +763,11 @@ test('built-in /status keeps priority while /skills run status explicitly reache
     requests.push({ path: pathOf(url), body: options.body ? JSON.parse(options.body) : null });
     return jsonResponse(202, { accepted: true, kind: 'skill_chain', objectives: 1 });
   });
+  // The machine's manager .env must not leak a GATEWAY_ENABLED=true into this
+  // test: /status would then discover the gateway and fetch /health +
+  // /capabilities, and the assertion below reads those as status noise.
+  const previousEnvFile = process.env.WIKI_MANAGER_ENV_FILE;
+  process.env.WIKI_MANAGER_ENV_FILE = join(root, 'test.env');
   try {
     await runLine('/status', { agent: null, packageJson: { version: 'test' }, session, runtime: { url: 'http://runtime.test' } });
     assert.equal(requests.length, 0, 'built-in status must stay local');
@@ -770,7 +775,11 @@ test('built-in /status keeps priority while /skills run status explicitly reache
     assert.equal(requests[0].path, '/run');
     assert.equal(requests[0].body.skillName, 'status');
     assert.equal(requests[0].body.input, '/status');
-  } finally { restore(); }
+  } finally {
+    restore();
+    if (previousEnvFile === undefined) delete process.env.WIKI_MANAGER_ENV_FILE;
+    else process.env.WIKI_MANAGER_ENV_FILE = previousEnvFile;
+  }
 });
 
 test('runLine does not update workspace profile before Donna handles the request', async () => {

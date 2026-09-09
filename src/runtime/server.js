@@ -413,7 +413,7 @@ export function startRuntimeServer({
         // Read-only chat turns intentionally remain available while an agent
         // run is active. Other interactive turns still become control
         // messages so they cannot start a competing agent decision.
-        const readOnlyChat = String(body.mode ?? '').toLowerCase() === 'chat';
+        let readOnlyChat = String(body.mode ?? '').toLowerCase() === 'chat';
         // An explicit /skill invocation has deterministic meaning. Keep the
         // conversational /turn boundary, but do not ask the LLM to rediscover
         // the skill from prose: it could choose a direct mutation instead and
@@ -433,14 +433,25 @@ export function startRuntimeServer({
           return;
         }
         if (context.running && !readOnlyChat) {
-          const result = await handleControlMessage(context, store, input, {
-            intent: body.intent,
-            startNextControlRequest,
-            cancel,
-            approve,
+          // Agent-mode message while a run is active. Classify once: control
+          // verbs and new tasks go to the control lane, plain conversation is
+          // ANSWERED read-only (like a chat turn) instead of parking the
+          // reader in a choice menu — the chat must stay usable during runs.
+          const classification = await classifyControlMessage(input, controlStatus(context, store), {
+            llm: context?.session?.llm,
+            session: context?.session,
           });
-          sendJson(response, result.statusCode, result.body);
-          return;
+          if (classification.kind !== 'converse') {
+            const result = await handleControlMessage(context, store, input, {
+              intent: body.intent,
+              startNextControlRequest,
+              cancel,
+              approve,
+            });
+            sendJson(response, result.statusCode, result.body);
+            return;
+          }
+          readOnlyChat = true;
         }
         if (typeof turn !== 'function') {
           sendJson(response, 501, { error: 'Runtime interactive turns are unavailable.' });
@@ -454,21 +465,27 @@ export function startRuntimeServer({
           // after this request was accepted. Reclassify against the fresh
           // state instead of starting another interactive decision in parallel.
           if (context.running && !readOnlyChat) {
-            const result = await handleControlMessage(context, store, input, {
-              intent: body.intent,
-              startNextControlRequest,
-              cancel,
-              approve,
+            const classification = await classifyControlMessage(input, controlStatus(context, store), {
+              llm: context?.session?.llm,
+              session: context?.session,
             });
-            publish(createAgentEvent('assistant_message', {
-              origin: 'runtime_turn',
-              turnId,
-              workspace: context.workspace ?? null,
-              payload: { content: result.body?.explanation ?? 'Runtime control request processed.' },
-            }));
-            return result.body;
+            if (classification.kind !== 'converse') {
+              const result = await handleControlMessage(context, store, input, {
+                intent: body.intent,
+                startNextControlRequest,
+                cancel,
+                approve,
+              });
+              publish(createAgentEvent('assistant_message', {
+                origin: 'runtime_turn',
+                turnId,
+                workspace: context.workspace ?? null,
+                payload: { content: result.body?.explanation ?? 'Runtime control request processed.' },
+              }));
+              return result.body;
+            }
           }
-          return turn(context, { ...body, input }, {
+          return turn(context, { ...body, input, mode: readOnlyChat ? 'chat' : body.mode }, {
             signal: controller.signal,
             turnId,
           });
@@ -1484,16 +1501,20 @@ async function classifyControlMessage(input, status, { forcedIntent = null, llm 
       const kind = String(reply ?? '').trim().toLowerCase();
       if (kind.startsWith('action')) return { kind: 'enqueue_run', confidence: 0.85, reason: 'llm_classified_action' };
       if (kind.startsWith('conversation')) return { kind: 'converse', confidence: 0.85, reason: 'llm_classified_conversation' };
-      emitRuntimeLog(session, `control-classify: LLM returned an unrecognized reply, falling back to the choice menu — ${JSON.stringify(kind).slice(0, 200)}`);
+      emitRuntimeLog(session, `control-classify: LLM returned an unrecognized reply, answering as read-only conversation — ${JSON.stringify(kind).slice(0, 200)}`);
     } catch (err) {
       // A degradation must announce itself: silently falling through here
       // hides the difference between "no LLM configured" (expected) and "the
       // configured LLM is failing every call" (a real problem) — both would
       // otherwise look identical from the Shell or serve UI.
-      emitRuntimeLog(session, `control-classify: LLM call failed, falling back to the choice menu — ${err instanceof Error ? err.message : String(err)}`);
+      emitRuntimeLog(session, `control-classify: LLM call failed, answering as read-only conversation — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  return { kind: 'ambiguous', confidence: 0.45, reason: 'action_vs_conversation_unclear' };
+  // A choice menu IS the block the reader complains about: while a run is
+  // active, every unanswered message turned into a menu. Falling back to
+  // read-only conversation keeps the chat usable — a wrong converse only
+  // answers as chat, it can never mutate or queue anything.
+  return { kind: 'converse', confidence: 0.3, reason: 'fallback_to_readonly_conversation' };
 }
 
 function isAuthorized(request, token) {

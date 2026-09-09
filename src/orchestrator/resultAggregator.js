@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { validateContract } from '../contracts/schemas.js';
 import { parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
@@ -63,6 +65,26 @@ export async function accept(result, {
     taskId,
     payload,
   })));
+  // A worktree proposal is a review item, not a log line: persist it into the
+  // workspace review queue (.wiki/agent-proposals/) where the served review
+  // surface reads it, and announce it — a proposal nobody is told about is a
+  // proposal nobody merges, and a merge is the approval.
+  const worktreePersisted = persistWorktreeProposal(session, result, { runId, taskId, ok, status });
+  if (worktreePersisted.error) {
+    persistDispatch(store, dispatchAgentEvent(session, createAgentEvent('runtime_log', {
+      origin: 'result_aggregator',
+      runId,
+      taskId,
+      payload: { message: `agent-proposal: could not persist the worktree proposal for ${taskId}: ${worktreePersisted.error}` },
+    })));
+  } else if (worktreePersisted.path) {
+    persistDispatch(store, dispatchAgentEvent(session, createAgentEvent('runtime_log', {
+      origin: 'result_aggregator',
+      runId,
+      taskId,
+      payload: { message: `agent-proposal: ${taskId} is waiting for review — ${worktreePersisted.path}` },
+    })));
+  }
   persistDispatch(store, dispatchAgentEvent(session, createAgentEvent('plan_step_updated', {
     origin: 'result_aggregator',
     runId,
@@ -225,6 +247,51 @@ function normalizeOutputRefs(value) {
 
 function persistDispatch(store, event) {
   store?.persistEvent?.(event);
+}
+
+/**
+ * Worktree proposals (agent.curate): the external runtime's run result carries
+ * `worktreeProposal` — the confined branch's changed files, their new content
+ * and the unified diff. The manager writes it into the workspace review queue
+ * (`.wiki/agent-proposals/<id>.json`, gitignored state) where the served
+ * review surface reads it; the MERGE happens there, through the engine's own
+ * write machinery — this function only records, it never touches wiki content.
+ */
+function persistWorktreeProposal(session, result, { runId, taskId }) {
+  const proposal = result?.result?.worktreeProposal ?? result?.worktreeProposal;
+  if (!proposal || typeof proposal !== 'object') return { path: null };
+  const changes = Array.isArray(proposal.changes) ? proposal.changes : [];
+  if (changes.length === 0) return { path: null };
+  const workspacePath = session?.workspacePath;
+  if (!workspacePath || typeof workspacePath !== 'string') {
+    return { error: 'no workspace path on the session — the proposal stays in the run result only' };
+  }
+  const record = {
+    id: String(taskId),
+    runId: String(runId ?? ''),
+    workspace: String(proposal.workspace ?? session.workspace ?? ''),
+    branch: String(proposal.branch ?? ''),
+    worktreePath: String(proposal.worktreePath ?? ''),
+    worktreeRelativePath: String(proposal.worktreeRelativePath ?? ''),
+    createdAt: new Date().toISOString(),
+    justification: String(proposal.justification ?? ''),
+    ...(Array.isArray(proposal.objections) && proposal.objections.length > 0
+      ? { objections: proposal.objections }
+      : {}),
+    changedFiles: Array.isArray(proposal.changedFiles) ? proposal.changedFiles : [],
+    changes,
+    diff: String(proposal.diff ?? ''),
+  };
+  try {
+    const safeId = String(taskId).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const dir = join(workspacePath, '.wiki', 'agent-proposals');
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${safeId}.json`);
+    writeFileSync(path, JSON.stringify(record, null, 2));
+    return { path };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 function agentPlanRequest(request, session) {

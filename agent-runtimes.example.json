@@ -11,7 +11,8 @@
           "name": "agent.review",
           "operations": ["run"],
           "description": "Read-only audit of a wiki workspace: compare source documents against the existing concept pages, identify missing or under-covered classes, and produce a structured gap report. No mutation.",
-          "aliases": ["audit", "review", "analyze", "compare", "check"]
+          "aliases": ["audit", "review", "analyze", "compare", "check"],
+          "subagents": ["scout", "analyst", "critique", "archivist"]
         },
         {
           "name": "agent.consistency",
@@ -39,6 +40,15 @@
           "operations": ["run"],
           "description": "Read-only research answer: investigate a question using the wiki sources and web search, and reply with a grounded answer. No mutation.",
           "aliases": ["answer", "question", "explain"]
+        },
+        {
+          "_comment": "worktree: the gateway gives this capability real but confined hands — a git worktree branch per objective, behind a canonical-path check. The workspace itself is NEVER written: the run returns a reviewable diff and the human merge (in the served review queue) IS the approval. No mutationClass, so no pre-run approval pause. subagents: the named collective that runs for this capability, in order — the Critique objects structurally, never blocks.",
+          "name": "agent.curate",
+          "operations": ["run"],
+          "description": "Curation proposal over the wiki: find duplicates, contradictions, outdated pages and unsourced claims, write the corrections on a dedicated branch and return a reviewable diff. The wiki is only read; nothing changes without a human merge.",
+          "aliases": ["curate", "clean", "deduplicate", "fix", "tidy"],
+          "worktree": true,
+          "subagents": ["scout", "analyst", "critique", "redactor", "archivist"]
         },
         {
           "_comment": "mutationClass 'ingest': writes the findings into the workspace inbox, approval required.",

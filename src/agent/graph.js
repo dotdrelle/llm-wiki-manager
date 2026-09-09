@@ -504,20 +504,50 @@ function looksLikeCapabilityQuestion(input) {
     .test(String(input ?? '').trim());
 }
 
+// Four structurally different failures used to collapse into two sentences, so
+// a real outage and a deliberate "nothing here fits" were indistinguishable.
+// Observed cost: /wiki-ingest was refused with "no ingestion capability is
+// available" while the production agent was merely down — it registered
+// knowledge.update eight minutes later, and nothing in the message had
+// suggested waiting or restarting it.
+//
+// The identifiers stay out of the user's message, as before. The KIND of
+// failure does not: it is the difference between "retry", "start your agent"
+// and "rephrase", and only the runtime can tell them apart.
+const DELEGATION_BLOCKERS = [
+  {
+    // objectiveResolver.js:18 — capabilityCandidates() is empty.
+    match: /No orchestrable capability is currently available/i,
+    blocker: 'no_agent_connected',
+    reason: 'No agent is connected right now, so nothing can be delegated. This is usually a service that is down or still starting, not a limit of what was asked.',
+  },
+  {
+    // objectiveResolver.js:146 — the capability is known, no healthy provider.
+    match: /No healthy agent provides/i,
+    blocker: 'agent_unavailable',
+    reason: 'The agent that handles this kind of work is connected but not answering, so the request was not started. It is worth retrying once it is back.',
+  },
+  {
+    // objectiveResolver.js:48 — the resolver judged that nothing fits.
+    match: /No connected agent can do that/i,
+    blocker: 'unsupported_action',
+    reason: 'None of the connected agents covers this kind of action. Rephrasing will not help; it needs an agent that provides it.',
+  },
+];
+
 function delegationBlockerForDonna(rawFailure) {
   const cleaned = String(rawFailure ?? '')
     .replace(/^[A-Za-z][A-Za-z0-9_]*Error\s*:?\s*/i, '')
     .replace(/\s*Available capabilities:\s*[\s\S]*$/i, '')
     .trim();
-  const reason = /No connected agent can do that|No orchestrable capability/i.test(cleaned)
-    ? 'No connected agent currently supports the requested action.'
-    : 'The requested action could not be assigned to a connected agent.';
+  const matched = DELEGATION_BLOCKERS.find((entry) => entry.match.test(cleaned));
   return JSON.stringify({
     delegated: false,
-    blocker: 'unsupported_action',
-    reason,
+    blocker: matched?.blocker ?? 'delegation_failed',
+    reason: matched?.reason
+      ?? 'The request reached an agent but could not be started. This is a failure on the way there, not a limit of what was asked.',
     instruction:
-      'Answer the user naturally in their language. Explain the concrete limitation briefly. Do not expose exception names, capability identifiers, tool names, UUIDs, or internal routing details. Do not retry or claim that an action started.',
+      'Answer the user naturally in their language. State which of these it is — nothing connected, an agent not answering, no agent covering this kind of action, or a failure on the way — so they know whether to wait, restart a service, or ask for something else. Do not expose exception names, capability identifiers, tool names, UUIDs, or internal routing details. Do not retry or claim that an action started.',
   });
 }
 
@@ -1986,6 +2016,11 @@ export function createAgentGraph(options = {}) {
               resultText = unresolvedTargetForDonna(delegationFailure);
             } else {
               terminalFailure = delegationFailure;
+              // The raw failure names the capability and the registry it saw.
+              // That belongs in the journal, where it turns the next
+              // occurrence into its own diagnosis — the user's message carries
+              // only the kind of failure.
+              state.session._onStep?.(`Agent: delegation refused — ${String(delegationFailure).replace(/\s+/g, ' ').trim()}`);
               resultText = delegationBlockerForDonna(delegationFailure);
               ok = false;
             }

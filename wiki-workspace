@@ -1188,7 +1188,13 @@ refresh_running_services() {
   local running_services=()
   read_lines_into_array running_services "$@" ps --status running --services
   if [[ ${#running_services[@]} -eq 0 ]]; then
-    printf '%s\n' "$no_running_msg"
+    # Refreshing only what already runs made `refresh` a no-op on a cold stack —
+    # exactly the state after a reboot, which is when someone runs it. The images
+    # are the thing being refreshed, and pulling them does not need a container
+    # up; only the recreate does.
+    printf '%s — pulling images anyway so the next start uses them.\n' "$no_running_msg"
+    "$@" pull
+    printf 'Images pulled. Start the stack to run them.\n'
     return
   fi
   "$@" pull "${running_services[@]}"

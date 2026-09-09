@@ -54,6 +54,10 @@ const SESSION_PROJECTION_EVENTS = new Set([
 // Events that can mutate state.plan in applyEvent() — only these warrant the
 // before/after plan comparison below (runtime_log fires far more often and
 // never touches the plan).
+// Generous enough to hold a large parallel run whole, small enough that the
+// per-event projection cost stays flat.
+const MAX_SESSION_EVENTS = 5000;
+
 const PLAN_MUTATING_EVENTS = new Set([
   'run_started',
   'plan_set',
@@ -95,6 +99,20 @@ export function dispatchAgentEvent(session, event) {
   const previousPlan = tracksPlan ? JSON.stringify(session.headlessPlan ?? null) : null;
   session.agentEvents ??= [];
   session.agentEvents.push(normalized);
+  // Bounded, because this array is re-read on every /state: store.js projects
+  // the workflow over the WHOLE of it, and /state is called on each SSE event.
+  // Unbounded, the cost of one event grew with everything the runtime had ever
+  // dispatched — a progressive slowdown that survived closing the browser and
+  // restarting the ShellUI, because the runtime process outlives both, and that
+  // only a purge or a runtime restart ever cleared.
+  // runtime_log alone justifies the cap: store.js deliberately keeps it OUT of
+  // the persisted log for being unbounded, while it accumulated here anyway.
+  // The durable record is SQLite; this is the working set. Dropping the oldest
+  // entries only affects the display-only usage/timing summaries of runs long
+  // finished.
+  if (session.agentEvents.length > MAX_SESSION_EVENTS) {
+    session.agentEvents.splice(0, session.agentEvents.length - MAX_SESSION_EVENTS);
+  }
   session._agentProjectionState ??= createProjectionState();
   applyEvent(session._agentProjectionState, normalized);
   session.agentProjection = publicProjection(session._agentProjectionState);

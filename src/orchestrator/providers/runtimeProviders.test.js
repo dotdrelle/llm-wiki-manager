@@ -157,8 +157,10 @@ test('resolveRuntimeProviders maps enabled entries and skips unknown types', () 
 test('loadAgentRuntimesConfig reads both array and object forms', () => {
   const dir = mkdtempSync(join(tmpdir(), 'agent-runtimes-'));
   try {
+    // env: {} — the machine's manager .env (GATEWAY_ENABLED) must not leak
+    // into this parse-shape test through the implied-gateway path.
     writeFileSync(join(dir, 'agent-runtimes.json'), JSON.stringify({ runtimes: [{ id: 'a', type: 'fake' }] }));
-    assert.deepEqual(loadAgentRuntimesConfig({ stateDir: dir }), [{ id: 'a', type: 'fake' }]);
+    assert.deepEqual(loadAgentRuntimesConfig({ stateDir: dir, env: {} }), [{ id: 'a', type: 'fake' }]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

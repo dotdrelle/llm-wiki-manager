@@ -767,3 +767,20 @@ test('task.assigned records the executor on the plan step for the UIs', () => {
   assert.ok(step, 'plan step exists');
   assert.equal(step.executor, 'production-main');
 });
+
+test('the in-memory event log is bounded, so /state projection cost stays flat', () => {
+  // Unbounded, this array made every /state re-project over everything the
+  // runtime had ever dispatched — a slowdown that outlived the browser and the
+  // ShellUI because the runtime process outlives both.
+  const session = { workspace: 'acme' };
+  for (let index = 0; index < 5200; index += 1) {
+    dispatchAgentEvent(session, createAgentEvent('runtime_log', {
+      origin: 'runtime',
+      payload: { message: `line ${index}` },
+    }));
+  }
+  assert.equal(session.agentEvents.length, 5000);
+  // The oldest are dropped, the newest kept: a live run must stay whole.
+  assert.match(session.agentEvents.at(-1).payload.message, /line 5199/);
+  assert.match(session.agentEvents[0].payload.message, /line 200/);
+});

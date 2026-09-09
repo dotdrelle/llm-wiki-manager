@@ -154,6 +154,7 @@ services:
     environment:
       - GATEWAY_CONFIG_DIR=/config
       - GATEWAY_AUTH_TOKEN=${GATEWAY_AUTH_TOKEN:-}
+      - GATEWAY_WORKSPACES_ROOT=/workspaces
       - NODE_USE_ENV_PROXY=${NODE_USE_ENV_PROXY:-}
       - HTTPS_PROXY=${HTTPS_PROXY:-}
       - HTTP_PROXY=${HTTP_PROXY:-}

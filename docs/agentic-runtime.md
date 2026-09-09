@@ -159,6 +159,16 @@ gateway restarts; a request without a workspace lands on `default`.
   `resultAggregator` resolves the target capability, calls its `agent_plan`,
   validates and integrates the fragment into the **same run**, with
   `enforceApprovalCoverage`. The runtime never touches the scheduler.
+- **Worktree proposals** (`worktree: true`, today `agent.curate`): the runtime
+  gets confined hands on a git worktree branch (one per objective, canonical
+  path check on every operation) and its result carries a `worktreeProposal`
+  (changed files, their new content, unified diff). `resultAggregator` persists
+  it into `<workspace>/.wiki/agent-proposals/<taskId>.json` and announces it in
+  the runtime log — the served review page (`/agent-proposals` in `wiki serve`)
+  is where the human MERGES (write through the engine + history commit) or
+  rejects (worktree removed). The merge IS the approval: the capability
+  declares no `mutationClass`, so no pre-run pause. The manager only RECORDS
+  the proposal; it never writes wiki content.
 - One active run per workspace (`context.running` + the control lane), and
   per-run locks, keep the deterministic path authoritative even if the runtime
   proposes and the user asks at the same time.

@@ -6,6 +6,7 @@ const LEGACY_DEFAULT_WIKI_CHAT_TOOLS = [
   'help_list', 'help_read', 'help_search', 'wiki_workspace_status',
   'wiki_list_pages', 'wiki_read_page', 'wiki_read_pages', 'wiki_search_context',
   'wiki_collect_context', 'wiki_read_ingested_source',
+  'wiki_graph_query', 'wiki_graph_path',
 ];
 const TEMPLATE_AUTHORING_CHAT_TOOLS = [
   'wiki_outline', 'template_read', 'template_write', 'build_context_write',

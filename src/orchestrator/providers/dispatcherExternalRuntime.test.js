@@ -298,7 +298,7 @@ test('dispatcher sends the active profile model with the run', async () => {
   assert.equal(requests[0].language, 'fr', 'the workspace language travels with the run');
   assert.deepEqual(requests[0].mcp, [{
     name: 'wiki',
-    url: 'http://localhost:3335/mcp/',
+    url: 'http://host.docker.internal:3335/mcp',
     headers: { Authorization: 'Bearer wiki-token' },
     tools: ['wiki_search_context', 'wiki_read_page'],
   }], 'the wiki MCP travels per run, read tools only — write tools never leave');
@@ -378,7 +378,7 @@ test('dispatcher sends the active profile model with the run', async () => {
   );
 
   assert.equal(received[0].model.model, 'openai/gpt-test');
-  assert.equal(received[0].model.baseUrl, 'http://127.0.0.1:9/v1');
+  assert.equal(received[0].model.baseUrl, 'http://host.docker.internal:9/v1');
   assert.equal(received[0].model.apiKey, 'k');
   assert.equal(received[0].model.temperature, 0.2);
 });

@@ -24,13 +24,28 @@ export function toolStartNote(name) {
   return `Using ${name || 'a tool'}…`;
 }
 
+function noteReason(detail) {
+  const compact = String(detail ?? '').replace(/\s+/g, ' ').trim();
+  if (!compact) return '';
+  try {
+    const parsed = JSON.parse(compact);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const reason = parsed.reason;
+      return typeof reason === 'string' && reason.trim() ? reason.trim() : '';
+    }
+  } catch {
+    // Not JSON: the detail is the reason itself.
+  }
+  return compact;
+}
+
 export function toolResultNote(name, ok, detail) {
   const tool = name || 'the tool';
+  const reason = noteReason(detail);
   if (ok === false) {
-    const reason = String(detail ?? '').replace(/\s+/g, ' ').trim();
     return reason ? `${tool} failed: ${reason}` : `${tool} failed.`;
   }
-  return `${tool} finished.`;
+  return reason ? `${tool} done: ${reason}` : `${tool} done.`;
 }
 
 export function turnDoneNote(steps) {

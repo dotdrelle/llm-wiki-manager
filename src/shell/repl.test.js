@@ -9,6 +9,7 @@ import {
   chatAllowedTools,
   createSession,
   isProductHelpQuestion,
+  readSelectedPageDocuments,
   runHeadlessChatTurn,
   sanitizeOpenWikiPage,
   sanitizeOpenWikiPages,
@@ -1251,6 +1252,81 @@ test('runHeadlessChatTurn inlines selected document content (multiple files) so 
     assert.match(joined, /CONTENU_BETA du second doc/);
     assert.match(joined, /BEGIN ATTACHED DOCUMENT raw\/untracked\/note\.md/);
     assert.match(joined, /BEGIN ATTACHED DOCUMENT wiki\/page\.md/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('runHeadlessChatTurn follows a selected digest page\'s [src: ...] citation and attaches the real source too', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'repl-docs-cite-'));
+  mkdirSync(join(root, 'raw', 'ingested', 'topic'), { recursive: true });
+  mkdirSync(join(root, 'wiki', 'concepts', 'produit'), { recursive: true });
+  const sourcePath = 'raw/ingested/topic/full-source.md';
+  writeFileSync(join(root, sourcePath), 'CONTENU_SOURCE_COMPLET avec tous les détails fonctionnels');
+  writeFileSync(
+    join(root, 'wiki', 'concepts', 'produit', 'digest.md'),
+    `# Digest\n\nCONTENU_DIGEST_COURT. [src: ${sourcePath}]`,
+  );
+  try {
+    const session = createSession();
+    session.chatMode = true;
+    session.workspacePath = root;
+    session.chatAccess = { maxToolIterations: 4, servers: {} };
+    session.mcp = {};
+    // No tools declared (empty chatAccess.servers), so this exercises the
+    // plain-stream branch — the one case where nothing else could have
+    // supplied the source content except the citation-following itself.
+    let seenMessages = [];
+    session.llm = {
+      async *stream({ messages }) {
+        seenMessages = messages ?? [];
+        yield 'ok';
+      },
+    };
+    await runHeadlessChatTurn(session, 'résume ce document', {
+      history: [],
+      openWikiPages: ['wiki/concepts/produit/digest.md'],
+    });
+    const joined = seenMessages.map((message) => String(message.content ?? '')).join('\n');
+    assert.match(joined, /CONTENU_DIGEST_COURT/);
+    assert.match(joined, /CONTENU_SOURCE_COMPLET avec tous les détails fonctionnels/);
+    assert.match(joined, new RegExp(`cited source of wiki/concepts/produit/digest\\.md`));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('readSelectedPageDocuments reads a repeated citation once and does not follow it a second level', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'repl-docs-cite-dedup-'));
+  mkdirSync(join(root, 'raw', 'ingested'), { recursive: true });
+  mkdirSync(join(root, 'wiki', 'concepts', 'produit'), { recursive: true });
+  const sourcePath = 'raw/ingested/shared-source.md';
+  // The shared source itself carries a [src: ...] marker (to a page that is
+  // never attached elsewhere) — proving the follow stops at one level: it
+  // must not appear as its own separate attached document.
+  const secondLevelPath = 'raw/ingested/never-attached.md';
+  writeFileSync(join(root, sourcePath), `CONTENU_SOURCE_PARTAGEE [src: ${secondLevelPath}]`);
+  writeFileSync(join(root, secondLevelPath), 'CONTENU_JAMAIS_ATTACHE');
+  // Two digests both cite the SAME source, and one cites it twice.
+  writeFileSync(
+    join(root, 'wiki', 'concepts', 'produit', 'digest-a.md'),
+    `DIGEST_A premier extrait [src: ${sourcePath}] et un second rappel [src: ${sourcePath}]`,
+  );
+  writeFileSync(
+    join(root, 'wiki', 'concepts', 'produit', 'digest-b.md'),
+    `DIGEST_B autre angle [src: ${sourcePath}]`,
+  );
+  try {
+    const session = createSession();
+    session.workspacePath = root;
+    const docs = await readSelectedPageDocuments(session, [
+      'wiki/concepts/produit/digest-a.md',
+      'wiki/concepts/produit/digest-b.md',
+    ]);
+    const sourceDocs = docs.filter((doc) => doc.path === sourcePath);
+    assert.equal(sourceDocs.length, 1, 'the shared source must be attached exactly once, not once per citing digest');
+    assert.match(sourceDocs[0].content, /CONTENU_SOURCE_PARTAGEE/);
+    assert.equal(docs.some((doc) => doc.path === secondLevelPath), false, 'a citation inside the followed source must not itself be followed');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -141,6 +141,23 @@ test('scaffold upgrades the packaged wiki chat allow-list with template authorin
   });
 });
 
+test('scaffold upgrades a pre-graph packaged wiki chat allow-list with the graph tools', () => {
+  withTempManagerDir((dir) => {
+    const endpointsFile = join(dir, 'mcp.endpoints.json');
+    const example = JSON.parse(readFileSync('mcp.endpoints.example.json', 'utf8'));
+    example.chatAccess.servers['llm-wiki'].allow = example.chatAccess.servers['llm-wiki'].allow
+      .filter((tool) => !['wiki_graph_query', 'wiki_graph_path'].includes(tool));
+    writeFileSync(endpointsFile, JSON.stringify(example, null, 2));
+
+    const changes = ensureManagerScaffold();
+    const after = JSON.parse(readFileSync(endpointsFile, 'utf8'));
+
+    assert.ok(changes.some((item) => item.includes('wiki_graph_query')));
+    assert.ok(after.chatAccess.servers['llm-wiki'].allow.includes('wiki_graph_query'));
+    assert.ok(after.chatAccess.servers['llm-wiki'].allow.includes('wiki_graph_path'));
+  });
+});
+
 test('scaffold upgrades the packaged cme chat allow-list with the live search tools', () => {
   withTempManagerDir((dir) => {
     const endpointsFile = join(dir, 'mcp.endpoints.json');

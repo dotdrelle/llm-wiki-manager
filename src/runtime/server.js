@@ -8,6 +8,7 @@ import { runtimeTokenFromEnv } from './auth.js';
 import { controlMessage } from './controlMessages.js';
 import { tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
 import { approvalClassForTask } from '../orchestrator/approvalPolicy.js';
+import { RUNTIME_SHUTDOWN_ABORT_REASON } from '../orchestrator/dispatcher.js';
 import { matchSkillInvocation } from '../core/skillInvocation.js';
 import { reconcileControlQueue } from './controlDrain.js';
 import { cancelControlChain, cancelQueuedControlItem } from './controlCancellation.js';
@@ -577,7 +578,13 @@ export function startRuntimeServer({
         const workspace = workspaceFromUrl(url);
         const context = await resolveContext({ workspace });
         if (context?.running && context.currentAbortController) {
-          context.currentAbortController.abort();
+          // Reason-tagged: the poll loop still has to unwind so its `finally`
+          // releases locks before the process exits, but this is the manager
+          // going away, not a user cancellation — the dispatcher must not
+          // read it as "give up on the agent job too". recoveryManager.js's
+          // idempotency requeue exists precisely to reattach to that job on
+          // the next boot; cancelling it here defeats that on every restart.
+          context.currentAbortController.abort(RUNTIME_SHUTDOWN_ABORT_REASON);
           await cancel?.(context);
         }
         sendJson(response, 202, { shutdown: true });

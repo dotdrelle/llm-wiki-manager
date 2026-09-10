@@ -437,30 +437,70 @@ export function sanitizeOpenWikiPages(values) {
 }
 
 
+// Tolerant [src: path] matcher, mirroring llm-wiki's own
+// src/utils/markdown.ts#extractSourceCitations (chained "[src: a.md ; src:
+// b.md]" included) without importing across the repo boundary for one regex.
+const SOURCE_CITATION_PATTERN = /\[\s*src\s*:\s*([^\]]+?)\s*\]/gi;
+
+function extractSourceCitationPaths(content) {
+  return [...content.matchAll(SOURCE_CITATION_PATTERN)].flatMap((match) =>
+    (match[1] ?? '')
+      .split(';')
+      .map((part) => part.trim().replace(/^src\s*:\s*/i, ''))
+      .filter(Boolean),
+  );
+}
+
+async function readWorkspaceFile(session, relPath, maxCharsPerDoc) {
+  try {
+    const absPath = path.resolve(session.workspacePath, relPath);
+    const rel = path.relative(session.workspacePath, absPath);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) return { path: relPath, content: null };
+    const raw = await readFile(absPath, 'utf8');
+    const content = raw.length > maxCharsPerDoc
+      ? `${raw.slice(0, maxCharsPerDoc).trimEnd()}\n[truncated]`
+      : raw;
+    return { path: relPath, content };
+  } catch {
+    return { path: relPath, content: null };
+  }
+}
+
 // Read the selected documents' content so chat can summarize them directly,
 // without depending on the model choosing to call a read tool (and without the
 // tool being offered at all). Paths are already sanitized to wiki/ or
 // raw/untracked/ .md files; the path.relative check is defence in depth. A doc
 // that cannot be read yields { content: null } so the caller can note it.
-export async function readSelectedPageDocuments(session, pages, { maxCharsPerDoc = 16000 } = {}) {
+//
+// A wiki page is a digest, not the evidence: it names its real sources inline
+// as [src: ...] citations. Reading only the digest is exactly the shortcut
+// that produced an answer covering one facet of a source ingest had split
+// into several concept leaves — the model reused the one digest already in
+// hand instead of going back to the source, even though it was told to.
+// Rather than hope a differently-prompted model chooses to call a read tool
+// for that source, follow each selected page's own citations one level deep
+// and attach them the same deterministic way, up to maxCitedDocs.
+export async function readSelectedPageDocuments(session, pages, { maxCharsPerDoc = 16000, maxCitedDocs = 5 } = {}) {
   if (!Array.isArray(pages) || pages.length === 0 || !session?.workspacePath) return [];
   const docs = [];
+  const seen = new Set();
   for (const relPath of pages) {
-    try {
-      const absPath = path.resolve(session.workspacePath, relPath);
-      const rel = path.relative(session.workspacePath, absPath);
-      if (rel.startsWith('..') || path.isAbsolute(rel)) {
-        docs.push({ path: relPath, content: null });
-        continue;
-      }
-      const raw = await readFile(absPath, 'utf8');
-      const content = raw.length > maxCharsPerDoc
-        ? `${raw.slice(0, maxCharsPerDoc).trimEnd()}\n[truncated]`
-        : raw;
-      docs.push({ path: relPath, content });
-    } catch {
-      docs.push({ path: relPath, content: null });
+    docs.push(await readWorkspaceFile(session, relPath, maxCharsPerDoc));
+    seen.add(relPath);
+  }
+
+  const citedBy = new Map();
+  for (const doc of docs) {
+    if (typeof doc.content !== 'string') continue;
+    for (const citation of extractSourceCitationPaths(doc.content)) {
+      if (seen.has(citation) || citedBy.has(citation)) continue;
+      citedBy.set(citation, doc.path);
     }
+  }
+  for (const [citation, citingPath] of [...citedBy.entries()].slice(0, maxCitedDocs)) {
+    const doc = await readWorkspaceFile(session, citation, maxCharsPerDoc);
+    docs.push({ ...doc, citedBy: citingPath });
+    seen.add(citation);
   }
   return docs;
 }
@@ -473,7 +513,12 @@ export function buildAttachedDocMessages(docs) {
   const readable = (docs ?? []).filter((doc) => typeof doc?.content === 'string' && doc.content.trim());
   if (readable.length === 0) return [];
   const body = readable
-    .map((doc) => `--- BEGIN ATTACHED DOCUMENT ${doc.path} ---\n${doc.content}\n--- END ATTACHED DOCUMENT ${doc.path} ---`)
+    .map((doc) => {
+      const label = doc.citedBy
+        ? `${doc.path} (cited source of ${doc.citedBy} — the real evidence, not a digest)`
+        : doc.path;
+      return `--- BEGIN ATTACHED DOCUMENT ${label} ---\n${doc.content}\n--- END ATTACHED DOCUMENT ${label} ---`;
+    })
     .join('\n\n');
   return [{
     role: 'user',

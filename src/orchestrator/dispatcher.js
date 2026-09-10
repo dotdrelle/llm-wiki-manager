@@ -2,11 +2,23 @@ import { normalizeActivity, parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { loadWorkspaceProfile } from '../core/profile.js';
+import { containerReachableUrl } from '../core/wikiSetup.js';
 import { mapRuntimeEvent } from '../core/runtimeEventAdapter.js';
 import { emitRuntimeLog, pollActivitiesOnce } from '../runtime/supervisor.js';
 import { APPROVAL_DEFAULT_CLASS, approvalCovered } from './approvalPolicy.js';
 import { isSuccessful, isTerminal } from './taskStatuses.js';
 
+
+// Distinguishes "the manager process is shutting down" from a genuine task
+// cancellation (/run cancel, /stop, /control cancel) on the SAME shared
+// AbortController + signal (server.js's context.currentAbortController) —
+// the dispatcher otherwise cannot tell the two apart, and calling agent_cancel
+// on a shutdown-abort was cancelling a still-healthy job the very recovery
+// mechanism (recoveryManager.js's idempotency requeue) exists to reattach to
+// on the next boot. A shutdown must still abort the poll loop — the `finally`
+// block's lock release has to run before the process exits — it must just not
+// tell the agent to give up on real work.
+export const RUNTIME_SHUTDOWN_ABORT_REASON = 'runtime_shutdown';
 
 export function createDispatcher({
   session = null,
@@ -66,7 +78,7 @@ export async function execute(task, assignment, {
       session.mcp,
       serverName,
       executeTool,
-      executeRequest(task, session, runId),
+      executeRequest(task, session, runId, assignment),
       signal,
     ));
     if (accepted?.accepted === false || accepted?.ok === false) {
@@ -155,7 +167,7 @@ export async function execute(task, assignment, {
       }
     }
   } catch (error) {
-    if (isAbortError(error) && jobId) {
+    if (isAbortError(error) && jobId && error.reason !== RUNTIME_SHUTDOWN_ABORT_REASON) {
       await callTool(session.mcp, serverName, cancelTool, { jobId }, null).catch(() => null);
     }
     throw error;
@@ -407,7 +419,20 @@ function dispatchExternalRuntimeActivity(session, task, assignment, runtimeRunId
   }));
 }
 
-function executeRequest(task, session, runId) {
+function executeRequest(task, session, runId, assignment) {
+  // The assignment's `capability` field is the capability ID (a string) for
+  // MCP agents; the OBJECT with the inputSchema lives on the registry agent's
+  // description. Resolve it properly — reading inputSchema off the string is
+  // what silently disabled the configPath injection below.
+  const capabilityId = task?.requiredCapability;
+  const capabilityObject = (assignment?.capability && typeof assignment.capability === 'object'
+    ? assignment.capability
+    : null)
+    ?? assignment?.agent?.description?.capabilities?.find(
+      (capability) => String(capability?.id ?? '') === String(capabilityId ?? ''),
+    )
+    ?? null;
+  const schemaProperties = capabilityObject?.inputSchema?.properties ?? {};
   return {
     taskId: String(task.id ?? task.step),
     ...(runId ? { runId: String(runId) } : {}),
@@ -428,6 +453,17 @@ function executeRequest(task, session, runId) {
       // first E2E ingest plan dispatched by the deep agent's
       // planExpansionRequest failed exactly that way, 19 tasks in one batch.
       ...(task.requiresApproval === true ? { confirm: true } : {}),
+      // The ACTIVE profile must reach the job: a task planned without an
+      // explicit configPath (the common case) otherwise runs on the workspace
+      // default .wikirc, so /config use <profile> changes the runtime's own
+      // LLM but silently not the production job's. The dispatcher is the one
+      // place every executor sees — inject the session's current profile when
+      // the capability declares the field and the task did not set one.
+      ...(task.arguments?.configPath === undefined
+        && 'configPath' in schemaProperties
+        && session?.wikirc?.fileName
+        ? { configPath: session.wikirc.fileName }
+        : {}),
     },
     constraints: {
       requireApprovalForMutations: task.requiresApproval === true,
@@ -448,7 +484,7 @@ function workspaceRequest(session) {
 function activeProfileModel(session) {
   const llm = session?.wikircConfig?.llm ?? {};
   const model = {
-    ...(llm.baseUrl ? { baseUrl: String(llm.baseUrl) } : {}),
+    ...(llm.baseUrl ? { baseUrl: containerReachableUrl(String(llm.baseUrl)).url } : {}),
     ...(llm.model ? { model: String(llm.model) } : {}),
     ...(llm.apiKey ? { apiKey: String(llm.apiKey) } : {}),
   };
@@ -521,7 +557,7 @@ export function activeProfileMcp(session) {
       };
       blocks.push({
         name: 'wiki',
-        url: String(wiki.url),
+        url: containerReachableUrl(String(wiki.url)).url,
         ...(Object.keys(headers).length > 0 ? { headers } : {}),
         tools,
       });
@@ -542,7 +578,7 @@ export function activeProfileMcp(session) {
     if (tools.length === 0) continue;
     blocks.push({
       name,
-      url: String(entry.url),
+      url: containerReachableUrl(String(entry.url)).url,
       ...(entry.headers && typeof entry.headers === 'object' ? { headers: entry.headers } : {}),
       tools,
     });
@@ -739,24 +775,25 @@ function taskLogPayload(event, task, assignment, {
 function delay(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
-      reject(abortError());
+      reject(abortError(signal));
       return;
     }
     const timer = setTimeout(resolve, Math.max(0, Number(ms) || 0));
     signal?.addEventListener('abort', () => {
       clearTimeout(timer);
-      reject(abortError());
+      reject(abortError(signal));
     }, { once: true });
   });
 }
 
 function throwIfAborted(signal) {
-  if (signal?.aborted) throw abortError();
+  if (signal?.aborted) throw abortError(signal);
 }
 
-function abortError() {
+function abortError(signal) {
   const error = new Error('Runtime run cancelled.');
   error.name = 'AbortError';
+  error.reason = signal?.reason;
   return error;
 }
 

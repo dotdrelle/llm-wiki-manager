@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { activeProfileMcp, createDispatcher, normalizeTaskError } from './dispatcher.js';
+import { activeProfileMcp, createDispatcher, normalizeTaskError, RUNTIME_SHUTDOWN_ABORT_REASON } from './dispatcher.js';
 
 test('activeProfileMcp forwards only the read-only wiki tools to the external runtime', () => {
   const session = {
@@ -89,6 +89,29 @@ test('activeProfileMcp tolerates namespaced tool names', () => {
     },
   };
   assert.deepEqual(activeProfileMcp(session)[0].tools, ['wiki__wiki_read_page']);
+});
+
+test('activeProfileMcp rewrites loopback URLs for the container the runtime runs in', () => {
+  const session = {
+    mcp: {
+      wiki: {
+        url: 'http://127.0.0.1:3201/mcp', status: 'connected',
+        tools: [{ name: 'wiki_read_page' }],
+      },
+      exa: {
+        url: 'http://localhost:9999/mcp/', status: 'connected', external: true,
+        tools: [{ name: 'web_search_exa' }],
+      },
+      hosted: {
+        url: 'https://mcp.exa.ai/mcp', status: 'connected', external: true,
+        tools: [{ name: 'web_search_exa' }],
+      },
+    },
+  };
+  const pool = activeProfileMcp(session);
+  assert.equal(pool.find((block) => block.name === 'wiki').url, 'http://host.docker.internal:3201/mcp');
+  assert.equal(pool.find((block) => block.name === 'exa').url, 'http://host.docker.internal:9999/mcp');
+  assert.equal(pool.find((block) => block.name === 'hosted').url, 'https://mcp.exa.ai/mcp');
 });
 
 test('dispatcher returns a retryable logical failure when agent_execute reports workspace_busy', async () => {
@@ -201,6 +224,72 @@ test('dispatcher completes when an executor-only agent reports succeeded', async
   assert.equal(result.ok, true);
   assert.equal(result.status, 'succeeded');
   assert.equal(result.jobId, 'job-connectors');
+});
+
+test('dispatcher cancels the agent job when genuinely aborted mid-poll', async () => {
+  const session = {
+    workspace: 'test',
+    mcp: { production: { status: 'connected', tools: [{ name: 'agent_execute' }, { name: 'agent_status' }, { name: 'agent_cancel' }] } },
+    activities: {},
+  };
+  const calledTools = [];
+  const dispatcher = createDispatcher({
+    session,
+    pollIntervalMs: 5,
+    callTool: async (_mcp, _server, tool) => {
+      calledTools.push(tool);
+      if (tool === 'agent_execute') return { accepted: true, jobId: 'job-1', status: 'queued' };
+      if (tool === 'agent_cancel') return { ok: true };
+      // agent_status: never terminal, forces the poll loop to keep waiting
+      // until the abort fires.
+      return { jobId: 'job-1', status: 'running' };
+    },
+  });
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 10);
+
+  await assert.rejects(
+    dispatcher.execute(
+      { id: 'analyze-doc', label: 'Analyze doc', requiredCapability: 'knowledge.update', operation: 'ingest_plan', arguments: {} },
+      { serverName: 'production', agentInstanceId: 'production-main' },
+      { attempt: { attemptId: 'analyze-doc:attempt-1', locks: [], release() {} }, signal: controller.signal },
+    ),
+  );
+  assert.ok(calledTools.includes('agent_cancel'), 'a genuine cancel/abort must still cancel the agent job');
+});
+
+test('dispatcher does NOT cancel the agent job when the manager is only shutting down', async () => {
+  // The exact scenario that caused a real incident: restarting the runtime
+  // mid-ingest orphaned in-flight sources because this path cancelled their
+  // still-healthy jobs instead of leaving them for recoveryManager.js's
+  // idempotency requeue to reattach to on the next boot.
+  const session = {
+    workspace: 'test',
+    mcp: { production: { status: 'connected', tools: [{ name: 'agent_execute' }, { name: 'agent_status' }, { name: 'agent_cancel' }] } },
+    activities: {},
+  };
+  const calledTools = [];
+  const dispatcher = createDispatcher({
+    session,
+    pollIntervalMs: 5,
+    callTool: async (_mcp, _server, tool) => {
+      calledTools.push(tool);
+      if (tool === 'agent_execute') return { accepted: true, jobId: 'job-2', status: 'queued' };
+      if (tool === 'agent_cancel') return { ok: true };
+      return { jobId: 'job-2', status: 'running' };
+    },
+  });
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(RUNTIME_SHUTDOWN_ABORT_REASON), 10);
+
+  await assert.rejects(
+    dispatcher.execute(
+      { id: 'analyze-doc', label: 'Analyze doc', requiredCapability: 'knowledge.update', operation: 'ingest_plan', arguments: {} },
+      { serverName: 'production', agentInstanceId: 'production-main' },
+      { attempt: { attemptId: 'analyze-doc:attempt-1', locks: [], release() {} }, signal: controller.signal },
+    ),
+  );
+  assert.ok(!calledTools.includes('agent_cancel'), 'a shutdown-reason abort must leave the still-healthy agent job running');
 });
 
 test('dispatcher normalizes a bare string error reported on a terminal agent_status', async () => {

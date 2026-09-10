@@ -6,11 +6,10 @@ const LEGACY_DEFAULT_WIKI_CHAT_TOOLS = [
   'help_list', 'help_read', 'help_search', 'wiki_workspace_status',
   'wiki_list_pages', 'wiki_read_page', 'wiki_read_pages', 'wiki_search_context',
   'wiki_collect_context', 'wiki_read_ingested_source',
-  'wiki_graph_query', 'wiki_graph_path',
 ];
-const TEMPLATE_AUTHORING_CHAT_TOOLS = [
+const WIKI_CHAT_TOOL_ADDITIONS = [
   'wiki_outline', 'template_read', 'template_write', 'build_context_write',
-  'wiki_read_deliverable',
+  'wiki_read_deliverable', 'wiki_graph_query', 'wiki_graph_path',
 ];
 // Same additive rule for the packaged cme allow-list: an install scaffolded
 // before the live search tools existed keeps the three legacy reads forever,
@@ -154,7 +153,7 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
           const migrateWikiChatTools = Array.isArray(wikiAllow)
             && LEGACY_DEFAULT_WIKI_CHAT_TOOLS.every((tool) => wikiAllow.includes(tool));
           const missingWikiChatTools = migrateWikiChatTools
-            ? TEMPLATE_AUTHORING_CHAT_TOOLS.filter((tool) => !wikiAllow.includes(tool))
+            ? WIKI_CHAT_TOOL_ADDITIONS.filter((tool) => !wikiAllow.includes(tool))
             : [];
           const cmeAllow = current.chatAccess?.servers?.cme?.allow;
           const migrateCmeChatTools = Array.isArray(cmeAllow)

@@ -309,7 +309,7 @@ export function agentConcurrencySections(session, env = process.env) {
 }
 
 function workspaceStatsColumns(stats, session) {
-  if (!stats) return { left: 'No workspace loaded.', right: '' };
+  if (!stats) return { wiki: 'No workspace loaded.', tuning: '' };
 
   const wikiLatest = formatDate(Math.max(
       stats.wiki.latest?.mtimeMs ?? 0,
@@ -343,8 +343,8 @@ function workspaceStatsColumns(stats, session) {
   const concurrency = agentConcurrencySections(session);
 
   return {
-    left: [wikiColumn, deliveryColumn].join('\n\n'),
-    right: [rawColumn, concurrency.production, concurrency.collection].join('\n\n'),
+    wiki: [wikiColumn, rawColumn, deliveryColumn].join('\n\n'),
+    tuning: [concurrency.production, concurrency.collection].join('\n\n'),
   };
 }
 
@@ -726,15 +726,15 @@ async function statusText(session) {
   const runtimesColumn = runtimeProvidersSection(session);
   const stats = workspaceStatsColumns(workspaceStats, session);
 
-  const leftColumn = [workspaceColumn, stats.left, runtimeColumn, mcpColumn, runtimesColumn].filter(Boolean).join('\n\n');
-  const rightColumn = [configColumn, stats.right].filter(Boolean).join('\n\n');
+  const wikiColumnAll = [workspaceColumn, stats.wiki, runtimeColumn].filter(Boolean).join('\n\n');
+  const configColumnAll = [configColumn, stats.tuning, mcpColumn, runtimesColumn].filter(Boolean).join('\n\n');
 
   // Leading/trailing blank row so the boxed pair doesn't butt directly against
   // the pane border when the view is scrolled to show the tail. It is padding,
   // not data: LeftPane renders a row that is blank on both sides as a plain
   // spacer, so no empty bordered box is drawn past the last real line.
   const pad = ' ';
-  return [pad, twoColumns(leftColumn, rightColumn), pad].join('\n');
+  return [pad, twoColumns(wikiColumnAll, configColumnAll), pad].join('\n');
 }
 
 function loadWorkspaceSystemPrompt(workspacePath) {

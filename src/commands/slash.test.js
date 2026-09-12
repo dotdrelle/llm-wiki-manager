@@ -4,7 +4,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { agentConcurrencySections, compactBaseUrl, compactMcpStatus, handleSlashCommand, localizedOperationResult, refreshMcpRuntimeStatus } from './slash.js';
+import { agentConcurrencySections, compactBaseUrl, compactMcpStatus, handleSlashCommand, localizedOperationResult, refreshMcpRuntimeStatus, webUiUrl } from './slash.js';
 import { completionContext } from '../shell/repl.js';
 
 test('deterministic operation results ask Donna to localize compact facts without leaking commands', () => {
@@ -50,6 +50,16 @@ test('/status base URL displays only its domain while retaining the full link', 
   );
   assert.equal(compactBaseUrl('http://localhost:11434/v1'), '[localhost:11434](http://localhost:11434/v1)');
   assert.equal(compactBaseUrl(undefined), '-');
+});
+
+test('/openui reuses the loopback runtime host so serve shares the TOTP session', () => {
+  // The runtime sets wiki_session on its own origin and cookies ignore the
+  // port: opening serve on the same host avoids a second login. Non-loopback
+  // runtimes share no cookie, so the plain localhost URL stays.
+  assert.equal(webUiUrl('3200', 'http://127.0.0.1:7788'), 'http://127.0.0.1:3200');
+  assert.equal(webUiUrl('3200', 'http://localhost:7788'), 'http://localhost:3200');
+  assert.equal(webUiUrl('3200', null), 'http://localhost:3200');
+  assert.equal(webUiUrl('3200', 'https://manager.example.com'), 'http://localhost:3200');
 });
 
 test('/status replaces Internal and Hints with effective agent concurrency', () => {

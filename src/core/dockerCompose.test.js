@@ -27,6 +27,20 @@ test('workspace production agent enables restore by default', async () => {
   assert.match(String(allowed), /(?:^|,)restore(?:,|})/);
 });
 
+test('the manager allowlist carries the new knowledge steps, not only the agent default', async () => {
+  // This env OVERRIDES agent-production's own default: a value missing
+  // ingest_rebuild/lint silently filters knowledge.rebuild/knowledge.check out
+  // of agent_describe (the capability is published only if one of its steps
+  // survives). That is exactly what made the wiki-row rebuild button run a
+  // plain ingest from raw/untracked instead of re-filing raw/ingested.
+  const raw = await readFile(new URL('../../docker-compose.yml', import.meta.url), 'utf8');
+  const compose = YAML.parse(raw);
+  const allowed = String(compose.services['production-mcp'].environment
+    .find((entry) => String(entry).startsWith('PRODUCTION_ALLOWED_STEPS=')));
+  assert.match(allowed, /(?:^|,)ingest_rebuild(?:,|})/);
+  assert.match(allowed, /(?:^|,)lint(?:,|})/);
+});
+
 test('the shipped default carries no step the engine retired in 0.15.66', async () => {
   /*
    0.15.66 a retiré du moteur llm-wiki les commandes `wiki concepts`,

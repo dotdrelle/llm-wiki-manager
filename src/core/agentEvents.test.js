@@ -39,6 +39,43 @@ test('a streamed reply keeps the sequence of the delta that created it', () => {
   assert.deepEqual(conversationEventSequences(events), [1, 2]);
 });
 
+test('conversation_reset marks a seed boundary and keeps the displayed thread', () => {
+  const events = sequenced([
+    createAgentEvent('user_message', { origin: 'user', payload: { content: 'avant' } }),
+    createAgentEvent('assistant_message', { origin: 'runtime', payload: { content: 'réponse avant' } }),
+    createAgentEvent('conversation_reset', { origin: 'user', payload: {} }),
+    createAgentEvent('user_message', { origin: 'user', payload: { content: 'après' } }),
+  ]);
+
+  const projection = reduceAgentEvents(events);
+  // The thread stays whole — compacting must not erase what the reader sees…
+  assert.deepEqual(projection.conversation.map((message) => message.content), ['avant', 'réponse avant', 'après']);
+  // …only the grounding boundary moves.
+  assert.equal(projection.conversationSeedStart, 2);
+});
+
+test('conversation_reset stores the summary it carries and keeps it through a later compact with none', () => {
+  const events = sequenced([
+    createAgentEvent('user_message', { origin: 'user', payload: { content: 'avant' } }),
+    createAgentEvent('conversation_reset', { origin: 'user', payload: { summary: 'Résumé 1' } }),
+    createAgentEvent('user_message', { origin: 'user', payload: { content: 'entre' } }),
+    // A summary is best-effort (an LLM call): a compact with no summary (LLM
+    // unavailable, or nothing worth summarizing) must not erase the last one.
+    createAgentEvent('conversation_reset', { origin: 'user', payload: {} }),
+  ]);
+  const projection = reduceAgentEvents(events);
+  assert.equal(projection.conversationSummary, 'Résumé 1');
+});
+
+test('a later compact with a new summary replaces the previous one', () => {
+  const events = sequenced([
+    createAgentEvent('conversation_reset', { origin: 'user', payload: { summary: 'Résumé 1' } }),
+    createAgentEvent('conversation_reset', { origin: 'user', payload: { summary: 'Résumé 2' } }),
+  ]);
+  const projection = reduceAgentEvents(events);
+  assert.equal(projection.conversationSummary, 'Résumé 2');
+});
+
 test('an independent queued skill invocation never inherits the active run identity', () => {
   const session = {
     workspace: 'docs',

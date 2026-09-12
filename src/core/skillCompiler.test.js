@@ -31,7 +31,7 @@ test('validation rejects technical routing details', () => {
 });
 
 test('every shipped scaffold skill compiles to a single intention, deterministically', async () => {
-  const expected = { pipeline: 1, 'wiki-sync': 1, 'wiki-ingest': 1, 'wiki-build': 1, deliver: 1, diagnose: 1, status: 1, 'new-template': 1 };
+  const expected = { pipeline: 1, 'wiki-sync': 1, 'wiki-ingest': 1, 'wiki-build': 1, deliver: 1, diagnose: 1, status: 1, 'new-template': 1, 'wiki-rebuild': 1 };
   // Passing no llmFallback used to make this test assert the one path
   // production never takes: an ambiguous body silently returns the safe
   // mono-intention fallback, so the count was 1 and the test was green while
@@ -44,6 +44,26 @@ test('every shipped scaffold skill compiles to a single intention, deterministic
     const { meta, body } = parseFrontmatter(raw);
     assert.equal(deterministicObjectives(body).ambiguous, false, `${name} is ambiguous for the deterministic pass`);
     assert.equal((await compileSkillObjectives({ ...meta, body }, {}, { llmFallback })).length, count, name);
+  }
+});
+
+test('the shipped wiki-rebuild skill resolves through the deterministic alias path only', async () => {
+  // The objective resolver's fast path fires only when EXACTLY ONE capability
+  // alias phrase matches the objective. Bare words other agents alias ('build',
+  // 'rebuild', 'ingest', 'check', 'export'…) would make the LLM resolver decide
+  // instead. The shipped body is worded to stay on the deterministic path: it
+  // must carry the agent-production knowledge.rebuild alias phrase and none of
+  // the colliding words — verified against the alias lists actually shipped in
+  // agent-production (knowledge.rebuild / knowledge.check) and the other
+  // agents (cme: 'export sources'…, gateway: 'check'…).
+  const raw = readFileSync(resolve('../llm-wiki/scaffold/workspace/.wiki/skills', 'wiki-rebuild.md'), 'utf8');
+  const { body } = parseFrontmatter(raw);
+  const objectives = await compileSkillObjectives({ body }, {});
+  assert.equal(objectives.length, 1);
+  const text = objectives[0].text;
+  assert.match(text, /file the archived sources/i);
+  for (const word of ['ingest', 'build', 'rebuild', 'export', 'publish', 'okf', 'frontmatter', 'diagnose', 'restore', 'pipeline', 'check', 'audit', 'review', 'analyze', 'compare']) {
+    assert.doesNotMatch(text, new RegExp(`\\b${word}\\b`, 'i'), `word "${word}" must not appear in the objective`);
   }
 });
 

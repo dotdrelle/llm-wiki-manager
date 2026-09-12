@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { createInterface } from 'node:readline/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureManagerScaffold, loadManagerEnv } from '../core/env.js';
@@ -47,6 +48,17 @@ function valueAfter(argv, flag) {
   const index = argv.indexOf(flag);
   if (index === -1) return undefined;
   return argv[index + 1];
+}
+
+async function confirmOnTty(question, defaultValue) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return defaultValue;
+  const readline = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await readline.question(`${question} [y/N] `)).trim().toLowerCase();
+    return answer === 'y' || answer === 'yes';
+  } finally {
+    readline.close();
+  }
 }
 
 function errorDiagnostic(err) {
@@ -949,6 +961,11 @@ async function runRuntime(argv, agent) {
   const host = valueAfter(argv, '--host') ?? process.env.WIKI_MANAGER_RUNTIME_HOST ?? '0.0.0.0';
   const port = Number(valueAfter(argv, '--port') ?? process.env.WIKI_MANAGER_RUNTIME_PORT ?? 7788);
   const stateDir = valueAfter(argv, '--state-dir') ?? defaultRuntimeStateDir();
+  // The TOTP login modules resolve their state directory from the ENV, not
+  // from the CLI option: without this, `runtime --state-dir X` would store
+  // totp.json/session.json in the DEFAULT manager state dir while the rest of
+  // the runtime uses X — sessions issued on one side invisible to the other.
+  process.env.WIKI_MANAGER_STATE_DIR = stateDir;
   const auth = resolveRuntimeAuthToken({ host, stateDir });
   if (auth.token) process.env.WIKI_MANAGER_RUNTIME_TOKEN = auth.token;
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
@@ -1351,7 +1368,15 @@ async function runRuntime(argv, agent) {
       );
     }
     if (!Array.isArray(fragment?.tasks) || fragment.tasks.length === 0) {
-      throw new Error(fragment?.summary?.initialSynthesis?.[0] ?? `No task was planned for ${selection.capability}/${selection.operation}.`);
+      // An agent may legitimately plan nothing: no pending source to ingest, no
+      // template, no deliverable, no archived source to re-file. That is an
+      // OUTCOME, not a failure — the agent carries its own human-readable
+      // sentence in summary.initialSynthesis. The stable EMPTY_PLAN sentinel
+      // tells graph.js to relay that outcome instead of the generic "could not
+      // be started" failure (which read as a connectivity problem).
+      const plannedReason = String(fragment?.summary?.initialSynthesis?.[0] ?? '').replace(/\s+/g, ' ').trim();
+      const reason = plannedReason || `${selection.capability} planned no task for ${selection.operation}.`;
+      throw new Error(`EMPTY_PLAN: ${reason}`);
     }
     const validation = validateFragment(fragment, {
       registry: capabilityRegistryForSession(session),
@@ -1898,6 +1923,65 @@ export async function runCli(argv) {
     return;
   }
 
+  if (argv[0] === 'login' || argv[0] === 'logout') {
+    const { ensureRuntime } = await import('../runtime/lifecycle.js');
+    const { fetchLoginStatus, requestTotpSession, revokeRuntimeSession } = await import('../runtime/totpLogin.js');
+    let runtime = null;
+    try {
+      runtime = await ensureRuntime();
+    } catch (err) {
+      runtime = { url: null, error: err instanceof Error ? err.message : String(err) };
+    }
+    if (!runtime.url) throw new Error(`Runtime unavailable: ${runtime.error}`);
+    if (argv[0] === 'logout') {
+      const { currentSessionToken } = await import('../runtime/loginSession.js');
+      const revoked = await revokeRuntimeSession(runtime, currentSessionToken());
+      console.log(revoked ? 'Session revoked.' : 'No active session to revoke (or the runtime is not answering).');
+      return;
+    }
+    if (argv.includes('--reset')) {
+      // Re-enrollment after a lost authenticator: wipes the secret and the
+      // active session (local files, not an HTTP route) then runs the normal
+      // login flow, which lands on a fresh enrollment QR code.
+      const confirmed = argv.includes('--yes') || (await confirmOnTty(
+        'Reset the TOTP enrollment? This revokes the active session.\nContinue?',
+        false,
+      ));
+      if (!confirmed) {
+        console.log('Aborted.');
+        return;
+      }
+      const { resetTotpEnrollment } = await import('../runtime/loginSession.js');
+      resetTotpEnrollment();
+      console.log('TOTP enrollment and the active session were reset — enrolling a new authenticator now.');
+    }
+    const status = await fetchLoginStatus(runtime);
+    if (status && !status.enabled) {
+      console.log('TOTP login is disabled (WIKI_MANAGER_TOTP=off).');
+      return;
+    }
+    if (!argv.includes('--reset') && status?.sessionActive) {
+      // A session already exists, but the *browser* only gets the shared
+      // wiki_session cookie the moment it verifies a code on the runtime's
+      // origin. Re-open the page when asked so a browser that has none can
+      // seed it (and then reuse it on serve, same host) without waiting for
+      // the session to expire first.
+      if (!argv.includes('--no-open')) {
+        const { loginPageUrl, openBrowser } = await import('../runtime/totpLogin.js');
+        try {
+          await openBrowser(loginPageUrl(runtime));
+        } catch {
+          console.log(`Open ${loginPageUrl(runtime)} to seed this browser's session.`);
+        }
+      }
+      console.log(`Session already active until ${new Date(status.sessionExpiresAt).toLocaleString()}.`);
+      return;
+    }
+    const result = await requestTotpSession(runtime, { open: !argv.includes('--no-open') });
+    if (!result.ok) throw new Error(result.error);
+    return;
+  }
+
   if (argv.includes('--setup-wizard')) {
     if (!process.versions.bun) {
       throw new Error('Setup wizard requires Bun. Run: bun ./bin/wiki-manager.js --setup-wizard');
@@ -2008,6 +2092,15 @@ export async function runCli(argv) {
       runtime = unavailableRuntime(err);
       console.error(`Runtime unavailable: ${runtime.error}`);
     }
+    if (runtime.url) {
+      const { requestTotpSession } = await import('../runtime/totpLogin.js');
+      const gate = await requestTotpSession(runtime);
+      if (!gate.ok) {
+        console.error(gate.error);
+        process.exitCode = 1;
+        return;
+      }
+    }
     preflight = withRuntimePreflight(preflight, runtime);
     // render() resolves at mount; the TUI owns renderer teardown. The shared
     // runtime deliberately survives shell exit because `serve` may use it.
@@ -2029,6 +2122,15 @@ export async function runCli(argv) {
     } catch (err) {
       runtime = unavailableRuntime(err);
       console.error(`Runtime unavailable: ${runtime.error}`);
+    }
+    if (runtime.url) {
+      const { requestTotpSession } = await import('../runtime/totpLogin.js');
+      const gate = await requestTotpSession(runtime);
+      if (!gate.ok) {
+        console.error(gate.error);
+        process.exitCode = 1;
+        return;
+      }
     }
   }
   await runShell({ agent, packageJson, runtime });

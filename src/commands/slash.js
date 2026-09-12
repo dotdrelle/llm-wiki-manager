@@ -109,6 +109,26 @@ export function compactBaseUrl(value) {
   }
 }
 
+/*
+ The web UI URL `/openui` opens. The runtime sets the `wiki_session` cookie on
+ its own origin when the ShellUI logs in, and cookies ignore the port, so we
+ reuse the runtime's loopback hostname: serve on that same host then validates
+ the shared session instead of asking for a second TOTP code. A non-loopback
+ runtime (remote deployment) shares no cookie with the local browser, so we
+ keep the plain `localhost` URL there — behaving exactly as before.
+*/
+export function webUiUrl(port, runtimeUrl) {
+  let runtimeHost = null;
+  try {
+    if (runtimeUrl) runtimeHost = new URL(runtimeUrl).hostname || null;
+  } catch {
+    runtimeHost = null;
+  }
+  const loopback = runtimeHost === 'localhost' || runtimeHost === '::1' || /^127\./.test(runtimeHost ?? '');
+  const host = loopback ? runtimeHost : 'localhost';
+  return `http://${host}:${port}`;
+}
+
 function commandLabel(value) {
   return `${styles.bold}${styles.cyan}${value}${styles.reset}`;
 }
@@ -726,8 +746,8 @@ async function statusText(session) {
   const runtimesColumn = runtimeProvidersSection(session);
   const stats = workspaceStatsColumns(workspaceStats, session);
 
-  const wikiColumnAll = [workspaceColumn, stats.wiki, runtimeColumn].filter(Boolean).join('\n\n');
-  const configColumnAll = [configColumn, stats.tuning, mcpColumn, runtimesColumn].filter(Boolean).join('\n\n');
+  const wikiColumnAll = [workspaceColumn, stats.wiki, runtimeColumn, mcpColumn].filter(Boolean).join('\n\n');
+  const configColumnAll = [configColumn, stats.tuning, runtimesColumn].filter(Boolean).join('\n\n');
 
   // Leading/trailing blank row so the boxed pair doesn't butt directly against
   // the pane border when the view is scrolled to show the tail. It is padding,
@@ -1734,9 +1754,23 @@ export async function handleSlashCommand(line, context) {
     }
     case 'openui': {
       const port = context.session.workspaceEnv?.WIKI_SERVE_PORT ?? '3100';
-      const url = `http://localhost:${port}`;
+      const url = webUiUrl(port, context.runtime?.url ?? context.session?.runtime?.url ?? null);
+      // Hand the ShellUI session to the browser so serve opens without a second
+      // TOTP code: the token rides in the URL fragment (never sent to the
+      // server, so it stays out of logs), and serve's login page exchanges it
+      // for its cookie on load. Open `/login` directly rather than the root so
+      // the fragment never has to survive a redirect. The printed line never
+      // carries the token.
+      let openUrl = url;
+      try {
+        const { currentSessionToken } = await import('../runtime/loginSession.js');
+        const token = currentSessionToken();
+        if (token) openUrl = `${url}/login#t=${encodeURIComponent(token)}`;
+      } catch {
+        // No readable session (gate off, or a custom state dir): plain URL.
+      }
       const note = context.session.workspaceEnv ? '' : ' (no workspace loaded — using default port)';
-      if (openExternalUrl(url)) return { output: `Opening web UI: ${url}${note}` };
+      if (openExternalUrl(openUrl)) return { output: `Opening web UI: ${url}${note}` };
       return { output: `Web UI: ${url}${note}` };
     }
     case 'clear': {

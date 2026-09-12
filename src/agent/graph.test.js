@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bareToolCallJson, buildAgentSystemPrompt, connectorConfigurationTarget, createAgentGraph, invalidSuggestedSlashCommands, invalidUserFacingToolNames, isOrchestrationBypassTool, knownCapabilityIds, normalizeToolArgumentsFromSchema } from './graph.js';
+import { bareToolCallJson, buildAgentSystemPrompt, connectorConfigurationTarget, createAgentGraph, invalidSuggestedSlashCommands, invalidUserFacingToolNames, isOrchestrationBypassTool, knownCapabilityIds, normalizeToolArgumentsFromSchema, nothingToDoForDonna } from './graph.js';
 
 test('user-facing response guard hides MCP identifiers generically', () => {
   const session = sessionBase();
@@ -11,6 +11,29 @@ test('user-facing response guard hides MCP identifiers generically', () => {
     invalidUserFacingToolNames('Utilisez production__production_start_job.', session),
     ['production__production_start_job'],
   );
+});
+
+test('an empty agent plan is relayed as "nothing to do", not as a failure', () => {
+  // The agent planned zero tasks and said why: no pending source, no template,
+  // no deliverable. That is an outcome. The old generic path called it "could
+  // not be started" and sent the reader after a connectivity problem that did
+  // not exist.
+  const payload = JSON.parse(nothingToDoForDonna(
+    'No Markdown files were found in raw/untracked; no ingest operation was planned.',
+  ));
+  assert.equal(payload.delegated, false);
+  assert.equal(payload.nothingToDo, true);
+  assert.match(payload.reason, /No Markdown files were found in raw\/untracked/);
+  assert.match(payload.instruction, /do not call it a failure/i);
+  assert.doesNotMatch(payload.instruction, /EMPTY_PLAN/);
+});
+
+test('the nothing-to-do reason strips internal routing details', () => {
+  const payload = JSON.parse(nothingToDoForDonna(
+    'No templates were found. Available capabilities: document.build, knowledge.update provider=production endpoint=http://host:3202',
+  ));
+  assert.doesNotMatch(payload.reason, /Available capabilities/);
+  assert.doesNotMatch(payload.reason, /provider=|endpoint=/);
 });
 
 test('CME setup stays direct while CME export execution stays orchestrated', () => {

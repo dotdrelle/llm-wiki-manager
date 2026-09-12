@@ -637,6 +637,41 @@ The env-based defaults are resolved once and cached in `getEnvRetryPolicy()`.
 `createSqliteQueueStore` for runtime sessions. `jobQueue.js` routes through
 `queueStoreFor(session)` transparently.
 
+### TOTP login surface
+
+The runtime is the **single login authority** for the human surfaces (ShellUI
++ `serve`): it holds the TOTP secret (`totp.json`) and the active session
+(`session.json`) in the runtime state directory, both 0600. Never duplicate
+the secret or the session logic anywhere else.
+
+- `src/runtime/totp.js` — RFC 6238 core (HMAC-SHA1, 6 digits, 30 s, ±1 window,
+  timing-safe digest compare), base32, `otpauthUri`. Vectors-tested.
+- `src/runtime/loginSession.js` — enrollment (in-memory pending secret shown
+  on the page BEFORE the first successful code persists it; enrollment refused
+  from non-loopback addresses), session issue/verify/slide/revoke, per-address
+  attempt rate limit. TTL: `WIKI_MANAGER_SESSION_TTL_HOURS` (default 12);
+  disable with `WIKI_MANAGER_TOTP=off`.
+- `src/runtime/loginPage.js` + `src/runtime/qrCode.js` — the login page
+  (English chrome) with the enrollment QR (vendored MIT `qrcode-generator` in
+  `vendor/qrcode.cjs`).
+- `server.js` routes **before the bearer gate** (public by design — the door,
+  not a room): `GET /login`, `POST /login/verify`, `GET /login/status`,
+  `POST /logout`, and `GET /session/verify?token=`. The verify endpoint is
+  public ON PURPOSE: the token IS the credential being checked — the caller
+  already holds it, so confirming it leaks nothing possession does not imply,
+  and requiring the bearer there turns a token/URL mismatch into a login loop
+  on serve.
+- `src/runtime/totpLogin.js` — `wiki-manager login`/`logout` and the
+  interactive startup gate (open browser, poll, report expiry).
+- Headless/CI never passes through the gate; the runtime bearer stays the
+  service-to-service credential, untouched.
+
+`serve` (llm-wiki) validates its `wiki_session` cookie against
+`GET /session/verify` on every request (30 s memo) and fails closed with a
+clear page when the runtime is unreachable. Logout revokes server-side and
+drops the cookie; a stolen token still expires with the TTL (documented in
+`help-doc/13-login-totp.md`).
+
 ## Contracts
 
 `src/contracts/schemas.js` (0.10.3): versioned (`v1`) JSON-schema-like

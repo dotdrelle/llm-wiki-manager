@@ -77,6 +77,13 @@ workspace `.wikirc.yaml`.
 | `NO_PROXY` | recommended with a proxy | hosts that must remain direct, notably the local runtime and MCP endpoints |
 | `WIKI_MANAGER_CONNECTIVITY_URL` | no | HTTPS endpoint used by the ordered ShellUI startup connectivity probe |
 | `WIKI_MANAGER_RUNTIME_HOST` | yes (shipped active) | interface the host runtime binds. `0.0.0.0` by default: `serve` runs in Docker and reaches the runtime through `host.docker.internal`, which a `127.0.0.1` bind refuses. Exposing the port always generates `WIKI_MANAGER_RUNTIME_TOKEN` |
+| `WIKI_MANAGER_TOTP` | no | set to `off` to disable the TOTP login gate (default: on). The gate is the **human** lock in front of the ShellUI and `serve`; headless/CI never passes through it |
+| `WIKI_MANAGER_SESSION_TTL_HOURS` | no | TOTP session lifetime in hours of inactivity, sliding (default `12`) |
+
+The TOTP secret and the session live in the manager runtime state directory
+(`totp.json`, `session.json`, both 0600) — the runtime is the single login
+authority; `serve` validates its session cookie against it on every request.
+See `help-doc/13-login-totp.md` for the user-facing behaviour.
 
 Leaving an agent's `*_MCP_AUTH_TOKEN` empty disables authentication on that
 agent — not recommended outside local development.

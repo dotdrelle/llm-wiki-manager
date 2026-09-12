@@ -215,6 +215,8 @@ export function conversationEventSequences(events = []) {
 function createProjectionState() {
   return {
     conversation: [],
+    conversationSeedStart: 0,
+    conversationSummary: null,
     chain: [],
     plan: null,
     activities: {},
@@ -234,6 +236,8 @@ function createProjectionState() {
 function publicProjection(state) {
   const projection = {
     conversation: state.conversation.map((message) => ({ ...message })),
+    conversationSeedStart: state.conversationSeedStart ?? 0,
+    conversationSummary: state.conversationSummary ?? null,
     chain: state.chain.map((step) => ({ ...step })),
     plan: state.plan ? state.plan.map((step) => ({ ...step })) : null,
     activities: sortedActivities(state.activities).map((activity) => ({ ...activity })),
@@ -312,6 +316,25 @@ function applyEvent(state, event) {
       return;
     case 'user_message':
       state.conversation.push({ role: 'user', content: String(event.payload?.content ?? '') });
+      return;
+    case 'conversation_reset':
+      // A deliberate user action (the served chat's memory gauge): everything
+      // said before this point stops feeding conversationSeed's LLM context,
+      // WITHOUT touching the displayed conversation — the thread stays visible
+      // everywhere (ShellUI and serve), only what Donna is told going forward
+      // is reset. Nothing is removed from the event log. Marking the boundary
+      // (length at reset time) instead of clearing state.conversation is what
+      // keeps the two concerns apart: the gauge/seed read conversationSeedStart,
+      // the display reads conversation.
+      state.conversationSeedStart = state.conversation.length;
+      // The summary is best-effort (an LLM call the compact route makes before
+      // dispatching this event): when it succeeds it REPLACES the previous one
+      // — it is a rolling summary of "everything before this point", not an
+      // accumulating log — and when it fails or is skipped (no LLM configured)
+      // the previous summary survives rather than being wiped by an empty one.
+      if (typeof event.payload?.summary === 'string' && event.payload.summary.trim()) {
+        state.conversationSummary = event.payload.summary.trim();
+      }
       return;
     case 'assistant_message':
       finalizeAssistantMessage(state, String(event.payload?.content ?? ''));

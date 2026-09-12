@@ -15,6 +15,29 @@ import { cancelControlChain, cancelQueuedControlItem } from './controlCancellati
 import { generateSkillAcknowledgment, runSkillChain } from './skillRun.js';
 import { emitRuntimeLog } from './supervisor.js';
 import { findSkill, listSkills } from '../core/skills.js';
+import {
+  enrollment,
+  isLoopbackAddress,
+  isTotpEnabled,
+  issueSessionWithTotp,
+  loginAttemptAllowed,
+  loginStatus,
+  pruneLoginAttempts,
+  resetLoginAttempts,
+  revokeSession,
+  verifySessionToken,
+} from './loginSession.js';
+import { loginPageHtml } from './loginPage.js';
+
+function loginErrorText(code) {
+  const messages = {
+    totp_disabled: 'TOTP login is disabled on this manager.',
+    no_enrollment: 'Enrollment expired. Reload this page.',
+    enrollment_requires_loopback: 'Enrollment must be done from the machine running the manager.',
+    invalid_code: 'Invalid verification code.',
+  };
+  return messages[code] ?? 'Verification failed.';
+}
 
 const PRIVATE_CONTROL_INPUTS = new WeakMap();
 
@@ -75,12 +98,85 @@ export function startRuntimeServer({
 
   const server = createServer(async (request, response) => {
     try {
+      const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+
+      // ── TOTP login surface — public by design: it is the door, not a room ──
+      if (url.pathname === '/login' && request.method === 'GET') {
+        const remoteAddress = request.socket?.remoteAddress ?? null;
+        const current = enrollment();
+        const status = loginStatus();
+        if (!status.enabled) {
+          sendHtml(response, 200, loginPageHtml({ error: 'TOTP login is disabled on this manager.' }));
+          return;
+        }
+        if (!status.enrolled && !isLoopbackAddress(remoteAddress)) {
+          sendHtml(response, 403, loginPageHtml({ error: 'Enrollment must be done from the machine running the manager.' }));
+          return;
+        }
+        sendHtml(response, 200, loginPageHtml({
+          enrolled: status.enrolled,
+          secret: current?.secret ?? null,
+          uri: current?.uri ?? null,
+        }));
+        return;
+      }
+      if (url.pathname === '/login/verify' && request.method === 'POST') {
+        const remoteAddress = request.socket?.remoteAddress ?? null;
+        const allowed = loginAttemptAllowed(remoteAddress);
+        if (!allowed.ok) {
+          sendJson(response, 429, { ok: false, error: `Too many attempts. Try again in ${allowed.retryAfterSeconds}s.` });
+          return;
+        }
+        const body = await readJson(request).catch(() => ({}));
+        const result = issueSessionWithTotp(body?.code, { remoteAddress });
+        if (!result.ok) {
+          sendJson(response, 401, { ok: false, error: loginErrorText(result.error) });
+          return;
+        }
+        resetLoginAttempts(remoteAddress);
+        // Hand the session to the browser as a cookie, on the runtime's own
+        // origin. Cookies ignore the port, so a browser that logged in here
+        // (the ShellUI gate) carries the same `wiki_session` to `serve` when
+        // it runs on this host — one TOTP login for both surfaces. serve sets
+        // its own cookie too when a browser reaches it first.
+        setSessionCookie(response, result.token, result.expiresAt, request);
+        sendJson(response, 200, {
+          ok: true,
+          token: result.token,
+          expiresAt: result.expiresAt,
+          page: loginPageHtml({ enrolled: true, sessionExpiresAt: result.expiresAt }),
+        });
+        return;
+      }
+      if (url.pathname === '/login/status' && request.method === 'GET') {
+        sendJson(response, 200, { ok: true, ...loginStatus() });
+        return;
+      }
+      if (url.pathname === '/logout' && request.method === 'POST') {
+        const body = await readJson(request).catch(() => ({}));
+        // revokeSession refuses without the session's own token — this route
+        // sits before the bearer gate by design, so the token itself is the
+        // only proof that the caller is the session being revoked, not an
+        // unauthenticated third party forcing the operator out.
+        const revoked = revokeSession(body?.token ?? null);
+        sendJson(response, 200, { ok: true, revoked });
+        return;
+      }
+      if (request.method === 'GET' && url.pathname === '/session/verify') {
+        // Public on purpose: the token IS the credential being checked — the
+        // caller already holds it, so verifying it leaks nothing beyond what
+        // possession implies. serve and the shell call this without bearer.
+        const sessionToken = String(url.searchParams.get('token') ?? '').trim();
+        const result = verifySessionToken(sessionToken);
+        sendJson(response, 200, { ok: result.ok, ...result });
+        return;
+      }
+
       if (!isAuthorized(request, token)) {
         sendJson(response, 401, { error: 'Unauthorized' });
         return;
       }
 
-      const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
       if (request.method === 'GET' && url.pathname === '/health') {
         const workspace = workspaceFromUrl(url);
         const context = workspace ? await resolveContext({ workspace }) : null;
@@ -649,6 +745,51 @@ export function startRuntimeServer({
         sendJson(response, 200, { truncated: true, index, removedEvents });
         return;
       }
+      // Compact: a deliberate "forget everything said so far in this
+      // workspace" action (served chat's memory gauge). Unlike
+      // /conversation/truncate above, nothing is deleted from the event log —
+      // the audit trail (GET /audit) stays intact. A single conversation_reset
+      // event is enough: the reducer (core/agentEvents.js) moves the
+      // conversationSeedStart boundary on it, and since executeInteractiveTurn
+      // rebuilds its conversationSeed from a fresh reduceAgentEvents() replay
+      // on every turn, future turns stop seeing anything before this point
+      // while the displayed conversation (and the ShellUI thread) stays whole.
+      if (request.method === 'POST' && url.pathname === '/conversation/compact') {
+        const { workspace, context } = await resolveBodyContext(request, url);
+        if (context?.running) {
+          sendJson(response, 409, { compacted: false, reason: 'run_active' });
+          return;
+        }
+        const resolvedWorkspace = context?.workspace ?? workspace ?? null;
+        if (!resolvedWorkspace) {
+          sendJson(response, 400, { compacted: false, reason: 'workspace_required' });
+          return;
+        }
+        let summary = null;
+        if (context?.session) {
+          const conversation = Array.isArray(context.session.agentProjection?.conversation)
+            ? context.session.agentProjection.conversation
+            : [];
+          const seedStart = Math.max(0, Number(context.session.agentProjection?.conversationSeedStart) || 0);
+          const previousSummary = context.session.agentProjection?.conversationSummary ?? null;
+          // Summarize BEFORE dispatching: the event's payload carries the
+          // result so the reducer only ever has to store a plain string, and
+          // a run cannot start concurrently (already refused with 409 above)
+          // to move conversation.length out from under this read.
+          summary = await summarizeCompactedConversation(context.session, {
+            previousSummary,
+            segment: conversation.slice(seedStart),
+          });
+          dispatchAgentEvent(context.session, createAgentEvent('conversation_reset', {
+            origin: 'user',
+            workspace: resolvedWorkspace,
+            payload: summary ? { summary } : {},
+          }));
+        }
+        publishState(resolvedWorkspace, context);
+        sendJson(response, 200, { compacted: true, summary });
+        return;
+      }
       if (request.method === 'POST' && url.pathname === '/resume') {
         const workspace = workspaceFromUrl(url);
         const result = await resume?.({ workspace });
@@ -681,6 +822,12 @@ export function startRuntimeServer({
     }
   });
 
+  // Housekeeping for the in-memory login-attempt rate limiter: nothing else
+  // ever calls pruneLoginAttempts, so without this the `attempts` Map grows
+  // by one entry per distinct source address for the life of the process.
+  const loginAttemptPruneTimer = setInterval(() => pruneLoginAttempts(), 10 * 60 * 1000);
+  loginAttemptPruneTimer.unref?.();
+
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, host, () => {
@@ -692,6 +839,7 @@ export function startRuntimeServer({
         publish,
         drainControl: (context) => drainControlQueue(context),
         close: () => new Promise((closeResolve, closeReject) => {
+          clearInterval(loginAttemptPruneTimer);
           for (const client of clients) client.response.end();
           clients.clear();
           server.close((err) => (err ? closeReject(err) : closeResolve()));
@@ -1206,6 +1354,44 @@ async function handleControlMessage(context, store, input, { intent = null, star
  falls back to the deterministic English catalog when no LLM is configured or
  the call fails. The fallback is what keeps the lane deterministic-under-failure.
  */
+const CONVERSATION_SUMMARY_TIMEOUT_MS = 20_000;
+const CONVERSATION_SUMMARY_MAX_INPUT_CHARS = 8_000;
+
+/*
+ A compact does not just cut older turns from conversationSeed — it replaces
+ them with a short rolling summary, so a decision made 20 messages ago is not
+ gone from Donna's grounding entirely, only condensed. Best-effort: no LLM
+ configured, an empty reply, or a call failure all fall back to keeping
+ whatever summary already existed (never worse than before this compact),
+ the same deterministic-under-failure shape as generateControlAcknowledgment.
+ */
+async function summarizeCompactedConversation(session, { previousSummary, segment }) {
+  const llm = session?.llm;
+  const transcript = (Array.isArray(segment) ? segment : [])
+    .filter((message) => ['user', 'assistant'].includes(message?.role) && String(message?.content ?? '').trim())
+    .map((message) => `${message.role === 'user' ? 'User' : 'Assistant'}: ${String(message.content).trim()}`)
+    .join('\n')
+    .slice(0, CONVERSATION_SUMMARY_MAX_INPUT_CHARS);
+  if (!transcript) return previousSummary || null;
+  if (!(llm && typeof llm.complete === 'function')) return previousSummary || null;
+  try {
+    const reply = await llm.complete({
+      system: 'You maintain a compact working memory for Donna, a workspace assistant. You are shown an optional PREVIOUS SUMMARY and a NEW SEGMENT of conversation about to leave the assistant\'s context window. Write ONE updated summary that preserves the facts, decisions, open questions and user preferences that still matter for future turns. Be concise: well under 200 words. Return only the summary text — no preamble, no meta-commentary, no headings.',
+      input: [
+        previousSummary ? `PREVIOUS SUMMARY:\n${previousSummary}` : null,
+        `NEW SEGMENT:\n${transcript}`,
+      ].filter(Boolean).join('\n\n'),
+      signal: AbortSignal.timeout(CONVERSATION_SUMMARY_TIMEOUT_MS),
+    });
+    const text = String(reply ?? '').trim();
+    if (text) return text;
+    emitRuntimeLog(session, 'conversation-compact: LLM returned an empty summary, keeping the previous one');
+  } catch (err) {
+    emitRuntimeLog(session, `conversation-compact: summary LLM call failed, keeping the previous summary — ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return previousSummary || null;
+}
+
 async function generateControlAcknowledgment(session, { kind, input }) {
   const language = String(session?.language ?? '').trim().toLowerCase() || 'en';
   const llm = session?.llm;
@@ -1547,6 +1733,25 @@ function constantTimeEqual(left, right) {
 function sendJson(response, statusCode, value) {
   response.writeHead(statusCode, { 'Content-Type': 'application/json' });
   response.end(`${JSON.stringify(value)}\n`);
+}
+
+function sendHtml(response, statusCode, html) {
+  response.writeHead(statusCode, { 'Content-Type': 'text/html; charset=utf-8' });
+  response.end(html);
+}
+
+// Mirrors serve's cookie (same name, flags and lifetime) so one runtime-issued
+// session is also the one serve validates. Secure only when the request
+// already arrived over TLS — a localhost HTTP install must still get the
+// cookie, but a proxied HTTPS one must not leak it.
+function setSessionCookie(response, token, expiresAt, request) {
+  const maxAgeSeconds = Math.max(1, Math.floor((Number(expiresAt) - Date.now()) / 1000));
+  const tls = Boolean(request.socket?.encrypted) || request.headers['x-forwarded-proto'] === 'https';
+  const secure = tls ? '; Secure' : '';
+  response.setHeader(
+    'Set-Cookie',
+    `wiki_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure}`,
+  );
 }
 
 function readRequiredPatchId(body, response) {

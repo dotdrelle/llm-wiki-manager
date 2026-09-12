@@ -546,14 +546,18 @@ Use `wiki-workspace` whenever possible so Compose receives the right project
 name, env file, ports, and volume mounts.
 
 `PRODUCTION_ALLOWED_STEPS` gates what `production-mcp` will accept, and an
-omission from it is **silent**: `agent_plan` simply leaves the step's task out of
-the fragment instead of failing. `taxonomy` was missing from the shipped default
-for several releases, so every compose-deployed ingest ran without the taxonomy
-barrier and left the published map stale. Keep the variable in step with the
-in-code default of `production_mcp_server.py`: a test here asserts `taxonomy` is
-present, and one in `agent-production` compares the whole list against that
-in-code reference. Remember that an explicit value in your `.env` overrides the
-default entirely.
+omission from it is **silent**: `agent_plan` simply leaves the step's task out
+of the fragment instead of failing, and a capability whose every step is
+disallowed disappears from `agent_describe` entirely. Because this value
+**overrides** the agent's own in-code default, it has drifted twice: the retired
+`taxonomy` stayed in the shipped default, and later `ingest_rebuild`/`lint` were
+missing from it — which silently removed `knowledge.rebuild` and
+`knowledge.check` from the registry, so the wiki-row rebuild button fell back to
+a plain ingest from `raw/untracked`. Keep it in step with
+`production_mcp_server.py`: a test here asserts `ingest_rebuild` and `lint` are
+present, and one in `agent-production` compares its own list against that
+in-code reference. An explicit value in your `.env` overrides the default
+entirely.
 
 Runtime split: the host manager/runtime uses Node.js 22+ for `node:sqlite`; the
 interactive OpenTUI shell uses Bun 1.2+; workspace Docker services run from the

@@ -108,6 +108,33 @@ test('resolveObjective resolves an ingest objective deterministically despite no
   assert.equal(result.operation, 'ingest');
 });
 
+test('"rebuild" resolves to knowledge.rebuild, not document.build', async () => {
+  // document.build used to alias "rebuild" too, so the wiki row's rebuild
+  // button ran a template build instead of re-filing the archive. The alias is
+  // unique to knowledge.rebuild now, and the bare /wiki-rebuild invocation must
+  // resolve deterministically (no LLM) to ingest_rebuild.
+  const knowledgeRebuild = makeCapability('knowledge.rebuild', {
+    operations: ['ingest_rebuild'],
+    aliases: ['file the archived sources', 'archived sources into the wiki', 'concept pages from the archive', 'rebuild', 'rebuild concepts'],
+    description: 'Re-file the archived sources into their concept folders.',
+  });
+  const documentBuild = makeCapability('document.build', {
+    operations: ['build'],
+    aliases: ['build', 'generate deliverable'],
+    description: 'Build llm-wiki deliverables from templates.',
+  });
+  const session = sessionWith([
+    provider('production-1', knowledgeRebuild),
+    provider('production-1', documentBuild),
+  ]);
+  session.llm.completeWithTools = async () => {
+    throw new Error('the rebuild alias must resolve without the LLM');
+  };
+  const result = await resolveObjective('/wiki-rebuild', session);
+  assert.equal(result.capability, 'knowledge.rebuild');
+  assert.equal(result.operation, 'ingest_rebuild');
+});
+
 test('resolveObjective resolves diagnose via alias despite the notification "send"', async () => {
   const session = sessionWith([
     provider('production-1', diagnose),

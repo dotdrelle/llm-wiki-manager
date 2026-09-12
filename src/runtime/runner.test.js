@@ -1103,6 +1103,64 @@ test('runtime runs are seeded with the chat that preceded them', async () => {
   assert.equal(clipped[0].content.length, 2000);
 });
 
+test('a compact boundary hides the prior exchanges from the seed but keeps them in the conversation', async () => {
+  const { conversationSeed } = await import('./runner.js');
+  const session = {
+    agentProjection: {
+      conversation: [
+        { role: 'user', content: 'avant 1' },
+        { role: 'assistant', content: 'avant 2' },
+        { role: 'user', content: 'après 1' },
+        { role: 'assistant', content: 'après 2' },
+      ],
+      conversationSeedStart: 2,
+    },
+  };
+  const seed = conversationSeed(session, 'nouvelle question');
+  assert.deepEqual(seed, [
+    { role: 'user', content: 'après 1' },
+    { role: 'assistant', content: 'après 2' },
+  ]);
+  // The pre-compact exchange is gone from the grounding…
+  assert.equal(seed.some((message) => /avant/.test(message.content)), false);
+  // …but it stays in the displayed conversation.
+  assert.equal(session.agentProjection.conversation.length, 4);
+});
+
+test('a stored compact summary is prepended to the seed, ahead of the recent exchanges', async () => {
+  const { conversationSeed } = await import('./runner.js');
+  const session = {
+    agentProjection: {
+      conversation: [
+        { role: 'user', content: 'après 1' },
+        { role: 'assistant', content: 'après 2' },
+      ],
+      conversationSeedStart: 0,
+      conversationSummary: 'Résumé condensé des échanges précédents.',
+    },
+  };
+  const seed = conversationSeed(session, 'nouvelle question');
+  assert.equal(seed.length, 3);
+  assert.equal(seed[0].role, 'user');
+  assert.match(seed[0].content, /Résumé condensé des échanges précédents\./);
+  assert.deepEqual(seed.slice(1), [
+    { role: 'user', content: 'après 1' },
+    { role: 'assistant', content: 'après 2' },
+  ]);
+});
+
+test('no stored summary means no synthetic entry is added to the seed', async () => {
+  const { conversationSeed } = await import('./runner.js');
+  const session = {
+    agentProjection: {
+      conversation: [{ role: 'user', content: 'salut' }],
+      conversationSeedStart: 0,
+    },
+  };
+  const seed = conversationSeed(session, 'autre question');
+  assert.deepEqual(seed, [{ role: 'user', content: 'salut' }]);
+});
+
 test('skipImpossibleTasks propage un échec jusqu’au point fixe', () => {
   /*
    Marquer les seules tâches directement bloquées laissait un résidu : A en

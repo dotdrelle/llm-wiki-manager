@@ -63,7 +63,12 @@ export function conversationSeed(session, currentInput, { limit = 12, maxChars =
   const conversation = Array.isArray(session.agentProjection?.conversation)
     ? session.agentProjection.conversation
     : [];
+  // Everything before the last compact (conversation_reset) is forgotten for
+  // grounding, while it stays visible in the displayed thread. The boundary is
+  // an index into the same array, so no message is actually removed.
+  const seedStart = Math.max(0, Number(session.agentProjection?.conversationSeedStart) || 0);
   const seed = conversation
+    .slice(seedStart)
     .filter((message) => ['user', 'assistant'].includes(message?.role) && String(message?.content ?? '').trim())
     .slice(-limit)
     .map((message) => ({ role: message.role, content: String(message.content).slice(0, maxChars) }));
@@ -71,6 +76,13 @@ export function conversationSeed(session, currentInput, { limit = 12, maxChars =
   // drop it from the seed to avoid sending it twice.
   const last = seed.at(-1);
   if (last && last.role === 'user' && last.content === String(currentInput ?? '').slice(0, maxChars)) seed.pop();
+  // A compact does not just cut the older turns — it replaces them with a
+  // short summary (see /conversation/compact), so what was agreed there is
+  // not lost to the grounding window entirely, only condensed.
+  const summary = String(session.agentProjection?.conversationSummary ?? '').trim();
+  if (summary) {
+    seed.unshift({ role: 'user', content: `[Summary of earlier conversation, compacted]\n${summary.slice(0, maxChars)}` });
+  }
   return seed;
 }
 

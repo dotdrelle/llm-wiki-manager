@@ -555,6 +555,27 @@ function isUnresolvedTargetFailure(rawFailure) {
   return /file does not exist|does not exist|no files match/i.test(rawFailure);
 }
 
+// An agent that plans zero tasks is not a failure: it found nothing to act on
+// (no pending source, no template, no deliverable, no archived source to
+// re-file) and says so in its own synthesis sentence. Relaying that outcome is
+// the whole point — the old generic path called it "could not be started" and
+// sent the reader hunting a connectivity problem that did not exist.
+export function nothingToDoForDonna(rawReason) {
+  const reason = String(rawReason ?? '')
+    .replace(/\s*Available capabilities:\s*[\s\S]*$/i, '')
+    .replace(/\b(?:provider|endpoint)=[^\s,]+/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    .slice(0, 400);
+  return JSON.stringify({
+    delegated: false,
+    nothingToDo: true,
+    reason,
+    instruction:
+      'The agent ran its planning and found nothing to act on. Answer the user naturally in their language, stating that plainly (use the reason above), and do not call it a failure, do not suggest restarting a service, and do not retry the same action. Do not expose exception names, capability identifiers, tool names, UUIDs, or internal routing details.',
+  });
+}
+
 function unresolvedTargetForDonna(rawFailure) {
   const cleaned = String(rawFailure ?? '')
     .replace(/\b(?:provider|endpoint)=[^\s,]+/g, '')
@@ -941,14 +962,19 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
         });
       }
       const result = await postRuntimeDelegate(objective, { url, workspace });
-      return result?.runId
-        ? JSON.stringify({
-            delegated: true,
-            runId: result.runId,
-            summary: result.delegation ?? null,
-            message: `Action started (${String(result.runId).slice(0, 8)}) after real-plan validation: ${result.delegation?.tasks ?? 0} task(s), ${result.delegation?.agent ?? 'resolved agent'}. Execution in progress.`,
-          })
-        : `Delegation refused: ${result?.error ?? JSON.stringify(result)}`;
+      if (result?.runId) {
+        return JSON.stringify({
+          delegated: true,
+          runId: result.runId,
+          summary: result.delegation ?? null,
+          message: `Action started (${String(result.runId).slice(0, 8)}) after real-plan validation: ${result.delegation?.tasks ?? 0} task(s), ${result.delegation?.agent ?? 'resolved agent'}. Execution in progress.`,
+        });
+      }
+      const refused = String(result?.error ?? JSON.stringify(result));
+      // Same EMPTY_PLAN outcome as the in-run path above: relay it, don't call
+      // it a failure.
+      if (/^EMPTY_PLAN:\s*/i.test(refused)) return nothingToDoForDonna(refused.replace(/^EMPTY_PLAN:\s*/i, ''));
+      return `Delegation refused: ${refused}`;
     }
     if (tool === 'run_skill') {
       const skillName = String(args.skillName ?? '').trim();
@@ -2009,6 +2035,14 @@ export function createAgentGraph(options = {}) {
                 missingRequiredFields: needsInput[1].split(',').map((item) => item.trim()).filter(Boolean),
                 instruction: 'Ask the user for the missing required information. Do not expose internal validation details.',
               });
+            } else if (/^EMPTY_PLAN:\s*/i.test(delegationFailure)) {
+              // Valid planning, nothing to do (no pending source/template/
+              // deliverable). Not a failure and not retryable — Donna relays
+              // the agent's own sentence instead of a connectivity-sounding
+              // generic error. Checked before the target heuristic: a plan
+              // reason is authoritative and could mention a missing file
+              // without meaning "unresolved target".
+              resultText = nothingToDoForDonna(delegationFailure.replace(/^EMPTY_PLAN:\s*/i, ''));
             } else if (isUnresolvedTargetFailure(delegationFailure)) {
               // A named target that resolves to nothing is not an unsupported
               // action: Donna can look it up and retry (or ask), so the turn

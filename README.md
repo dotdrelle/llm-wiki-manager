@@ -121,47 +121,60 @@ in isolated workspaces.
 
 ## How wikiLLM compares
 
-Several open projects now build a Markdown wiki with an LLM. They target
+Several open projects now build an LLM-maintained knowledge layer over your
+sources — some as a wiki, some as a retrieval and answer platform. They target
 **different problems** — the useful questions are *what goes in, what comes out,
-and who operates it*. Snapshot as of 2026; all of these move quickly.
+and who operates it*. Snapshot as of **September 2026**; all of these move quickly.
 
 ✅ first-class · 🟡 partial or indirect · ❌ not a goal
 
-Projects compared: [OpenWiki](https://github.com/langchain-ai/openwiki),
-[DeepWiki-Open](https://github.com/asyncfuncai/deepwiki-open),
+Projects compared: [OpenWiki](https://github.com/langchain-ai/openwiki) and
+[DeepWiki-Open](https://github.com/asyncfuncai/deepwiki-open) (code / knowledge
+wikis), [RAGFlow](https://github.com/infiniflow/ragflow) and
+[Onyx](https://github.com/onyx-dot-app/onyx) (RAG platforms), and
 [GraphRAG](https://github.com/microsoft/graphrag).
 
 <table>
 <thead>
-<tr><th><small>Need</small></th><th><small><strong>wikiLLM</strong></small></th><th><small><strong>OpenWiki</strong></small></th><th><small><strong>DeepWiki-Open</strong></small></th><th><small><strong>GraphRAG</strong></small></th></tr>
+<tr>
+<th><small>Need</small></th>
+<th><small><strong>wikiLLM</strong></small></th>
+<th><small><strong>Code / knowledge wikis</strong><br>OpenWiki · DeepWiki-Open</small></th>
+<th><small><strong>RAG platforms</strong><br>RAGFlow · Onyx</small></th>
+<th><small><strong>Graph pipeline</strong><br>GraphRAG</small></th>
+</tr>
 </thead>
 <tbody>
-<tr><td><small>Input</small></td><td><small>✅ Business docs — Confluence, PDF, Office, SaaS</small></td><td><small>✅ Codebase (code mode)</small></td><td><small>✅ Code repo → diagrams</small></td><td><small>🟡 Plain-text corpus only</small></td></tr>
-<tr><td><small>Output</small></td><td><small>✅ Maintained wiki <strong>+ deliverables</strong> from your templates</small></td><td><small>🟡 Wiki about the code, for agents</small></td><td><small>🟡 Interactive wiki + diagrams</small></td><td><small>❌ Entity graph + summaries — no wiki</small></td></tr>
-<tr><td><small>Keep current</small></td><td><small>✅ Re-ingest / scheduled</small></td><td><small>✅ <code>--update</code>, CI action</small></td><td><small>🟡 Regenerated per run</small></td><td><small>✅ <code>graphrag update</code> (delta)</small></td></tr>
-<tr><td><small>Evidence &amp; citations</small></td><td><small>🟡 Cites retrieved context</small></td><td><small>✅ Claims tied to versioned source</small></td><td><small>🟡 RAG-cited answers</small></td><td><small>✅ Citations to text units</small></td></tr>
-<tr><td><small>Corpus-wide Q&amp;A</small></td><td><small>🟡 BM25 + vector feeding generation</small></td><td><small>❌</small></td><td><small>🟡 Repo-scoped RAG chat</small></td><td><small>✅ Local/global community search</small></td></tr>
-<tr><td><small>Team UI</small></td><td><small>✅ Web console — wiki, graph, chat, runs (single-user today)</small></td><td><small>🟡 Local viewer + CLI chat</small></td><td><small>✅ Self-hosted web app + RAG</small></td><td><small>❌ Library / CLI</small></td></tr>
-<tr><td><small>Multi-project isolation</small></td><td><small>✅ Workspaces, own services, ports, secrets</small></td><td><small>❌ One wiki per run</small></td><td><small>❌ One wiki per repo</small></td><td><small>❌ One index per corpus</small></td></tr>
-<tr><td><small>Orchestration &amp; governance</small></td><td><small>✅ Approval-gated dispatcher, budgets, idempotent writes, crash recovery</small></td><td><small>❌ One agent loop</small></td><td><small>❌ One generation pipeline</small></td><td><small>❌ Indexing pipeline</small></td></tr>
-<tr><td><small>Connectors as services</small></td><td><small>✅ Independent MCP agents (Confluence, docs, e-mail…)</small></td><td><small>🟡 Built-in connector set</small></td><td><small>❌</small></td><td><small>❌</small></td></tr>
-<tr><td><small>Offline / local models</small></td><td><small>✅ Per-workspace OpenAI-compatible or gateway (Ollama, vLLM, MLX…)</small></td><td><small>✅ 13+ providers</small></td><td><small>✅ Ollama</small></td><td><small>✅ Any OpenAI-compatible</small></td></tr>
-<tr><td><small>License</small></td><td><small>❌ PolyForm <strong>Noncommercial</strong></small></td><td><small>✅ MIT</small></td><td><small>✅ MIT</small></td><td><small>✅ MIT</small></td></tr>
+<tr><td><small>Input</small></td><td><small>✅ Business docs — Confluence, PDF, Office, SaaS</small></td><td><small>✅ Code repo; OpenWiki also personal sources (Notion, Gmail, Slack…)</small></td><td><small>✅ PDF/Office/images, Confluence, S3, 50+ connectors</small></td><td><small>🟡 Plain text</small></td></tr>
+<tr><td><small>Output</small></td><td><small>✅ Maintained wiki <strong>+ deliverables</strong></small></td><td><small>✅ Linked Markdown wiki (+ graph / diagrams)</small></td><td><small>🟡 Grounded RAG answers, not a wiki</small></td><td><small>❌ Entity graph + summaries</small></td></tr>
+<tr><td><small>Agents &amp; actions</small></td><td><small>✅ Capability dispatcher, external agentic runtime, MCP tools</small></td><td><small>✅ Doc-generation agents, MCP connectors</small></td><td><small>✅ Agentic workflow, MCP actions, deep research</small></td><td><small>❌ Indexing pipeline</small></td></tr>
+<tr><td><small>Keep current</small></td><td><small>✅ Re-ingest / scheduled</small></td><td><small>✅ <code>--update</code> / regenerate, CI</small></td><td><small>✅ Scheduled connector sync</small></td><td><small>🟡 Maintenance mode</small></td></tr>
+<tr><td><small>Team UI</small></td><td><small>✅ Web console — wiki, graph, chat, runs</small></td><td><small>🟡 CLI + visualizer; DeepWiki-Open web app</small></td><td><small>✅ Self-hosted web app</small></td><td><small>❌ Library / CLI</small></td></tr>
+<tr><td><small>Multi-project isolation</small></td><td><small>✅ Workspaces, own services, ports, secrets</small></td><td><small>❌ One wiki per repo / directory</small></td><td><small>🟡 Datasets / teams, not isolated services</small></td><td><small>❌ One index per corpus</small></td></tr>
+<tr><td><small>Human approval &amp; governance</small></td><td><small>✅ Approval-gated dispatcher, budgets, crash recovery</small></td><td><small>❌ PR review only</small></td><td><small>🟡 RBAC / SSO (Onyx enterprise)</small></td><td><small>❌</small></td></tr>
+<tr><td><small>License</small></td><td><small>❌ PolyForm <strong>Noncommercial</strong></small></td><td><small>✅ MIT</small></td><td><small>✅ Apache-2.0 / MIT CE</small></td><td><small>✅ MIT</small></td></tr>
 </tbody>
 </table>
 
+<small>Per-project details: OpenWiki emits OKF v0.2 and maintains a versioned
+evidence graph of “grounded claims”; GraphRAG is a research project now in
+maintenance mode; Onyx’s SSO/RBAC live in its enterprise edition.</small>
+
 **The short version:**
 
-- **OpenWiki** and **DeepWiki-Open** document *source code*. Point wikiLLM at a
-  repository and there is nothing for it to ingest; point either of them at a
-  stack of Confluence pages and a Word document and that is not their job.
-- **GraphRAG** builds *retrieval structure*, not a wiki you read or deliverables
-  you ship — it is a strong back end for corpus-wide Q&A, and complementary
-  rather than competing.
-- **wikiLLM** is the only one of the four whose output is *both* a browsable wiki
-  *and* regenerated business documents, and the only one with the operational
-  layer — isolated projects, bounded approvals, automatic recovery, a web
-  console — that a shared internal tool needs.
+- **OpenWiki** and **DeepWiki-Open** build wikis from a **code repository**
+  (OpenWiki also ingests personal sources — Notion, Gmail, Slack…). Their input
+  is code or personal feeds, not a stack of business documents feeding your
+  deliverable templates.
+- **RAGFlow** and **Onyx** are RAG platforms: they index sources and answer
+  questions from them, with agents and connectors, but the output is an answer,
+  not a wiki you browse or a document you ship.
+- **GraphRAG** builds retrieval structure and is now in maintenance mode — a
+  complementary back end, not a wiki.
+- **wikiLLM** is the only one whose output is *both* a browsable wiki *and*
+  regenerated business documents, and the only one with the operational layer —
+  isolated projects, bounded approvals, automatic recovery, a web console —
+  that a shared internal tool needs.
 
 **What wikiLLM does *not* try to do (today):**
 
@@ -170,8 +183,6 @@ Projects compared: [OpenWiki](https://github.com/langchain-ai/openwiki),
 - Serve a true multi-user instance with per-user identity and an attributed
   audit trail. This is a single-user deployment baseline (see the scope note
   above).
-- Expose a graph-query API over the corpus the way GraphRAG does; retrieval is
-  BM25 plus a vector index feeding generation.
 - Ship or host the multi-provider AI gateway — routing to several providers is
   supported, the gateway itself is infrastructure you bring.
 

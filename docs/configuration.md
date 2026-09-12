@@ -79,6 +79,7 @@ workspace `.wikirc.yaml`.
 | `WIKI_MANAGER_RUNTIME_HOST` | yes (shipped active) | interface the host runtime binds. `0.0.0.0` by default: `serve` runs in Docker and reaches the runtime through `host.docker.internal`, which a `127.0.0.1` bind refuses. Exposing the port always generates `WIKI_MANAGER_RUNTIME_TOKEN` |
 | `WIKI_MANAGER_TOTP` | no | set to `off` to disable the TOTP login gate (default: on). The gate is the **human** lock in front of the ShellUI and `serve`; headless/CI never passes through it |
 | `WIKI_MANAGER_SESSION_TTL_HOURS` | no | TOTP session lifetime in hours of inactivity, sliding (default `12`) |
+| `PRODUCTION_ALLOWED_STEPS` | no | comma-separated steps `production-mcp` accepts. This compose default **overrides** the agent's in-code list: it must include `ingest_rebuild` and `lint`, or `knowledge.rebuild`/`knowledge.check` silently disappear from `agent_describe` (the serve rebuild button then falls back to a plain ingest) |
 
 The TOTP secret and the session live in the manager runtime state directory
 (`totp.json`, `session.json`, both 0600) — the runtime is the single login

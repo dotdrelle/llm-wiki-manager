@@ -202,11 +202,13 @@ Rules, all enforced:
   capability), or a skill declaring parameters — the declared route calls
   `agent_plan` directly and skips the argument extraction a selector such as
   `<template>` needs, so `/wiki-build rapport` would widen to every template.
-- **Declare only what the executor can actually plan.** `diagnose` once declared
-  `workspace.diagnose`/`doctor`; the production agent's planning allow-list has
-  no `doctor`, so the plan was refused and the skill stopped diagnosing. A
-  refusal is now surfaced instead of being reported as a completed run, but the
-  declaration still has to match what the agent accepts.
+- **Declare only what the executor can actually plan.** A declaration needs a
+  planner behind it: the production agent once advertised
+  `workspace.diagnose`/`doctor` while `agent_plan` returned an empty fragment,
+  so the skill stopped diagnosing. `doctor` is now plannable (one read-only
+  doctor task), so the declaration and the planner agree. A refusal is surfaced
+  instead of being reported as a completed run, and a declaration still has to
+  match what the agent accepts.
 
 ## Execution policy
 

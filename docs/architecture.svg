@@ -1,6 +1,6 @@
 <svg viewBox="0 0 1000 780" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" role="img">
 <title>wikiLLM functional diagram</title>
-<desc>Inputs split into external sources (Confluence, docs/files/mails, notes) and structural template/build-context/skills from a marketplace. Orchestrator is agentic (LangGraph), multi-model / multi-API. MCP calls split into internal MCP (production engine per workspace) and external MCP (shared, replaceable toolbox plus user-configured endpoints). Outputs: core wiki and graph with deliverables kept up to date in Markdown. Over a workspaces foundation.</desc>
+<desc>Inputs split into external sources (Confluence, docs/files/mails, notes) and structural template/build-context/skills from a marketplace. Orchestrator is agentic (LangGraph), multi-model / multi-API; open-ended work can also be routed to an optional external agentic runtime (Deep Agents) behind the same capability registry. MCP calls split into internal MCP (production engine per workspace) and external MCP (shared, replaceable toolbox plus user-configured endpoints). Outputs: core wiki and graph with deliverables kept up to date in Markdown. Over a workspaces foundation.</desc>
 
 <style>
 .box { fill: #ffffff; stroke: #e2e2dd; stroke-width: 1.5; }
@@ -85,6 +85,8 @@
 <rect x="375" y="362" width="56" height="14" rx="7" class="pill"/><text x="384" y="372">export</text>
 <rect x="436" y="362" width="54" height="14" rx="7" class="pill"/><text x="445" y="372">polish</text>
 <rect x="495" y="362" width="56" height="14" rx="7" class="pill"/><text x="504" y="372">doctor</text>
+<rect x="556" y="362" width="58" height="14" rx="7" class="pill"/><text x="565" y="372">rebuild</text>
+<rect x="619" y="362" width="36" height="14" rx="7" class="pill"/><text x="628" y="372">lint</text>
 </g>
 
 <!-- external -->

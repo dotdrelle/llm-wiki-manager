@@ -170,7 +170,9 @@ After the user enters the main ShellUI and the selected workspace has loaded,
 the UI runs the canonical `/status` command automatically. For **Open
 workspace**, run it after starting the selected workspace services so the first
 snapshot reflects their resulting state; do not duplicate status assembly in
-the TUI.
+the TUI. `statusText` (`commands/slash.js`) renders that snapshot as two
+columns: Workspace, wiki stats, Services and MCP on the **left**; Config,
+concurrency tuning and the `Agentic runtime` section on the **right**.
 
 - The visible agent is `donna`.
 - Lines beginning with `/` execute deterministic primitives.
@@ -231,6 +233,16 @@ difference between "retry", "start your agent" and "rephrase" that only the
 runtime can tell. The raw failure (capability + registry) goes to the journal,
 where it turns the next occurrence into its own diagnosis.
 
+An agent that plans **zero tasks** is not one of those failures.
+`prepareDelegation` (`src/cli/wiki-manager.js`) throws the stable
+`EMPTY_PLAN: <agent synthesis>` sentinel when nothing is pending (no source to
+ingest, no template, no deliverable — e.g. no archived source to re-file);
+`graph.js` recognizes it **before** the unresolved-target heuristic and answers
+with a `nothingToDo` payload (`nothingToDoForDonna`, exported and tested)
+carrying the agent's own sentence and an instruction to relay it as an outcome
+— never a failure, a restart or a retry. The generic `delegation_failed` blocker
+stays for genuinely unexpected errors only.
+
 ## Agent Orchestration
 
 `src/agent/graph.js` is a ReAct loop:
@@ -255,6 +267,9 @@ are exhausted. A provider-compatibility error must never be silently converted
 into a business result such as "not an action", "no task", or "unsupported
 operation". Keep this ordering generic and provider-driven; do not add model,
 agent, capability, or business-verb branches to compensate for one endpoint.
+The converse holds for delegation too: a genuine empty plan is a business
+outcome, not a provider error, so the `EMPTY_PLAN` sentinel is relayed through
+`nothingToDoForDonna` instead of being dressed up as a failure.
 
 Tests for a preferred provider feature must also cover its degraded path. In
 particular, any use of forced `tool_choice` needs coverage for an endpoint that
@@ -419,8 +434,13 @@ Key modules in `src/runtime/`:
 - **`server.js`**: `GET /health`, `GET /state`, `GET /events/stream` (SSE),
   `GET /audit` (0.10.3, `listAuditTrail`, filterable by `workspace`/`runId`),
   `POST /run`, `POST /turn`, `POST /cancel`, `POST /kill`, `POST /resume`,
-  `POST /approve`, `POST /conversation/truncate`, `GET`/`POST /control`,
-  `GET /config/profiles`, and `POST /config/use`. `running` flag
+  `POST /approve`, `POST /conversation/truncate`, `POST /conversation/compact`,
+  `GET`/`POST /control`, `GET /config/profiles`, and `POST /config/use`.
+  `POST /conversation/compact` (the served chat's memory gauge) dispatches one
+  `conversation_reset`: the reducer moves `conversationSeedStart` so later turns
+  stop grounding on earlier messages while the displayed thread stays whole, and
+  stores a best-effort rolling summary (`conversationSummary`) in their place —
+  nothing is deleted from the event log or `GET /audit`. `running` flag
   is set before `await readJson` to close the TOCTOU race on concurrent
   `POST /run` requests. `resolveBodyContext(request, url)` centralizes the
   read-body → resolve-workspace → resolve-context sequence shared by the
@@ -925,6 +945,14 @@ wiki-manager runtime [--host 127.0.0.1] [--port 7788] [--state-dir .wiki/runtime
 /approve run <runId>
 /approve item <itemId>
 ```
+
+The `npm test` release gate also pins the shipped compose wiring in
+`src/core/dockerCompose.test.js`, in particular that `production-mcp`'s
+`PRODUCTION_ALLOWED_STEPS` carries `ingest_rebuild` and `lint`. That env value
+**overrides** the agent's own in-code default, and an omission is silent
+(`agent_describe` simply drops the capability), so removing `ingest_rebuild` or
+`lint` makes the serve wiki rebuild button fall back to a plain ingest. Keep it
+in step with `agent-production`'s `production_mcp_server.py`.
 
 Headless `--skill` goes through the **same runtime resolver** as the Shell and
 serve, so a multi-capability skill produces the same chain everywhere. Its value

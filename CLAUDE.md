@@ -524,6 +524,15 @@ content must be obtained through the normal allow-listed read tools. Do not add
 a direct file-read/content-injection shortcut or a second mutable session field
 for this context.
 
+Interactive turns publish streamed fragments as `assistant_delta` events, but
+**coalesced** (`src/runtime/deltaCoalescer.js`, flushed every 80 ms and before
+any non-delta event) rather than one event per token. Persisting one synchronous
+SQLite row per token was a buffer problem: when a tool pulled a lot of content
+into the thread, the long answer stalled the event loop and both chats (serve
+and ShellUI) froze mid-stream. The durable event carries the buffered text; the
+reducer still aggregates it into the last conversation entry, so both UIs stream
+exactly as before.
+
 Donna exposes `runtime__kill({runId?, purge?})`. Set `purge: true` only for an
 explicit request to delete, reset, abandon, or replace the current plan; it
 purges the workspace runtime projection/history after stopping active work.

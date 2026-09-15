@@ -29,6 +29,7 @@ import { extractActivity, mergePolledActivity, parseJsonText, sessionActivities,
 import { syncActivitiesToPlan, formatPlanStatus } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../core/agentEvents.js';
 import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
+import { createDeltaCoalescer } from '../runtime/deltaCoalescer.js';
 import { resolveCapabilityConcurrency } from '../orchestrator/scheduler.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
 import { CapabilityUnavailableError, resolve as resolveCapability } from '../orchestrator/capabilityResolver.js';
@@ -1739,7 +1740,21 @@ async function runRuntime(argv, agent) {
       workspace: context.workspace ?? ephemeral.workspace ?? null,
     }));
     const messages = conversationSeed({ agentProjection: persistedProjection }, input);
+    // Streaming fragments are coalesced before they are persisted and pushed —
+    // one synchronous SQLite insert (plus one SSE write) per token stalled the
+    // event loop, freezing both chats (serve and ShellUI) while a long answer
+    // was still being produced. Flushed before any non-delta event so ordering
+    // and the final tail are preserved.
+    const deltaCoalescer = createDeltaCoalescer((delta) => dispatchAgentEvent(ephemeral, createAgentEvent('assistant_delta', {
+      origin: 'runtime_turn',
+      turnId,
+      workspace: context.workspace ?? null,
+      payload: { delta },
+    })), { intervalMs: 80 });
     ephemeral._onAgentEvent = (event) => {
+      // Never let a final message (or any other event) overtake the buffered
+      // fragments that precede it: flush them first, in order.
+      if (event.type !== 'assistant_delta' && event.type !== 'assistant_delta_reset') deltaCoalescer.flush();
       const interactiveEvent = {
         ...event,
         origin: 'runtime_turn',
@@ -1785,28 +1800,30 @@ async function runRuntime(argv, agent) {
       response = await runHeadlessChatTurn(ephemeral, input, {
         history,
         onStep: ephemeral._onStep,
-        // Fragments de réponse publiés au fil de l'eau. Le réducteur les
-        // agrège dans la dernière entrée de conversation (`assistant_delta`),
-        // que `assistant_message` vient ensuite figer : les deux interfaces
-        // voient la réponse s'écrire, au lieu d'attendre le tour complet.
-        onTextDelta: (delta) => dispatchAgentEvent(ephemeral, createAgentEvent('assistant_delta', {
-          origin: 'runtime_turn',
-          turnId,
-          workspace: context.workspace ?? null,
-          payload: { delta },
-        })),
-        onTextReset: () => dispatchAgentEvent(ephemeral, createAgentEvent('assistant_delta_reset', {
-          origin: 'runtime_turn',
-          turnId,
-          workspace: context.workspace ?? null,
-          payload: {},
-        })),
+        // Fragments de réponse publiés au fil de l'eau, coalescés (voir
+        // deltaCoalescer ci-dessus). Le réducteur les agrège dans la dernière
+        // entrée de conversation (`assistant_delta`), que `assistant_message`
+        // vient ensuite figer : les deux interfaces voient la réponse s'écrire
+        // sans qu'un insert SQLite par token ne bloque le flux.
+        onTextDelta: (delta) => deltaCoalescer.push(delta),
+        onTextReset: () => {
+          deltaCoalescer.reset();
+          dispatchAgentEvent(ephemeral, createAgentEvent('assistant_delta_reset', {
+            origin: 'runtime_turn',
+            turnId,
+            workspace: context.workspace ?? null,
+            payload: {},
+          }));
+        },
         openWikiPages,
       });
     } else {
       ephemeral.openWikiPages = openWikiPages;
       response = await runAgentTurn(agent, ephemeral, input, { messages, signal });
     }
+    // Flush the tail before the turn is finalized, then stop the timer.
+    deltaCoalescer.flush();
+    deltaCoalescer.dispose();
     // Persist the artifact the turn may have opened/edited (template_write,
     // template_read, …) back onto the long-lived session, so the next /turn —
     // chat or agent — sees it. The ephemeral session is otherwise discarded.

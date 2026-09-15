@@ -4,7 +4,7 @@ import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../core
 import { tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
 import { isTerminal } from '../orchestrator/taskStatuses.js';
 import { readyPlanTasks } from '../core/planPatch.js';
-import { skipImpossibleTasks, structuredPlanEvaluation, ensurePlanProjection, evaluateRuntimeRun, finishRuntimeRun, materializeTaskInputs, replanRuntimeRun, runRuntimeAgenticWorkflow, runRuntimeParallelPlan, shouldUseParallelScheduler } from './runner.js';
+import { skipImpossibleTasks, structuredPlanEvaluation, ensurePlanProjection, evaluateRuntimeRun, finishRuntimeRun, materializeTaskInputs, replanRuntimeRun, runRuntimeAgenticWorkflow, runRuntimeParallelPlan, shouldUseParallelScheduler, announceRunOutcome } from './runner.js';
 
 test('ensurePlanProjection re-projects when the chained plan changes shape (step 2)', () => {
   const session = { agentEvents: [], agentProjection: null };
@@ -1287,4 +1287,35 @@ test('rejouer les événements redonne exactement les mêmes statuts', () => {
     first.plan.map((step) => step.status),
   );
   assert.deepEqual(replayed.plan.map((step) => step.status), ['failed', 'skipped']);
+});
+
+test('announceRunOutcome never calls a plan with pending tasks a success', async () => {
+  // The outcome summary counted only failed/cancelled/successful, so a run
+  // whose single mutating task was still `pending_approval` produced
+  // "Plan terminé avec succès — 0/1 réussie", which the model rephrased into
+  // "le livrable a bien été publié" — before the approval that would run it.
+  const session = {
+    agentEvents: [],
+    agentProjection: null,
+    headlessPlan: [{ id: 'a', description: 'Build TechSections', status: 'pending_approval' }],
+  };
+  await announceRunOutcome(session, { runId: 'run-1', ok: true });
+  const message = session.agentEvents.find((event) => event.type === 'assistant_message');
+  assert.match(message.payload.content, /non terminé/i);
+  assert.match(message.payload.content, /en attente/);
+  assert.doesNotMatch(message.payload.content, /succès/i);
+});
+
+test('announceRunOutcome reports success only when every task finished', async () => {
+  const session = {
+    agentEvents: [],
+    agentProjection: null,
+    headlessPlan: [
+      { id: 'a', description: 'Build TechSections', status: 'done' },
+      { id: 'b', description: 'Export', status: 'success' },
+    ],
+  };
+  await announceRunOutcome(session, { runId: 'run-2', ok: true });
+  const message = session.agentEvents.find((event) => event.type === 'assistant_message');
+  assert.match(message.payload.content, /succès/);
 });

@@ -61,16 +61,47 @@ test('runs concurrent tool calls and replays results in call order', async () =>
   assert.deepEqual(order, ['a', 'b']); // preserved model call order
 });
 
-test('reports capped when the model keeps calling tools past the cap', async () => {
+test('stops on a repeated identical tool call instead of burning the cap', async () => {
   const llm = {
-    async completeWithTools() {
+    async completeWithTools({ tools }) {
+      if (tools.length === 0) return { content: 'Synthèse des résultats.', tool_calls: [] };
       const calls = [toolCall('x', 's__status')];
       return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
     },
   };
-  const out = await runBoundedToolLoop({ llm, tools: [], executeCall: async () => 'r', maxIterations: 3 });
+  const out = await runBoundedToolLoop({
+    llm,
+    tools: [{ function: { name: 's__status' } }],
+    executeCall: async () => 'r',
+    maxIterations: 8,
+  });
   assert.equal(out.capped, true);
-  assert.equal(out.iterations, 3);
+  // The same call twice is a loop: it stopped well before the cap.
+  assert.ok(out.iterations < 8, `expected an early stop, got ${out.iterations}`);
+  // And the turn still answers from what it gathered instead of a dead-end.
+  assert.equal(out.content, 'Synthèse des résultats.');
+});
+
+test('answers from the gathered results when the cap is reached', async () => {
+  let round = 0;
+  const llm = {
+    async completeWithTools({ tools }) {
+      round += 1;
+      if (round <= 2 && tools.length > 0) {
+        const calls = [toolCall('x', 's__search', `{"q":"${round}"}`)];
+        return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+      }
+      return { content: "Voici ce que j'ai trouvé.", tool_calls: [] };
+    },
+  };
+  const out = await runBoundedToolLoop({
+    llm,
+    tools: [{ function: { name: 's__search' } }],
+    executeCall: async () => 'r',
+    maxIterations: 2,
+  });
+  assert.equal(out.capped, true);
+  assert.equal(out.content, "Voici ce que j'ai trouvé.");
 });
 
 test('propagates an abort thrown by executeCall', async () => {

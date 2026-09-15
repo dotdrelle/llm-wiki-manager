@@ -72,6 +72,7 @@ src/agent/graph.js          LangGraph ReAct orchestrator
 src/agent/llm.js            OpenAI-compatible client
 src/commands/slash.js       Deterministic slash commands
 src/core/agentLoop.js       Shared agent turn + multi-turn agentic loop
+src/core/toolLoop.js        Bounded read-only chat tool loop (cap, loop detection)
 src/core/agentEvents.js     AgentRunEvent reducer/projection
 src/core/activity.js        Generic activity normalization/polling
 src/core/jobQueue.js        Workspace-scoped production queue
@@ -462,7 +463,14 @@ Key modules in `src/runtime/`:
   regressing, not proof that a real llm-wiki build/provider round-trip shows
   the same margin. `donna-contract.test.js` (see Release recipe gate above)
   drives this same code path with a mocked per-turn agent for rows 1-3 and 8,
-  and the real `/control` HTTP endpoint for row 7.
+  and the real `/control` HTTP endpoint for row 7. `announceRunOutcome` (the
+  synthesized run summary on the parallel-scheduler path) only reports success
+  when **every** plan task is terminal and successful: a plan with pending
+  tasks — `pending_approval` in particular — is reported as not finished. It
+  used to count only failed/cancelled/successful, so a run that had merely
+  planned its mutations produced "Plan terminé avec succès — 0/N réussie",
+  which the model rephrased into "le livrable a bien été publié" *before* the
+  approval that would run it.
 - **`approvals.js`**: run-level and tool-level approval gate. Run-level:
   `requireApproval: true` in the `/run` body suspends execution after the first
   plan is formed and emits `run_pending_approval`; `POST /approve?runId=...`
@@ -572,6 +580,14 @@ question (`donne le status du job en cours`) is answered by the runtime itself
 otherwise mistook the runtime `runId` for a production `jobId` and reported
 "job not found". The status shortcut is deliberately narrow — a status word AND
 a run/job noun — so it never hijacks an ordinary "explain how X works" question.
+
+The read-only chat loop (`runBoundedToolLoop`, `src/core/toolLoop.js`) stops as
+soon as the model repeats an identical tool call (same server/tool/arguments),
+and when the iteration cap is reached — or a loop is detected — it asks the
+model once more **without tools** for the best answer the gathered results
+support. Before this, a long Confluence/global search burned the cap and the
+turn ended on "Could not finish within the chat mode iteration limit" instead of
+the partial answer it already had.
 
 `mutate` (0.10.0) is now a real, event-sourced plan-patch proposal, not a
 dead-end note: `storeControlProposal` builds a patch via

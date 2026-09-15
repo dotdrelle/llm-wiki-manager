@@ -303,12 +303,13 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
 // instead of the client streaming a per-job line for every task. Uses the
 // workspace LLM to phrase it, degrading to a plain templated fact line if the
 // LLM is unavailable or errors — the run must never block on this summary.
-async function announceRunOutcome(session, { runId, ok, signal = null } = {}) {
+export async function announceRunOutcome(session, { runId, ok, signal = null } = {}) {
   const plan = Array.isArray(session.headlessPlan) ? session.headlessPlan : [];
   if (plan.length === 0) return;
   let failed = 0;
   let cancelled = 0;
   let completed = 0;
+  let pending = 0;
   let firstError = null;
   for (const step of plan) {
     const status = String(step?.status ?? '').toLowerCase();
@@ -322,12 +323,24 @@ async function announceRunOutcome(session, { runId, ok, signal = null } = {}) {
       cancelled += 1;
     } else if (isSuccessful(status)) {
       completed += 1;
+    } else if (isPending(status) || !isTerminal(status)) {
+      // pending_approval, waiting_approval, running, unknown: the work has NOT
+      // happened. Counting these as neither success nor failure is what made a
+      // run that had only *planned* its mutations announce a success (LLM
+      // rephrasing "0/N réussie" into "le livrable a bien été publié") before
+      // the approval that would actually run it.
+      pending += 1;
     }
   }
   const total = plan.length;
-  const factLine = ok && failed === 0
+  const finished = ok && failed === 0 && cancelled === 0 && pending === 0 && completed === total;
+  const factLine = finished
     ? `Plan terminé avec succès — ${completed}/${total} tâche(s) réussie(s).`
-    : `Plan terminé en erreur — ${completed}/${total} tâche(s) réussie(s), ${failed} en erreur${cancelled ? `, ${cancelled} annulée(s)` : ''}.${firstError ? ` Première erreur : ${firstError}.` : ''}`;
+    : `Plan non terminé — ${completed}/${total} tâche(s) réussie(s)` +
+      `${pending ? `, ${pending} en attente (approbation ou exécution)` : ''}` +
+      `${failed ? `, ${failed} en erreur` : ''}` +
+      `${cancelled ? `, ${cancelled} annulée(s)` : ''}.` +
+      `${firstError ? ` Première erreur : ${firstError}.` : ''}`;
   let content = factLine;
   const llm = session.llm;
   if (llm && typeof llm.completeWithTools === 'function') {
@@ -337,6 +350,7 @@ async function announceRunOutcome(session, { runId, ok, signal = null } = {}) {
           'You are Donna, an orchestration assistant reporting a run result to the user.',
           'Rephrase the outcome facts in ONE short, natural sentence, in the same language as the facts.',
           'No lists, no headers, no raw job ids — just a concise human summary.',
+          'If the facts say the plan is NOT finished, say so plainly and name what is still pending or failed: never claim the work was completed, published or successful.',
         ].join('\n'),
         tools: [],
         messages: [{ role: 'user', content: `Run outcome facts:\n${factLine}` }],

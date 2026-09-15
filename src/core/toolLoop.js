@@ -38,7 +38,15 @@ export async function runBoundedToolLoop({
   // livre le texte au fil de l'eau. Sans lui, la réponse finale n'apparaissait
   // qu'une fois complète — le tour paraissait figé pendant toute sa durée.
   const canStream = typeof onTextDelta === 'function' && typeof llm?.streamWithTools === 'function';
+  // The exact same tool + arguments called again is a loop, not progress: a
+  // model that keeps re-issuing `search("x")` will never finish, and burning
+  // the whole iteration cap on it only produced "could not finish". Track the
+  // signatures and stop as soon as a turn repeats one already executed.
+  const seen = new Set();
+  const signature = (call) => `${call?.function?.name ?? ''}\u0000${String(call?.function?.arguments ?? '')}`;
+  let iterations = 0;
   for (let i = 0; i < cap; i += 1) {
+    iterations = i + 1;
     onStep?.(i + 1, cap);
     let streamedText = false;
     const result = canStream
@@ -62,10 +70,12 @@ export async function runBoundedToolLoop({
     if (calls.length === 0) {
       return {
         content: result?.content ?? result?.message?.content ?? '',
-        iterations: i + 1,
+        iterations,
         capped: false,
       };
     }
+    if (calls.every((call) => seen.has(signature(call)))) break;
+    for (const call of calls) seen.add(signature(call));
     convo.push(result.message ?? { role: 'assistant', content: result.content ?? '', tool_calls: calls });
     // Tool calls within one turn are independent: dispatch concurrently, then
     // replay results in the model's call order so the transcript stays stable.
@@ -77,5 +87,49 @@ export async function runBoundedToolLoop({
       convo.push({ role: 'tool', tool_call_id: outcome.tool_call_id, content: outcome.content });
     }
   }
-  return { content: '', iterations: cap, capped: true };
+  // Cap reached or a loop detected: ask once more WITHOUT tools for the best
+  // answer the results gathered so far support. Returning '' here is what made
+  // a long search end in a dead-end instead of the partial answer it had
+  // already collected.
+  const content = await finalAnswerWithoutTools({ llm, system, convo, canStream, onTextDelta, onTextReset, signal });
+  return { content, iterations, capped: true };
+}
+
+async function finalAnswerWithoutTools({
+  llm,
+  system,
+  convo,
+  canStream,
+  onTextDelta,
+  onTextReset,
+  signal,
+}) {
+  try {
+    if (canStream) {
+      let text = '';
+      const result = await llm.streamWithTools({
+        system,
+        tools: [],
+        messages: convo,
+        toolChoice: 'auto',
+        onTextDelta: (delta) => { text += delta; onTextDelta(delta); },
+        signal,
+      });
+      // A tool call despite the empty toolset is not an answer: drop whatever
+      // it streamed and let the caller fall back to its own message.
+      if (result?.tool_calls?.length) { onTextReset?.(); return ''; }
+      return String(result?.content ?? text ?? '').trim();
+    }
+    const result = await llm.completeWithTools({
+      system,
+      tools: [],
+      messages: convo,
+      toolChoice: 'auto',
+      signal,
+    });
+    if (result?.tool_calls?.length) return '';
+    return String(result?.content ?? result?.message?.content ?? '').trim();
+  } catch {
+    return '';
+  }
 }

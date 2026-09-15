@@ -1583,13 +1583,17 @@ async function runChatToolLoop({ input, session, history, donnaMessage, onUpdate
     executeCall,
     maxIterations: Math.min(8, Number(session?.chatAccess?.maxToolIterations) || 4),
     signal: session._abortSignal,
-    onStep: (i, cap) => onStep?.(`Chat: consulting… [${i}/${cap}]`),
+    onStep: () => onStep?.('Chat: consulting…'),
     onTextDelta,
     onTextReset,
   });
-  donnaMessage.content = capped
+  // A capped turn now asks the model for a final answer without tools, so an
+  // answer may exist even when the loop hit its limit: show it. Only fall back
+  // to the honest limit notice when there is genuinely nothing to show.
+  const answer = stripDsmlArtifacts(content).trim();
+  donnaMessage.content = answer || (capped
     ? 'Could not finish within the chat mode iteration limit. Switch to /agent if needed.'
-    : (stripDsmlArtifacts(content).trimEnd() || formatLlmUnavailableMessage('empty response'));
+    : formatLlmUnavailableMessage('empty response'));
   onUpdate?.();
 }
 

@@ -94,6 +94,9 @@ test('generateSkillAcknowledgment asks Donna in the session language and echoes 
   assert.equal(calls.length, 1);
   assert.match(calls[0].input, /es/);
   assert.match(calls[0].input, /\/deliver deliverable="Informe"/);
+  // The acknowledgement is not a decision point: it must not invite the user
+  // into a dialog the runtime cannot act on.
+  assert.match(calls[0].input, /Do not ask a question/);
 });
 
 test('generateSkillAcknowledgment degrades to a neutral message without an LLM client', async () => {

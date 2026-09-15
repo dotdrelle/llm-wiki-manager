@@ -529,6 +529,20 @@ export function startRuntimeServer({
           }
           return;
         }
+        // A run/job status question is answered by the runtime itself, whatever
+        // the mode and whether or not a run is active. Left to the model it
+        // confused the runtime runId with a production job id ("job not
+        // found"); in chat mode it had no runtime status tool at all.
+        if (asksForRunStatus(input)) {
+          const status = controlStatus(context, store);
+          sendJson(response, 200, {
+            accepted: true,
+            kind: 'observe',
+            ...status,
+            explanation: explainControlState(status),
+          });
+          return;
+        }
         if (context.running && !readOnlyChat) {
           // Agent-mode message while a run is active. Classify once: control
           // verbs and new tasks go to the control lane, plain conversation is
@@ -1632,6 +1646,18 @@ function rejectPlanPatch(context, store, patchId, reason) {
   };
 }
 
+// A question about the run/job currently executing. Deliberately narrow — a
+// status word AND a run/job noun — so it never hijacks an ordinary "explain how
+// X works" question. Such a question must be answered by the runtime itself:
+// left to the model, a runtime runId was mistaken for a production job id and
+// reported as "not found", and a read-only chat turn had no runtime status tool.
+function asksForRunStatus(input) {
+  const text = String(input ?? '');
+  const statusWord = /\b(status|statut|progression|progress|avancement|o[uù] en est|o[uù] en sont)\b/i;
+  const runNoun = /\b(job|run|t[aâ]che|task|build|ingest|pipeline|export|polish|traitement)\b/i;
+  return statusWord.test(text) && runNoun.test(text);
+}
+
 // Classifier for the control lane's free-text messages. The classification is
 // LLM-backed: the only deterministic matches left are the runtime's own
 // control verbs (cancel, an explicit "later/queue", status and plan-change
@@ -1667,6 +1693,14 @@ async function classifyControlMessage(input, status, { forcedIntent = null, llm 
   }
   if (/\b(o[uù] en es[t-]|status|statut|progress|progression|logs?|explique|explain|inspect|show|montre|quoi de neuf)\b/i.test(lower)) {
     return { kind: 'observe', confidence: 0.86, reason: 'status_or_explanation_request' };
+  }
+  // A bare "yes" answers the runtime's own last prompt (the launch
+  // acknowledgement used to end on "check progress or cancel?"). While a run is
+  // active, the only thing the runtime can act on is a status check: treating
+  // the word as ordinary conversation made the read-only chat fallback lecture
+  // the user about switching modes instead of answering.
+  if (status.running && /^\s*(oui|yes|yep|ok|okay|vas[- ]?y|d'accord|daccord|entendu)\b/i.test(lower)) {
+    return { kind: 'observe', confidence: 0.7, reason: 'confirmation_of_runtime_prompt' };
   }
   if (status.running && /\b(ajoute|add|change|modifie|modify|remplace|replace|retire|remove|skip|ignore|apr[eè]s|before|after|chaque|each|plan|step|t[aâ]che)\b/i.test(lower)) {
     return { kind: 'modify_run', confidence: 0.78, reason: 'active_run_change_request' };

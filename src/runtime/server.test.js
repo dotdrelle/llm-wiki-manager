@@ -1733,6 +1733,93 @@ test('POST /turn keeps informational skill and build questions conversational', 
   }
 });
 
+test('POST /turn answers a run status question from the runtime instead of the model', async (t) => {
+  const session = { workspace: 'acme', controlQueue: [] };
+  const context = { workspace: 'acme', session, running: true, currentAbortController: null };
+  const status = {
+    status: 'running',
+    running: true,
+    plan: [{ step: 1, description: 'Build TechSections', status: 'running' }],
+    queue: [],
+    controlQueue: [],
+    approvals: [],
+    conversation: [],
+  };
+  let turns = 0;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1', port: 0,
+      store: { dbPath: ':memory:', getState: () => status, listEvents: () => [] },
+      getContext: async () => context,
+      run: async () => new Promise(() => {}),
+      turn: async () => { turns += 1; return { ok: true }; },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw err;
+  }
+  try {
+    // The model once mistook the runtime runId for a production job id and
+    // answered "job not found". The runtime answers its own status.
+    const response = await fetch(`http://127.0.0.1:${handle.port}/turn?workspace=acme`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: 'donne le status du job en cours', mode: 'agent' }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.kind, 'observe');
+    assert.match(body.explanation, /Build TechSections/);
+    assert.equal(turns, 0);
+  } finally {
+    context.currentAbortController?.abort();
+    await handle.close();
+  }
+});
+
+test('POST /turn treats a bare confirmation during a run as a status check', async (t) => {
+  const session = { workspace: 'acme', controlQueue: [] };
+  const context = { workspace: 'acme', session, running: true, currentAbortController: null };
+  const status = {
+    status: 'running',
+    running: true,
+    plan: [{ step: 1, description: 'Rebuild the wiki', status: 'running' }],
+    queue: [],
+    controlQueue: [],
+    approvals: [],
+    conversation: [],
+  };
+  let turns = 0;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1', port: 0,
+      store: { dbPath: ':memory:', getState: () => status, listEvents: () => [] },
+      getContext: async () => context,
+      run: async () => new Promise(() => {}),
+      turn: async () => { turns += 1; return { ok: true }; },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw err;
+  }
+  try {
+    // "oui" answers the launch acknowledgement. It must reach the runtime's
+    // status, not a read-only chat turn that lectures about switching modes.
+    const response = await fetch(`http://127.0.0.1:${handle.port}/turn?workspace=acme`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: 'oui', mode: 'agent' }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.kind, 'observe');
+    assert.equal(turns, 0);
+  } finally {
+    context.currentAbortController?.abort();
+    await handle.close();
+  }
+});
+
 test('POST /run accepts named skill arguments and deduplicates an explicit retry key', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'runtime-named-skill-'));
   mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });

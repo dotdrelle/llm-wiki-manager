@@ -562,6 +562,17 @@ verbs and new tasks go to the control lane, plain conversation is answered
 read-only (mode `chat`), so the composer stays usable during runs (see
 `llm-wiki/CLAUDE.md`).
 
+Two deterministic shortcuts sit in front of that classification, both learned
+from the same confusion: a bare confirmation (`oui`/`yes`/`ok`/`vas-y`) typed
+while a run is active classifies `observe` — the launch acknowledgement is not
+a decision point, and routing the word to the read-only chat made it answer
+"switch to agent mode" to a user who was already there; and any run/job status
+question (`donne le status du job en cours`) is answered by the runtime itself
+(`explainControlState`), in chat mode and while idle too, because the model
+otherwise mistook the runtime `runId` for a production `jobId` and reported
+"job not found". The status shortcut is deliberately narrow — a status word AND
+a run/job noun — so it never hijacks an ordinary "explain how X works" question.
+
 `mutate` (0.10.0) is now a real, event-sourced plan-patch proposal, not a
 dead-end note: `storeControlProposal` builds a patch via
 `buildPlanPatchFromInput` (`src/core/planPatch.js`) and dispatches

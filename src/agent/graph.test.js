@@ -624,7 +624,10 @@ test('an explicitly selected skill runs through the intra-runtime path with name
     },
   });
   const result = await createAgentGraph().invoke({ input: 'lance le skill deliver avec le template Quarterly report', session });
-  assert.equal(result.response, 'Skill mis en file.');
+  // Launching a skill ends the turn: the acknowledgement is generated once and
+  // the model is not given a second chance to re-delegate or contradict it.
+  assert.equal(result.response, 'Started /deliver deliverable="Quarterly report" — 1 step(s) in progress.');
+  assert.equal(mainCalls, 1);
   // `skillStack` accompagne désormais la demande : le run imbriqué démarre après
   // le nettoyage de celui-ci, et c'est le seul canal par lequel il peut savoir
   // quelles compétences sont déjà ouvertes au-dessus de lui.

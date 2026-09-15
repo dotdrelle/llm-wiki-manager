@@ -31,6 +31,7 @@ import { artifactFromToolCall, currentArtifactFor, currentArtifactPromptLine, re
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
 import { objectiveForResolution } from '../orchestrator/objectiveResolver.js';
 import { fetchRuntimeState, postRuntimeCancel, postRuntimeControl, postRuntimeDelegate, postRuntimeKill, postRuntimeSkill } from '../runtime/client.js';
+import { formatPublicSkillInvocation, generateSkillAcknowledgment } from '../runtime/skillRun.js';
 
 const MAX_TOOL_ITERATIONS = 80;
 /**
@@ -1903,6 +1904,7 @@ export function createAgentGraph(options = {}) {
     const toolCalls = state.pendingToolCalls ?? [];
     const toolResultMessages = [];
     let terminalFailure = null;
+    let skillLaunch = null;
 
     for (const call of toolCalls) {
       const resolved = resolveToolCallName(state.session.mcp, call.function.name, INTERNAL_TOOL_SERVERS);
@@ -2017,6 +2019,19 @@ export function createAgentGraph(options = {}) {
             if (skillResult?.terminal === true) {
               terminalFailure = skillResult.code ?? 'skill_failed';
               ok = false;
+            } else if (skillResult?.accepted === true) {
+              // The skill owns execution from here. Without this the turn kept
+              // going and the model could re-delegate or refuse the very
+              // objective it had just launched — the "launched, then no agent
+              // capable" contradiction. End the turn with the launch
+              // acknowledgement instead of another tool round.
+              skillLaunch = {
+                publicInput: formatPublicSkillInvocation(
+                  skillResult.skill ?? args.skillName ?? '',
+                  args.arguments && typeof args.arguments === 'object' ? args.arguments : {},
+                ),
+                objectives: Number(skillResult.objectiveCount ?? skillResult.objectives ?? 1) || 1,
+              };
             }
           }
           if (tool === 'delegate' && /^Runtime control error \(delegate\):/i.test(resultText)) {
@@ -2181,6 +2196,24 @@ export function createAgentGraph(options = {}) {
         invalidResponseRetries: 0,
       };
     }
+    if (skillLaunch) {
+      // Deterministic, localized acknowledgement, generated in the session
+      // language like the `/turn` skill path. No further model turn: the skill
+      // is launched and owns execution, so nothing can contradict it.
+      const response = await generateSkillAcknowledgment(state.session, skillLaunch).catch(
+        () => `Started ${skillLaunch.publicInput} — ${skillLaunch.objectives} step(s) in progress.`,
+      );
+      return {
+        messages: toolResultMessages,
+        pendingToolCalls: null,
+        response,
+        forceDelegation: false,
+        retryWithoutTool: false,
+        terminalToolFailure: false,
+        invalidToolCallRetries: 0,
+        invalidResponseRetries: 0,
+      };
+    }
     return {
       messages: toolResultMessages,
       pendingToolCalls: null,
@@ -2193,6 +2226,9 @@ export function createAgentGraph(options = {}) {
   }
 
   function routeToolExecutor(state) {
+    // A skill launch already produced its final acknowledgement: end the turn
+    // instead of routing back for another model call that could contradict it.
+    if (state.response != null) return END;
     return 'orchestrator';
   }
 

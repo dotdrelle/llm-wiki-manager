@@ -165,7 +165,7 @@ export async function generateSkillAcknowledgment(session, { publicInput, object
       // slow provider must not block the skill-launch HTTP response forever.
       const reply = await llm.complete({
         system: 'You are Donna, the workspace assistant. You acknowledge a launched workflow in the user\'s language. Be concise: exactly one short sentence.',
-        input: `The user just launched the workspace skill ${publicInput}. It was compiled into ${count} step(s) and is now running.\n\nWrite ONE short sentence in ${language} that confirms the launch, echoes the skill and its arguments, and says progress will be reported. Do not ask a question, do not propose options, and do not offer to check, monitor or cancel anything: the runtime reports progress on its own and this acknowledgement is not a decision point. Return only that sentence, nothing else.`,
+        input: `The user just launched the workspace skill ${publicInput}. It was compiled into ${count} step(s) and has been queued.\n\nWrite ONE short sentence in ${language} that confirms the launch, echoes the skill and its arguments, and says progress will be reported. Do not claim the work is running, executing or done: a mutating step waits for the user's approval before it runs. Do not ask a question, do not propose options, and do not offer to check, monitor or cancel anything: the runtime reports progress on its own and this acknowledgement is not a decision point. Return only that sentence, nothing else.`,
         signal: AbortSignal.timeout(8_000),
       });
       const text = String(reply ?? '').trim();
@@ -179,7 +179,7 @@ export async function generateSkillAcknowledgment(session, { publicInput, object
       emitRuntimeLog(session, `skill-acknowledgment: LLM call failed, using the neutral fallback — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  return `Started ${publicInput} — ${count} step(s) in progress.`;
+  return `Started ${publicInput} — ${count} step(s) queued.`;
 }
 
 function argumentError(message) {

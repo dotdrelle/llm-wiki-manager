@@ -30,6 +30,7 @@ import { syncActivitiesToPlan, formatPlanStatus } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../core/agentEvents.js';
 import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
 import { createDeltaCoalescer } from '../runtime/deltaCoalescer.js';
+import { TERMINAL_STATUS_SET } from '../orchestrator/taskStatuses.js';
 import { resolveCapabilityConcurrency } from '../orchestrator/scheduler.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
 import { CapabilityUnavailableError, resolve as resolveCapability } from '../orchestrator/capabilityResolver.js';
@@ -828,7 +829,7 @@ async function runHeadless(argv, agent) {
 // export finished, before the ingest had even started. The control queue is the
 // only place where the whole chain is observable, so the wait is scoped to
 // chainId and ends when every item of that chain is terminal.
-const CHAIN_TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled', 'skipped']);
+const CHAIN_TERMINAL_STATUSES = TERMINAL_STATUS_SET;
 
 export async function waitForRuntimeChain(session, log, {
   chainId,

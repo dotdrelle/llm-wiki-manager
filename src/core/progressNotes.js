@@ -48,7 +48,3 @@ export function toolResultNote(name, ok, detail) {
   return reason ? `${tool} done: ${reason}` : `${tool} done.`;
 }
 
-export function turnDoneNote(steps) {
-  if (!steps) return 'Done.';
-  return `Done — ${steps} step${steps > 1 ? 's' : ''}.`;
-}

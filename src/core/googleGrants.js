@@ -33,6 +33,3 @@ export function defaultGoogleGrants() {
   return [...GOOGLE_GRANTS];
 }
 
-export function describeGoogleGrant(grant) {
-  return GOOGLE_GRANT_LABELS[grant] ?? null;
-}

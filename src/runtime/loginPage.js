@@ -127,6 +127,3 @@ export function loginPageHtml({ enrolled = false, secret = null, uri = null, err
 </html>`;
 }
 
-export function loginSuccessHtml(sessionExpiresAt) {
-  return loginPageHtml({ enrolled: true, sessionExpiresAt });
-}

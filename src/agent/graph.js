@@ -1378,24 +1378,6 @@ export function buildAgentSystemPrompt(state) {
   return customPrompt ? `${customPrompt}\n\n${agentContext}` : agentContext;
 }
 
-export function buildLimitedAgentResponse(state, reason = 'no workspace loaded with .wikirc.yaml') {
-  const workspace = state.session.workspace ?? 'no workspace selected';
-  const wikirc = state.session.wikirc?.profile ?? 'no profile loaded';
-  return [
-    `Donna is active. Current workspace: ${workspace}.`,
-    `Current wikirc profile: ${wikirc}.`,
-    '',
-    'I am the shell agent mode: use `/agent` to route free text through this LangGraph graph, or `/chat` for direct chat.',
-    `LLM connection: limited mode (${reason}).`,
-    `Available primitives: ${commandList(state.session)}.`,
-    '',
-    'Connected MCP tools:',
-    formatMcpToolsForAgent(state.session.mcp),
-    '',
-    'Limited mode: workspace, Docker Compose tools, MCP calls, /wiki fallback, skill discovery, and headless mode are wired.',
-    'Use `/help` to see deterministic shell commands.',
-  ].join('\n');
-}
 
 export function formatLlmUnavailableMessage(reason) {
   const clean = String(reason ?? 'unknown reason').replace(/\s+/g, ' ').trim();

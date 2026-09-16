@@ -48,10 +48,6 @@ export function extractHeadlessPlan(text) {
   return steps;
 }
 
-export function matchCompletedToPlan(plan, completed) {
-  if (!plan) return;
-  syncActivitiesToPlan(plan, completed.filter((activity) => activity.terminal));
-}
 
 export function syncActivitiesToPlan(plan, activities) {
   if (!plan) return;

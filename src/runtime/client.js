@@ -238,19 +238,6 @@ export async function postRuntimeShutdown({
   return response.json();
 }
 
-export async function postRuntimeResume({
-  url = runtimeUrlFromEnv(),
-  token = runtimeToken(),
-  workspace = null,
-} = {}) {
-  const response = await fetch(runtimeEndpoint(url, '/resume', workspace), {
-    method: 'POST',
-    headers: runtimeHeaders(token),
-  });
-  if (!response.ok) throw new Error(`Runtime resume failed: HTTP ${response.status}`);
-  return response.json();
-}
-
 export async function postRuntimeApprove({
   url = runtimeUrlFromEnv(),
   token = runtimeToken(),
@@ -331,6 +318,3 @@ export async function* streamRuntimeEvents({
   }
 }
 
-export function runtimeFetchOptions(token = runtimeToken()) {
-  return { headers: runtimeHeaders(token) };
-}

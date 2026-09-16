@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { defaultRuntimeStateDir } from '../core/env.js';
@@ -221,6 +221,3 @@ export function pruneLoginAttempts() {
   }
 }
 
-export function sessionExists() {
-  return existsSync(sessionPath());
-}

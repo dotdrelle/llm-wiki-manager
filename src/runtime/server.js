@@ -7,6 +7,7 @@ import { validateContractInDev } from '../contracts/schemas.js';
 import { runtimeTokenFromEnv } from './auth.js';
 import { controlMessage } from './controlMessages.js';
 import { tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
+import { isCancelled, isFailed, isSuccessful } from '../orchestrator/taskStatuses.js';
 import { approvalClassForTask } from '../orchestrator/approvalPolicy.js';
 import { RUNTIME_SHUTDOWN_ABORT_REASON } from '../orchestrator/dispatcher.js';
 import { matchSkillInvocation } from '../core/skillInvocation.js';
@@ -1168,13 +1169,39 @@ export function runtimeState(context, store, { workspace = null, session = null 
   };
 }
 
+// The live figures of the activity the run is on, in one line: percent, plan
+// step, build batch, instruction count and the stabilize counters. A status
+// that only named the current step could not tell 5% from 95%, nor what the
+// running batch had actually done.
+function describeActivityProgress(activity) {
+  const progress = activity?.progress ?? {};
+  const bits = [];
+  if (Number.isFinite(Number(progress.percent))) bits.push(`${Number(progress.percent)}%`);
+  if (progress.stepIndex != null && progress.stepTotal != null) bits.push(`step ${progress.stepIndex}/${progress.stepTotal}`);
+  if (progress.batchIndex != null && progress.batchCount != null) bits.push(`batch ${Number(progress.batchIndex) + 1}/${progress.batchCount}`);
+  if (progress.instructionCount != null) bits.push(`${progress.instructionCount} instruction${Number(progress.instructionCount) > 1 ? 's' : ''}`);
+  const stabilize = [progress.stabilizeKept, progress.stabilizeMerged, progress.stabilizeInserted, progress.stabilizeRemoved];
+  if (stabilize.some((value) => value != null)) {
+    bits.push(`kept ${progress.stabilizeKept ?? 0}, merged ${progress.stabilizeMerged ?? 0}, inserted ${progress.stabilizeInserted ?? 0}, removed ${progress.stabilizeRemoved ?? 0}`);
+  }
+  const detail = progress.detail && !bits.includes(String(progress.detail)) ? String(progress.detail) : null;
+  return { bits: bits.join(' · '), detail, label: activity?.label ?? null };
+}
+
 function explainControlState(status) {
   const plan = Array.isArray(status.plan) ? status.plan : [];
+  const activities = Array.isArray(status.activities)
+    ? status.activities
+    : Object.values(status.activities ?? {});
   if (status.running) {
     const runningStep = plan.find((step) => step.status === 'running');
+    const activity = activities.find((entry) => !entry?.terminal) ?? activities[0] ?? null;
+    const info = activity ? describeActivityProgress(activity) : { bits: '', detail: null, label: null };
+    const detailText = [info.bits, info.detail].filter(Boolean).join(' · ');
+    const suffix = detailText ? ` (${detailText})` : '';
     return runningStep
-      ? `Runtime run is active. Current step: ${runningStep.description ?? runningStep.label ?? runningStep.step}.`
-      : 'Runtime run is active. No current plan step is available yet.';
+      ? `Runtime run is active. Current step: ${runningStep.description ?? runningStep.label ?? runningStep.step}.${suffix}`
+      : `Runtime run is active. No current plan step is available yet.${suffix}`;
   }
   const pendingApproval = status.approvals.find((approval) => approval.status === 'pending_approval');
   if (pendingApproval) {
@@ -1186,6 +1213,15 @@ function explainControlState(status) {
   }
   if (plan.some((step) => step.status === 'pending')) {
     return 'Runtime is idle with pending plan steps visible from the last run.';
+  }
+  // Idle at the end of a run: say what the last run did, not just "idle" — that
+  // is the question the operator actually asks when the thread goes quiet.
+  const failed = plan.filter((step) => isFailed(step.status) || isCancelled(step.status)).length;
+  const done = plan.filter((step) => isSuccessful(step.status)).length;
+  if (plan.length > 0) {
+    return failed > 0
+      ? `Runtime is idle. Last run: ${done}/${plan.length} task(s) succeeded, ${failed} failed or cancelled.`
+      : `Runtime is idle. Last run: ${done}/${plan.length} task(s) succeeded.`;
   }
   return 'Runtime is idle.';
 }
@@ -1646,13 +1682,22 @@ function rejectPlanPatch(context, store, patchId, reason) {
   };
 }
 
-// A question about the run/job currently executing. Deliberately narrow — a
-// status word AND a run/job noun — so it never hijacks an ordinary "explain how
-// X works" question. Such a question must be answered by the runtime itself:
-// left to the model, a runtime runId was mistaken for a production job id and
-// reported as "not found", and a read-only chat turn had no runtime status tool.
+// A question about the run/job currently executing. The free-text form is
+// deliberately narrow — a status word AND a run/job noun — so it never hijacks
+// an ordinary "explain how X works" question. Such a question must be answered
+// by the runtime itself: left to the model, a runtime runId was mistaken for a
+// production job id and reported as "not found", and a read-only chat turn had
+// no runtime status tool.
+//
+// The reserved built-in `/status` is ALWAYS a runtime status, in every surface:
+// `RESERVED_SLASH_COMMANDS` keeps the homonymous workspace skill out of
+// `matchSkillInvocation`, but without this branch `/turn` still handed the
+// literal command to the model, which ran the skill (English "status" output) or
+// an unrelated review instead of reporting anything. Serve types `/status` into
+// this endpoint; the ShellUI answers it locally.
 function asksForRunStatus(input) {
-  const text = String(input ?? '');
+  const text = String(input ?? '').trim();
+  if (/^\/status(?:\s|$)/i.test(text)) return true;
   const statusWord = /\b(status|statut|progression|progress|avancement|o[uù] en est|o[uù] en sont)\b/i;
   const runNoun = /\b(job|run|t[aâ]che|task|build|ingest|pipeline|export|polish|traitement)\b/i;
   return statusWord.test(text) && runNoun.test(text);

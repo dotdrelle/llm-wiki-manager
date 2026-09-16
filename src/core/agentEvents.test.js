@@ -127,6 +127,40 @@ test('reduceAgentEvents: interactive (user) run_started clears state but is not 
   assert.notEqual(projection.status, 'running');
 });
 
+test('reduceAgentEvents: a run blocked on approval is not shown as running', () => {
+  // The chat claimed a rebuild was executing while its only task was still
+  // waiting for a human: the run status stayed 'running' through the per-task
+  // approval request. It must mirror run_pending_approval.
+  const projection = reduceAgentEvents([
+    createAgentEvent('run_started', { origin: 'runtime' }),
+    createAgentEvent('plan_set', { origin: 'tool', payload: { steps: ['Rebuild the concepts'] } }),
+    createAgentEvent('plan_step_updated', { origin: 'runtime', payload: { step: 1, status: 'waiting_approval' } }),
+    createAgentEvent('approval.requested', { origin: 'runtime', payload: { id: 'a1', scope: 'task', taskId: 't1' } }),
+  ]);
+  assert.equal(projection.status, 'pending_approval');
+});
+
+test('reduceAgentEvents: granting the approval puts the run back to running', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('run_started', { origin: 'runtime' }),
+    createAgentEvent('plan_set', { origin: 'tool', payload: { steps: ['Rebuild the concepts'] } }),
+    createAgentEvent('plan_step_updated', { origin: 'runtime', payload: { step: 1, status: 'waiting_approval' } }),
+    createAgentEvent('approval.requested', { origin: 'runtime', payload: { id: 'a1', scope: 'task', taskId: 't1' } }),
+    createAgentEvent('approval.granted', { origin: 'runtime', payload: { id: 'a1', scope: 'task', taskId: 't1' } }),
+  ]);
+  assert.equal(projection.status, 'running');
+});
+
+test('reduceAgentEvents: an approval request does not hide a genuinely running task', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('run_started', { origin: 'runtime' }),
+    createAgentEvent('plan_set', { origin: 'tool', payload: { steps: ['Export', 'Build'] } }),
+    createAgentEvent('plan_step_updated', { origin: 'runtime', payload: { step: 1, status: 'running' } }),
+    createAgentEvent('approval.requested', { origin: 'runtime', payload: { id: 'a1', scope: 'task', taskId: 't2' } }),
+  ]);
+  assert.equal(projection.status, 'running');
+});
+
 test('reduceAgentEvents: tracks manual plan and step updates', () => {
   const projection = reduceAgentEvents([
     createAgentEvent('plan_set', {

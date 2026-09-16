@@ -174,6 +174,3 @@ function taskId(task) {
   return String(task?.id ?? task?.step);
 }
 
-export function isTerminalTask(task) {
-  return isTerminal(statusOf(task));
-}

@@ -1820,6 +1820,54 @@ test('POST /turn treats a bare confirmation during a run as a status check', asy
   }
 });
 
+test('POST /turn answers the reserved /status command itself, never the homonymous skill', async (t) => {
+  // A workspace skill named `status` exists precisely to prove the built-in
+  // wins: `/status` was handed to the model, which ran that skill (English
+  // output) or an unrelated review instead of reporting anything. Serve types
+  // `/status` into /turn; only `/skills run status` may reach the skill.
+  const root = mkdtempSync(join(tmpdir(), 'runtime-status-builtin-'));
+  mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
+  writeFileSync(join(root, '.wiki', 'skills', 'status.md'), '---\nname: status\n---\nInspect services.');
+  const session = { workspace: 'acme', workspacePath: root, controlQueue: [] };
+  const context = { workspace: 'acme', session, running: false, currentAbortController: null };
+  const status = {
+    status: 'idle',
+    running: false,
+    plan: [{ step: 1, description: 'Rebuild the wiki', status: 'done' }],
+    queue: [],
+    controlQueue: [],
+    approvals: [],
+    conversation: [],
+  };
+  let turns = 0;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1', port: 0,
+      store: { dbPath: ':memory:', getState: () => status, listEvents: () => [] },
+      getContext: async () => context,
+      run: async () => new Promise(() => {}),
+      turn: async () => { turns += 1; return { ok: true }; },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw err;
+  }
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/turn?workspace=acme`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: '/status', mode: 'agent' }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.kind, 'observe');
+    assert.equal(turns, 0, 'the built-in status must not become a model turn');
+  } finally {
+    context.currentAbortController?.abort();
+    await handle.close();
+  }
+});
+
 test('POST /run accepts named skill arguments and deduplicates an explicit retry key', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'runtime-named-skill-'));
   mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });

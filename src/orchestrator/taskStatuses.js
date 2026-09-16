@@ -28,6 +28,14 @@ export const PENDING_STATUSES_LIST = Object.freeze(['pending', 'pending_approval
 /** En cours : un agent y travaille en ce moment. */
 export const ACTIVE_STATUSES = Object.freeze(['running', 'in_progress', 'started', 'starting']);
 
+/**
+ * Terminal, réduit à ses quatre formes canoniques (les alias sont normalisés
+ * avant comparaison). Les modules qui recopiaient `['done','failed',
+ * 'cancelled','skipped']` dans un `Set` importent celui-ci à la place.
+ */
+export const TERMINAL_STATUSES = Object.freeze(['done', 'failed', 'cancelled', 'skipped']);
+export const TERMINAL_STATUS_SET = new Set(TERMINAL_STATUSES);
+
 const ALIASES = new Map([
   ...SUCCESS_STATUSES.map((status) => [status, 'done']),
   ...FAILURE_STATUSES.map((status) => [status, 'failed']),

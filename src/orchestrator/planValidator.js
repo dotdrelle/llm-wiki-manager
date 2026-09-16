@@ -1,4 +1,5 @@
 import { validateContract } from '../contracts/schemas.js';
+import { cloneJson } from '../core/json.js';
 
 const SUPPORTED_CONTRACT_VERSIONS = new Set(['1']);
 const MUTATING_OPERATIONS = new Set([
@@ -529,6 +530,3 @@ function issue(code, message, details = {}) {
   return { code, message, details };
 }
 
-function cloneJson(value) {
-  return value == null ? value : JSON.parse(JSON.stringify(value));
-}

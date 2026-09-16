@@ -43,20 +43,6 @@ import { assertContract } from '../../contracts/schemas.js';
 
 export const RUNTIME_PROTOCOL_VERSION = '1';
 
-export const RUNTIME_EVENT_TYPES = [
-  'run_created',
-  'run_started',
-  'agent_thinking',
-  'tool_started',
-  'tool_finished',
-  'subagent_started',
-  'subagent_finished',
-  'message',
-  'approval_required',
-  'run_completed',
-  'run_failed',
-  'run_cancelled',
-];
 
 export class RuntimeProviderUnavailableError extends Error {
   constructor(runtime, reason) {

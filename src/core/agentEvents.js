@@ -1,11 +1,12 @@
 import { normalizeActivity } from './activity.js';
+import { cloneJson } from './json.js';
 import { attachActivityToExistingPlan, syncActivitiesToPlan } from './plan.js';
 import { applyPlanPatch, normalizePlanPatch, normalizePlanRevision, rebasePlanPatch } from './planPatch.js';
 import { formatRuntimeLogPayload, isDispatchPlumbingLine, normalizeRuntimeLog, shortTaskLabel } from './runtimeLog.js';
 import { projectSkillChains, TERMINAL as CONTROL_TERMINAL_STATUSES } from './skillChainView.js';
 import { projectWorkflow } from './workflow.js';
 import { validateContractInDev } from '../contracts/schemas.js';
-import { isTerminal, isSuccessful, isUnknownStatus, normalizeTaskStatus } from '../orchestrator/taskStatuses.js';
+import { isActive, isTerminal, isSuccessful, isUnknownStatus, normalizeTaskStatus } from '../orchestrator/taskStatuses.js';
 
 const SESSION_PROJECTION_EVENTS = new Set([
   'run_started',
@@ -289,6 +290,11 @@ export function applyAgentProjectionToSession(session, projection) {
     terminal: production.terminal,
     updatedAt: production.updatedAt,
   } : session.productionActivity ?? null;
+}
+
+function hasRunningPlanStep(state) {
+  return (Array.isArray(state.plan) ? state.plan : [])
+    .some((step) => isActive(step?.status));
 }
 
 function applyEvent(state, event) {
@@ -597,6 +603,13 @@ function applyEvent(state, event) {
         reason: event.payload?.reason ?? null,
         createdAt: event.ts,
       });
+      // A run waiting for a human is not "running": showing it as running is
+      // how the chat could claim a rebuild was executing before anyone
+      // approved it. Mirror `run_pending_approval` (AGENTS.md: the run status
+      // is pending_approval while the decision is outstanding), but only when
+      // no task is actually executing — a parallel run may have work in flight
+      // while one branch waits.
+      if (!hasRunningPlanStep(state)) state.status = 'pending_approval';
       return;
     case 'approval.granted': {
       const grant = {
@@ -616,6 +629,13 @@ function applyEvent(state, event) {
       };
       upsertApproval(state, grant);
       markCoveredApprovalsApproved(state.approvals, grant, event.ts);
+      // The decision is in: the run goes back to running unless another
+      // approval is still outstanding (a run-scoped grant clears its covered
+      // ones, markCoveredApprovalsApproved above).
+      if (state.status === 'pending_approval'
+        && !(state.approvals ?? []).some((approval) => approval.status === 'pending_approval')) {
+        state.status = 'running';
+      }
       return;
     }
     case 'approval.rejected':
@@ -1240,6 +1260,3 @@ function sortedActivities(activities) {
     .sort((a, b) => String(a.updatedAt ?? '').localeCompare(String(b.updatedAt ?? '')));
 }
 
-function cloneJson(value) {
-  return value == null ? value : JSON.parse(JSON.stringify(value));
-}

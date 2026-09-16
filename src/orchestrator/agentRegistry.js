@@ -1,5 +1,6 @@
 import { createAgentEvent, dispatchAgentEvent, dispatchRuntimeLog } from '../core/agentEvents.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
+import { cloneJson } from '../core/json.js';
 import { assertContract } from '../contracts/schemas.js';
 
 const AVAILABLE = 'available';
@@ -320,6 +321,3 @@ function cloneAgent(agent) {
   };
 }
 
-function cloneJson(value) {
-  return value == null ? value : JSON.parse(JSON.stringify(value));
-}

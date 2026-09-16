@@ -7,6 +7,8 @@
  * which is why the shaping lives here and not in either renderer.
  */
 
+import { TERMINAL_STATUS_SET } from '../orchestrator/taskStatuses.js';
+
 const SYMBOLS = {
   done: '✓',
   running: '●',
@@ -29,7 +31,7 @@ export function selectionKindLabel(selectionKind) {
   return SELECTION_KIND_LABELS[selectionKind] ?? selectionKind ?? null;
 }
 
-export const TERMINAL = new Set(['done', 'failed', 'cancelled', 'skipped']);
+export const TERMINAL = TERMINAL_STATUS_SET;
 
 // Objectives are whole paragraphs; a chain view needs a line. Keep the first
 // sentence, drop the parameter block the compiler appends, and never cut a word

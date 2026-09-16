@@ -1,10 +1,13 @@
 /**
  * @statuses-vocabulary
  * Control items are queued run requests, not orchestrator tasks. Their
- * terminal vocabulary deliberately includes chain-level `skipped` and is
- * projected by core/agentEvents.js rather than taskStatuses.js.
+ * terminal vocabulary is the same four canonical statuses as a task's
+ * (`TERMINAL_STATUS_SET`), including chain-level `skipped`; the projection is
+ * still done by core/agentEvents.js, this only shares the vocabulary.
  */
-const TERMINAL = new Set(['done', 'failed', 'cancelled', 'skipped']);
+import { TERMINAL_STATUS_SET } from '../orchestrator/taskStatuses.js';
+
+const TERMINAL = TERMINAL_STATUS_SET;
 
 export function reconcileControlQueue(context, { startItem, skipItem } = {}) {
   if (!context?.session || context.running || context.controlDrainActive) return false;

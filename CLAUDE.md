@@ -584,11 +584,22 @@ from the same confusion: a bare confirmation (`oui`/`yes`/`ok`/`vas-y`) typed
 while a run is active classifies `observe` — the launch acknowledgement is not
 a decision point, and routing the word to the read-only chat made it answer
 "switch to agent mode" to a user who was already there; and any run/job status
-question (`donne le status du job en cours`) is answered by the runtime itself
-(`explainControlState`), in chat mode and while idle too, because the model
-otherwise mistook the runtime `runId` for a production `jobId` and reported
-"job not found". The status shortcut is deliberately narrow — a status word AND
-a run/job noun — so it never hijacks an ordinary "explain how X works" question.
+question (`donne le status du job en cours`) is detected by a deliberately
+narrow rule — a status word AND a run/job noun — so it never hijacks an
+ordinary "explain how X works" question.
+
+**System facts are never pushed into the thread raw; they go through Donna.**
+On `/turn` (the serve chat) neither a detected status question nor an
+`observe` classification is answered by the runtime: the facts are collected
+server-side (`runtimeStatusFacts`), handed to Donna as a scoped prompt
+(`runtimeStatusSynthesisPrompt`), and she synthesizes them in the session
+language (`.wikirc`). Supplying the facts is also what keeps the model from
+mistaking the runtime `runId` for a production `jobId` ("job not found").
+Cancel/enqueue/mutate stay deterministic in that block. The control lane
+(`/control {action:"message"}`, `/run` observe) still answers with
+`explainControlState` for the Shell. The served chat's Activity **Inspect**
+follows the same rule: it asks Donna a scoped status question instead of
+appending a local `runtimeStatusMarkdown` (removed).
 
 The read-only chat loop (`runBoundedToolLoop`, `src/core/toolLoop.js`) stops as
 soon as the model repeats an identical tool call (same server/tool/arguments),

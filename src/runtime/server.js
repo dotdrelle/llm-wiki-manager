@@ -7,7 +7,7 @@ import { validateContractInDev } from '../contracts/schemas.js';
 import { runtimeTokenFromEnv } from './auth.js';
 import { controlMessage } from './controlMessages.js';
 import { tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
-import { isCancelled, isFailed, isSuccessful } from '../orchestrator/taskStatuses.js';
+import { isActive, isCancelled, isFailed, isSuccessful } from '../orchestrator/taskStatuses.js';
 import { approvalClassForTask } from '../orchestrator/approvalPolicy.js';
 import { RUNTIME_SHUTDOWN_ABORT_REASON } from '../orchestrator/dispatcher.js';
 import { matchSkillInvocation } from '../core/skillInvocation.js';
@@ -503,7 +503,7 @@ export function startRuntimeServer({
       }
       if (request.method === 'POST' && url.pathname === '/turn') {
         const { body, context } = await resolveBodyContext(request, url);
-        const input = String(body.input ?? body.prompt ?? '').trim();
+        let input = String(body.input ?? body.prompt ?? '').trim();
         if (!input) {
           sendJson(response, 400, { error: 'Missing input.' });
           return;
@@ -530,19 +530,15 @@ export function startRuntimeServer({
           }
           return;
         }
-        // A run/job status question is answered by the runtime itself, whatever
-        // the mode and whether or not a run is active. Left to the model it
-        // confused the runtime runId with a production job id ("job not
-        // found"); in chat mode it had no runtime status tool at all.
+        // A run/job status question must NEVER surface the raw system text in
+        // the thread: the runtime collects the facts and hands them to Donna,
+        // who synthesizes them in the session language. `readOnlyChat` so the
+        // turn is a conversation, not a control decision — and the facts are
+        // supplied here so the model cannot mistake the runtime run id for a
+        // production job id ("job not found").
         if (asksForRunStatus(input)) {
-          const status = controlStatus(context, store);
-          sendJson(response, 200, {
-            accepted: true,
-            kind: 'observe',
-            ...status,
-            explanation: explainControlState(status),
-          });
-          return;
+          input = runtimeStatusSynthesisPrompt(input, controlStatus(context, store));
+          readOnlyChat = true;
         }
         if (context.running && !readOnlyChat) {
           // Agent-mode message while a run is active. Classify once: control
@@ -553,7 +549,13 @@ export function startRuntimeServer({
             llm: context?.session?.llm,
             session: context?.session,
           });
-          if (classification.kind !== 'converse') {
+          if (classification.kind === 'observe') {
+            // An observation is system facts, not a control action: Donna gets
+            // them and answers in the session language, never a raw English
+            // line pushed into the thread.
+            input = runtimeStatusSynthesisPrompt(input, controlStatus(context, store));
+            readOnlyChat = true;
+          } else if (classification.kind !== 'converse') {
             const result = await handleControlMessage(context, store, input, {
               intent: body.intent,
               startNextControlRequest,
@@ -562,8 +564,9 @@ export function startRuntimeServer({
             });
             sendJson(response, result.statusCode, result.body);
             return;
+          } else {
+            readOnlyChat = true;
           }
-          readOnlyChat = true;
         }
         if (typeof turn !== 'function') {
           sendJson(response, 501, { error: 'Runtime interactive turns are unavailable.' });
@@ -581,7 +584,10 @@ export function startRuntimeServer({
               llm: context?.session?.llm,
               session: context?.session,
             });
-            if (classification.kind !== 'converse') {
+            if (classification.kind === 'observe') {
+              input = runtimeStatusSynthesisPrompt(input, controlStatus(context, store));
+              readOnlyChat = true;
+            } else if (classification.kind !== 'converse') {
               const result = await handleControlMessage(context, store, input, {
                 intent: body.intent,
                 startNextControlRequest,
@@ -1162,7 +1168,12 @@ export function runtimeState(context, store, { workspace = null, session = null 
     // own history) so those replies surface. The log is a superset of the
     // canonical run conversation, so run rendering is unaffected.
     conversation: reduceAgentEvents(store.listEvents({ workspace })).conversation,
-    status: context?.running ? 'running' : state.status ?? 'idle',
+    // `context.running` keeps the process alive while the scheduler waits for an
+    // approval, but the run is then NOT running — the reducer already says
+    // `pending_approval`. Prefer it over the blanket override.
+    status: context?.running
+      ? (state.status === 'pending_approval' ? 'pending_approval' : 'running')
+      : state.status ?? 'idle',
     running: Boolean(context?.running),
     runId: context?.currentRunId ?? state.runId ?? null,
     workspace: context?.currentRunWorkspace ?? context?.workspace ?? state.workspace ?? workspace ?? null,
@@ -1188,11 +1199,68 @@ function describeActivityProgress(activity) {
   return { bits: bits.join(' · '), detail, label: activity?.label ?? null };
 }
 
+// The facts a status answer is built from, rendered server-side ONCE. A status
+// question is answered by Donna, never by pushing this text into the thread:
+// the runtime supplies the figures, she phrases them in the session language.
+function runtimeStatusFacts(status) {
+  const plan = Array.isArray(status.plan) ? status.plan : [];
+  const approvals = Array.isArray(status.approvals) ? status.approvals : [];
+  const queue = Array.isArray(status.controlQueue) ? status.controlQueue : [];
+  const activities = Array.isArray(status.activities)
+    ? status.activities
+    : Object.values(status.activities ?? {});
+  const lines = [
+    `Runtime status: ${status.status ?? 'idle'}`,
+    `Workspace: ${status.workspace ?? '-'}`,
+  ];
+  if (status.runId) lines.push(`Run id: ${status.runId}`);
+  for (const activity of activities.filter((entry) => !entry?.terminal).slice(0, 8)) {
+    const info = describeActivityProgress(activity);
+    const detail = [info.bits, info.detail].filter(Boolean).join(' · ');
+    lines.push(
+      `Activity: ${info.label ?? activity.label ?? activity.id ?? '-'} — ${activity.status ?? '-'}${detail ? ` (${detail})` : ''}`,
+    );
+  }
+  for (const [index, step] of plan.slice(0, 60).entries()) {
+    lines.push(`Task ${step.step ?? index + 1}: ${step.status ?? 'pending'} - ${step.description ?? step.label ?? step.id ?? 'step'}`);
+  }
+  for (const approval of approvals.filter((entry) => entry.status === 'pending_approval')) {
+    lines.push(`Pending approval: ${approval.reason ?? approval.taskId ?? approval.id ?? '-'}`);
+  }
+  for (const item of queue.filter((entry) => entry.status === 'queued')) {
+    lines.push(`Queued: ${item.label ?? item.input ?? item.id ?? '-'}`);
+  }
+  return lines.join('\n');
+}
+
+function runtimeStatusSynthesisPrompt(asked, status) {
+  return [
+    'The runtime facts below are the authoritative status the system just collected (this is a runtime run, not a production job — do not look up a job id).',
+    `User question: ${asked}`,
+    'Answer in the session language with a concise, natural status: name the requested target first, then progress, blockers (pending approvals), queued items and the next step.',
+    'Keep every figure (percent, step, batch, instruction and stabilize counts) and every task status accurate; never invent, drop or round away a figure. Do not paste the fact block verbatim; summarize it into prose.',
+    '',
+    'Runtime facts:',
+    runtimeStatusFacts(status),
+  ].join('\n');
+}
+
 function explainControlState(status) {
   const plan = Array.isArray(status.plan) ? status.plan : [];
   const activities = Array.isArray(status.activities)
     ? status.activities
     : Object.values(status.activities ?? {});
+  // A run whose only outstanding work is a human decision is not "running":
+  // `status.running` mirrors the process, which stays alive while the scheduler
+  // waits. Mirrors the reducer's rule — pending_approval, or a pending approval
+  // with no step actually executing.
+  const approvals = Array.isArray(status.approvals) ? status.approvals : [];
+  const pendingApproval = approvals.find((approval) => approval.status === 'pending_approval');
+  const awaitingApproval = pendingApproval
+    && (status.status === 'pending_approval' || !plan.some((step) => isActive(step?.status)));
+  if (awaitingApproval) {
+    return `Runtime is waiting for approval: ${pendingApproval.reason ?? pendingApproval.id}.`;
+  }
   if (status.running) {
     const runningStep = plan.find((step) => step.status === 'running');
     const activity = activities.find((entry) => !entry?.terminal) ?? activities[0] ?? null;
@@ -1203,7 +1271,6 @@ function explainControlState(status) {
       ? `Runtime run is active. Current step: ${runningStep.description ?? runningStep.label ?? runningStep.step}.${suffix}`
       : `Runtime run is active. No current plan step is available yet.${suffix}`;
   }
-  const pendingApproval = status.approvals.find((approval) => approval.status === 'pending_approval');
   if (pendingApproval) {
     return `Runtime is waiting for approval: ${pendingApproval.reason ?? pendingApproval.id}.`;
   }

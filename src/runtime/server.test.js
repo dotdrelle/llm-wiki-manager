@@ -1733,7 +1733,7 @@ test('POST /turn keeps informational skill and build questions conversational', 
   }
 });
 
-test('POST /turn answers a run status question from the runtime instead of the model', async (t) => {
+test('POST /turn hands a run status question to Donna with the runtime facts', async (t) => {
   const session = { workspace: 'acme', controlQueue: [] };
   const context = { workspace: 'acme', session, running: true, currentAbortController: null };
   const status = {
@@ -1746,6 +1746,8 @@ test('POST /turn answers a run status question from the runtime instead of the m
     conversation: [],
   };
   let turns = 0;
+  let turnInput = '';
+  let turnMode = null;
   let handle;
   try {
     handle = await startRuntimeServer({
@@ -1753,24 +1755,84 @@ test('POST /turn answers a run status question from the runtime instead of the m
       store: { dbPath: ':memory:', getState: () => status, listEvents: () => [] },
       getContext: async () => context,
       run: async () => new Promise(() => {}),
-      turn: async () => { turns += 1; return { ok: true }; },
+      turn: async (_context, options) => { turns += 1; turnInput = options.input; turnMode = options.mode; return { ok: true }; },
     });
   } catch (err) {
     if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
     throw err;
   }
   try {
-    // The model once mistook the runtime runId for a production job id and
-    // answered "job not found". The runtime answers its own status.
+    // System facts never reach the thread as raw text: the runtime supplies
+    // them to Donna, who synthesizes the answer. The facts also prevent the
+    // model mistaking the runtime runId for a production job id.
     const response = await fetch(`http://127.0.0.1:${handle.port}/turn?workspace=acme`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ input: 'donne le status du job en cours', mode: 'agent' }),
     });
     const body = await response.json();
-    assert.equal(response.status, 200);
-    assert.equal(body.kind, 'observe');
-    assert.match(body.explanation, /Build TechSections/);
-    assert.equal(turns, 0);
+    assert.equal(response.status, 202);
+    assert.equal(body.kind, 'turn');
+    // The turn is dispatched asynchronously after the 202.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(turns, 1);
+    assert.equal(turnMode, 'chat');
+    assert.match(turnInput, /Build TechSections/);
+    assert.match(turnInput, /runtime run, not a production job/i);
+  } finally {
+    context.currentAbortController?.abort();
+    await handle.close();
+  }
+});
+
+test('a run blocked on approval is described as waiting, not as running', async (t) => {
+  const session = { workspace: 'acme', controlQueue: [] };
+  const context = { workspace: 'acme', session, running: true, currentAbortController: null };
+  const status = {
+    status: 'pending_approval',
+    running: true,
+    plan: [{ step: 1, description: 'Rebuild the concepts', status: 'pending_approval' }],
+    queue: [],
+    controlQueue: [],
+    approvals: [{ id: 'a1', status: 'pending_approval', reason: 'a mutating task needs approval' }],
+    conversation: [],
+  };
+  let turns = 0;
+  let turnInput = '';
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1', port: 0,
+      store: { dbPath: ':memory:', getState: () => status, listEvents: () => [] },
+      getContext: async () => context,
+      run: async () => new Promise(() => {}),
+      turn: async (_context, options) => { turns += 1; turnInput = options.input; return { ok: true }; },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw err;
+  }
+  try {
+    // The controller (`explainControlState`) must not call a pending approval
+    // "running": the scheduler keeps `context.running` true while it waits.
+    const control = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'explain' }),
+    });
+    const controlBody = await control.json();
+    assert.match(controlBody.explanation, /waiting for approval/i);
+    assert.doesNotMatch(controlBody.explanation, /is active/i);
+
+    // And the turn hands the same facts to Donna rather than dumping them.
+    const response = await fetch(`http://127.0.0.1:${handle.port}/turn?workspace=acme`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: 'donne le status du run en cours', mode: 'agent' }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 202);
+    assert.equal(body.kind, 'turn');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(turns, 1);
+    assert.match(turnInput, /Pending approval: a mutating task needs approval/);
   } finally {
     context.currentAbortController?.abort();
     await handle.close();
@@ -1790,6 +1852,7 @@ test('POST /turn treats a bare confirmation during a run as a status check', asy
     conversation: [],
   };
   let turns = 0;
+  let turnInput = '';
   let handle;
   try {
     handle = await startRuntimeServer({
@@ -1797,23 +1860,27 @@ test('POST /turn treats a bare confirmation during a run as a status check', asy
       store: { dbPath: ':memory:', getState: () => status, listEvents: () => [] },
       getContext: async () => context,
       run: async () => new Promise(() => {}),
-      turn: async () => { turns += 1; return { ok: true }; },
+      turn: async (_context, options) => { turns += 1; turnInput = options.input; return { ok: true }; },
     });
   } catch (err) {
     if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
     throw err;
   }
   try {
-    // "oui" answers the launch acknowledgement. It must reach the runtime's
-    // status, not a read-only chat turn that lectures about switching modes.
+    // "oui" answers the launch acknowledgement. It is an observation, so it
+    // reaches Donna with the runtime facts — not a deterministic English line
+    // and not a read-only chat turn that lectures about switching modes.
     const response = await fetch(`http://127.0.0.1:${handle.port}/turn?workspace=acme`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ input: 'oui', mode: 'agent' }),
     });
     const body = await response.json();
-    assert.equal(response.status, 200);
-    assert.equal(body.kind, 'observe');
-    assert.equal(turns, 0);
+    assert.equal(response.status, 202);
+    assert.equal(body.kind, 'turn');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(turns, 1);
+    assert.match(turnInput, /Runtime facts:/);
+    assert.match(turnInput, /Rebuild the wiki/);
   } finally {
     context.currentAbortController?.abort();
     await handle.close();
@@ -1840,6 +1907,7 @@ test('POST /turn answers the reserved /status command itself, never the homonymo
     conversation: [],
   };
   let turns = 0;
+  let turnInput = '';
   let handle;
   try {
     handle = await startRuntimeServer({
@@ -1847,7 +1915,7 @@ test('POST /turn answers the reserved /status command itself, never the homonymo
       store: { dbPath: ':memory:', getState: () => status, listEvents: () => [] },
       getContext: async () => context,
       run: async () => new Promise(() => {}),
-      turn: async () => { turns += 1; return { ok: true }; },
+      turn: async (_context, options) => { turns += 1; turnInput = options.input; return { ok: true }; },
     });
   } catch (err) {
     if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
@@ -1859,9 +1927,12 @@ test('POST /turn answers the reserved /status command itself, never the homonymo
       body: JSON.stringify({ input: '/status', mode: 'agent' }),
     });
     const body = await response.json();
-    assert.equal(response.status, 200);
-    assert.equal(body.kind, 'observe');
-    assert.equal(turns, 0, 'the built-in status must not become a model turn');
+    assert.equal(response.status, 202);
+    assert.equal(body.kind, 'turn');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(turns, 1, 'the built-in status reaches Donna, never the homonymous skill');
+    assert.match(turnInput, /Runtime facts:/);
+    assert.doesNotMatch(turnInput, /Inspect services/);
   } finally {
     context.currentAbortController?.abort();
     await handle.close();

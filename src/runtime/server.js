@@ -874,12 +874,24 @@ export function startRuntimeServer({
     if (context?.session) {
       context.session._runSkillWithinRun = async (skillName, args = {}, metadata = {}) => {
         const skill = findSkill(context.session, skillName);
-        if (!skill) return {
-          ok: false,
-          terminal: true,
-          code: 'skill_not_found',
-          availableSkills: listSkills(context.session).map((item) => item.name),
-        };
+        if (!skill) {
+          const available = listSkills(context.session).map((item) => item.name);
+          /*
+           A skill the model GUESSED is recoverable, not terminal: the observed
+           failure was `/diagnose` (leading slash copied from the catalogue) →
+           skill_not_found → the terminal path stripped the tools from the
+           synthesis turn → the model wrote `runtime__delegate{...}` as plain
+           text and the turn did nothing. An explicitly user-named missing skill
+           stays terminal: there is nothing to fall back to.
+          */
+          return {
+            ok: false,
+            terminal: metadata.selectionKind === 'explicit_name',
+            code: 'skill_not_found',
+            message: `No skill named "${skillName}". Pass the exact name without a leading slash (${available.join(', ') || 'none'}), or delegate the objective with runtime__delegate.`,
+            availableSkills: available,
+          };
+        }
         try {
           const idempotencyKey = metadata.idempotencyKey
             ? String(metadata.idempotencyKey)

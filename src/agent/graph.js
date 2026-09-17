@@ -436,6 +436,19 @@ export function bareToolCallJson(content, tools = []) {
   return hasArguments ? name : null;
 }
 
+/**
+ * A model that has NO tool to call sometimes writes the call as text:
+ * `runtime__delegate{"objective":"…"}`. Unlike `bareToolCallJson` it is not
+ * JSON and cannot be validated against the offered set (there is none), but the
+ * `<namespace>__<tool>{` shape is never legitimate prose. Observed after a
+ * terminal failure stripped the tools from the synthesis turn: the raw call
+ * reached the user and nothing ran.
+ */
+export function narratedToolCallText(content) {
+  const match = String(content ?? '').trim().match(/^([a-z][a-z0-9_-]*__[a-z][a-z0-9_-]*)\s*\{/i);
+  return match ? match[1] : null;
+}
+
 function parseActionJson(text) {
   const cleaned = String(text ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   if (!cleaned) return null;
@@ -979,7 +992,7 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
     }
     if (tool === 'run_skill') {
       const skillName = String(args.skillName ?? '').trim();
-      if (!skillName) return JSON.stringify({ ok: false, terminal: true, code: 'skill_not_found', availableSkills: [] });
+      if (!skillName) return JSON.stringify({ ok: false, terminal: false, code: 'skill_not_found', message: 'skillName is required: pass the exact skill name, or delegate the objective with runtime__delegate.', availableSkills: [] });
       const selectedSkill = findSkill(session, skillName);
       const suppliedArguments = args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
         ? args.arguments
@@ -1696,10 +1709,14 @@ export function createAgentGraph(options = {}) {
       // text really is a call to one of them: a legitimate answer that happens
       // to contain JSON (a config excerpt, an API sample) must go through
       // untouched, which is why this is not a "content starts with {" test.
-      const bareCall = tools.length > 0 ? bareToolCallJson(result.content, tools) : null;
+      const bareCall = (tools.length > 0 ? bareToolCallJson(result.content, tools) : null)
+        ?? narratedToolCallText(result.content);
       if (bareCall) {
         const retries = Number(state.invalidToolCallRetries ?? 0);
-        if (retries < 2) {
+        // Retry only when a tool can still be called; when none are offered (the
+        // synthesis turn after a terminal failure) the call is unexecutable and
+        // the honest failure below is the whole answer.
+        if (tools.length > 0 && retries < 2) {
           state.session._onStreamReset?.();
           state.session._onStep?.('Agent: tool call written as JSON text rejected; retrying…');
           return {
@@ -2014,6 +2031,11 @@ export function createAgentGraph(options = {}) {
                 ),
                 objectives: Number(skillResult.objectiveCount ?? skillResult.objectives ?? 1) || 1,
               };
+            } else if (skillResult?.ok === false) {
+              // A recoverable refusal (guessed skill, missing input): keep the
+              // turn alive so the model can correct itself or delegate, but do
+              // not let the progress note call it a success.
+              ok = false;
             }
           }
           if (tool === 'delegate' && /^Runtime control error \(delegate\):/i.test(resultText)) {

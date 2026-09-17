@@ -709,6 +709,73 @@ test('a terminal skill refusal stops the whole turn before a delegate fallback',
   assert.equal(delegated, false);
 });
 
+test('a narrated tool call on the tool-less synthesis turn is never shown, and nothing runs', async () => {
+  // After a terminal failure the synthesis turn offers no tools; a model that
+  // still wants to act writes the call as text (`runtime__delegate{"…"}`) and
+  // the turn did nothing. That raw call must never reach the user.
+  let delegated = false;
+  const narrated = 'runtime__delegate{"objective":"nettoyer le wiki"}';
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    _runSkillWithinRun: async () => ({ ok: false, terminal: true, code: 'skill_not_found', availableSkills: [] }),
+    _delegateWithinRun: async () => { delegated = true; return { runId: 'bad' }; },
+    llm: {
+      async completeWithTools({ tools }) {
+        if (tools.some((tool) => tool.function?.name === 'classify_action_request')) {
+          return { content: null, message: { role: 'assistant', content: null }, tool_calls: [{ id: 'classify', type: 'function', function: { name: 'classify_action_request', arguments: '{"action":true}' } }] };
+        }
+        if (tools.length > 0) {
+          return { content: null, message: { role: 'assistant', content: null }, tool_calls: [
+            { id: 'missing', type: 'function', function: { name: 'runtime__run_skill', arguments: '{"skillName":"missing","selectionKind":"explicit_name"}' } },
+          ] };
+        }
+        return { content: narrated, message: { role: 'assistant', content: narrated }, tool_calls: null };
+      },
+    },
+  });
+  const result = await createAgentGraph().invoke({ input: 'nettoie le wiki', session });
+  assert.equal(delegated, false);
+  assert.match(result.response, /printed an internal tool request/);
+  assert.doesNotMatch(result.response, /runtime__delegate/);
+});
+
+test('a recoverable skill refusal lets the delegate fallback run in the same turn', async () => {
+  // The observed defect: the model guessed `/diagnose`, the skill runner
+  // answered skill_not_found, and because that was terminal the tools were
+  // stripped from the next turn — the model then wrote
+  // `runtime__delegate{...}` as plain text and the turn did nothing. A guessed
+  // skill must be recoverable so the fallback can actually run.
+  let delegated = false;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    _runSkillWithinRun: async () => ({
+      ok: false,
+      terminal: false,
+      code: 'skill_not_found',
+      message: 'No skill named "/diagnose". Pass the exact name without a leading slash, or delegate the objective with runtime__delegate.',
+      availableSkills: ['diagnose'],
+    }),
+    _delegateWithinRun: async () => { delegated = true; return { runId: 'run-1', summary: { tasks: 1, agent: 'gateway' } }; },
+    llm: {
+      async completeWithTools({ tools }) {
+        if (tools.some((tool) => tool.function?.name === 'classify_action_request')) {
+          return { content: null, message: { role: 'assistant', content: null }, tool_calls: [{ id: 'classify', type: 'function', function: { name: 'classify_action_request', arguments: '{"action":true}' } }] };
+        }
+        return {
+          content: null, message: { role: 'assistant', content: null },
+          tool_calls: [
+            { id: 'guess', type: 'function', function: { name: 'runtime__run_skill', arguments: '{"skillName":"/diagnose","arguments":{}}' } },
+            { id: 'fallback', type: 'function', function: { name: 'runtime__delegate', arguments: '{"objective":"nettoyer le wiki, corriger les doublons et les affirmations non sourcées"}' } },
+          ],
+        };
+      },
+    },
+  });
+  const result = await createAgentGraph().invoke({ input: 'nettoie le wiki, corrige les doublons et les affirmations non sourcées', session });
+  assert.equal(delegated, true);
+  assert.notEqual(result.terminalToolFailure, true);
+});
+
 test('tool argument normalization repairs only an unambiguous schema-compatible field name', () => {
   const schema = {
     type: 'object',

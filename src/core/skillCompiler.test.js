@@ -31,7 +31,7 @@ test('validation rejects technical routing details', () => {
 });
 
 test('every shipped scaffold skill compiles to a single intention, deterministically', async () => {
-  const expected = { pipeline: 1, 'wiki-sync': 1, 'wiki-ingest': 1, 'wiki-build': 1, deliver: 1, diagnose: 1, status: 1, 'new-template': 1, 'wiki-rebuild': 1 };
+  const expected = { pipeline: 1, 'wiki-sync': 1, 'wiki-ingest': 1, 'wiki-build': 1, deliver: 1, diagnose: 1, status: 1, 'new-template': 1, 'wiki-rebuild': 1, curate: 1 };
   // Passing no llmFallback used to make this test assert the one path
   // production never takes: an ambiguous body silently returns the safe
   // mono-intention fallback, so the count was 1 and the test was green while

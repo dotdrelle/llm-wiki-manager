@@ -129,7 +129,13 @@ async function finalAnswerWithoutTools({
     });
     if (result?.tool_calls?.length) return '';
     return String(result?.content ?? result?.message?.content ?? '').trim();
-  } catch {
+  } catch (err) {
+    // An abort is the user cancelling, not an empty answer. Swallowing it here
+    // made `runBoundedToolLoop` return `{ content: '', capped: true }`, and the
+    // caller printed the iteration-limit notice for a turn that was cancelled
+    // — the loop's contract is that an abort escapes, and this was the one
+    // call that broke it.
+    if (err?.name === 'AbortError' || signal?.aborted) throw err;
     return '';
   }
 }

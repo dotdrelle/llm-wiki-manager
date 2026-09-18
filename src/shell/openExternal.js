@@ -51,3 +51,46 @@ export function openExternalUrl(value, { run = execFileSync } = {}) {
   }
   return null;
 }
+
+// A Chromium `--app=<url>` window is chromeless from the start — no tab
+// strip, no address bar — and, when the origin serves a manifest (llm-wiki's
+// `/manifest.webmanifest`), it picks up the site's name/icon/theme-color and
+// window-controls-overlay exactly like a formally "installed" PWA, with no
+// prior install step required. `/openui`'s whole point is a desktop-feeling
+// window, so it tries this before falling back to `openExternalUrl`'s plain
+// tab. Same candidate/fallback shape as `openerCandidates` above, and the same
+// contract: returns the opened URL, or null when no Chromium browser answered.
+function appModeCandidates() {
+  if (process.platform === 'darwin') {
+    return [
+      ['open', ['-na', 'Google Chrome', '--args']],
+      ['open', ['-na', 'Microsoft Edge', '--args']],
+    ];
+  }
+  if (process.platform === 'win32') {
+    return [
+      ['cmd', ['/c', 'start', '', 'chrome']],
+      ['cmd', ['/c', 'start', '', 'msedge']],
+    ];
+  }
+  return [
+    ['google-chrome', []],
+    ['chromium', []],
+    ['chromium-browser', []],
+    ['microsoft-edge', []],
+  ];
+}
+
+export function openAppWindowUrl(value, { run = execFileSync } = {}) {
+  const url = normalizeExternalUrl(value);
+  if (!url) return null;
+  for (const [command, args] of appModeCandidates()) {
+    try {
+      run(command, [...args, `--app=${url}`], { stdio: 'ignore', timeout: 5_000 });
+      return url;
+    } catch {
+      // Missing binary or non-zero exit: try the next candidate.
+    }
+  }
+  return null;
+}

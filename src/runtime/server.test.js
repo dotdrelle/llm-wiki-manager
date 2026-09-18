@@ -1747,6 +1747,7 @@ test('POST /turn hands a run status question to Donna with the runtime facts', a
   };
   let turns = 0;
   let turnInput = '';
+  let turnDisplayInput = '';
   let turnMode = null;
   let handle;
   try {
@@ -1755,7 +1756,13 @@ test('POST /turn hands a run status question to Donna with the runtime facts', a
       store: { dbPath: ':memory:', getState: () => status, listEvents: () => [] },
       getContext: async () => context,
       run: async () => new Promise(() => {}),
-      turn: async (_context, options) => { turns += 1; turnInput = options.input; turnMode = options.mode; return { ok: true }; },
+      turn: async (_context, options) => {
+        turns += 1;
+        turnInput = options.input;
+        turnDisplayInput = options.displayInput;
+        turnMode = options.mode;
+        return { ok: true };
+      },
     });
   } catch (err) {
     if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
@@ -1778,6 +1785,11 @@ test('POST /turn hands a run status question to Donna with the runtime facts', a
     assert.equal(turnMode, 'chat');
     assert.match(turnInput, /Build TechSections/);
     assert.match(turnInput, /runtime run, not a production job/i);
+    // …and the THREAD still shows what the reader typed. `executeInteractiveTurn`
+    // persists `displayInput` as the user_message; feeding it the fact block
+    // put a raw English dump in the reader's own bubble and replayed it as
+    // history on every later turn.
+    assert.equal(turnDisplayInput, 'donne le status du job en cours');
   } finally {
     context.currentAbortController?.abort();
     await handle.close();

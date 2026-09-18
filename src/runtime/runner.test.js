@@ -1306,6 +1306,26 @@ test('announceRunOutcome never calls a plan with pending tasks a success', async
   assert.doesNotMatch(message.payload.content, /succès/i);
 });
 
+test('announceRunOutcome names the steps a failed chain abandoned', async () => {
+  // `skipped` fell through every bucket: a 3-step chain failing at step 1
+  // announced "0/3 réussie(s), 1 en erreur" and never mentioned the two steps
+  // nobody ran. "When something is skipped, say so where the panels read."
+  const session = {
+    agentEvents: [],
+    agentProjection: null,
+    headlessPlan: [
+      { id: 'a', description: 'Sync', status: 'failed' },
+      { id: 'b', description: 'Ingest', status: 'skipped' },
+      { id: 'c', description: 'Build', status: 'skipped' },
+    ],
+  };
+  await announceRunOutcome(session, { runId: 'run-3', ok: false });
+  const message = session.agentEvents.find((event) => event.type === 'assistant_message');
+  assert.match(message.payload.content, /non terminé/i);
+  assert.match(message.payload.content, /1 en erreur/);
+  assert.match(message.payload.content, /2 abandonnée\(s\)/);
+});
+
 test('announceRunOutcome reports success only when every task finished', async () => {
   const session = {
     agentEvents: [],

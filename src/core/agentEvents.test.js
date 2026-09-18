@@ -151,6 +151,31 @@ test('reduceAgentEvents: granting the approval puts the run back to running', ()
   assert.equal(projection.status, 'running');
 });
 
+test('reduceAgentEvents: REJECTING the approval also puts the run back to running', () => {
+  // A refusal is a decision. Only `granted` cleared the latch, so a rejected
+  // approval left both UIs asking for a decision already made, for the rest of
+  // the run.
+  const projection = reduceAgentEvents([
+    createAgentEvent('run_started', { origin: 'runtime' }),
+    createAgentEvent('plan_set', { origin: 'tool', payload: { steps: ['Rebuild the concepts'] } }),
+    createAgentEvent('plan_step_updated', { origin: 'runtime', payload: { step: 1, status: 'waiting_approval' } }),
+    createAgentEvent('approval.requested', { origin: 'runtime', payload: { id: 'a1', scope: 'task', taskId: 't1' } }),
+    createAgentEvent('approval.rejected', { origin: 'runtime', payload: { id: 'a1', scope: 'task', taskId: 't1' } }),
+  ]);
+  assert.equal(projection.status, 'running');
+});
+
+test('reduceAgentEvents: rejecting one of two approvals keeps the run blocked', () => {
+  const projection = reduceAgentEvents([
+    createAgentEvent('run_started', { origin: 'runtime' }),
+    createAgentEvent('plan_set', { origin: 'tool', payload: { steps: ['Export', 'Build'] } }),
+    createAgentEvent('approval.requested', { origin: 'runtime', payload: { id: 'a1', scope: 'task', taskId: 't1' } }),
+    createAgentEvent('approval.requested', { origin: 'runtime', payload: { id: 'a2', scope: 'task', taskId: 't2' } }),
+    createAgentEvent('approval.rejected', { origin: 'runtime', payload: { id: 'a1', scope: 'task', taskId: 't1' } }),
+  ]);
+  assert.equal(projection.status, 'pending_approval');
+});
+
 test('reduceAgentEvents: an approval request does not hide a genuinely running task', () => {
   const projection = reduceAgentEvents([
     createAgentEvent('run_started', { origin: 'runtime' }),

@@ -94,7 +94,7 @@ const COMMAND_COMPLETION_DESCRIPTIONS = {
   '/clear': 'Clear the conversation screen.',
   '/chat': 'Switch free text to direct LLM chat without tools.',
   '/agent': 'Switch to agent mode, or run one agent request with /agent <question>.',
-  '/openui': 'Open the workspace web UI in the browser.',
+  '/openui': 'Open the workspace web UI as a chromeless desktop window (Chrome/Edge), or a browser tab as fallback.',
   '/run': 'Inspect, cancel, kill runtime runs, or start a capability run.',
   '/approve': 'Approve a pending runtime run or tool.',
 };

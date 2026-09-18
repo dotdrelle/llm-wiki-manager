@@ -678,6 +678,14 @@ test('a natural-language skill match cannot drop declared scope and fall back to
     const toolResult = session.agentEvents.find((event) => event.type === 'tool_call_result');
     assert.match(toolResult?.payload?.result ?? '', /missingParameters/);
     assert.match(toolResult?.payload?.result ?? '', /never replace a missing parameter with an unscoped/);
+    // "Ask the user for the missing scope" is a conversational blocker, not an
+    // execution failure — the turn is working exactly as intended. Marking it
+    // failed published `runtime__run_skill failed: {…}` into the progress and
+    // activity surfaces; the `delegate` branch handles the identical case as a
+    // non-failure, and the two must not disagree.
+    assert.equal(toolResult?.payload?.ok, true);
+    const progress = session.agentEvents.find((event) => event.type === 'assistant_progress');
+    assert.doesNotMatch(progress?.payload?.message ?? '', /failed/i);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -774,6 +782,43 @@ test('a recoverable skill refusal lets the delegate fallback run in the same tur
   const result = await createAgentGraph().invoke({ input: 'nettoie le wiki, corrige les doublons et les affirmations non sourcées', session });
   assert.equal(delegated, true);
   assert.notEqual(result.terminalToolFailure, true);
+});
+
+test('an ACCEPTED skill launch stops the rest of the batch, and says what it dropped', async () => {
+  // The mirror of the test above: a refusal must let the fallback run, an
+  // acceptance must not. The skill owns execution from there, but the loop
+  // kept going — a companion runtime__delegate in the same batch started a
+  // second, independent run while only the skill was acknowledged, with
+  // nothing in the thread naming the delegated one.
+  let delegated = false;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    _runSkillWithinRun: async () => ({ accepted: true, skill: 'pipeline', objectiveCount: 1 }),
+    _delegateWithinRun: async () => { delegated = true; return { runId: 'run-2', summary: { tasks: 1 } }; },
+    llm: {
+      async completeWithTools({ tools }) {
+        if (tools.some((tool) => tool.function?.name === 'classify_action_request')) {
+          return { content: null, message: { role: 'assistant', content: null }, tool_calls: [{ id: 'classify', type: 'function', function: { name: 'classify_action_request', arguments: '{"action":true}' } }] };
+        }
+        return {
+          content: null, message: { role: 'assistant', content: null },
+          tool_calls: [
+            { id: 'skill', type: 'function', function: { name: 'runtime__run_skill', arguments: '{"skillName":"pipeline","selectionKind":"explicit_name"}' } },
+            { id: 'also', type: 'function', function: { name: 'runtime__delegate', arguments: '{"objective":"construire le livrable"}' } },
+          ],
+        };
+      },
+    },
+  });
+  await createAgentGraph().invoke({ input: '/pipeline', session });
+  assert.equal(delegated, false, 'the delegate must not start a second run behind the skill');
+  // …and the skipped call is announced rather than silently dropped, with a
+  // tool result so a replayed history is not missing one.
+  const skipped = session.agentEvents.find(
+    (event) => event.type === 'tool_call_result' && event.payload?.callId === 'also',
+  );
+  assert.equal(skipped?.payload?.summary, 'skipped');
+  assert.match(skipped?.payload?.result ?? '', /owns execution/);
 });
 
 test('tool argument normalization repairs only an unambiguous schema-compatible field name', () => {

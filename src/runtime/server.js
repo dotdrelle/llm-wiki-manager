@@ -508,6 +508,12 @@ export function startRuntimeServer({
           sendJson(response, 400, { error: 'Missing input.' });
           return;
         }
+        // What the reader actually typed. `input` below may be replaced by a
+        // system fact block for the model; the THREAD must still show the
+        // reader's own words — the replacement was persisted as the
+        // `user_message` and replayed as history on every later turn, which is
+        // exactly the "raw facts never enter the thread" rule it broke.
+        const displayInput = input;
         // Read-only chat turns intentionally remain available while an agent
         // run is active. Other interactive turns still become control
         // messages so they cannot start a competing agent decision.
@@ -603,7 +609,12 @@ export function startRuntimeServer({
               return result.body;
             }
           }
-          return turn(context, { ...body, input, mode: readOnlyChat ? 'chat' : body.mode }, {
+          return turn(context, {
+            ...body,
+            input,
+            displayInput,
+            mode: readOnlyChat ? 'chat' : body.mode,
+          }, {
             signal: controller.signal,
             turnId,
           });
@@ -1789,7 +1800,7 @@ function asksForRunStatus(input) {
 // semantic judgement about the workspace's domain, so it is never a keyword
 // list here — it goes to the model, bounded, and falls back to the choice menu
 // (`ambiguous`) rather than guessing when no model is available.
-async function classifyControlMessage(input, status, { forcedIntent = null, llm = null, session = null } = {}) {
+export async function classifyControlMessage(input, status, { forcedIntent = null, llm = null, session = null } = {}) {
   // Caller (the /control message route) already trims and rejects empty input.
   const lower = String(input ?? '').toLowerCase();
   const intent = forcedIntent ? String(forcedIntent).toLowerCase() : null;
@@ -1823,7 +1834,10 @@ async function classifyControlMessage(input, status, { forcedIntent = null, llm 
   // active, the only thing the runtime can act on is a status check: treating
   // the word as ordinary conversation made the read-only chat fallback lecture
   // the user about switching modes instead of answering.
-  if (status.running && /^\s*(oui|yes|yep|ok|okay|vas[- ]?y|d'accord|daccord|entendu)\b/i.test(lower)) {
+  // Anchored at BOTH ends: "oui" is a confirmation, "oui, ajoute une étape de
+  // polish" is a plan change. Without the end anchor this branch shadowed
+  // modify_run and enqueue_run for every message merely STARTING on a yes.
+  if (status.running && /^\s*(oui|yes|yep|ok|okay|vas[- ]?y|d'accord|daccord|entendu)\s*[.!…]*\s*$/i.test(lower)) {
     return { kind: 'observe', confidence: 0.7, reason: 'confirmation_of_runtime_prompt' };
   }
   if (status.running && /\b(ajoute|add|change|modifie|modify|remplace|replace|retire|remove|skip|ignore|apr[eè]s|before|after|chaque|each|plan|step|t[aâ]che)\b/i.test(lower)) {

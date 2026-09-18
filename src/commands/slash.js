@@ -9,7 +9,7 @@
  */
 import { isTerminal } from '../orchestrator/taskStatuses.js';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { openExternalUrl } from '../shell/openExternal.js';
+import { openAppWindowUrl, openExternalUrl } from '../shell/openExternal.js';
 import { classifyCommandFailure, failureHint, rawFailureText } from '../core/commandFailure.js';
 import { basename, join, relative } from 'node:path';
 import { composeServices, listServices, otherWorkspacesRunning, runWikiCli, serviceLogs, serviceNames, serviceStates, startService, stopService } from '../core/compose.js';
@@ -845,7 +845,7 @@ ${helpPair('/upload <path>', 'Upload document', '/uploads', 'Uploaded docs')}
 ${helpPair('/upload convert pending', 'Convert pending', '/uploads clean', 'Clean uploads')}
 ${helpPair('/wiki', 'Run wiki index', '/wiki run <args>', 'Raw wiki CLI')}
 ${helpPair('/chat', 'Chat mode', '/agent [question]', 'Agent mode / one-shot')}
-${helpPair('/openui', 'Open web UI in browser', '', '')}
+${helpPair('/openui', 'Open web UI as a desktop window', '', '')}
 ${helpPair('/run status', 'Runtime status', '/run kill', 'Kill runtime run(s)')}
 ${helpPair('/run capability <id>', 'Deterministic capability run', '/approve', 'Grant pending approval')}
 ${helpPair('/cancel', 'Cancel active run', '', '')}
@@ -1770,6 +1770,11 @@ export async function handleSlashCommand(line, context) {
         // No readable session (gate off, or a custom state dir): plain URL.
       }
       const note = context.session.workspaceEnv ? '' : ' (no workspace loaded — using default port)';
+      // App-mode first: a chromeless Chrome/Edge window picks up serve's own
+      // manifest (name, icon, window-controls-overlay) with no prior "Install"
+      // step. Falls back to the plain default-browser tab when neither is
+      // found (Safari/Firefox-only machines).
+      if (openAppWindowUrl(openUrl)) return { output: `Opening web UI: ${url}${note}` };
       if (openExternalUrl(openUrl)) return { output: `Opening web UI: ${url}${note}` };
       return { output: `Web UI: ${url}${note}` };
     }

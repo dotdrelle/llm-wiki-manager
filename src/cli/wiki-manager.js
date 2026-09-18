@@ -1725,6 +1725,13 @@ async function runRuntime(argv, agent) {
   async function executeInteractiveTurn(context, body, { signal, turnId } = {}) {
     const input = String(body.input ?? body.prompt ?? '').trim();
     if (!input) throw new Error('Missing input.');
+    // The reader's own words, when the caller augmented `input` with system
+    // facts (a status question gets the runtime's fact block appended for the
+    // model). The thread, the SSE stream and the replayed history must all
+    // show what was typed — publishing the fact block as the user's message
+    // put a raw English dump in their bubble and seeded every later turn with
+    // it.
+    const displayInput = String(body.displayInput ?? '').trim() || input;
     // The runtime may start while optional agents are still stopped. `/start
     // agents` happens in the shell process, so its refreshed MCP snapshot does
     // not mutate this long-lived runtime context. Re-probe only while at least
@@ -1776,7 +1783,7 @@ async function runRuntime(argv, agent) {
       origin: 'runtime_turn',
       turnId,
       workspace: context.workspace ?? null,
-      payload: { content: input },
+      payload: { content: displayInput },
     }));
     // Read-only chat turn: same chatAccess policy as the Shell UI's /chat, now
     // reachable over HTTP so `wiki serve` chat mode gets read tools without
@@ -1792,39 +1799,46 @@ async function runRuntime(argv, agent) {
       body.context?.openWikiPages ?? body.context?.openWikiPage,
     );
     let response;
-    if (chatMode) {
-      ephemeral.chatMode = true;
-      ephemeral.chatAccess = readChatAccessConfig();
-      const history = messages.length && messages[messages.length - 1]?.role === 'user'
-        ? messages.slice(0, -1)
-        : messages;
-      response = await runHeadlessChatTurn(ephemeral, input, {
-        history,
-        onStep: ephemeral._onStep,
-        // Fragments de réponse publiés au fil de l'eau, coalescés (voir
-        // deltaCoalescer ci-dessus). Le réducteur les agrège dans la dernière
-        // entrée de conversation (`assistant_delta`), que `assistant_message`
-        // vient ensuite figer : les deux interfaces voient la réponse s'écrire
-        // sans qu'un insert SQLite par token ne bloque le flux.
-        onTextDelta: (delta) => deltaCoalescer.push(delta),
-        onTextReset: () => {
-          deltaCoalescer.reset();
-          dispatchAgentEvent(ephemeral, createAgentEvent('assistant_delta_reset', {
-            origin: 'runtime_turn',
-            turnId,
-            workspace: context.workspace ?? null,
-            payload: {},
-          }));
-        },
-        openWikiPages,
-      });
-    } else {
-      ephemeral.openWikiPages = openWikiPages;
-      response = await runAgentTurn(agent, ephemeral, input, { messages, signal });
+    try {
+      if (chatMode) {
+        ephemeral.chatMode = true;
+        ephemeral.chatAccess = readChatAccessConfig();
+        const history = messages.length && messages[messages.length - 1]?.role === 'user'
+          ? messages.slice(0, -1)
+          : messages;
+        response = await runHeadlessChatTurn(ephemeral, input, {
+          history,
+          onStep: ephemeral._onStep,
+          // Fragments de réponse publiés au fil de l'eau, coalescés (voir
+          // deltaCoalescer ci-dessus). Le réducteur les agrège dans la dernière
+          // entrée de conversation (`assistant_delta`), que `assistant_message`
+          // vient ensuite figer : les deux interfaces voient la réponse s'écrire
+          // sans qu'un insert SQLite par token ne bloque le flux.
+          onTextDelta: (delta) => deltaCoalescer.push(delta),
+          onTextReset: () => {
+            deltaCoalescer.reset();
+            dispatchAgentEvent(ephemeral, createAgentEvent('assistant_delta_reset', {
+              origin: 'runtime_turn',
+              turnId,
+              workspace: context.workspace ?? null,
+              payload: {},
+            }));
+          },
+          openWikiPages,
+        });
+      } else {
+        ephemeral.openWikiPages = openWikiPages;
+        response = await runAgentTurn(agent, ephemeral, input, { messages, signal });
+      }
+    } finally {
+      // In a `finally`, not after the await: a throwing or aborted turn left
+      // the 80 ms timer armed, so a stray assistant_delta fired AFTER the
+      // "Runtime turn failed" message and appended orphan fragments to the
+      // wrong conversation entry — and the handle kept the session closure
+      // alive. Flush the tail first so ordering survives either way.
+      deltaCoalescer.flush();
+      deltaCoalescer.dispose();
     }
-    // Flush the tail before the turn is finalized, then stop the timer.
-    deltaCoalescer.flush();
-    deltaCoalescer.dispose();
     // Persist the artifact the turn may have opened/edited (template_write,
     // template_read, …) back onto the long-lived session, so the next /turn —
     // chat or agent — sees it. The ephemeral session is otherwise discarded.

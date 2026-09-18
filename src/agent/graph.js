@@ -2031,10 +2031,17 @@ export function createAgentGraph(options = {}) {
                 ),
                 objectives: Number(skillResult.objectiveCount ?? skillResult.objectives ?? 1) || 1,
               };
-            } else if (skillResult?.ok === false) {
-              // A recoverable refusal (guessed skill, missing input): keep the
-              // turn alive so the model can correct itself or delegate, but do
-              // not let the progress note call it a success.
+            } else if (skillResult?.ok === false && skillResult?.needsInput !== true) {
+              // A recoverable refusal (a guessed skill that does not exist):
+              // keep the turn alive so the model can correct itself or
+              // delegate, but do not let the progress note call it a success.
+              //
+              // `needsInput` is excluded on purpose: "ask the user for the
+              // missing scope" is a conversational blocker, and marking it
+              // failed published `runtime__run_skill failed: {…}` into the
+              // progress surfaces while the turn was working exactly as
+              // intended. The `delegate` branch below already treats the
+              // identical case that way; the two must not disagree.
               ok = false;
             }
           }
@@ -2186,7 +2193,35 @@ export function createAgentGraph(options = {}) {
         tool_call_id: call.id,
         content: boundedResult,
       });
-      if (terminalFailure) break;
+      if (terminalFailure || skillLaunch) break;
+    }
+
+    // A skill launch owns execution and ends the turn, so the rest of the
+    // batch is NOT executed — a companion runtime__delegate in the same batch
+    // used to start a second, independent run with nothing in the thread
+    // naming it. Every unexecuted call still gets its tool result: a provider
+    // that sees tool_calls without matching results on a replayed history
+    // rejects the conversation.
+    if (skillLaunch) {
+      const executed = new Set(toolResultMessages.map((message) => message.tool_call_id));
+      const dropped = toolCalls.filter((call) => !executed.has(call.id));
+      const notRun = `Not executed: ${skillLaunch.publicInput} was launched earlier in this `
+        + 'turn and owns execution from here. Do not start a second run for the same objective.';
+      for (const call of dropped) {
+        emitAgentEvent(state.session, 'tool_call_result', 'tool', {
+          callId: call.id,
+          name: call.function?.name ?? 'tool',
+          ok: false,
+          result: notRun,
+          summary: 'skipped',
+        });
+        toolResultMessages.push({ role: 'tool', tool_call_id: call.id, content: notRun });
+      }
+      if (dropped.length > 0) {
+        state.session._onStep?.(
+          `${dropped.length} tool call(s) skipped: ${skillLaunch.publicInput} owns execution`,
+        );
+      }
     }
 
     if (terminalFailure) {
@@ -2205,7 +2240,7 @@ export function createAgentGraph(options = {}) {
       // language like the `/turn` skill path. No further model turn: the skill
       // is launched and owns execution, so nothing can contradict it.
       const response = await generateSkillAcknowledgment(state.session, skillLaunch).catch(
-        () => `Started ${skillLaunch.publicInput} — ${skillLaunch.objectives} step(s) in progress.`,
+        () => `Started ${skillLaunch.publicInput} — ${skillLaunch.objectives} step(s) queued.`,
       );
       return {
         messages: toolResultMessages,

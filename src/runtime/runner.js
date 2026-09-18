@@ -9,7 +9,7 @@ import { createBudgetManager, BudgetExceededError } from '../orchestrator/budget
 import { createDispatcher } from '../orchestrator/dispatcher.js';
 import { approvalCovered, approvalRequestForTask } from '../orchestrator/approvalPolicy.js';
 import { blockedByFailedDependency, tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
-import { isFailed, isPending, isSkipped, isSuccessful, isTerminal, isUnknownStatus } from '../orchestrator/taskStatuses.js';
+import { isCancelled, isFailed, isPending, isSkipped, isSuccessful, isTerminal, isUnknownStatus } from '../orchestrator/taskStatuses.js';
 import { assertValidatedFragment } from '../orchestrator/planValidator.js';
 import { createResultAggregator } from '../orchestrator/resultAggregator.js';
 import { describePlanConcurrency, drainActive, startReadyTasks } from '../orchestrator/scheduler.js';
@@ -308,6 +308,7 @@ export async function announceRunOutcome(session, { runId, ok, signal = null } =
   if (plan.length === 0) return;
   let failed = 0;
   let cancelled = 0;
+  let skipped = 0;
   let completed = 0;
   let pending = 0;
   let firstError = null;
@@ -319,8 +320,14 @@ export async function announceRunOutcome(session, { runId, ok, signal = null } =
         step?.error?.message ?? step?.error?.code ?? step?.error
         ?? step?.result?.error?.message ?? step?.result?.error?.code ?? '',
       ).trim() || null;
-    } else if (['cancelled', 'canceled'].includes(status)) {
+    } else if (isCancelled(status)) {
       cancelled += 1;
+    } else if (isSkipped(status)) {
+      // A chain step abandoned because an earlier required one failed. It fell
+      // through every bucket, so a 3-step chain that failed at step 1
+      // announced "0/3 réussie(s), 1 en erreur" and never mentioned the two
+      // steps nobody ran — precisely the silence the announce rule forbids.
+      skipped += 1;
     } else if (isSuccessful(status)) {
       completed += 1;
     } else if (isPending(status) || !isTerminal(status)) {
@@ -333,13 +340,15 @@ export async function announceRunOutcome(session, { runId, ok, signal = null } =
     }
   }
   const total = plan.length;
-  const finished = ok && failed === 0 && cancelled === 0 && pending === 0 && completed === total;
+  const finished = ok && failed === 0 && cancelled === 0 && skipped === 0
+    && pending === 0 && completed === total;
   const factLine = finished
     ? `Plan terminé avec succès — ${completed}/${total} tâche(s) réussie(s).`
     : `Plan non terminé — ${completed}/${total} tâche(s) réussie(s)` +
       `${pending ? `, ${pending} en attente (approbation ou exécution)` : ''}` +
       `${failed ? `, ${failed} en erreur` : ''}` +
-      `${cancelled ? `, ${cancelled} annulée(s)` : ''}.` +
+      `${cancelled ? `, ${cancelled} annulée(s)` : ''}` +
+      `${skipped ? `, ${skipped} abandonnée(s) faute d'une étape précédente` : ''}.` +
       `${firstError ? ` Première erreur : ${firstError}.` : ''}`;
   let content = factLine;
   const llm = session.llm;

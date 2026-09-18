@@ -1,3 +1,5 @@
+import { truncateToolResult } from './mcp.js';
+
 // Minimal, side-effect-free bounded tool-use loop.
 //
 // This is the shared mechanic of "ask the LLM with a tool set, run the tool
@@ -79,9 +81,13 @@ export async function runBoundedToolLoop({
     convo.push(result.message ?? { role: 'assistant', content: result.content ?? '', tool_calls: calls });
     // Tool calls within one turn are independent: dispatch concurrently, then
     // replay results in the model's call order so the transcript stays stable.
+    // Bound what enters the LLM context, exactly like the /agent loop
+    // (graph.js). Without it a wide read — a CME Confluence search at limit 50
+    // can weigh ~35 kB — is re-sent on every iteration (up to the cap), and the
+    // chat answer pays for tokens the model never needed.
     const outcomes = await Promise.all(calls.map(async (call) => ({
       tool_call_id: call.id,
-      content: await executeCall(call),
+      content: truncateToolResult(await executeCall(call)),
     })));
     for (const outcome of outcomes) {
       convo.push({ role: 'tool', tool_call_id: outcome.tool_call_id, content: outcome.content });

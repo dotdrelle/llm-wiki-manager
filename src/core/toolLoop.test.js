@@ -104,6 +104,34 @@ test('answers from the gathered results when the cap is reached', async () => {
   assert.equal(out.content, "Voici ce que j'ai trouvé.");
 });
 
+test('bounds a wide tool result before it enters the LLM context', async () => {
+  // A CME Confluence search at limit 50 can weigh ~35 kB and would otherwise be
+  // re-sent on every iteration. The /agent loop already truncates at 16 kB
+  // (graph.js); the chat loop must not be the one unbounded path.
+  let round = 0;
+  let toolContent = '';
+  const llm = {
+    async completeWithTools({ messages }) {
+      round += 1;
+      if (round === 1) {
+        const calls = [toolCall('c1', 'cme__cme_confluence_search')];
+        return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+      }
+      toolContent = messages.find((m) => m.role === 'tool')?.content ?? '';
+      return { content: 'ok', tool_calls: [] };
+    },
+  };
+  const wide = 'x'.repeat(50000);
+  await runBoundedToolLoop({
+    llm,
+    tools: [{ function: { name: 'cme__cme_confluence_search' } }],
+    executeCall: async () => wide,
+  });
+  assert.ok(toolContent.length < wide.length, 'the result must be bounded');
+  assert.ok(toolContent.length <= 16200, `bounded length was ${toolContent.length}`);
+  assert.match(toolContent, /tronqu/);
+});
+
 test('propagates an abort thrown by executeCall', async () => {
   const llm = {
     async completeWithTools() {

@@ -287,6 +287,19 @@ The review's concurrency slot is released when its run reaches any terminal
 state, and the marker rides on the persisted control item — so a runtime
 restart re-attaches a queued review instead of losing it or running it twice.
 
+## Progressive final stream (lot 7 — not enabled)
+
+The adapter accepts `assistant_delta` / `assistant_delta_reset` from a runtime,
+and the reducer REPLACES the streamed text with the final `assistant_message`
+(`finalizeAssistantMessage`), so streaming cannot duplicate the answer. The
+consumer side is ready. The gateway does NOT stream yet: its Deep Agents graph
+surfaces the assembly through `streamMode: 'messages'` as ONE aggregated
+message per call, not token chunks (a probe model that yields three chunks
+produces a single frame against the installed version). A single "delta" that is
+the whole answer is not progressive — so lot 7 stays unshipped rather than
+shipping a fake one. Token-level progress needs the graph to stream LLM tokens,
+which this wiring does not.
+
 ## Governance
 
 

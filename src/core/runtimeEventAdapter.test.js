@@ -142,3 +142,15 @@ test('a memory notice is journalled as maintenance, not as a failure', () => {
   assert.equal(entry.type, 'runtime_log');
   assert.match(entry.payload.message, /^notice memory\.evicted: old-workspace$/);
 });
+
+test('the final stream maps as deltas, and a reset clears them', () => {
+  assert.deepEqual(
+    mapRuntimeEvent({ type: 'assistant_delta', delta: 'Hi' }),
+    [{ type: 'assistant_delta', payload: { delta: 'Hi' } }],
+  );
+  assert.deepEqual(
+    mapRuntimeEvent({ type: 'assistant_delta_reset' }),
+    [{ type: 'assistant_delta_reset', payload: {} }],
+  );
+  assert.deepEqual(mapRuntimeEvent({ type: 'assistant_delta', delta: '' }), []);
+});

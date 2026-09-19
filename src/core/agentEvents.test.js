@@ -927,3 +927,15 @@ test('a queued control item keeps its proactive-review marker across projection'
 
   assert.deepEqual(session.agentProjection.controlQueue[0].proactiveReview, marker);
 });
+
+test('streamed deltas are replaced by the final message, never duplicated', () => {
+  const session = {};
+  dispatchAgentEvent(session, createAgentEvent('assistant_delta', { origin: 'runtime', payload: { delta: 'Hello ' } }));
+  dispatchAgentEvent(session, createAgentEvent('assistant_delta', { origin: 'runtime', payload: { delta: 'world' } }));
+  assert.equal(session.agentProjection.conversation.at(-1).content, 'Hello world');
+
+  dispatchAgentEvent(session, createAgentEvent('assistant_message', { origin: 'runtime', payload: { content: 'Hello world' } }));
+  assert.equal(session.agentProjection.conversation.length, 1, 'the final message replaces the streamed one');
+  assert.equal(session.agentProjection.conversation[0].content, 'Hello world');
+  assert.ok(!session.agentProjection.conversation[0].streaming);
+});

@@ -23,6 +23,19 @@ export function mapRuntimeEvent(event) {
       const content = String(event?.content ?? event?.message ?? '').trim();
       return content ? [{ type: 'assistant_message', payload: { content } }] : [];
     }
+    // Progressive final stream (lot 7). The gateway only streams the MAIN
+    // assembly, never a role, so a delta can only belong to the answer. The
+    // reducer replaces the streamed text with the final `assistant_message`
+    // (finalizeAssistantMessage), so streaming cannot duplicate it.
+    case 'assistant_delta': {
+      const delta = String(event?.delta ?? '');
+      return delta ? [{ type: 'assistant_delta', payload: { delta } }] : [];
+    }
+    // A tool call interrupted the streamed answer: the text so far was
+    // reasoning, not the answer — discard it (the reducer empties, never pops,
+    // the streaming entry).
+    case 'assistant_delta_reset':
+      return [{ type: 'assistant_delta_reset', payload: {} }];
     case 'tool_started':
       return log(`tool ${toolLabel(event)} started`);
     case 'tool_finished': {

@@ -369,23 +369,14 @@ const runtimeEventSchema = {
   required: ['type'],
   additionalProperties: true,
   properties: {
-    type: {
-      type: 'string',
-      enum: [
-        'run_created',
-        'run_started',
-        'agent_thinking',
-        'tool_started',
-        'tool_finished',
-        'subagent_started',
-        'subagent_finished',
-        'message',
-        'approval_required',
-        'run_completed',
-        'run_failed',
-        'run_cancelled',
-      ],
-    },
+    // Deliberately OPEN: a gateway newer than the manager emits event types
+    // this version has never heard of, and a closed enum here threw inside
+    // `normalizeRuntimeEvent` before `runtimeEventAdapter` could decide what to
+    // do with them — the provider's catch swallowed the frame, so the whole
+    // activity contract was invisible in production while its unit tests
+    // passed. The adapter owns the vocabulary and journals an unknown type;
+    // the schema must let it see one.
+    type: { type: 'string' },
     runId: { type: 'string' },
     tool: { type: 'string' },
     durationMs: { type: 'number' },

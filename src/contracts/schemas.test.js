@@ -250,3 +250,18 @@ test('capability status contract carries dynamic pending inputs without prescrib
   assert.equal(validateContract('capabilityStatus', status).ok, true);
   assert.equal(validateContract('capabilityStatus', { ...status, pendingInputs: [{ type: 'file' }] }).ok, false);
 });
+
+test('the runtime event contract tolerates a type this version does not know', () => {
+  // A newer gateway emits types this manager has never heard of. A closed enum
+  // made `normalizeRuntimeEvent` throw before the adapter could journal it, so
+  // the whole activity contract was silently invisible. The schema must let an
+  // unknown type through; deciding what to do with it belongs to the adapter.
+  for (const type of ['phase_started', 'progress', 'heartbeat', 'finding', 'degraded', 'notice', 'stream_epoch', 'a_future_type']) {
+    assert.equal(
+      validateContract('runtimeEvent', { type, runId: 'r1' }).ok,
+      true,
+      `${type} must be accepted`,
+    );
+  }
+  assert.equal(validateContract('runtimeEvent', { runId: 'r1' }).ok, false, 'a missing type is still refused');
+});

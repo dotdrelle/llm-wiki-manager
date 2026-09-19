@@ -4,6 +4,21 @@ import {
   normalizeRuntimeEvent,
 } from './runtimeProvider.js';
 
+// The gateway closes the stream when one of these arrives; the client stops
+// reconnecting on it too, so a finished run never leaves a retry loop behind.
+const TERMINAL_RUNTIME_EVENT_TYPES = new Set(['run_completed', 'run_failed', 'run_cancelled']);
+
+function sleep(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener?.('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+  });
+}
+
 /**
  * DeepAgentsProvider — client HTTP vers un runtime Deep Agents externe
  * (RFC § 11, option A). Implémente le contrat RuntimeProvider :
@@ -28,6 +43,8 @@ export function createDeepAgentsProvider({
   headers = {},
   version = null,
   timeoutMs = 10_000,
+  streamRetries = Number(process.env.WIKI_MANAGER_RUNTIME_STREAM_RETRIES ?? 5),
+  streamBackoffMs = Number(process.env.WIKI_MANAGER_RUNTIME_STREAM_BACKOFF_MS ?? 250),
 } = {}) {
   const base = String(endpoint).replace(/\/+$/, '');
 
@@ -157,43 +174,126 @@ export function createDeepAgentsProvider({
         },
       });
     },
+    // A broken stream must not mean "silence forever", and a naive reconnect
+    // must not replay what was already seen. `cursor` is the last `sequence`
+    // delivered, `epoch` the gateway instance that produced it; both travel
+    // back on the next connection. Bounded retries then announce the give-up:
+    // a dead subscription that never says so is the defect this closes.
     subscribe(runId, listener) {
       const controller = new AbortController();
-      const url = `${base}/runs/${encodeURIComponent(String(runId))}/events`;
-      void (async () => {
+      const target = `${base}/runs/${encodeURIComponent(String(runId))}/events`;
+      let cursor = null;
+      let epoch = null;
+      let attempts = 0;
+      let stopped = false;
+
+      const emit = (event) => {
         try {
-          const response = await fetchImpl(url, {
-            headers: { accept: 'text/event-stream', ...headers },
-            signal: controller.signal,
-          });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const blocks = buffer.split('\n\n');
-            buffer = blocks.pop() ?? '';
-            for (const block of blocks) {
-              let data = '';
-              for (const line of block.split('\n')) {
-                if (line.startsWith('data: ')) data += line.slice(6);
-              }
-              if (!data) continue;
-              try {
-                listener(normalizeRuntimeEvent(JSON.parse(data)));
-              } catch {
-                // malformed or out-of-contract frame — skip
+          listener(normalizeRuntimeEvent(event));
+        } catch {
+          // The contract refused the frame: journal it instead of vanishing.
+          try {
+            listener(normalizeRuntimeEvent({
+              type: 'degraded',
+              capability: 'stream',
+              cause: 'an out-of-contract frame arrived from the runtime',
+              fallback: 'the frame was skipped',
+            }));
+          } catch { /* nothing left to report with */ }
+        }
+      };
+      const announce = (cause, fallback) => emit({ type: 'degraded', capability: 'stream', cause, fallback });
+
+      void (async () => {
+        while (!stopped && attempts < streamRetries) {
+          attempts += 1;
+          try {
+            const query = new URLSearchParams();
+            if (cursor != null) query.set('after', String(cursor));
+            if (epoch) query.set('epoch', epoch);
+            const suffix = query.toString();
+            const response = await fetchImpl(suffix ? `${target}?${suffix}` : target, {
+              headers: { accept: 'text/event-stream', ...headers },
+              signal: controller.signal,
+            });
+            if (response.status === 404) {
+              announce(`run ${runId} is not known to the runtime`, 'it was purged or never existed; no replay is possible');
+              return;
+            }
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            // The budget resets on PROGRESS, not on a mere HTTP 200: a gateway
+            // that accepts a connection and immediately closes it (or replays
+            // only what was already seen) would otherwise reset the budget
+            // forever and reconnect in a loop that never gives up.
+            let progressed = false;
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              const blocks = buffer.split('\n\n');
+              buffer = blocks.pop() ?? '';
+              for (const block of blocks) {
+                const data = block
+                  .split('\n')
+                  .filter((line) => line.startsWith('data: '))
+                  .map((line) => line.slice(6))
+                  .join('');
+                if (!data) continue;
+                let parsed;
+                try {
+                  parsed = JSON.parse(data);
+                } catch {
+                  announce('a malformed frame arrived from the runtime', 'the frame was skipped');
+                  continue;
+                }
+                if (parsed?.type === 'stream_epoch') {
+                  const next = String(parsed.epoch ?? '');
+                  if (epoch && next && next !== epoch) {
+                    announce('the runtime restarted (stream epoch changed)', 'reconnect from a fresh subscription; no events were replayed');
+                    return;
+                  }
+                  epoch = next || epoch;
+                  continue;
+                }
+                if (Number.isFinite(Number(parsed?.sequence))) {
+                  const sequence = Number(parsed.sequence);
+                  if (sequence > (cursor ?? -1)) progressed = true;
+                  cursor = Math.max(cursor ?? 0, sequence);
+                }
+                emit(parsed);
+                if (TERMINAL_RUNTIME_EVENT_TYPES.has(String(parsed?.type))) return;
               }
             }
+            if (progressed) attempts = 0;
+            // The stream ended without a terminal event: reconnect from the cursor.
+          } catch (error) {
+            if (controller.signal.aborted || stopped) return;
+            if (attempts >= streamRetries) {
+              announce(
+                'gave up reconnecting to the runtime stream',
+                `after ${attempts} attempt(s): ${error instanceof Error ? error.message : String(error)}`,
+              );
+              return;
+            }
           }
-        } catch {
-          // stream ended or aborted — the unsubscribe path is a no-op
+          if (stopped || controller.signal.aborted) return;
+          if (attempts >= streamRetries) break;
+          await sleep(streamBackoffMs * 2 ** (attempts - 1), controller.signal);
+        }
+        // The loop can also end because the budget ran out on a stream that
+        // kept closing cleanly — that is a give-up too, and it must be said.
+        if (!stopped && !controller.signal.aborted) {
+          announce('gave up reconnecting to the runtime stream', `after ${attempts} attempt(s) without progress`);
         }
       })();
-      return () => controller.abort();
+
+      return () => {
+        stopped = true;
+        controller.abort();
+      };
     },
   };
   return provider;

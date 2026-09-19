@@ -170,13 +170,18 @@ test('subscribe parses the SSE stream and forwards normalized events', async () 
       ]),
     }),
   });
-  const provider = createDeepAgentsProvider({ endpoint: 'http://agent-runtime:8080', fetchImpl });
+  // A single attempt: this test is about parsing, not reconnection. The mock
+  // stream carries no terminal event, so the provider would otherwise reconnect
+  // (and the mock would re-deliver) until its budget ran out.
+  const provider = createDeepAgentsProvider({
+    endpoint: 'http://agent-runtime:8080', fetchImpl, streamRetries: 1, streamBackoffMs: 1,
+  });
 
   const events = [];
   provider.subscribe('run-1', (event) => events.push(event));
 
-  await waitFor(() => events.length === 2);
-  assert.deepEqual(events.map((event) => event.type), ['tool_started', 'tool_finished']);
+  await waitFor(() => events.length >= 2);
+  assert.deepEqual(events.slice(0, 2).map((event) => event.type), ['tool_started', 'tool_finished']);
   assert.equal(events[0].tool, 'wiki_search');
 });
 
@@ -203,4 +208,134 @@ test('the deepagents factory is reachable from the agentRuntimes config', () => 
   assert.equal(providers.length, 1);
   assert.equal(providers[0].type, 'deepagents');
   assertRuntimeProvider(providers[0].provider);
+});
+
+// ── Lot 0: a broken stream must not mean "silence forever" ──────────────────
+
+test('an event type this manager does not know still reaches the listener', async () => {
+  const fetchImpl = mockFetch({
+    'GET /runs/run-6/events': () => ({
+      ok: true,
+      status: 200,
+      body: sseBody([
+        { type: 'phase_started', phase: 'discover', sequence: 1 },
+        { type: 'run_completed', sequence: 2 },
+      ]),
+    }),
+  });
+  const provider = createDeepAgentsProvider({ endpoint: 'http://agent-runtime:8080', fetchImpl });
+  const events = [];
+  provider.subscribe('run-6', (event) => events.push(event));
+
+  await waitFor(() => events.some((event) => event.type === 'phase_started'));
+  assert.equal(events.find((event) => event.type === 'phase_started').phase, 'discover');
+});
+
+test('a dropped stream reconnects from the cursor and never repeats an event', async () => {
+  let connections = 0;
+  const fetchImpl = mockFetch({
+    'GET /runs/run-1/events': () => {
+      connections += 1;
+      if (connections === 1) {
+        return {
+          ok: true,
+          status: 200,
+          body: sseBody([
+            { type: 'stream_epoch', epoch: 'epoch-a' },
+            { type: 'tool_started', tool: 'wiki_search', sequence: 5 },
+          ]),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: sseBody([
+          { type: 'stream_epoch', epoch: 'epoch-a' },
+          { type: 'run_completed', sequence: 6 },
+        ]),
+      };
+    },
+  });
+  const provider = createDeepAgentsProvider({
+    endpoint: 'http://agent-runtime:8080', fetchImpl, streamRetries: 3, streamBackoffMs: 1,
+  });
+  const events = [];
+  const unsubscribe = provider.subscribe('run-1', (event) => events.push(event));
+
+  await waitFor(() => events.some((event) => event.type === 'run_completed'));
+  unsubscribe();
+
+  assert.equal(connections, 2, 'the stream was reconnected once');
+  assert.match(fetchImpl.calls[1].url, /after=5/, 'the cursor travels back');
+  assert.match(fetchImpl.calls[1].url, /epoch=epoch-a/, 'the epoch travels back');
+  assert.equal(events.filter((event) => event.type === 'tool_started').length, 1, 'no duplicate delivery');
+  assert.equal(events.filter((event) => event.type === 'stream_epoch').length, 0, 'the epoch frame is consumed, never forwarded');
+});
+
+test('a stream epoch change stops the subscription with an announced reason', async () => {
+  let connections = 0;
+  const fetchImpl = mockFetch({
+    'GET /runs/run-2/events': () => {
+      connections += 1;
+      return {
+        ok: true,
+        status: 200,
+        body: sseBody([{ type: 'stream_epoch', epoch: connections === 1 ? 'epoch-a' : 'epoch-b' }]),
+      };
+    },
+  });
+  const provider = createDeepAgentsProvider({
+    endpoint: 'http://agent-runtime:8080', fetchImpl, streamRetries: 5, streamBackoffMs: 1,
+  });
+  const events = [];
+  provider.subscribe('run-2', (event) => events.push(event));
+
+  await waitFor(() => events.some((event) => event.type === 'degraded'));
+  assert.equal(connections, 2, 'it stopped after the mismatch');
+  assert.match(events.find((event) => event.type === 'degraded').cause, /epoch changed/);
+});
+
+test('a purged run ends the subscription with an announced reason', async () => {
+  const fetchImpl = mockFetch({}); // 404 on every route
+  const provider = createDeepAgentsProvider({
+    endpoint: 'http://agent-runtime:8080', fetchImpl, streamRetries: 5, streamBackoffMs: 1,
+  });
+  const events = [];
+  provider.subscribe('run-gone', (event) => events.push(event));
+
+  await waitFor(() => events.some((event) => event.type === 'degraded'));
+  assert.match(events.find((event) => event.type === 'degraded').cause, /not known to the runtime/);
+});
+
+test('a stream that keeps failing announces the give-up', async () => {
+  const fetchImpl = mockFetch({
+    'GET /runs/run-4/events': () => ({ ok: false, status: 500, json: async () => ({}) }),
+  });
+  const provider = createDeepAgentsProvider({
+    endpoint: 'http://agent-runtime:8080', fetchImpl, streamRetries: 2, streamBackoffMs: 1,
+  });
+  const events = [];
+  provider.subscribe('run-4', (event) => events.push(event));
+
+  await waitFor(() => events.some((event) => event.type === 'degraded' && /gave up/.test(event.cause)));
+});
+
+test('a malformed frame is journalled instead of silently skipped', async () => {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode('data: {not json\n\n'));
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'run_completed' })}\n\n`));
+      controller.close();
+    },
+  });
+  const fetchImpl = mockFetch({
+    'GET /runs/run-5/events': () => ({ ok: true, status: 200, body }),
+  });
+  const provider = createDeepAgentsProvider({ endpoint: 'http://agent-runtime:8080', fetchImpl });
+  const events = [];
+  provider.subscribe('run-5', (event) => events.push(event));
+
+  await waitFor(() => events.some((event) => event.type === 'degraded' && /malformed/.test(event.cause)));
+  assert.ok(events.some((event) => event.type === 'run_completed'), 'the good frame still arrives');
 });

@@ -207,6 +207,33 @@ An optional role's failure emits `degraded`, keeps the roles already finished
 and does NOT remove the worktree; a required role's failure removes the branch
 nobody will review.
 
+## Transport and compatibility
+
+The SSE subscription is a cursor protocol, not a fire hose:
+
+- the gateway's first frame is `stream_epoch`, one identity per process. The
+  provider sends the last `sequence` it saw (`?after=`) and the epoch it saw
+  (`?epoch=`) on every reconnect; the gateway replays strictly after the cursor.
+  A different epoch means the gateway restarted: the manager refuses the mixed
+  history and is told (a `degraded`), it does not silently resume on a gap.
+- the gateway bounds `run.events` (`GATEWAY_MAX_RUN_EVENTS`, default 5000) and
+  purges finished runs after `GATEWAY_RUN_TTL_MS` (default 10 min). A cursor
+  older than what the buffer retains is told events were lost.
+- the manager reconnects with bounded backoff
+  (`WIKI_MANAGER_RUNTIME_STREAM_RETRIES` / `..._STREAM_BACKOFF_MS`, default 5 /
+  250 ms). The budget resets on PROGRESS (an advanced cursor), never on a mere
+  HTTP 200 — a flapping stream must not loop forever. Giving up, a 404 on a
+  purged run, and a malformed frame are all announced, not swallowed.
+
+Matrix (fields and types added remain OPTIONAL until a coordinated version
+bump; nothing here requires a same-second deploy):
+
+| Manager | Gateway | Behaviour |
+| --- | --- | --- |
+| same | same | Full: liveness, phases, cursor replay. |
+| new | old | Fine. The old gateway emits legacy types only; absent optional fields default, and its missing `stream_epoch` simply means no restart detection. |
+| old | new | **Upgrade the manager first.** The old manager's closed `runtimeEvent` contract rejected event types it did not know before its adapter could journal them, so the new activity (phases, heartbeat, findings) is invisible to it. It still runs — `memoryScope` and the cursor query params are optional to the gateway. |
+
 ## Governance
 
 

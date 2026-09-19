@@ -231,6 +231,10 @@ function createProjectionState() {
     agents: {},
     summary: null,
     status: 'idle',
+    // Liveness from the external runtime's heartbeat (lot 2). Display-only:
+    // never persisted, never in the conversation.
+    lastHeartbeatAt: null,
+    lastHeartbeatElapsedMs: 0,
   };
 }
 
@@ -263,6 +267,8 @@ function publicProjection(state) {
       .sort((a, b) => a.agentInstanceId.localeCompare(b.agentInstanceId)),
     summary: state.summary,
     status: state.status,
+    lastHeartbeatAt: state.lastHeartbeatAt ?? null,
+    lastHeartbeatElapsedMs: state.lastHeartbeatElapsedMs ?? 0,
   };
   return {
     ...projection,
@@ -333,7 +339,16 @@ function applyEvent(state, event) {
       state.planPatches = [];
       state.summary = null;
       state.subagents = [];
+      state.lastHeartbeatAt = null;
+      state.lastHeartbeatElapsedMs = 0;
       pruneTerminalControlItems(state.controlQueue);
+      return;
+    case 'runtime_heartbeat':
+      // Liveness only: the external runtime saying "still working" during a
+      // long, tool-less phase. A timestamp the run strip reads; never a
+      // conversation entry, never persisted (store.js NON_PERSISTED_EVENT_TYPES).
+      state.lastHeartbeatAt = event.ts ?? new Date().toISOString();
+      state.lastHeartbeatElapsedMs = Number(event.payload?.elapsedMs) || 0;
       return;
     case 'user_message':
       state.conversation.push({ role: 'user', content: String(event.payload?.content ?? '') });

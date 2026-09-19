@@ -255,6 +255,7 @@ async function executeExternalRuntime(task, assignment, {
       capability: task.requiredCapability ?? null,
       arguments: task.arguments && typeof task.arguments === 'object' ? task.arguments : {},
       workspace: workspaceRequest(session),
+      memoryScope: memoryScopeRequest(session),
       model: activeProfileModel(session),
       language: session?.language ?? session?.wikircConfig?.language ?? null,
       mcp: mcpPool,
@@ -469,6 +470,24 @@ function executeRequest(task, session, runId, assignment) {
       requireApprovalForMutations: task.requiresApproval === true,
     },
   };
+}
+
+/**
+ * Which past conversation this run resumes, on the external runtime.
+ *
+ * The workspace alone today. The multi-user lot turns this into
+ * `<workspace>:<actorId>` — the shape is already the one the gateway accepts,
+ * so identity lands here and nowhere else. Returning null is legitimate and
+ * silent: the gateway then scopes to the workspace it resolved itself.
+ *
+ * Never a value a caller supplied: the runtime treats the scope as a read
+ * capability and refuses one that leaves its own workspace.
+ */
+function memoryScopeRequest(session) {
+  const actorId = session?._currentRunIdentity?.actorId ?? session?.actorId ?? null;
+  if (!actorId) return null;
+  const workspace = workspaceRequest(session)?.name;
+  return workspace ? `${workspace}:${String(actorId)}` : null;
 }
 
 function workspaceRequest(session) {

@@ -60,15 +60,100 @@ export function mapRuntimeEvent(event) {
         },
       }];
     }
+    // ── Activity (lot 2) ────────────────────────────────────────────────────
+    //
+    // The runtime's phases enrich the EXISTING business activity line; they do
+    // not open a second axis of "phases" beside `projectWorkflow`. That is why
+    // they travel as runtime_log here and are aggregated downstream, rather
+    // than minting a new event type the reducer would have to reconcile.
+    case 'phase_started':
+      return log(`phase ${phaseLabel(event)} started`);
+    case 'phase_finished': {
+      const counters = phaseCounters(event);
+      const outcome = event?.ok === false ? 'interrupted' : 'done';
+      return log(`phase ${phaseLabel(event)} ${outcome}${counters}`);
+    }
+    case 'progress': {
+      const label = String(event?.label ?? event?.phase ?? '').trim();
+      return label ? log(`progress ${label}${phaseCounters(event)}`) : [];
+    }
+    // A heartbeat is liveness, not history: it proves the run is alive to
+    // whoever is watching right now. It travels as its own NON-persisted event
+    // so the run strip can read it, but it never reaches the journal — one
+    // line per beat would bury what actually happened. Persisting is the
+    // store's decision (NON_PERSISTED_EVENT_TYPES); dropping it here would
+    // leave the strip with no liveness signal at all.
+    case 'heartbeat':
+      return [{
+        type: 'runtime_heartbeat',
+        payload: { elapsedMs: Number(event?.elapsedMs) || 0 },
+      }];
+    case 'finding': {
+      const severity = String(event?.severity ?? '').trim();
+      const summary = String(event?.summary ?? '').trim();
+      if (!summary) return [];
+      const path = String(event?.path ?? '').trim();
+      const where = path ? ` at ${path}` : '';
+      return log(`finding${severity ? ` [${severity}]` : ''} from ${String(event?.role ?? 'runtime')}${where}: ${summary}`);
+    }
+    // Maintenance the gateway performed on its own memory (eviction of an
+    // inactive workspace, compaction of a thread). Not a failure — a notice,
+    // so a reader can tell "the agent forgot an old workspace" from "the
+    // agent broke".
+    case 'notice': {
+      const topic = String(event?.topic ?? 'notice').trim();
+      const detail = String(event?.detail ?? '').trim();
+      return log(`notice ${topic}${detail ? `: ${detail}` : ''}`);
+    }
+    // A degradation must announce itself — that is the whole contract. It is
+    // never filtered, whatever else this adapter decides to keep quiet.
+    case 'degraded': {
+      const capability = String(event?.capability ?? 'capability').trim();
+      const cause = String(event?.cause ?? 'unknown cause').trim();
+      const fallback = String(event?.fallback ?? '').trim();
+      return log(`degraded ${capability}: ${cause}${fallback ? ` — ${fallback}` : ''}`);
+    }
     case 'run_started':
     case 'run_created':
     case 'agent_thinking':
     case 'run_completed':
     case 'run_failed':
     case 'run_cancelled':
-    default:
+      // Deliberately silent, and listed BY NAME so the silence is a decision
+      // rather than a default: `agent_thinking` is private reasoning the chat
+      // never shows, and the terminal events are already carried by the
+      // dispatcher's own `status()` poll.
       return [];
+    default:
+      // Everything else is a type this manager does not know — most likely a
+      // newer gateway talking to an older manager. Dropping it made that
+      // version skew invisible: the events simply never arrived, and nothing
+      // said so. One bounded line is the cost of knowing.
+      return log(`unrecognized runtime event "${type || 'unnamed'}"${unknownDetail(event)}`);
   }
+}
+
+function phaseLabel(event) {
+  return String(event?.phase ?? event?.label ?? 'unnamed');
+}
+
+function phaseCounters(event) {
+  const parts = [];
+  const tools = Number(event?.tools);
+  const pages = Number(event?.pages);
+  if (Number.isFinite(tools) && tools > 0) parts.push(`${tools} tool(s)`);
+  if (Number.isFinite(pages) && pages > 0) parts.push(`${pages} page(s) read`);
+  return parts.length > 0 ? ` — ${parts.join(', ')}` : '';
+}
+
+// Bounded on purpose: this is a diagnostic breadcrumb for a version skew, not
+// a channel for an unknown payload to reach the journal whole.
+const UNKNOWN_EVENT_DETAIL_MAX = 200;
+function unknownDetail(event) {
+  const keys = Object.keys(event ?? {})
+    .filter((key) => !['type', 'runId', 'ts', 'sequence'].includes(key));
+  if (keys.length === 0) return '';
+  return ` (fields: ${keys.join(', ')})`.slice(0, UNKNOWN_EVENT_DETAIL_MAX);
 }
 
 function log(message) {

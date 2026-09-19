@@ -117,6 +117,11 @@ export function createDeepAgentsProvider({
           capability: request.capability ?? null,
           arguments: request.arguments ?? {},
           workspace: request.workspace ?? null,
+          // The body is rebuilt field by field here, so a value the dispatcher
+          // adds only at the runtime layer would be dropped in transit. The
+          // memory scope decides which past conversation the run resumes: it
+          // has to be named in this list to exist at all.
+          memoryScope: request.memoryScope ?? null,
           model: request.model ?? null,
           language: request.language ?? null,
           mcp: Array.isArray(request.mcp) ? request.mcp : [],

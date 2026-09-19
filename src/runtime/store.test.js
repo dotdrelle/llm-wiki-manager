@@ -770,12 +770,16 @@ test('runtime store backfills sequence for legacy event rows', () => {
   store.close();
 });
 
-test('runtime store does not persist runtime logs', () => {
+test('runtime store does not persist runtime logs or liveness beats', () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
   const store = openRuntimeStore({ stateDir });
   store.persistEvent(createAgentEvent('runtime_log', {
     origin: 'runtime',
     payload: { message: 'agentic-loop: turn 1/20' },
+  }));
+  store.persistEvent(createAgentEvent('runtime_heartbeat', {
+    origin: 'runtime_provider',
+    payload: { elapsedMs: 30_000 },
   }));
 
   assert.equal(store.listEvents().length, 0);

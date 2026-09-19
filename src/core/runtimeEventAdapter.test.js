@@ -61,6 +61,84 @@ test('private reasoning and terminal events are never re-emitted', () => {
   assert.deepEqual(mapRuntimeEvent({ type: 'run_cancelled' }), []);
 });
 
-test('an unknown event type produces nothing', () => {
-  assert.deepEqual(mapRuntimeEvent({ type: 'made_up' }), []);
+// (An unknown type used to produce nothing. It now produces one journal line —
+// see "an unknown event type is journalled instead of vanishing" below. The
+// old assertion pinned the silence that hid a version skew.)
+
+// ── Activity events (lot 2) ──────────────────────────────────────────────────
+
+test('phase and progress events enrich the journal with bounded counters', () => {
+  assert.deepEqual(
+    mapRuntimeEvent({ type: 'phase_started', phase: 'discover' }),
+    [{ type: 'runtime_log', payload: { message: 'phase discover started' } }],
+  );
+  const [finished] = mapRuntimeEvent({
+    type: 'phase_finished', phase: 'discover', ok: true, tools: 7, pages: 4,
+  });
+  assert.match(finished.payload.message, /phase discover done — 7 tool\(s\), 4 page\(s\) read/);
+
+  const [interrupted] = mapRuntimeEvent({ type: 'phase_finished', phase: 'critique', ok: false });
+  assert.match(interrupted.payload.message, /phase critique interrupted/);
+});
+
+// A beat proves the run is alive to whoever watches NOW. It still travels — as
+// its own non-persisted event, so the run strip can read it — but one journal
+// line per beat would bury what actually happened under "still alive".
+test('a heartbeat becomes a non-persisted liveness event, not a journal line', () => {
+  assert.deepEqual(
+    mapRuntimeEvent({ type: 'heartbeat', elapsedMs: 30_000 }),
+    [{ type: 'runtime_heartbeat', payload: { elapsedMs: 30_000 } }],
+  );
+});
+
+test('a finding carries its severity, its author and its path', () => {
+  const [entry] = mapRuntimeEvent({
+    type: 'finding',
+    role: 'critique',
+    severity: 'blocking',
+    path: 'wiki/concepts/demo/a.md',
+    summary: 'cites no source',
+  });
+  assert.match(
+    entry.payload.message,
+    /finding \[blocking\] from critique at wiki\/concepts\/demo\/a\.md: cites no source/,
+  );
+});
+
+test('a degradation is never filtered', () => {
+  const [entry] = mapRuntimeEvent({
+    type: 'degraded',
+    capability: 'role:critique',
+    cause: 'model timeout',
+    fallback: 'the run continues without this role',
+  });
+  assert.match(entry.payload.message, /degraded role:critique: model timeout — the run continues/);
+});
+
+/*
+ The version-skew guard. A newer gateway talking to an older manager used to
+ lose EVERY new event here, silently — the adapter ended on `default: return []`.
+ The deliberate silences stay silent, but they are now listed by name, so the
+ difference between "we chose not to show this" and "we did not recognise it"
+ is visible in the journal instead of being the same thing.
+*/
+test('an unknown event type is journalled instead of vanishing', () => {
+  const [entry] = mapRuntimeEvent({ type: 'sub_phase_started', detail: 'x', weight: 2 });
+  assert.equal(entry.type, 'runtime_log');
+  assert.match(entry.payload.message, /unrecognized runtime event "sub_phase_started"/);
+  assert.match(entry.payload.message, /fields: detail, weight/);
+});
+
+test('the deliberate silences stay silent', () => {
+  for (const type of ['agent_thinking', 'run_started', 'run_completed', 'run_failed', 'run_cancelled']) {
+    assert.deepEqual(mapRuntimeEvent({ type }), [], `${type} must stay silent`);
+  }
+});
+
+test('a memory notice is journalled as maintenance, not as a failure', () => {
+  const [entry] = mapRuntimeEvent({
+    type: 'notice', topic: 'memory.evicted', detail: 'old-workspace',
+  });
+  assert.equal(entry.type, 'runtime_log');
+  assert.match(entry.payload.message, /^notice memory\.evicted: old-workspace$/);
 });

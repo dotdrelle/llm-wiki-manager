@@ -138,10 +138,74 @@ exist (`{ "plan": "plan", "apply": "run" }`); it is propagated like
 ## Memory
 
 The runtime keeps a **conversation memory per workspace**: the manager sends
-the workspace with every run and the gateway checkpoints each thread under
-`thread_id = workspace` (`memory.sqlite` in its config dir, SqliteSaver). A
-run therefore resumes its workspace's previous thread across runs and across
+the workspace with every run and the gateway checkpoints the MAIN thread under
+`thread_id = <memory scope>` (`memory.sqlite` in its config dir, SqliteSaver).
+A run therefore resumes its workspace's previous thread across runs and across
 gateway restarts; a request without a workspace lands on `default`.
+
+**The scope is a read capability, so the gateway owns it.** `memoryScope`
+travels on the run request (`RuntimeExecuteRequest` → `DeepAgentsProvider.execute`
+→ the `/runs` body), and the gateway validates it against the workspace it
+resolved for the run: a scope may only REFINE that workspace
+(`<workspace>:<actorId>`, the shape the multi-user lot will fill), never leave
+it. A value that does, or that is malformed or oversized, falls back to the
+workspace and emits a `degraded` event. An ABSENT scope is the normal
+single-user case and says nothing — there is no actor to name yet.
+
+**The collective's role threads are bounded to one run**
+(`<workspace>:<runId>:<role>`), deliberately not derived from the main thread.
+They used to be, so making the main thread stable would have made them stable
+too — and a Critique that re-raises an objection settled three runs ago, or a
+Scout that accumulates every past run's findings, degrades the collective
+instead of helping it. The main thread carries the workspace's memory; the
+role threads carry one curation, and their checkpoints are deleted once the
+role finishes — bounded to the run means no reader afterwards.
+
+The memory is bounded so `memory.sqlite` cannot grow without end: a
+**workspace dossier** (the Archivist's factual memory + unresolved objections,
+in its own table of the same file) is what survives, injected into the next run
+as a bounded `## Workspace memory` section; the main thread is **compacted**
+past `GATEWAY_MEMORY_MAX_CHECKPOINTS` (default 200) and **evicted** for
+workspaces untouched for `GATEWAY_MEMORY_TTL_MS` (default 30 days). Compaction
+and eviction are `notice` events, not failures; a missing volume is a
+`degraded` and the run continues without memory.
+
+The dossier **merges**, it never replaces: an empty run keeps the previous
+summary (so an optional Archivist that failed cannot erase the workspace's
+memory) and objections accumulate, deduplicated on path+statement. An objection
+is closed only EXPLICITLY — the Archivist repeats it as
+`[resolved] <path> — <statement>` — because a run that does not mention an
+objection has ignored it, not resolved it. The cap drops the stalest, never the
+freshest, and announces what it abandoned with a `notice memory.capped` — a
+silent cap would repeat the defect the merge rule exists to prevent.
+
+## Activity and liveness
+
+The gateway emits structured facts, never private reasoning. The adapter maps
+them to the manager's vocabulary; `runtime_log` and `runtime_heartbeat` are
+SSE-only and never persisted:
+
+- `phase_started` / `phase_finished` — bounded, carrying the tool/page counters
+  the phase used. They enrich the EXISTING business activity line and its
+  `projectWorkflow`, never a second axis of "phases".
+- `progress` — coalesced by the gateway (one frame per window, not one per
+  tool); the phase close always carries the final counts.
+- `heartbeat` — liveness while a long, tool-less phase runs. It becomes a
+  NON-persisted `runtime_heartbeat` event: the serve run strip reads it (elapsed
+  since the last beat) and it restarts the in-flight watchdog. It never reaches
+  the journal — one line per beat would bury what actually happened.
+- `finding` — one per `[objection]` line, carrying severity, role and the page
+  path as structured fields, then the bounded statement.
+- `degraded` — a refused memory scope, a role that failed, a capability
+  fallback. Always surfaced, and carried on the run RESULT so a proposal opened
+  later still says what was lost when it was written.
+
+The collective declares its roles required or optional: Scout and Analyst are
+required (without material the Redactor writes about nothing), Critique and
+Archivist are optional, and Redactor is required only when a worktree is armed.
+An optional role's failure emits `degraded`, keeps the roles already finished
+and does NOT remove the worktree; a required role's failure removes the branch
+nobody will review.
 
 ## Governance
 

@@ -25,7 +25,7 @@ export { defaultRuntimeStateDir };
 // turn's LLM context. A persisted progress note would be re-read by the model
 // on every later turn as if it were something the user said or Donna answered,
 // growing the context with commentary about work already finished.
-const NON_PERSISTED_EVENT_TYPES = new Set(['runtime_log', 'assistant_progress']);
+const NON_PERSISTED_EVENT_TYPES = new Set(['runtime_log', 'assistant_progress', 'runtime_heartbeat']);
 export const RUNTIME_STORE_SCHEMA_VERSION = 1;
 const RUNTIME_RETENTION_DAYS = 30;
 const TERMINAL_RUN_STATUSES = ['done', 'error', 'cancelled', 'interrupted'];

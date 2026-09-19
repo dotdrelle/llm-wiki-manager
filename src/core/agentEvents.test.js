@@ -899,3 +899,19 @@ test('subagent_started/finished track the collective timeline, reset per run', (
   dispatchAgentEvent(session, createAgentEvent('run_started', { origin: 'runtime', runId: 'r2', payload: {} }));
   assert.equal(session.agentProjection.subagents.length, 0, 'a new run starts a fresh timeline');
 });
+
+test('a runtime heartbeat sets liveness only, and a new run clears it', () => {
+  const session = {};
+  dispatchAgentEvent(session, createAgentEvent('run_started', { origin: 'runtime', runId: 'r1', payload: {} }));
+  dispatchAgentEvent(session, createAgentEvent('runtime_heartbeat', {
+    origin: 'runtime_provider', runId: 'r1', payload: { elapsedMs: 30_000 },
+  }));
+
+  assert.ok(session.agentProjection.lastHeartbeatAt, 'the beat is visible to the strip');
+  assert.equal(session.agentProjection.lastHeartbeatElapsedMs, 30_000);
+  // A heartbeat is not an event the conversation projection can seed from.
+  assert.equal(session.agentProjection.conversation.length, 0);
+
+  dispatchAgentEvent(session, createAgentEvent('run_started', { origin: 'runtime', runId: 'r2', payload: {} }));
+  assert.equal(session.agentProjection.lastHeartbeatAt, null, 'a new run starts with no stale beat');
+});

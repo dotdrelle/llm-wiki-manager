@@ -32,6 +32,8 @@ test('normalizeProactiveConfig stays disabled on anything malformed', () => {
   assert.equal(config.enabled, true);
   assert.equal(config.cooldownMs, PROACTIVE_DEFAULTS.cooldownMs, 'a negative cooldown falls back');
   assert.equal(config.runsPerDay, 2);
+  assert.equal(config.staleAfterDays, PROACTIVE_DEFAULTS.staleAfterDays);
+  assert.equal(normalizeProactiveConfig({ enabled: true, staleAfterDays: 30 }).staleAfterDays, 30);
 });
 
 test('the same source version never queues a second audit', () => {

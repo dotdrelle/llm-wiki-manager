@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { closeSync, openSync, readSync, readdirSync } from 'node:fs';
+import { closeSync, openSync, readFileSync, readSync, readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 
@@ -101,6 +101,61 @@ function readFileHead(filePath, maxBytes = 4_096) {
  * `wiki/concepts/` — nested folders included, so two leaves in different
  * sub-folders still report two DISTINCT paths.
  */
+/**
+ * The engine's source registry (`.wiki/source-registry.json`), read as the
+ * stable contract it is. Unreadable or corrupt yields no sources: a failed
+ * observation never breaks the run that triggered it.
+ */
+export function readSourceRegistry(rootDir) {
+  let raw;
+  try {
+    raw = readFileSync(join(String(rootDir), '.wiki', 'source-registry.json'), 'utf8');
+  } catch {
+    return { sources: [] };
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return { sources: Array.isArray(parsed?.sources) ? parsed.sources : [] };
+  } catch {
+    return { sources: [] };
+  }
+}
+
+/**
+ * Sources whose knowledge has not been re-verified inside the window. The date
+ * is `lastIngestedAt` — the engine already writes it; a source never ingested
+ * (`null`) is not "aging knowledge", it simply produced none. Bounded like the
+ * conflict scan, with the same rule: the total counts the whole set.
+ */
+export function detectStaleSources(registry, { now = Date.now(), staleAfterDays = 180, max = 50 } = {}) {
+  const at = Number(now);
+  const cutoff = at - staleAfterDays * 24 * 60 * 60 * 1000;
+  const stale = [];
+  for (const source of registry?.sources ?? []) {
+    if (String(source?.status ?? 'active') !== 'active') continue;
+    const lastIngestedAt = source?.lastIngestedAt ?? null;
+    const observed = Date.parse(String(lastIngestedAt ?? ''));
+    if (!Number.isFinite(observed)) continue;
+    if (observed > cutoff) continue;
+    stale.push({
+      sourceId: String(source?.sourceId ?? ''),
+      archivePath: String(source?.archivePath ?? ''),
+      lastIngestedAt,
+    });
+  }
+  stale.sort((a, b) => String(a.archivePath).localeCompare(String(b.archivePath)));
+  const bounded = stale.slice(0, max);
+  return { stale: bounded, total: stale.length, dropped: stale.length - bounded.length };
+}
+
+export function staleFingerprint(stale, total = Array.isArray(stale) ? stale.length : 0) {
+  const lines = (stale ?? [])
+    .map((entry) => `${entry.sourceId}:${entry.archivePath}:${entry.lastIngestedAt}`)
+    .sort();
+  lines.push(`total:${total}`);
+  return createHash('sha1').update(lines.join('\n')).digest('hex').slice(0, 16);
+}
+
 export function readConceptLeaves(rootDir) {
   const base = join(String(rootDir), 'wiki', 'concepts');
   const leaves = [];

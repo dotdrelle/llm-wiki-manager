@@ -7,8 +7,11 @@ import { join } from 'node:path';
 import {
   conflictFingerprint,
   detectConceptConflicts,
+  detectStaleSources,
   normalizeSubject,
   readConceptLeaves,
+  readSourceRegistry,
+  staleFingerprint,
 } from './knowledgeSignals.js';
 
 test('normalizeSubject folds case, accents and punctuation', () => {
@@ -92,4 +95,43 @@ test('a corpus without homonyms produces no signal', () => {
     0,
   );
   assert.equal(detectConceptConflicts([]).total, 0);
+});
+
+test('only a source not re-ingested inside the window is stale', () => {
+  const now = Date.parse('2026-06-01T00:00:00.000Z');
+  const registry = {
+    sources: [
+      { sourceId: 'a', archivePath: 'raw/ingested/a.md', status: 'active', lastIngestedAt: '2026-05-30T00:00:00.000Z' },
+      { sourceId: 'b', archivePath: 'raw/ingested/b.md', status: 'active', lastIngestedAt: '2025-01-01T00:00:00.000Z' },
+      { sourceId: 'c', archivePath: 'raw/ingested/c.md', status: 'retracted', lastIngestedAt: '2024-01-01T00:00:00.000Z' },
+      { sourceId: 'd', archivePath: 'raw/ingested/d.md', status: 'active', lastIngestedAt: null },
+    ],
+  };
+  const { stale, total, dropped } = detectStaleSources(registry, { now, staleAfterDays: 180 });
+  assert.equal(total, 1, 'a recent source, a retracted one and a never-ingested one are not stale');
+  assert.equal(dropped, 0);
+  assert.deepEqual(stale.map((entry) => entry.sourceId), ['b']);
+});
+
+test('the stale fingerprint is stable and counts the whole set', () => {
+  const a = [{ sourceId: 'b', archivePath: 'raw/ingested/b.md', lastIngestedAt: '2025-01-01T00:00:00.000Z' }];
+  assert.equal(staleFingerprint(a, 1), staleFingerprint(a, 1));
+  assert.notEqual(staleFingerprint(a, 1), staleFingerprint(a, 2));
+});
+
+test('readSourceRegistry tolerates an absent or corrupt file', () => {
+  const root = mkdtempSync(join(tmpdir(), 'registry-'));
+  try {
+    assert.deepEqual(readSourceRegistry(root), { sources: [] });
+    mkdirSync(join(root, '.wiki'), { recursive: true });
+    writeFileSync(join(root, '.wiki', 'source-registry.json'), '{not json');
+    assert.deepEqual(readSourceRegistry(root), { sources: [] });
+    writeFileSync(
+      join(root, '.wiki', 'source-registry.json'),
+      JSON.stringify({ version: 1, sources: [{ sourceId: 'a' }] }),
+    );
+    assert.equal(readSourceRegistry(root).sources.length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

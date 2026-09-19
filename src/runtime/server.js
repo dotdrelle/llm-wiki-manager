@@ -19,7 +19,10 @@ import {
 import {
   conflictFingerprint,
   detectConceptConflicts,
+  detectStaleSources,
   readConceptLeaves,
+  readSourceRegistry,
+  staleFingerprint,
 } from '../orchestrator/knowledgeSignals.js';
 import { matchSkillInvocation } from '../core/skillInvocation.js';
 import { reconcileControlQueue } from './controlDrain.js';
@@ -1208,29 +1211,53 @@ export function startRuntimeServer({
     // leaf synchronously on the event loop that also serves both chats' SSE is
     // a cost the default (disabled) must not pay.
     const config = normalizeProactiveConfig(session?.wikircConfig?.proactiveReviews);
-    if (!config.enabled || !config.triggers.includes('knowledge.conflict_detected')) return;
+    if (!config.enabled) return;
+    const wantsConflicts = config.triggers.includes('knowledge.conflict_detected');
+    const wantsStale = config.triggers.includes('knowledge.stale');
+    if (!wantsConflicts && !wantsStale) return;
     const workspacePath = session?.workspacePath;
     if (!workspacePath) return;
     try {
-      const { conflicts, total, dropped } = detectConceptConflicts(readConceptLeaves(workspacePath));
-      if (total === 0) return;
-      if (dropped > 0) {
-        emitRuntimeLog(
-          session,
-          `knowledge-signals: ${total} conflict(s) found, ${dropped} beyond the ceiling are not listed (the fingerprint still counts them)`,
-        );
+      if (wantsConflicts) {
+        const { conflicts, total, dropped } = detectConceptConflicts(readConceptLeaves(workspacePath));
+        if (total > 0) {
+          if (dropped > 0) {
+            emitRuntimeLog(
+              session,
+              `knowledge-signals: ${total} conflict(s) found, ${dropped} beyond the ceiling are not listed (the fingerprint still counts them)`,
+            );
+          }
+          handleKnowledgeTrigger(context, {
+            workspace,
+            trigger: 'knowledge.conflict_detected',
+            // The fingerprint includes the full count, so a conflict beyond the
+            // cap still moves the version and is not deduped away.
+            sourceVersion: conflictFingerprint(conflicts, total),
+          });
+        }
       }
-      handleKnowledgeTrigger(context, {
-        workspace,
-        trigger: 'knowledge.conflict_detected',
-        // The fingerprint includes the full count, so a conflict beyond the cap
-        // still moves the version and is not deduped away.
-        sourceVersion: conflictFingerprint(conflicts, total),
-      });
+      if (wantsStale) {
+        const { stale, total, dropped } = detectStaleSources(readSourceRegistry(workspacePath), {
+          staleAfterDays: config.staleAfterDays,
+        });
+        if (total > 0) {
+          if (dropped > 0) {
+            emitRuntimeLog(
+              session,
+              `knowledge-signals: ${total} source(s) not re-verified for ${config.staleAfterDays}d, ${dropped} beyond the ceiling are not listed`,
+            );
+          }
+          handleKnowledgeTrigger(context, {
+            workspace,
+            trigger: 'knowledge.stale',
+            sourceVersion: staleFingerprint(stale, total),
+          });
+        }
+      }
     } catch (error) {
       emitRuntimeLog(
         session,
-        `knowledge-signals: the conflict scan failed — ${error instanceof Error ? error.message : String(error)}`,
+        `knowledge-signals: a corpus scan failed — ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }

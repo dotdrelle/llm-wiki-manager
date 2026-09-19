@@ -23,6 +23,7 @@ export const PROACTIVE_DEFAULTS = {
   cooldownMs: 6 * 60 * 60 * 1000,
   runsPerDay: 4,
   concurrency: 1,
+  staleAfterDays: 180,
 };
 
 /**
@@ -88,6 +89,8 @@ export function normalizeProactiveConfig(value) {
     cooldownMs: positive(value.cooldownMs, PROACTIVE_DEFAULTS.cooldownMs),
     runsPerDay: positive(value?.budget?.runsPerDay, PROACTIVE_DEFAULTS.runsPerDay),
     concurrency: Math.max(1, positive(value.concurrency, PROACTIVE_DEFAULTS.concurrency)),
+    // How old a source's last ingest must be before `knowledge.stale` fires.
+    staleAfterDays: positive(value.staleAfterDays, PROACTIVE_DEFAULTS.staleAfterDays),
   };
 }
 

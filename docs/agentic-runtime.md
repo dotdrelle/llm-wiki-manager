@@ -255,10 +255,12 @@ worth a read-only audit:
   freezes the version, so a later conflict still moves it. The scan runs ONLY
   when the workspace opted in (never on the default), and reads a bounded file
   head, not whole pages. No model is involved. When the conflict review takes
-  the only concurrency slot, the ingest fact's skip says so by name;
-  `knowledge.stale` is not built yet — it needs the per-source
-  verification/ingestion date the engine does not produce today, and the plan
-  makes that observation a prerequisite rather than a guess;
+  the only concurrency slot, the ingest fact's skip says so by name. A second
+  deterministic read publishes `knowledge.stale` from the engine's source
+  registry: an active source whose `lastIngestedAt` is older than
+  `staleAfterDays` (default 180) is named, with a fingerprint over the whole
+  set. (`reconcileRegistry`'s vanished/orphan facts are still engine-only; wiring
+  them in is the remaining half of this detector.);
 - an accepted trigger queues an `agent.review` through the normal control lane.
   The objective carries ONLY the `audit` alias — the resolver returns null when
   two capability aliases match, and `agent.notify` owns `report`, `agent.curate`

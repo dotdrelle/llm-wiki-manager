@@ -11,6 +11,7 @@ import {
   normalizeSubject,
   readConceptLeaves,
   readSourceRegistry,
+  readWikiPages,
   staleFingerprint,
 } from './knowledgeSignals.js';
 
@@ -118,7 +119,7 @@ test('stale knowledge is aged sources plus registry paths that no longer exist',
   });
   assert.equal(total, 3, 'a recent, a retracted and a never-ingested source are not stale');
   assert.equal(dropped, 0);
-  assert.deepEqual(counts, { aged: 1, vanishedArchive: 1, vanishedPage: 1 });
+  assert.deepEqual(counts, { aged: 1, vanishedArchive: 1, vanishedPage: 1, orphan: 0 });
   assert.deepEqual(stale.map((entry) => entry.kind), ['aged', 'vanished-archive', 'vanished-page']);
   assert.equal(stale.find((entry) => entry.kind === 'aged').sourceId, 'f');
   assert.equal(stale.find((entry) => entry.kind === 'vanished-archive').path, 'raw/ingested/b.md');
@@ -143,6 +144,49 @@ test('readSourceRegistry tolerates an absent or corrupt file', () => {
       JSON.stringify({ version: 1, sources: [{ sourceId: 'a' }] }),
     );
     assert.equal(readSourceRegistry(root).sources.length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a wiki page no active source backs is an orphan fact', () => {
+  const now = Date.parse('2026-06-01T00:00:00.000Z');
+  const recent = '2026-05-30T00:00:00.000Z';
+  const registry = {
+    sources: [
+      { sourceId: 'a', archivePath: 'raw/ingested/a.md', status: 'active', lastIngestedAt: recent, producedPages: ['wiki/concepts/saas/a.md'] },
+      { sourceId: 'b', archivePath: 'raw/ingested/b.md', status: 'retracted', lastIngestedAt: recent, producedPages: ['wiki/concepts/saas/retracted.md'] },
+    ],
+  };
+  const { stale, counts } = detectStaleKnowledge(registry, {
+    rootDir: '/ws',
+    now,
+    staleAfterDays: 180,
+    exists: () => true,
+    wikiPages: ['wiki/concepts/saas/a.md', 'wiki/concepts/saas/handwritten.md', 'wiki/concepts/saas/retracted.md'],
+  });
+  // A page backed by an ACTIVE source is not an orphan; a hand-written one and
+  // one produced by a RETRACTED source are.
+  assert.deepEqual(
+    stale.filter((entry) => entry.kind === 'orphan').map((entry) => entry.path),
+    ['wiki/concepts/saas/handwritten.md', 'wiki/concepts/saas/retracted.md'],
+  );
+  assert.equal(counts.orphan, 2);
+
+  // Without the inventory, no orphan kind is invented.
+  const without = detectStaleKnowledge(registry, { rootDir: '/ws', now, exists: () => true });
+  assert.equal(without.stale.some((entry) => entry.kind === 'orphan'), false);
+});
+
+test('readWikiPages inventories wiki/**/*.md, names only', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wikipages-'));
+  try {
+    mkdirSync(join(root, 'wiki', 'concepts', 'saas'), { recursive: true });
+    mkdirSync(join(root, 'wiki', 'answers'), { recursive: true });
+    writeFileSync(join(root, 'wiki', 'concepts', 'saas', 'a.md'), 'x');
+    writeFileSync(join(root, 'wiki', 'answers', 'b.md'), 'x');
+    writeFileSync(join(root, 'wiki', 'notes.txt'), 'x');
+    assert.deepEqual(readWikiPages(root), ['wiki/answers/b.md', 'wiki/concepts/saas/a.md']);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

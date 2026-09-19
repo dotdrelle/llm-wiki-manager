@@ -121,6 +121,44 @@ export function readSourceRegistry(rootDir) {
   }
 }
 
+/**
+ * Every `.md` under `wiki/`, relative to the workspace — the inventory the
+ * engine's `reconcileRegistry` calls `wikiPages`. Names only, no content.
+ */
+export function readWikiPages(rootDir, { max = 5_000 } = {}) {
+  const base = join(String(rootDir), 'wiki');
+  const pages = [];
+  let entries;
+  try {
+    entries = readdirSync(base, { withFileTypes: true, recursive: true });
+  } catch {
+    return pages;
+  }
+  const toPosix = (value) => value.split(sep).join('/');
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+    const parent = entry.parentPath ?? entry.path;
+    if (!parent) continue;
+    const rel = toPosix(relative(base, join(parent, entry.name)));
+    if (!rel || rel.startsWith('..')) continue;
+    pages.push(`wiki/${rel}`);
+    if (pages.length >= max) break;
+  }
+  return pages.sort();
+}
+
+// The engine's `orphanPages` rule: a page no ACTIVE source lists among the pages
+// it produced. A hand-written or pre-registry page is an orphan too — a
+// provenance gap the operator is asked about, never a deletion.
+function orphanPagesFromRegistry(registry, wikiPages) {
+  const supported = new Set(
+    (registry?.sources ?? [])
+      .filter((source) => String(source?.status ?? 'active') === 'active')
+      .flatMap((source) => (Array.isArray(source?.producedPages) ? source.producedPages.map(String) : [])),
+  );
+  return wikiPages.map(String).filter((page) => !supported.has(page)).sort();
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -143,13 +181,16 @@ export function detectStaleKnowledge(registry, {
   staleAfterDays = 180,
   max = 50,
   exists = existsSync,
+  // The `wiki/**/*.md` inventory (`readWikiPages`), when the caller has it:
+  // orphan detection is a join on the registry, nothing more.
+  wikiPages = null,
 } = {}) {
   const cutoff = Number(now) - staleAfterDays * DAY_MS;
   const evidence = [];
   // Counted per kind over the FULL set: the ceiling line must describe the
-  // facts it is capping, not lump three natures into one number. "61 source(s)
-  // not re-verified" sent the reader looking for the wrong defect.
-  const counts = { aged: 0, vanishedArchive: 0, vanishedPage: 0 };
+  // facts it is capping, not lump natures into one number. "61 source(s) not
+  // re-verified" sent the reader looking for the wrong defect.
+  const counts = { aged: 0, vanishedArchive: 0, vanishedPage: 0, orphan: 0 };
   for (const source of registry?.sources ?? []) {
     if (String(source?.status ?? 'active') !== 'active') continue;
     const sourceId = String(source?.sourceId ?? '');
@@ -172,9 +213,15 @@ export function detectStaleKnowledge(registry, {
       counts.aged += 1;
     }
   }
+  if (Array.isArray(wikiPages)) {
+    for (const page of orphanPagesFromRegistry(registry, wikiPages)) {
+      evidence.push({ kind: 'orphan', sourceId: null, path: page });
+      counts.orphan += 1;
+    }
+  }
   evidence.sort((a, b) => a.kind.localeCompare(b.kind)
     || a.path.localeCompare(b.path)
-    || a.sourceId.localeCompare(b.sourceId));
+    || String(a.sourceId ?? '').localeCompare(String(b.sourceId ?? '')));
   const stale = evidence.slice(0, max);
   return { stale, total: evidence.length, dropped: evidence.length - stale.length, counts };
 }

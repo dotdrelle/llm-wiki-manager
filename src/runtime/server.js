@@ -22,6 +22,7 @@ import {
   detectStaleKnowledge,
   readConceptLeaves,
   readSourceRegistry,
+  readWikiPages,
   staleFingerprint,
 } from '../orchestrator/knowledgeSignals.js';
 import { matchSkillInvocation } from '../core/skillInvocation.js';
@@ -1263,13 +1264,15 @@ export function startRuntimeServer({
     const { stale, total, dropped, counts } = detectStaleKnowledge(readSourceRegistry(workspacePath), {
       rootDir: workspacePath,
       staleAfterDays: config.staleAfterDays,
+      wikiPages: readWikiPages(workspacePath),
     });
     if (total === 0) return;
     if (dropped > 0) {
-      // Counted PER NATURE: the ceiling hides evidence of three kinds, and a
-      // single "N source(s)" would be false for at least two of them.
+      // Counted PER NATURE: the ceiling hides evidence of several kinds, and a
+      // single "N source(s)" would be false for the others.
       const breakdown = [
         counts.aged ? `${counts.aged} aged` : null,
+        counts.orphan ? `${counts.orphan} orphan page(s)` : null,
         counts.vanishedArchive ? `${counts.vanishedArchive} vanished archive(s)` : null,
         counts.vanishedPage ? `${counts.vanishedPage} vanished page(s)` : null,
       ].filter(Boolean).join(', ');

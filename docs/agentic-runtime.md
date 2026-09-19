@@ -258,11 +258,11 @@ worth a read-only audit:
   the only concurrency slot, the ingest fact's skip says so by name. A second
   deterministic read publishes `knowledge.stale` from the engine's source
   registry: it names an active source whose `lastIngestedAt` is older than
-  `staleAfterDays` (default 180), AND any registry path that no longer exists —
-  a vanished archive or a vanished produced page. Existence, not a mirrored
-  reconciliation rule. Orphans (a wiki page no active source backs) still need
-  the full inventory and the supported-set rule, so they remain the engine's
-  `reconcileRegistry` to expose;
+  `staleAfterDays` (default 180), any registry path that no longer exists — a
+  vanished archive or a vanished produced page — AND any wiki page no ACTIVE
+  source backs (an orphan: hand-written or pre-registry pages included, a
+  provenance gap the operator is asked about). Existence and a join on the
+  registry, never a mirrored reconciliation algorithm;
 - an accepted trigger queues an `agent.review` through the normal control lane
   with an EXPLICIT `capabilityPlan` naming the capability: the objective names
   evidence PATHS, which could contain another capability's alias (`report`,

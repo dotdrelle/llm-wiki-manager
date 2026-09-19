@@ -292,13 +292,16 @@ restart re-attaches a queued review instead of losing it or running it twice.
 The adapter accepts `assistant_delta` / `assistant_delta_reset` from a runtime,
 and the reducer REPLACES the streamed text with the final `assistant_message`
 (`finalizeAssistantMessage`), so streaming cannot duplicate the answer. The
-consumer side is ready. The gateway does NOT stream yet: its Deep Agents graph
-surfaces the assembly through `streamMode: 'messages'` as ONE aggregated
-message per call, not token chunks (a probe model that yields three chunks
-produces a single frame against the installed version). A single "delta" that is
-the whole answer is not progressive — so lot 7 stays unshipped rather than
-shipping a fake one. Token-level progress needs the graph to stream LLM tokens,
-which this wiring does not.
+consumer side is ready. The gateway does NOT stream yet — for a SCOPE reason,
+not a technical one: only the ASSEMBLY has a visible answer (a role's output is
+a handoff the user never sees), so a progressive stream would accelerate one
+phase of the run, not the run. Token streaming itself is available: the JS hook
+is `_streamResponseChunks`, the graph takes that path when the model implements
+it, and `ChatOpenAI` (what `openai/…` resolves to) does. An earlier note here
+claimed the graph aggregates and cannot stream — a false negative from a probe
+using `_stream` (the Python name) instead of `_streamResponseChunks`; retracted.
+Enable the stream only with a real integration test against the installed
+version.
 
 ## Governance
 

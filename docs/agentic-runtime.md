@@ -247,6 +247,18 @@ worth a read-only audit:
 - the workspace opts in through `proactiveReviews` in `.wikirc.yaml`
   (`{ enabled, triggers, cooldownMs, budget: { runsPerDay }, concurrency }`).
   Anything missing or malformed is DISABLED, and every refusal is logged;
+- beyond task facts, a deterministic CORPUS read runs when an ingest/rebuild
+  completes: two homonym leaves under one top-level concept folder (same
+  normalized subject, nested sub-folders included) publish
+  `knowledge.conflict_detected` with a stable fingerprint computed over the
+  FULL conflict set — the display ceiling (50) names what it hides and never
+  freezes the version, so a later conflict still moves it. The scan runs ONLY
+  when the workspace opted in (never on the default), and reads a bounded file
+  head, not whole pages. No model is involved. When the conflict review takes
+  the only concurrency slot, the ingest fact's skip says so by name;
+  `knowledge.stale` is not built yet — it needs the per-source
+  verification/ingestion date the engine does not produce today, and the plan
+  makes that observation a prerequisite rather than a guess;
 - an accepted trigger queues an `agent.review` through the normal control lane.
   The objective carries ONLY the `audit` alias — the resolver returns null when
   two capability aliases match, and `agent.notify` owns `report`, `agent.curate`

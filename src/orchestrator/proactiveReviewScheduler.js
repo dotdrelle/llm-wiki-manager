@@ -14,7 +14,12 @@ export const PROACTIVE_REVIEW_CAPABILITY = 'agent.review';
 
 export const PROACTIVE_DEFAULTS = {
   enabled: false,
-  triggers: ['knowledge.ingested', 'knowledge.rebuilt'],
+  triggers: [
+    'knowledge.ingested',
+    'knowledge.rebuilt',
+    'knowledge.stale',
+    'knowledge.conflict_detected',
+  ],
   cooldownMs: 6 * 60 * 60 * 1000,
   runsPerDay: 4,
   concurrency: 1,
@@ -127,6 +132,9 @@ export function createProactiveReviewScheduler({ now = () => Date.now() } = {}) 
     entry.lastFiredAt = at;
     entry.dayCount += 1;
     entry.inFlight += 1;
+    // What is holding the slot, so a later skip can SAY another review took
+    // precedence instead of a bare "concurrency".
+    entry.inFlightTrigger = String(trigger ?? '');
     return {
       action: 'review',
       config: cfg,
@@ -146,6 +154,7 @@ export function createProactiveReviewScheduler({ now = () => Date.now() } = {}) 
     const entry = state.get(String(workspace ?? ''));
     if (!entry) return;
     if (entry.inFlight > 0) entry.inFlight -= 1;
+    if (entry.inFlight <= 0) entry.inFlightTrigger = null;
     if (undo) {
       if (entry.dayCount > 0) entry.dayCount -= 1;
       if (sourceVersion != null) entry.seen.delete(String(sourceVersion));
@@ -155,11 +164,12 @@ export function createProactiveReviewScheduler({ now = () => Date.now() } = {}) 
   // Display-only: what the budget panel reads. A read must not allocate.
   function snapshot(workspace) {
     const entry = state.get(String(workspace ?? ''));
-    if (!entry) return { lastFiredAt: null, runsToday: 0, inFlight: 0, seenVersions: 0 };
+    if (!entry) return { lastFiredAt: null, runsToday: 0, inFlight: 0, inFlightTrigger: null, seenVersions: 0 };
     return {
       lastFiredAt: entry.lastFiredAt,
       runsToday: entry.dayCount,
       inFlight: entry.inFlight,
+      inFlightTrigger: entry.inFlightTrigger ?? null,
       seenVersions: entry.seen.size,
     };
   }

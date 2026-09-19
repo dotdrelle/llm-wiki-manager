@@ -14,7 +14,13 @@ import {
   PROACTIVE_REVIEW_CAPABILITY,
   buildProactiveReviewObjective,
   createProactiveReviewScheduler,
+  normalizeProactiveConfig,
 } from '../orchestrator/proactiveReviewScheduler.js';
+import {
+  conflictFingerprint,
+  detectConceptConflicts,
+  readConceptLeaves,
+} from '../orchestrator/knowledgeSignals.js';
 import { matchSkillInvocation } from '../core/skillInvocation.js';
 import { reconcileControlQueue } from './controlDrain.js';
 import { cancelControlChain, cancelQueuedControlItem } from './controlCancellation.js';
@@ -1131,6 +1137,12 @@ export function startRuntimeServer({
     const session = context?.session ?? null;
     const workspace = String(payload?.workspace ?? context?.workspace ?? '');
     const trigger = String(payload?.trigger ?? '');
+    // The corpus detectors are reads that only make sense when the corpus just
+    // changed. They feed this same scheduler — never a second one — and cannot
+    // recurse, since a conflict/stale fact does not re-run the detectors.
+    if (trigger === 'knowledge.ingested' || trigger === 'knowledge.rebuilt') {
+      emitCorpusSignals(context, workspace);
+    }
     const config = session?.wikircConfig?.proactiveReviews ?? null;
     const decision = proactiveScheduler.decide({
       workspace,
@@ -1139,9 +1151,15 @@ export function startRuntimeServer({
       config,
     });
     if (decision.action !== 'review') {
+      const inFlight = proactiveScheduler.snapshot(workspace).inFlightTrigger;
+      // The conflict detector runs first, so it can take the only slot; saying
+      // so turns an effect of statement order into a stated precedence.
+      const precedence = decision.reason === 'concurrency' && inFlight
+        ? ` — a ${inFlight} review already holds the slot`
+        : '';
       emitRuntimeLog(
         session,
-        `proactive-review: skipped (${decision.reason}) for ${workspace || 'workspace'} [${trigger}]`,
+        `proactive-review: skipped (${decision.reason}${precedence}) for ${workspace || 'workspace'} [${trigger}]`,
       );
       return;
     }
@@ -1176,6 +1194,45 @@ export function startRuntimeServer({
       `proactive-review: queued ${item.id} (${trigger}) for ${workspace || 'workspace'} — ${PROACTIVE_REVIEW_CAPABILITY}, read-only`,
     );
     void startNextControlRequest(context);
+  }
+
+  /*
+   The live-corpus read: two homonym leaves under one concept folder are a
+   conflict the ingest plan never sees (they are already written). Pure fs +
+   string work, no model. A conflict set is a stable fingerprint, so the same
+   conflict dedups instead of re-firing every time the corpus is touched.
+  */
+  function emitCorpusSignals(context, workspace) {
+    const session = context?.session ?? null;
+    // Stay OFF the corpus until the workspace actually opted in: reading every
+    // leaf synchronously on the event loop that also serves both chats' SSE is
+    // a cost the default (disabled) must not pay.
+    const config = normalizeProactiveConfig(session?.wikircConfig?.proactiveReviews);
+    if (!config.enabled || !config.triggers.includes('knowledge.conflict_detected')) return;
+    const workspacePath = session?.workspacePath;
+    if (!workspacePath) return;
+    try {
+      const { conflicts, total, dropped } = detectConceptConflicts(readConceptLeaves(workspacePath));
+      if (total === 0) return;
+      if (dropped > 0) {
+        emitRuntimeLog(
+          session,
+          `knowledge-signals: ${total} conflict(s) found, ${dropped} beyond the ceiling are not listed (the fingerprint still counts them)`,
+        );
+      }
+      handleKnowledgeTrigger(context, {
+        workspace,
+        trigger: 'knowledge.conflict_detected',
+        // The fingerprint includes the full count, so a conflict beyond the cap
+        // still moves the version and is not deduped away.
+        sourceVersion: conflictFingerprint(conflicts, total),
+      });
+    } catch (error) {
+      emitRuntimeLog(
+        session,
+        `knowledge-signals: the conflict scan failed — ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   function takePrivateControlInput(session, item) {

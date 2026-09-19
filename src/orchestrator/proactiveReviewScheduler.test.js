@@ -135,7 +135,7 @@ test('the proactive objective carries ONLY the audit alias and the trigger it ca
 test('reading the budget, or releasing an unknown workspace, never allocates', () => {
   const scheduler = createProactiveReviewScheduler();
   assert.deepEqual(scheduler.snapshot('never-seen'), {
-    lastFiredAt: null, runsToday: 0, inFlight: 0, seenVersions: 0,
+    lastFiredAt: null, runsToday: 0, inFlight: 0, inFlightTrigger: null, seenVersions: 0,
   });
   scheduler.release('never-seen');
   scheduler.release('never-seen', { undo: true });
@@ -173,4 +173,13 @@ test('an undone reservation returns the budget unit and the version', () => {
   // Neither the budget nor the version was consumed: the audit can still happen.
   const again = scheduler.decide({ workspace: 'w', trigger: 'knowledge.ingested', sourceVersion: 'v1', config });
   assert.equal(again.action, 'review');
+});
+
+test('the in-flight review names itself, so a skip can say who holds the slot', () => {
+  const scheduler = createProactiveReviewScheduler();
+  const config = { enabled: true, cooldownMs: 0, budget: { runsPerDay: 10 }, concurrency: 1 };
+  scheduler.decide({ workspace: 'w', trigger: 'knowledge.conflict_detected', sourceVersion: 'f1', config });
+  assert.equal(scheduler.snapshot('w').inFlightTrigger, 'knowledge.conflict_detected');
+  scheduler.release('w');
+  assert.equal(scheduler.snapshot('w').inFlightTrigger, null);
 });

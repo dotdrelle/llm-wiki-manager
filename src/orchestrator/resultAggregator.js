@@ -9,6 +9,7 @@ import { resolve as resolveCapability } from './capabilityResolver.js';
 import { integrate } from './planIntegrator.js';
 import { validateFragment } from './planValidator.js';
 import { isSuccessful } from './taskStatuses.js';
+import { PROACTIVE_REVIEW_CAPABILITY, triggerForTask } from './proactiveReviewScheduler.js';
 
 export function createResultAggregator({
   session = null,
@@ -102,6 +103,52 @@ export async function accept(result, {
     taskId,
     payload,
   })));
+  // A successful ingest/rebuild is a business FACT the rest of the manager can
+  // act on. We publish it as a stable event and hand it to a trigger hook; the
+  // runtime decides whether it is worth a read-only review. Nothing here
+  // mutates anything — a trigger only ever proposes.
+  if (ok) {
+    const trigger = triggerForTask({
+      capability: task?.requiredCapability,
+      operation: task?.operation,
+    });
+    if (trigger) {
+      const workspace = session.workspace ?? session._currentRunIdentity?.workspace ?? null;
+      // The RUN is the fact, not the task: a parallel ingest of N sources is N
+      // tasks with N idempotency keys, and keying on the task would fire on the
+      // first source applied — an audit of a half-written corpus. One run, one
+      // version, one review; the queued review itself starts only after the
+      // run's control-lane drain.
+      const sourceVersion = runId ?? result?.idempotencyKey ?? task?.idempotencyKey ?? null;
+      const triggerPayload = { workspace, trigger, sourceVersion, taskId, runId };
+      persistDispatch(store, dispatchAgentEvent(session, createAgentEvent(trigger, {
+        origin: 'result_aggregator',
+        runId,
+        taskId,
+        workspace,
+        payload: triggerPayload,
+      })));
+      session._onKnowledgeTrigger?.(triggerPayload);
+    }
+    // A proactive review's result is a NOTE, not a mutation: file it in the
+    // workspace's review queue (never in agent-proposals, which is for merges)
+    // and announce where it waits. The run is read-only by capability, so
+    // nothing here can have changed the wiki.
+    if (task?.requiredCapability === PROACTIVE_REVIEW_CAPABILITY && session._proactiveReview) {
+      const persisted = persistProactiveReview(session, result, session._proactiveReview, taskId);
+      persistDispatch(store, dispatchAgentEvent(session, createAgentEvent('runtime_log', {
+        origin: 'result_aggregator',
+        runId,
+        taskId,
+        payload: {
+          message: persisted.error
+            ? `proactive-review: could not file the review — ${persisted.error}`
+            : `proactive-review: ${persisted.id} is waiting — ${persisted.path} (${persisted.findings} finding(s))`,
+        },
+      })));
+      session._proactiveReview = null;
+    }
+  }
   const expansion = await maybeExpandPlan(result, {
     session,
     runId,
@@ -292,6 +339,62 @@ function persistWorktreeProposal(session, result, { runId, taskId }) {
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/*
+ A proactive review is a read-only audit the workspace asked for. Its result is
+ FILED, never merged: `.wiki/agent-reviews/<id>.json` is a queue of notes a
+ human reads, distinct from `.wiki/agent-proposals/` (which exists to be
+ merged). No worktree, no mutation, no external message — the capability is
+ read-only by construction; this is only where its conclusion is kept.
+*/
+function persistProactiveReview(session, result, pending, taskId) {
+  const workspacePath = session?.workspacePath;
+  if (!workspacePath || typeof workspacePath !== 'string') {
+    return { error: 'no workspace path on the session — the review stays in the run result only' };
+  }
+  const content = String(result?.result?.content ?? result?.content ?? '');
+  const findings = extractReviewFindings(content);
+  const id = String(pending?.id ?? `review-${taskId}`).replace(/[^a-zA-Z0-9._-]/g, '_');
+  const record = {
+    id,
+    workspace: String(pending?.workspace ?? session.workspace ?? ''),
+    trigger: pending?.trigger ?? null,
+    createdAt: pending?.createdAt ?? new Date().toISOString(),
+    status: 'proposed',
+    summary: content.replace(/\s+/g, ' ').trim().slice(0, 1000),
+    findings,
+    sourceVersion: pending?.sourceVersion ?? null,
+    budget: pending?.budget ?? null,
+  };
+  try {
+    const dir = join(workspacePath, '.wiki', 'agent-reviews');
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${id}.json`);
+    writeFileSync(path, JSON.stringify(record, null, 2));
+    return { path, id, findings: findings.length };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// The `[objection] severity: … — path — statement` lines the gateway's Critique
+// emits, lifted so a review's findings are structured, not a prose blob.
+function extractReviewFindings(content, { max = 50 } = {}) {
+  const findings = [];
+  for (const line of String(content ?? '').split('\n')) {
+    const match = /^\s*\[objection\]\s*severity:\s*(blocking|non-blocking)\s*[-—]\s*(.+)$/i.exec(line.trim());
+    if (!match) continue;
+    const tail = match[2].trim();
+    const separator = tail.indexOf(' — ');
+    findings.push({
+      severity: match[1].toLowerCase(),
+      path: separator === -1 ? null : tail.slice(0, separator).trim() || null,
+      statement: (separator === -1 ? tail : tail.slice(separator + 3).trim()).slice(0, 300),
+    });
+    if (findings.length >= max) break;
+  }
+  return findings;
 }
 
 function agentPlanRequest(request, session) {

@@ -234,6 +234,33 @@ bump; nothing here requires a same-second deploy):
 | new | old | Fine. The old gateway emits legacy types only; absent optional fields default, and its missing `stream_epoch` simply means no restart detection. |
 | old | new | **Upgrade the manager first.** The old manager's closed `runtimeEvent` contract rejected event types it did not know before its adapter could journal them, so the new activity (phases, heartbeat, findings) is invisible to it. It still runs — `memoryScope` and the cursor query params are optional to the gateway. |
 
+## Proactive reviews (opt-in)
+
+A successful ingest or rebuild publishes a stable business fact
+(`knowledge.ingested` / `knowledge.rebuilt`), derived in `resultAggregator` from
+the task's capability/operation, and hands it to a trigger hook. The runtime's
+`proactiveReviewScheduler` decides, deterministically, whether the fact is
+worth a read-only audit:
+
+- dedup per `(workspace, trigger, sourceVersion)`, a cooldown, a per-day budget
+  and a concurrency ceiling (default 1);
+- the workspace opts in through `proactiveReviews` in `.wikirc.yaml`
+  (`{ enabled, triggers, cooldownMs, budget: { runsPerDay }, concurrency }`).
+  Anything missing or malformed is DISABLED, and every refusal is logged;
+- an accepted trigger queues an `agent.review` through the normal control lane.
+  The objective carries ONLY the `audit` alias — the resolver returns null when
+  two capability aliases match, and `agent.notify` owns `report`, `agent.curate`
+  owns `clean`/`fix`. The run is read-only: no worktree, no mutation, no
+  external message;
+- the result is FILED as a note in `<workspace>/.wiki/agent-reviews/<id>.json`
+  (`{ id, workspace, trigger, createdAt, status, summary, findings,
+  sourceVersion, budget }`) and announced in the Activity/logs. It never goes
+  to `.wiki/agent-proposals/`, which exists to be merged.
+
+The review's concurrency slot is released when its run reaches any terminal
+state, and the marker rides on the persisted control item — so a runtime
+restart re-attaches a queued review instead of losing it or running it twice.
+
 ## Governance
 
 

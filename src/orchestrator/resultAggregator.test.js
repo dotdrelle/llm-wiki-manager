@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { accept } from './resultAggregator.js';
@@ -270,4 +273,83 @@ test('resultAggregator honours an explicit opt-out from the proposal constraints
 
   assert.equal(calls[0].constraints.requireApprovalForMutations, false);
   assert.equal(calls[0].constraints.maxTasks, 2);
+});
+
+test('a completed ingest publishes knowledge.ingested and hands the trigger to the hook', async () => {
+  const session = { agentEvents: [], activities: {}, workspace: 'docs', headlessPlan: [] };
+  const triggers = [];
+  session._onKnowledgeTrigger = (payload) => triggers.push(payload);
+  const task = { id: 't1', requiredCapability: 'knowledge.update', operation: 'ingest_apply', idempotencyKey: 'sha-1' };
+
+  await accept({ ok: true, taskId: 't1', status: 'succeeded', idempotencyKey: 'sha-1' }, {
+    session,
+    runId: 'run-1',
+    task,
+  });
+
+  assert.ok(session.agentEvents.some((event) => event.type === 'knowledge.ingested'));
+  assert.equal(triggers.length, 1);
+  assert.deepEqual(triggers[0], {
+    workspace: 'docs',
+    trigger: 'knowledge.ingested',
+    // The RUN is the fact: the task's own idempotency key is neither. A
+    // parallel ingest's other tasks must land on the same version.
+    sourceVersion: 'run-1',
+    taskId: 't1',
+    runId: 'run-1',
+  });
+});
+
+test('a completed build publishes no knowledge trigger', async () => {
+  const session = { agentEvents: [], activities: {}, workspace: 'docs', headlessPlan: [] };
+  const triggers = [];
+  session._onKnowledgeTrigger = (payload) => triggers.push(payload);
+
+  await accept({ ok: true, taskId: 't2', status: 'succeeded' }, {
+    session,
+    runId: 'run-1',
+    task: { id: 't2', requiredCapability: 'document.build', operation: 'build' },
+  });
+
+  assert.equal(triggers.length, 0);
+  assert.ok(!session.agentEvents.some((event) => event.type.startsWith('knowledge.')));
+});
+
+test('a completed proactive review is filed under .wiki/agent-reviews, never merged', async () => {
+  const workspacePath = mkdtempSync(join(tmpdir(), 'proactive-review-'));
+  const session = { agentEvents: [], activities: {}, workspace: 'docs', workspacePath, headlessPlan: [] };
+  session._proactiveReview = {
+    id: 'review-1',
+    workspace: 'docs',
+    trigger: 'knowledge.ingested',
+    sourceVersion: 'sha-9',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    budget: { runsToday: 1, inFlight: 1 },
+  };
+  try {
+    const content = [
+      'The workspace is missing a cost concept.',
+      '[objection] severity: blocking — wiki/concepts/cout/a.md — unsourced claim',
+    ].join('\n');
+    await accept(
+      { ok: true, taskId: 't-review', status: 'succeeded', result: { content } },
+      { session, runId: 'run-review', task: { id: 't-review', requiredCapability: 'agent.review' } },
+    );
+
+    const file = join(workspacePath, '.wiki', 'agent-reviews', 'review-1.json');
+    assert.ok(existsSync(file), 'the review is filed');
+    const record = JSON.parse(readFileSync(file, 'utf8'));
+    assert.equal(record.id, 'review-1');
+    assert.equal(record.trigger, 'knowledge.ingested');
+    assert.equal(record.sourceVersion, 'sha-9');
+    assert.equal(record.status, 'proposed');
+    assert.equal(record.findings.length, 1);
+    assert.equal(record.findings[0].severity, 'blocking');
+    assert.equal(record.findings[0].path, 'wiki/concepts/cout/a.md');
+    // It is a note, not a proposal to merge.
+    assert.ok(!existsSync(join(workspacePath, '.wiki', 'agent-proposals')));
+    assert.equal(session._proactiveReview, null, 'the marker is consumed');
+  } finally {
+    rmSync(workspacePath, { recursive: true, force: true });
+  }
 });

@@ -10,6 +10,11 @@ import { tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
 import { isActive, isCancelled, isFailed, isSuccessful } from '../orchestrator/taskStatuses.js';
 import { approvalClassForTask } from '../orchestrator/approvalPolicy.js';
 import { RUNTIME_SHUTDOWN_ABORT_REASON } from '../orchestrator/dispatcher.js';
+import {
+  PROACTIVE_REVIEW_CAPABILITY,
+  buildProactiveReviewObjective,
+  createProactiveReviewScheduler,
+} from '../orchestrator/proactiveReviewScheduler.js';
 import { matchSkillInvocation } from '../core/skillInvocation.js';
 import { reconcileControlQueue } from './controlDrain.js';
 import { cancelControlChain, cancelQueuedControlItem } from './controlCancellation.js';
@@ -74,6 +79,12 @@ export function startRuntimeServer({
   exitOnShutdown = process.env.WIKI_MANAGER_RUNTIME_CHILD === '1',
 } = {}) {
   const clients = new Set();
+  // Deterministic dedup/cooldown/budget for proactive reviews; the run itself
+  // stays the normal control-lane path.
+  const proactiveScheduler = createProactiveReviewScheduler();
+  // runId -> the review record that started it, so the slot is released exactly
+  // once when the run reaches a terminal state (persisted or not).
+  const proactiveRuns = new Map();
   // Compiled objectives are private execution material. They deliberately do
   // not enter events, projections, SSE, audit output or the runs table.
   // When this runtime process started — used by ensureRuntime to detect that
@@ -1029,6 +1040,14 @@ export function startRuntimeServer({
         announceControlLaunch(context.session, body.publicInput ?? body.input, runWorkspace);
       }
     }
+    // The trigger hook and the proactive marker belong to THIS run on the
+    // session; the review that opened it is remembered so its concurrency slot
+    // is released exactly once, whatever terminal state it reaches.
+    if (context.session) context.session._onKnowledgeTrigger = (payload) => handleKnowledgeTrigger(context, payload);
+    if (body.proactiveReview) {
+      if (context.session) context.session._proactiveReview = { ...body.proactiveReview, runId };
+      proactiveRuns.set(runId, body.proactiveReview);
+    }
     const runPromise = run(context, runBody, { signal: context.currentAbortController.signal, runId });
     runPromise
       .catch((err) => {
@@ -1039,6 +1058,12 @@ export function startRuntimeServer({
         context.session?._onRuntimeError?.(err, runId);
       })
       .finally(() => {
+        const proactive = proactiveRuns.get(runId);
+        if (proactive) {
+          proactiveRuns.delete(runId);
+          proactiveScheduler.release(proactive.workspace);
+        }
+        if (context.session?._proactiveReview?.runId === runId) context.session._proactiveReview = null;
         context.running = false;
         context.currentAbortController = null;
         context.currentRunId = null;
@@ -1073,6 +1098,7 @@ export function startRuntimeServer({
         // may still grant the pending run explicitly through --auto-approve.
         ...(item.chainId ? { requireApproval: true } : {}),
         ...(item.capabilityPlan !== undefined ? { capabilityPlan: item.capabilityPlan } : {}),
+        ...(item.proactiveReview ? { proactiveReview: item.proactiveReview } : {}),
         ...(item.chainId
           ? {
             skillChain: {
@@ -1091,6 +1117,65 @@ export function startRuntimeServer({
         emitControlSkipped(context, item, reason);
       },
     });
+  }
+
+  /*
+   A knowledge fact is not an order: it is an opportunity, and the workspace
+   says (opt-in) whether it wants one. The decision is deterministic — dedup,
+   cooldown, budget, concurrency — and a refusal is said out loud, never a
+   silent no. An accepted trigger queues a read-only `agent.review` through the
+   normal control lane; nothing here mutates, creates a worktree or sends
+   anything.
+  */
+  function handleKnowledgeTrigger(context, payload) {
+    const session = context?.session ?? null;
+    const workspace = String(payload?.workspace ?? context?.workspace ?? '');
+    const trigger = String(payload?.trigger ?? '');
+    const config = session?.wikircConfig?.proactiveReviews ?? null;
+    const decision = proactiveScheduler.decide({
+      workspace,
+      trigger,
+      sourceVersion: payload?.sourceVersion ?? null,
+      config,
+    });
+    if (decision.action !== 'review') {
+      emitRuntimeLog(
+        session,
+        `proactive-review: skipped (${decision.reason}) for ${workspace || 'workspace'} [${trigger}]`,
+      );
+      return;
+    }
+    const record = {
+      id: `review-${randomUUID()}`,
+      workspace,
+      trigger,
+      sourceVersion: decision.sourceVersion,
+      createdAt: new Date().toISOString(),
+      budget: proactiveScheduler.snapshot(workspace),
+    };
+    const objective = buildProactiveReviewObjective({ trigger, sourceVersion: decision.sourceVersion });
+    let item;
+    try {
+      item = enqueueControlRequest(context, objective, {
+        publicInput: objective,
+        proactiveReview: record,
+      });
+    } catch (error) {
+      // A reservation that never became a queued item must be UNDONE: burning a
+      // budget unit and marking the version seen would silently cancel an audit
+      // that was never enqueued.
+      proactiveScheduler.release(workspace, { undo: true, sourceVersion: decision.sourceVersion });
+      emitRuntimeLog(
+        session,
+        `proactive-review: could not queue the review — ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+    emitRuntimeLog(
+      session,
+      `proactive-review: queued ${item.id} (${trigger}) for ${workspace || 'workspace'} — ${PROACTIVE_REVIEW_CAPABILITY}, read-only`,
+    );
+    void startNextControlRequest(context);
   }
 
   function takePrivateControlInput(session, item) {
@@ -1592,7 +1677,7 @@ function announceControlLaunch(session, input, workspace) {
  Une file est un passage de témoin : ce qui doit survivre au parent voyage avec
  le message, pas dans l'état de celui qui l'a posté.
 */
-function enqueueControlRequest(context, input, { publicInput = null, capabilityPlan, chainId, chainSequence, skillName, skillExecution, skillStack, selectionKind, optional = false, continueOnFailure = false } = {}) {
+function enqueueControlRequest(context, input, { publicInput = null, capabilityPlan, chainId, chainSequence, skillName, skillExecution, skillStack, selectionKind, optional = false, continueOnFailure = false, proactiveReview = null } = {}) {
   const now = new Date().toISOString();
   const item = {
     id: `control-${randomUUID()}`,
@@ -1609,6 +1694,9 @@ function enqueueControlRequest(context, input, { publicInput = null, capabilityP
     ...(skillExecution ? { skillExecution } : {}),
     ...(Array.isArray(skillStack) && skillStack.length ? { skillStack: [...skillStack] } : {}),
     ...(selectionKind ? { selectionKind } : {}),
+    // The proactive marker rides on the ITEM, so it survives projection and a
+    // runtime restart, and the drain can hand it back to the run it starts.
+    ...(proactiveReview ? { proactiveReview } : {}),
     optional: optional === true,
     continueOnFailure: continueOnFailure === true,
   };

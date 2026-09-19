@@ -915,3 +915,15 @@ test('a runtime heartbeat sets liveness only, and a new run clears it', () => {
   dispatchAgentEvent(session, createAgentEvent('run_started', { origin: 'runtime', runId: 'r2', payload: {} }));
   assert.equal(session.agentProjection.lastHeartbeatAt, null, 'a new run starts with no stale beat');
 });
+
+test('a queued control item keeps its proactive-review marker across projection', () => {
+  const session = {};
+  const marker = { id: 'review-1', workspace: 'docs', trigger: 'knowledge.ingested', sourceVersion: 'v1' };
+  dispatchAgentEvent(session, createAgentEvent('control_enqueued', {
+    origin: 'runtime',
+    workspace: 'docs',
+    payload: { id: 'control-1', workspace: 'docs', input: 'audit the workspace', proactiveReview: marker },
+  }));
+
+  assert.deepEqual(session.agentProjection.controlQueue[0].proactiveReview, marker);
+});

@@ -480,6 +480,15 @@ function applyEvent(state, event) {
     case 'task.failed':
       appendLog(state, taskLogLine(state, event, 'failed'));
       return;
+    // Stable business facts: a workspace's knowledge changed. They are
+    // published for the proactive scheduler and shown as one journal line.
+    case 'knowledge.ingested':
+    case 'knowledge.rebuilt': {
+      const workspace = String(event.payload?.workspace ?? 'workspace');
+      const version = String(event.payload?.sourceVersion ?? 'unknown version');
+      appendLog(state, `${logTime(event.ts)} ${event.type} — ${workspace} (${version})`.trim());
+      return;
+    }
     case 'plan.revision_changed':
       if (Array.isArray(event.payload?.tasks)) {
         state.plan = normalizePlan(event.payload.tasks, { owner: 'orchestrator', planRevision: state.planRevision });
@@ -745,6 +754,10 @@ function applyEvent(state, event) {
           : {}),
         ...(event.payload?.selectionKind ? { selectionKind: event.payload.selectionKind } : {}),
         ...(Number.isInteger(event.payload?.chainSequence) ? { chainSequence: event.payload.chainSequence } : {}),
+        // A proactive review's identity must survive projection and replay: the
+        // drain hands it back to the run it starts, which is what lets the
+        // result be filed as a review rather than lost as an anonymous audit.
+        ...(event.payload?.proactiveReview ? { proactiveReview: event.payload.proactiveReview } : {}),
         optional: event.payload?.optional === true,
         continueOnFailure: event.payload?.continueOnFailure === true,
       });

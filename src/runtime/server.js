@@ -19,7 +19,7 @@ import {
 import {
   conflictFingerprint,
   detectConceptConflicts,
-  detectStaleSources,
+  detectStaleKnowledge,
   readConceptLeaves,
   readSourceRegistry,
   staleFingerprint,
@@ -1237,7 +1237,8 @@ export function startRuntimeServer({
         }
       }
       if (wantsStale) {
-        const { stale, total, dropped } = detectStaleSources(readSourceRegistry(workspacePath), {
+        const { stale, total, dropped } = detectStaleKnowledge(readSourceRegistry(workspacePath), {
+          rootDir: workspacePath,
           staleAfterDays: config.staleAfterDays,
         });
         if (total > 0) {

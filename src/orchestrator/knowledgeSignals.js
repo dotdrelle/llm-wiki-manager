@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { closeSync, openSync, readFileSync, readSync, readdirSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 
@@ -121,36 +121,60 @@ export function readSourceRegistry(rootDir) {
   }
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 /**
- * Sources whose knowledge has not been re-verified inside the window. The date
- * is `lastIngestedAt` — the engine already writes it; a source never ingested
- * (`null`) is not "aging knowledge", it simply produced none. Bounded like the
- * conflict scan, with the same rule: the total counts the whole set.
+ * The registry's own deterministic staleness facts, with no rule to mirror:
+ *
+ * - `aged` — an active source whose `lastIngestedAt` (the engine writes it) is
+ *   older than the window. A source never ingested (`null`) is not "aging
+ *   knowledge", it simply produced none;
+ * - `vanished-archive` / `vanished-page` — the registry names a path that no
+ *   longer exists. Existence is existence: this is the engine's
+ *   `reconcileRegistry` truth, reached without re-implementing its rules.
+ *
+ * (Orphans — a wiki page no active source backs — need the full wiki inventory
+ * and the supported-set rule; that one stays the engine's to expose.)
+ * Bounded like the conflict scan: `total` counts the whole set.
  */
-export function detectStaleSources(registry, { now = Date.now(), staleAfterDays = 180, max = 50 } = {}) {
-  const at = Number(now);
-  const cutoff = at - staleAfterDays * 24 * 60 * 60 * 1000;
-  const stale = [];
+export function detectStaleKnowledge(registry, {
+  rootDir = '',
+  now = Date.now(),
+  staleAfterDays = 180,
+  max = 50,
+  exists = existsSync,
+} = {}) {
+  const cutoff = Number(now) - staleAfterDays * DAY_MS;
+  const evidence = [];
   for (const source of registry?.sources ?? []) {
     if (String(source?.status ?? 'active') !== 'active') continue;
+    const sourceId = String(source?.sourceId ?? '');
+    const archivePath = String(source?.archivePath ?? '');
+    if (archivePath && !exists(join(String(rootDir), archivePath))) {
+      evidence.push({ kind: 'vanished-archive', sourceId, path: archivePath });
+    }
+    for (const page of source?.producedPages ?? []) {
+      const pagePath = String(page ?? '');
+      if (pagePath && !exists(join(String(rootDir), pagePath))) {
+        evidence.push({ kind: 'vanished-page', sourceId, path: pagePath });
+      }
+    }
     const lastIngestedAt = source?.lastIngestedAt ?? null;
     const observed = Date.parse(String(lastIngestedAt ?? ''));
-    if (!Number.isFinite(observed)) continue;
-    if (observed > cutoff) continue;
-    stale.push({
-      sourceId: String(source?.sourceId ?? ''),
-      archivePath: String(source?.archivePath ?? ''),
-      lastIngestedAt,
-    });
+    if (Number.isFinite(observed) && observed <= cutoff) {
+      evidence.push({ kind: 'aged', sourceId, path: archivePath, lastIngestedAt });
+    }
   }
-  stale.sort((a, b) => String(a.archivePath).localeCompare(String(b.archivePath)));
-  const bounded = stale.slice(0, max);
-  return { stale: bounded, total: stale.length, dropped: stale.length - bounded.length };
+  evidence.sort((a, b) => a.kind.localeCompare(b.kind)
+    || a.path.localeCompare(b.path)
+    || a.sourceId.localeCompare(b.sourceId));
+  const stale = evidence.slice(0, max);
+  return { stale, total: evidence.length, dropped: evidence.length - stale.length };
 }
 
 export function staleFingerprint(stale, total = Array.isArray(stale) ? stale.length : 0) {
   const lines = (stale ?? [])
-    .map((entry) => `${entry.sourceId}:${entry.archivePath}:${entry.lastIngestedAt}`)
+    .map((entry) => `${entry.kind}:${entry.sourceId}:${entry.path}:${entry.lastIngestedAt ?? ''}`)
     .sort();
   lines.push(`total:${total}`);
   return createHash('sha1').update(lines.join('\n')).digest('hex').slice(0, 16);

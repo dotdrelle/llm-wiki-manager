@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import {
   conflictFingerprint,
   detectConceptConflicts,
-  detectStaleSources,
+  detectStaleKnowledge,
   normalizeSubject,
   readConceptLeaves,
   readSourceRegistry,
@@ -97,24 +97,35 @@ test('a corpus without homonyms produces no signal', () => {
   assert.equal(detectConceptConflicts([]).total, 0);
 });
 
-test('only a source not re-ingested inside the window is stale', () => {
+test('stale knowledge is aged sources plus registry paths that no longer exist', () => {
   const now = Date.parse('2026-06-01T00:00:00.000Z');
+  const recent = '2026-05-30T00:00:00.000Z';
   const registry = {
     sources: [
-      { sourceId: 'a', archivePath: 'raw/ingested/a.md', status: 'active', lastIngestedAt: '2026-05-30T00:00:00.000Z' },
-      { sourceId: 'b', archivePath: 'raw/ingested/b.md', status: 'active', lastIngestedAt: '2025-01-01T00:00:00.000Z' },
-      { sourceId: 'c', archivePath: 'raw/ingested/c.md', status: 'retracted', lastIngestedAt: '2024-01-01T00:00:00.000Z' },
-      { sourceId: 'd', archivePath: 'raw/ingested/d.md', status: 'active', lastIngestedAt: null },
+      { sourceId: 'a', archivePath: 'raw/ingested/a.md', status: 'active', lastIngestedAt: recent, producedPages: ['wiki/concepts/saas/a.md'] },
+      { sourceId: 'b', archivePath: 'raw/ingested/b.md', status: 'active', lastIngestedAt: recent, producedPages: [] },
+      { sourceId: 'e', archivePath: 'raw/ingested/e.md', status: 'active', lastIngestedAt: recent, producedPages: ['wiki/concepts/saas/e-gone.md'] },
+      { sourceId: 'f', archivePath: 'raw/ingested/f.md', status: 'active', lastIngestedAt: '2025-01-01T00:00:00.000Z', producedPages: [] },
+      { sourceId: 'g', archivePath: 'raw/ingested/g.md', status: 'retracted', lastIngestedAt: '2024-01-01T00:00:00.000Z', producedPages: [] },
+      { sourceId: 'h', archivePath: 'raw/ingested/h.md', status: 'active', lastIngestedAt: null, producedPages: [] },
     ],
   };
-  const { stale, total, dropped } = detectStaleSources(registry, { now, staleAfterDays: 180 });
-  assert.equal(total, 1, 'a recent source, a retracted one and a never-ingested one are not stale');
+  // Only b's archive and e's produced page are gone.
+  const exists = (path) => !path.includes('raw/ingested/b.md') && !path.endsWith('e-gone.md');
+
+  const { stale, total, dropped } = detectStaleKnowledge(registry, {
+    rootDir: '/ws', now, staleAfterDays: 180, exists,
+  });
+  assert.equal(total, 3, 'a recent, a retracted and a never-ingested source are not stale');
   assert.equal(dropped, 0);
-  assert.deepEqual(stale.map((entry) => entry.sourceId), ['b']);
+  assert.deepEqual(stale.map((entry) => entry.kind), ['aged', 'vanished-archive', 'vanished-page']);
+  assert.equal(stale.find((entry) => entry.kind === 'aged').sourceId, 'f');
+  assert.equal(stale.find((entry) => entry.kind === 'vanished-archive').path, 'raw/ingested/b.md');
+  assert.equal(stale.find((entry) => entry.kind === 'vanished-page').path, 'wiki/concepts/saas/e-gone.md');
 });
 
 test('the stale fingerprint is stable and counts the whole set', () => {
-  const a = [{ sourceId: 'b', archivePath: 'raw/ingested/b.md', lastIngestedAt: '2025-01-01T00:00:00.000Z' }];
+  const a = [{ kind: 'aged', sourceId: 'b', path: 'raw/ingested/b.md', lastIngestedAt: '2025-01-01T00:00:00.000Z' }];
   assert.equal(staleFingerprint(a, 1), staleFingerprint(a, 1));
   assert.notEqual(staleFingerprint(a, 1), staleFingerprint(a, 2));
 });

@@ -257,10 +257,12 @@ worth a read-only audit:
   head, not whole pages. No model is involved. When the conflict review takes
   the only concurrency slot, the ingest fact's skip says so by name. A second
   deterministic read publishes `knowledge.stale` from the engine's source
-  registry: an active source whose `lastIngestedAt` is older than
-  `staleAfterDays` (default 180) is named, with a fingerprint over the whole
-  set. (`reconcileRegistry`'s vanished/orphan facts are still engine-only; wiring
-  them in is the remaining half of this detector.);
+  registry: it names an active source whose `lastIngestedAt` is older than
+  `staleAfterDays` (default 180), AND any registry path that no longer exists —
+  a vanished archive or a vanished produced page. Existence, not a mirrored
+  reconciliation rule. Orphans (a wiki page no active source backs) still need
+  the full inventory and the supported-set rule, so they remain the engine's
+  `reconcileRegistry` to expose;
 - an accepted trigger queues an `agent.review` through the normal control lane.
   The objective carries ONLY the `audit` alias — the resolver returns null when
   two capability aliases match, and `agent.notify` owns `report`, `agent.curate`

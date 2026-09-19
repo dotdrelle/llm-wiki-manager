@@ -146,30 +146,37 @@ export function detectStaleKnowledge(registry, {
 } = {}) {
   const cutoff = Number(now) - staleAfterDays * DAY_MS;
   const evidence = [];
+  // Counted per kind over the FULL set: the ceiling line must describe the
+  // facts it is capping, not lump three natures into one number. "61 source(s)
+  // not re-verified" sent the reader looking for the wrong defect.
+  const counts = { aged: 0, vanishedArchive: 0, vanishedPage: 0 };
   for (const source of registry?.sources ?? []) {
     if (String(source?.status ?? 'active') !== 'active') continue;
     const sourceId = String(source?.sourceId ?? '');
     const archivePath = String(source?.archivePath ?? '');
     if (archivePath && !exists(join(String(rootDir), archivePath))) {
       evidence.push({ kind: 'vanished-archive', sourceId, path: archivePath });
+      counts.vanishedArchive += 1;
     }
     for (const page of source?.producedPages ?? []) {
       const pagePath = String(page ?? '');
       if (pagePath && !exists(join(String(rootDir), pagePath))) {
         evidence.push({ kind: 'vanished-page', sourceId, path: pagePath });
+        counts.vanishedPage += 1;
       }
     }
     const lastIngestedAt = source?.lastIngestedAt ?? null;
     const observed = Date.parse(String(lastIngestedAt ?? ''));
     if (Number.isFinite(observed) && observed <= cutoff) {
       evidence.push({ kind: 'aged', sourceId, path: archivePath, lastIngestedAt });
+      counts.aged += 1;
     }
   }
   evidence.sort((a, b) => a.kind.localeCompare(b.kind)
     || a.path.localeCompare(b.path)
     || a.sourceId.localeCompare(b.sourceId));
   const stale = evidence.slice(0, max);
-  return { stale, total: evidence.length, dropped: evidence.length - stale.length };
+  return { stale, total: evidence.length, dropped: evidence.length - stale.length, counts };
 }
 
 export function staleFingerprint(stale, total = Array.isArray(stale) ? stale.length : 0) {

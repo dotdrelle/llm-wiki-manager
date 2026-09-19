@@ -880,6 +880,26 @@ export function startRuntimeServer({
   const loginAttemptPruneTimer = setInterval(() => pruneLoginAttempts(), 10 * 60 * 1000);
   loginAttemptPruneTimer.unref?.();
 
+  // The corpus clock. `aged` is caused by TIME, and a workspace that stops
+  // ingesting — precisely the one whose knowledge ages — would otherwise never
+  // re-run the detector; conflicts and vanished paths are edit-caused, so the
+  // ingest moment covers them. This tick therefore reads only the source
+  // registry (staleOnly), and the opt-in gating happens inside the scan.
+  const corpusScanMs = Number(process.env.WIKI_MANAGER_CORPUS_SCAN_INTERVAL_MS ?? 15 * 60 * 1000);
+  const corpusScanTimer = Number.isFinite(corpusScanMs) && corpusScanMs > 0
+    ? setInterval(() => {
+      void (async () => {
+        try {
+          const context = await resolvedGetContext(null);
+          if (!context?.session) return;
+          const workspace = context.workspace ?? context.session.workspace ?? null;
+          if (workspace) emitCorpusSignals(context, workspace, { staleOnly: true });
+        } catch { /* a clock tick never breaks the server */ }
+      })();
+    }, corpusScanMs)
+    : null;
+  corpusScanTimer?.unref?.();
+
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, host, () => {
@@ -892,6 +912,7 @@ export function startRuntimeServer({
         drainControl: (context) => drainControlQueue(context),
         close: () => new Promise((closeResolve, closeReject) => {
           clearInterval(loginAttemptPruneTimer);
+          if (corpusScanTimer) clearInterval(corpusScanTimer);
           for (const client of clients) client.response.end();
           clients.clear();
           server.close((err) => (err ? closeReject(err) : closeResolve()));
@@ -1166,6 +1187,7 @@ export function startRuntimeServer({
       );
       return;
     }
+    const evidence = payload?.evidence ?? null;
     const record = {
       id: `review-${randomUUID()}`,
       workspace,
@@ -1173,12 +1195,24 @@ export function startRuntimeServer({
       sourceVersion: decision.sourceVersion,
       createdAt: new Date().toISOString(),
       budget: proactiveScheduler.snapshot(workspace),
+      // The deterministic facts, so the filed note says WHAT the scan knew —
+      // not only that a review happened. Persisted with the item's marker.
+      ...(evidence ? { evidence } : {}),
     };
-    const objective = buildProactiveReviewObjective({ trigger, sourceVersion: decision.sourceVersion });
+    const objective = buildProactiveReviewObjective({
+      trigger,
+      sourceVersion: decision.sourceVersion,
+      evidence,
+    });
     let item;
     try {
       item = enqueueControlRequest(context, objective, {
         publicInput: objective,
+        // Routing is EXPLICIT. The objective names evidence paths, which could
+        // contain another capability's alias (`report`, `plan`, `check`…), and
+        // the free-text resolver returns null on two hits. Naming the
+        // capability removes that risk entirely.
+        capabilityPlan: { capability: PROACTIVE_REVIEW_CAPABILITY, operation: 'run' },
         proactiveReview: record,
       });
     } catch (error) {
@@ -1205,56 +1239,76 @@ export function startRuntimeServer({
    string work, no model. A conflict set is a stable fingerprint, so the same
    conflict dedups instead of re-firing every time the corpus is touched.
   */
-  function emitCorpusSignals(context, workspace) {
+  function emitConflictSignal(context, workspace, session, workspacePath) {
+    const { conflicts, total, dropped } = detectConceptConflicts(readConceptLeaves(workspacePath));
+    if (total === 0) return;
+    if (dropped > 0) {
+      emitRuntimeLog(
+        session,
+        `knowledge-signals: ${total} conflict(s) found, ${dropped} beyond the ceiling are not listed (the fingerprint still counts them)`,
+      );
+    }
+    handleKnowledgeTrigger(context, {
+      workspace,
+      trigger: 'knowledge.conflict_detected',
+      // The fingerprint includes the full count, so a conflict beyond the cap
+      // still moves the version and is not deduped away.
+      sourceVersion: conflictFingerprint(conflicts, total),
+      // The exact facts travel to the agent and the filed note.
+      evidence: { kind: 'conflict', items: conflicts },
+    });
+  }
+
+  function emitStaleSignal(context, workspace, session, workspacePath, config) {
+    const { stale, total, dropped, counts } = detectStaleKnowledge(readSourceRegistry(workspacePath), {
+      rootDir: workspacePath,
+      staleAfterDays: config.staleAfterDays,
+    });
+    if (total === 0) return;
+    if (dropped > 0) {
+      // Counted PER NATURE: the ceiling hides evidence of three kinds, and a
+      // single "N source(s)" would be false for at least two of them.
+      const breakdown = [
+        counts.aged ? `${counts.aged} aged` : null,
+        counts.vanishedArchive ? `${counts.vanishedArchive} vanished archive(s)` : null,
+        counts.vanishedPage ? `${counts.vanishedPage} vanished page(s)` : null,
+      ].filter(Boolean).join(', ');
+      emitRuntimeLog(
+        session,
+        `knowledge-signals: stale knowledge — ${breakdown}; ${dropped} beyond the ceiling are not listed`,
+      );
+    }
+    handleKnowledgeTrigger(context, {
+      workspace,
+      trigger: 'knowledge.stale',
+      sourceVersion: staleFingerprint(stale, total),
+      evidence: { kind: 'stale', counts, items: stale },
+    });
+  }
+
+  /*
+   The live-corpus read, run when an ingest/rebuild completes AND on the
+   runtime's clock. The clock matters for `aged`: it is caused by TIME, and a
+   workspace that stops ingesting — precisely the one whose knowledge ages —
+   would otherwise never re-run the detector. Conflicts and vanished paths are
+   caused by edits, so the ingest moment is enough for them; `staleOnly` keeps
+   the periodic tick from re-walking every leaf it does not need.
+  */
+  function emitCorpusSignals(context, workspace, { staleOnly = false } = {}) {
     const session = context?.session ?? null;
     // Stay OFF the corpus until the workspace actually opted in: reading every
     // leaf synchronously on the event loop that also serves both chats' SSE is
     // a cost the default (disabled) must not pay.
     const config = normalizeProactiveConfig(session?.wikircConfig?.proactiveReviews);
     if (!config.enabled) return;
-    const wantsConflicts = config.triggers.includes('knowledge.conflict_detected');
+    const wantsConflicts = !staleOnly && config.triggers.includes('knowledge.conflict_detected');
     const wantsStale = config.triggers.includes('knowledge.stale');
     if (!wantsConflicts && !wantsStale) return;
     const workspacePath = session?.workspacePath;
     if (!workspacePath) return;
     try {
-      if (wantsConflicts) {
-        const { conflicts, total, dropped } = detectConceptConflicts(readConceptLeaves(workspacePath));
-        if (total > 0) {
-          if (dropped > 0) {
-            emitRuntimeLog(
-              session,
-              `knowledge-signals: ${total} conflict(s) found, ${dropped} beyond the ceiling are not listed (the fingerprint still counts them)`,
-            );
-          }
-          handleKnowledgeTrigger(context, {
-            workspace,
-            trigger: 'knowledge.conflict_detected',
-            // The fingerprint includes the full count, so a conflict beyond the
-            // cap still moves the version and is not deduped away.
-            sourceVersion: conflictFingerprint(conflicts, total),
-          });
-        }
-      }
-      if (wantsStale) {
-        const { stale, total, dropped } = detectStaleKnowledge(readSourceRegistry(workspacePath), {
-          rootDir: workspacePath,
-          staleAfterDays: config.staleAfterDays,
-        });
-        if (total > 0) {
-          if (dropped > 0) {
-            emitRuntimeLog(
-              session,
-              `knowledge-signals: ${total} source(s) not re-verified for ${config.staleAfterDays}d, ${dropped} beyond the ceiling are not listed`,
-            );
-          }
-          handleKnowledgeTrigger(context, {
-            workspace,
-            trigger: 'knowledge.stale',
-            sourceVersion: staleFingerprint(stale, total),
-          });
-        }
-      }
+      if (wantsConflicts) emitConflictSignal(context, workspace, session, workspacePath);
+      if (wantsStale) emitStaleSignal(context, workspace, session, workspacePath, config);
     } catch (error) {
       emitRuntimeLog(
         session,

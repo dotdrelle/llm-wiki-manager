@@ -366,6 +366,8 @@ function persistProactiveReview(session, result, pending, taskId) {
     findings,
     sourceVersion: pending?.sourceVersion ?? null,
     budget: pending?.budget ?? null,
+    // What the deterministic scan knew when it queued this review.
+    evidence: pending?.evidence ?? null,
   };
   try {
     const dir = join(workspacePath, '.wiki', 'agent-reviews');

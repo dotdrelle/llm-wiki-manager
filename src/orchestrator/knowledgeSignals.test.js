@@ -113,11 +113,12 @@ test('stale knowledge is aged sources plus registry paths that no longer exist',
   // Only b's archive and e's produced page are gone.
   const exists = (path) => !path.includes('raw/ingested/b.md') && !path.endsWith('e-gone.md');
 
-  const { stale, total, dropped } = detectStaleKnowledge(registry, {
+  const { stale, total, dropped, counts } = detectStaleKnowledge(registry, {
     rootDir: '/ws', now, staleAfterDays: 180, exists,
   });
   assert.equal(total, 3, 'a recent, a retracted and a never-ingested source are not stale');
   assert.equal(dropped, 0);
+  assert.deepEqual(counts, { aged: 1, vanishedArchive: 1, vanishedPage: 1 });
   assert.deepEqual(stale.map((entry) => entry.kind), ['aged', 'vanished-archive', 'vanished-page']);
   assert.equal(stale.find((entry) => entry.kind === 'aged').sourceId, 'f');
   assert.equal(stale.find((entry) => entry.kind === 'vanished-archive').path, 'raw/ingested/b.md');

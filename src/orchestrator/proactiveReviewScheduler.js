@@ -51,20 +51,49 @@ export function triggerForTask({ capability, operation } = {}) {
   return null;
 }
 
+const EVIDENCE_CHARS = 600;
+
+// The detector's exact facts, named for the agent. A fingerprint alone makes it
+// re-read the whole wiki to rediscover what the deterministic scan already
+// established — and a vanished page is an ABSENCE, which cannot be rediscovered
+// by reading. Bounded: the objective is a briefing, not a dump.
+function evidenceDetail(evidence) {
+  if (!evidence || typeof evidence !== 'object') return '';
+  const items = Array.isArray(evidence.items) ? evidence.items : [];
+  const listed = evidence.kind === 'conflict'
+    ? items.slice(0, 5).map((item) => `${item.concept}/${item.subject} (${(item.paths ?? []).join(', ')})`)
+    : items.slice(0, 5).map((item) => `${item.kind}: ${item.path}`);
+  const more = items.length > 5 ? '; …' : '';
+  if (evidence.kind === 'conflict') {
+    return `${items.length} homonym leaf group(s): ${listed.join('; ')}${more}`;
+  }
+  if (evidence.kind === 'stale') {
+    const counts = evidence.counts ?? {};
+    const parts = [
+      counts.aged ? `${counts.aged} aged source(s)` : null,
+      counts.vanishedArchive ? `${counts.vanishedArchive} vanished archive(s)` : null,
+      counts.vanishedPage ? `${counts.vanishedPage} vanished page(s)` : null,
+    ].filter(Boolean).join(', ');
+    return `${parts}${listed.length ? ` — ${listed.join('; ')}` : ''}${more}`;
+  }
+  return '';
+}
+
 /**
- * The objective a proactive review runs under. It carries the `audit` alias so
- * the deterministic resolver lands on `agent.review` — read-only, no worktree,
- * no mutation — and says why it was triggered, so the run's own output explains
- * itself.
- *
- * Every other capability alias must be ABSENT: the resolver returns null when
- * two aliases match, and `agent.notify` owns `report`, `agent.curate` owns
- * `clean`/`fix`, etc. This sentence is deliberately restricted to `audit`.
+ * The objective a proactive review runs under. Routing is EXPLICIT (a
+ * `capabilityPlan` naming `agent.review`), so the evidence below may name any
+ * path without risking the alias resolver — the reviewer is told WHAT the scan
+ * found, not a fingerprint to re-derive it from.
  */
-export function buildProactiveReviewObjective({ trigger, sourceVersion } = {}) {
+export function buildProactiveReviewObjective({ trigger, sourceVersion, evidence = null } = {}) {
   const version = sourceVersion ? ` (source ${sourceVersion})` : '';
   const fact = String(trigger ?? 'a knowledge change');
-  return `audit the workspace: ${fact}${version} just landed. Read the wiki and describe the gaps — no changes, no worktree.`;
+  const detail = evidenceDetail(evidence).slice(0, EVIDENCE_CHARS);
+  return [
+    `audit the workspace: ${fact}${version} just landed.`,
+    detail ? `The deterministic scan already found: ${detail}.` : '',
+    'Read the wiki and describe the gaps — no changes, no worktree.',
+  ].filter(Boolean).join(' ');
 }
 
 /**

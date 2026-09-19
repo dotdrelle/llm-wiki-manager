@@ -112,26 +112,32 @@ test('disabled or untriggered facts never start anything', () => {
   );
 });
 
-test('the proactive objective carries ONLY the audit alias and the trigger it came from', () => {
+test('the proactive objective names the evidence the scan already found', () => {
   const objective = buildProactiveReviewObjective({
-    trigger: 'knowledge.ingested',
+    trigger: 'knowledge.stale',
     sourceVersion: 'sha-9',
+    evidence: {
+      kind: 'stale',
+      counts: { aged: 1, vanishedArchive: 1, vanishedPage: 57 },
+      items: [
+        { kind: 'aged', path: 'raw/ingested/a.md' },
+        { kind: 'vanished-page', path: 'wiki/concepts/saas/gone.md' },
+      ],
+    },
   });
-  // `audit` is the deterministic alias the resolver maps to agent.review.
-  assert.match(objective, /\baudit\b/i);
-  assert.match(objective, /knowledge\.ingested/);
+  assert.match(objective, /audit the workspace/);
+  assert.match(objective, /knowledge\.stale/);
   assert.match(objective, /sha-9/);
-  // A second alias would make the resolver return null (ambiguous). `report`
-  // belongs to agent.notify, `clean`/`fix` to agent.curate, etc.
-  const forbidden = [
-    'report', 'review', 'check', 'compare', 'analyze', 'analyse', 'synthesize', 'summarize', 'summarise',
-    'plan', 'propose', 'answer', 'question', 'explain', 'curate', 'clean', 'fix', 'tidy',
-    'research', 'investigate', 'preview', 'draft', 'compose', 'notify', 'send', 'email',
-    'consistency', 'coherence', 'contradictions', 'conflicts',
-  ];
-  for (const alias of forbidden) {
-    assert.ok(!new RegExp(`\\b${alias}\\b`, 'i').test(objective), `alias "${alias}" must not appear`);
-  }
+  assert.match(objective, /1 aged source\(s\)/);
+  assert.match(objective, /1 vanished archive\(s\)/);
+  assert.match(objective, /57 vanished page\(s\)/);
+  assert.match(objective, /raw\/ingested\/a\.md/);
+  assert.match(objective, /wiki\/concepts\/saas\/gone\.md/);
+  // Routing is explicit (capabilityPlan), so an evidence path may contain any
+  // word — the alias resolver is no longer on the path.
+  const noEvidence = buildProactiveReviewObjective({ trigger: 'knowledge.ingested', sourceVersion: 'v1' });
+  assert.match(noEvidence, /audit the workspace/);
+  assert.doesNotMatch(noEvidence, /deterministic scan/);
 });
 
 test('reading the budget, or releasing an unknown workspace, never allocates', () => {

@@ -263,15 +263,25 @@ worth a read-only audit:
   reconciliation rule. Orphans (a wiki page no active source backs) still need
   the full inventory and the supported-set rule, so they remain the engine's
   `reconcileRegistry` to expose;
-- an accepted trigger queues an `agent.review` through the normal control lane.
-  The objective carries ONLY the `audit` alias — the resolver returns null when
-  two capability aliases match, and `agent.notify` owns `report`, `agent.curate`
-  owns `clean`/`fix`. The run is read-only: no worktree, no mutation, no
-  external message;
+- an accepted trigger queues an `agent.review` through the normal control lane
+  with an EXPLICIT `capabilityPlan` naming the capability: the objective names
+  evidence PATHS, which could contain another capability's alias (`report`,
+  `plan`, `check`…), and the free-text resolver returns null on two hits — so
+  routing never depends on the text. The run is read-only: no worktree, no
+  mutation, no external message;
+- the detector's exact facts travel with the review: named in the objective and
+  persisted on `.wiki/agent-reviews/<id>.json` as `evidence`. A fingerprint
+  alone would make the agent re-read the whole wiki to rediscover what the scan
+  already established — and a vanished page is an absence, which reading cannot
+  find;
 - the result is FILED as a note in `<workspace>/.wiki/agent-reviews/<id>.json`
   (`{ id, workspace, trigger, createdAt, status, summary, findings,
-  sourceVersion, budget }`) and announced in the Activity/logs. It never goes
-  to `.wiki/agent-proposals/`, which exists to be merged.
+  sourceVersion, budget, evidence }`) and announced in the Activity/logs. It
+  never goes to `.wiki/agent-proposals/`, which exists to be merged;
+- a periodic clock (`WIKI_MANAGER_CORPUS_SCAN_INTERVAL_MS`, default 15 min)
+  runs the stale read ALONE: `aged` is caused by time, and a workspace that
+  stops ingesting — precisely the one whose knowledge ages — would otherwise
+  never re-run the detector.
 
 The review's concurrency slot is released when its run reaches any terminal
 state, and the marker rides on the persisted control item — so a runtime

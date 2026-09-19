@@ -325,6 +325,7 @@ test('a completed proactive review is filed under .wiki/agent-reviews, never mer
     sourceVersion: 'sha-9',
     createdAt: '2026-01-01T00:00:00.000Z',
     budget: { runsToday: 1, inFlight: 1 },
+    evidence: { kind: 'stale', counts: { aged: 0, vanishedArchive: 1, vanishedPage: 0 }, items: [{ kind: 'vanished-archive', path: 'raw/ingested/gone.md' }] },
   };
   try {
     const content = [
@@ -346,6 +347,13 @@ test('a completed proactive review is filed under .wiki/agent-reviews, never mer
     assert.equal(record.findings.length, 1);
     assert.equal(record.findings[0].severity, 'blocking');
     assert.equal(record.findings[0].path, 'wiki/concepts/cout/a.md');
+    // The deterministic evidence travels with the note: "a review happened"
+    // vs "the review knew what to look at".
+    assert.deepEqual(record.evidence, {
+      kind: 'stale',
+      counts: { aged: 0, vanishedArchive: 1, vanishedPage: 0 },
+      items: [{ kind: 'vanished-archive', path: 'raw/ingested/gone.md' }],
+    });
     // It is a note, not a proposal to merge.
     assert.ok(!existsSync(join(workspacePath, '.wiki', 'agent-proposals')));
     assert.equal(session._proactiveReview, null, 'the marker is consumed');

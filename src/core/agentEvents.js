@@ -292,6 +292,21 @@ export function applyAgentProjectionToSession(session, projection) {
   } : session.productionActivity ?? null;
 }
 
+/**
+ * Clears the `pending_approval` latch once no approval is outstanding.
+ *
+ * Called after EVERY approval decision, granted or rejected. Only `granted`
+ * used to clear it, so a refusal left the projection reporting
+ * `pending_approval` for the rest of the run: both UIs kept asking for a
+ * decision already made, while `explainControlState` found nothing pending and
+ * answered "run is active". One function so the two verdicts cannot drift.
+ */
+function releaseApprovalLatch(state) {
+  if (state.status !== 'pending_approval') return;
+  if ((state.approvals ?? []).some((approval) => approval.status === 'pending_approval')) return;
+  state.status = 'running';
+}
+
 function hasRunningPlanStep(state) {
   return (Array.isArray(state.plan) ? state.plan : [])
     .some((step) => isActive(step?.status));
@@ -629,13 +644,7 @@ function applyEvent(state, event) {
       };
       upsertApproval(state, grant);
       markCoveredApprovalsApproved(state.approvals, grant, event.ts);
-      // The decision is in: the run goes back to running unless another
-      // approval is still outstanding (a run-scoped grant clears its covered
-      // ones, markCoveredApprovalsApproved above).
-      if (state.status === 'pending_approval'
-        && !(state.approvals ?? []).some((approval) => approval.status === 'pending_approval')) {
-        state.status = 'running';
-      }
+      releaseApprovalLatch(state);
       return;
     }
     case 'approval.rejected':
@@ -654,17 +663,7 @@ function applyEvent(state, event) {
         reason: event.payload?.reason ?? null,
         rejectedAt: event.ts,
       });
-      // Same latch release as `approval.granted`: a refusal IS a decision. Only
-      // `granted` cleared the status, so a rejected approval left the
-      // projection reporting `pending_approval` for the rest of the run —
-      // both UIs kept asking for a decision the user had already made, while
-      // `explainControlState` found no pending approval and answered "run is
-      // active". The two surfaces disagreed until some later run_done
-      // overwrote it.
-      if (state.status === 'pending_approval'
-        && !(state.approvals ?? []).some((approval) => approval.status === 'pending_approval')) {
-        state.status = 'running';
-      }
+      releaseApprovalLatch(state);
       return;
     case 'run_done':
       state.status = 'done';

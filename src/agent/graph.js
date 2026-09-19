@@ -1905,7 +1905,11 @@ export function createAgentGraph(options = {}) {
     let terminalFailure = null;
     let skillLaunch = null;
 
-    for (const call of toolCalls) {
+    // The index is kept so a break can name the calls that never ran: every
+    // iteration pushes a tool result before it continues or completes, so
+    // everything AFTER the break is exactly the unexecuted set.
+    let stoppedAt = toolCalls.length;
+    for (const [callIndex, call] of toolCalls.entries()) {
       const resolved = resolveToolCallName(state.session.mcp, call.function.name, INTERNAL_TOOL_SERVERS);
       const { server, tool } = resolved;
       const argsSummary = summarizeToolArguments(call.function.arguments);
@@ -2193,7 +2197,7 @@ export function createAgentGraph(options = {}) {
         tool_call_id: call.id,
         content: boundedResult,
       });
-      if (terminalFailure || skillLaunch) break;
+      if (terminalFailure || skillLaunch) { stoppedAt = callIndex + 1; break; }
     }
 
     // A skill launch owns execution and ends the turn, so the rest of the
@@ -2203,8 +2207,7 @@ export function createAgentGraph(options = {}) {
     // that sees tool_calls without matching results on a replayed history
     // rejects the conversation.
     if (skillLaunch) {
-      const executed = new Set(toolResultMessages.map((message) => message.tool_call_id));
-      const dropped = toolCalls.filter((call) => !executed.has(call.id));
+      const dropped = toolCalls.slice(stoppedAt);
       const notRun = `Not executed: ${skillLaunch.publicInput} was launched earlier in this `
         + 'turn and owns execution from here. Do not start a second run for the same objective.';
       for (const call of dropped) {

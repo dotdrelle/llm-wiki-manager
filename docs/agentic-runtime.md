@@ -292,16 +292,15 @@ restart re-attaches a queued review instead of losing it or running it twice.
 The adapter accepts `assistant_delta` / `assistant_delta_reset` from a runtime,
 and the reducer REPLACES the streamed text with the final `assistant_message`
 (`finalizeAssistantMessage`), so streaming cannot duplicate the answer. The
-consumer side is ready. The gateway does NOT stream yet — for a SCOPE reason,
-not a technical one: only the ASSEMBLY has a visible answer (a role's output is
-a handoff the user never sees), so a progressive stream would accelerate one
-phase of the run, not the run. Token streaming itself is available: the JS hook
-is `_streamResponseChunks`, the graph takes that path when the model implements
-it, and `ChatOpenAI` (what `openai/…` resolves to) does. An earlier note here
-claimed the graph aggregates and cannot stream — a false negative from a probe
-using `_stream` (the Python name) instead of `_streamResponseChunks`; retracted.
-Enable the stream only with a real integration test against the installed
-version.
+consumer side is ready. The gateway does NOT stream yet, and the note is
+deliberately careful: the JS hook is `_streamResponseChunks` (an earlier note
+probed `_stream`, the Python name, and was wrong), and the graph calls it when
+the model implements it — but whether it SURFACES per-token frames depends on
+the node's own invoke/stream branch, and our probes aggregated to one frame. So
+feasibility is NOT established; read that branch and prove it with a real
+integration test. The reason to defer regardless is SCOPE: only the ASSEMBLY
+has a visible answer (a role's output is a handoff the user never sees), so a
+stream would accelerate one phase, not the run.
 
 ## Governance
 

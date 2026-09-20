@@ -96,6 +96,9 @@ src/orchestrator/           Generic, business-agnostic orchestration core
   attemptManager.js         Attempts, retries, agent fallback
   resultAggregator.js       TaskResult intake, DAG update, plan expansion, worktree proposal persistence
   approvalPolicy.js         Bounded ApprovalGrants (run + revision + class)
+  proactiveReviewScheduler.js Deterministic dedup/cooldown/budget for proactive agent.review audits
+  knowledgeSignals.js       Deterministic live-corpus scanners (stale sources, concept conflicts)
+  providers/                External-runtime providers (RuntimeProvider contract), deepAgentsProvider.js
 src/activity/               Aggregated activity: synthesis, weighted progress, dedup
 src/graph/                  Run/Task graph projection + visibility policy
 src/runtime/                Agentic runtime HTTP/SSE server + SQLite store

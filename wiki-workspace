@@ -138,7 +138,6 @@ wiki CLI commands reachable through `wiki <workspace> run`:
   index                             Create or update the local vector index
   refresh                           Regenerate only the stale deliverables
   lint                              Static checks: dead links, orphans, stale deliverables
-  add-skill <source>                Install a workspace method (directory, .zip, HTTPS .zip)
   config                            Show the effective .wikirc.yaml
   doctor, ingest, build, export     Also available directly: wiki <workspace> <command>
 

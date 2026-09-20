@@ -135,14 +135,32 @@ function workspaceState(state, workspace) {
   return entry;
 }
 
-export function createProactiveReviewScheduler({ now = () => Date.now() } = {}) {
-  const state = new Map();
+export function createProactiveReviewScheduler({ now = () => Date.now(), db = null, pendingReviews = null } = {}) {
+  // Durable spend and dedup belong beside the runtime queue, in its SQLite DB.
+  // Slots are reconciled with the persisted control queue before each decision.
+  db?.exec('CREATE TABLE IF NOT EXISTS proactive_review_state (workspace TEXT PRIMARY KEY, payload TEXT NOT NULL)');
+  const save = db?.prepare('INSERT INTO proactive_review_state (workspace, payload) VALUES (?, ?) ON CONFLICT(workspace) DO UPDATE SET payload = excluded.payload');
+  const state = new Map((db?.prepare('SELECT workspace, payload FROM proactive_review_state').all() ?? []).map((row) => {
+    const entry = JSON.parse(row.payload);
+    return [row.workspace, { ...entry, seen: new Set(entry.seen), inFlight: 0, inFlightTrigger: null }];
+  }));
+  function persist(workspace, entry) {
+    save?.run(String(workspace ?? ''), JSON.stringify({ ...entry, seen: [...entry.seen] }));
+  }
 
   function decide({ workspace, trigger, sourceVersion = null, config = null } = {}) {
     const cfg = normalizeProactiveConfig(config);
     const skip = (reason) => ({ action: 'skip', reason, config: cfg });
     if (!cfg.enabled) return skip('disabled');
     if (!cfg.triggers.includes(String(trigger ?? ''))) return skip('trigger_disabled');
+    if (pendingReviews) {
+      for (const item of state.values()) { item.inFlight = 0; item.inFlightTrigger = null; }
+      for (const review of pendingReviews()) {
+        const pending = workspaceState(state, review.workspace);
+        pending.inFlight += 1;
+        pending.inFlightTrigger = review.trigger;
+      }
+    }
     const entry = workspaceState(state, workspace);
     const at = now();
     // The daily window is what bounds `seen`: pruning it at rollover keeps
@@ -159,6 +177,10 @@ export function createProactiveReviewScheduler({ now = () => Date.now() } = {}) 
     if (entry.inFlight >= cfg.concurrency) return skip('concurrency');
     if (entry.lastFiredAt != null && at - entry.lastFiredAt < cfg.cooldownMs) return skip('cooldown');
     if (entry.dayCount >= cfg.runsPerDay) return skip('budget');
+    // Each workspace can tighten its own limit, but cannot exceed the global
+    // default by opening another workspace.
+    const globalInFlight = [...state.values()].reduce((sum, item) => sum + item.inFlight, 0);
+    if (globalInFlight >= PROACTIVE_DEFAULTS.concurrency) return skip('concurrency');
 
     if (sourceVersion != null) entry.seen.add(String(sourceVersion));
     entry.lastFiredAt = at;
@@ -167,6 +189,7 @@ export function createProactiveReviewScheduler({ now = () => Date.now() } = {}) 
     // What is holding the slot, so a later skip can SAY another review took
     // precedence instead of a bare "concurrency".
     entry.inFlightTrigger = String(trigger ?? '');
+    persist(workspace, entry);
     return {
       action: 'review',
       config: cfg,
@@ -191,6 +214,7 @@ export function createProactiveReviewScheduler({ now = () => Date.now() } = {}) 
       if (entry.dayCount > 0) entry.dayCount -= 1;
       if (sourceVersion != null) entry.seen.delete(String(sourceVersion));
     }
+    persist(workspace, entry);
   }
 
   // Display-only: what the budget panel reads. A read must not allocate.

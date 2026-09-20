@@ -243,7 +243,10 @@ the task's capability/operation, and hands it to a trigger hook. The runtime's
 worth a read-only audit:
 
 - dedup per `(workspace, trigger, sourceVersion)`, a cooldown, a per-day budget
-  and a concurrency ceiling (default 1);
+  and a global concurrency ceiling of 1 across workspaces. Spend, cooldown and
+  seen versions survive restart in the runtime SQLite database; pending slots
+  are reconciled from the persisted control queue, including recovered runs.
+  The workspace concurrency setting cannot raise the global ceiling;
 - the workspace opts in through `proactiveReviews` in `.wikirc.yaml`
   (`{ enabled, triggers, cooldownMs, budget: { runsPerDay }, concurrency }`).
   Anything missing or malformed is DISABLED, and every refusal is logged;

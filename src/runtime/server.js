@@ -91,7 +91,12 @@ export function startRuntimeServer({
   const clients = new Set();
   // Deterministic dedup/cooldown/budget for proactive reviews; the run itself
   // stays the normal control-lane path.
-  const proactiveScheduler = createProactiveReviewScheduler();
+  const proactiveScheduler = createProactiveReviewScheduler({
+    db: store?.db,
+    pendingReviews: store?.getProjection ? () => (store.getProjection().controlQueue ?? [])
+      .filter((item) => item.proactiveReview && ['queued', 'running'].includes(item.status))
+      .map((item) => item.proactiveReview) : null,
+  });
   // runId -> the review record that started it, so the slot is released exactly
   // once when the run reaches a terminal state (persisted or not).
   const proactiveRuns = new Map();
@@ -1169,12 +1174,15 @@ export function startRuntimeServer({
       emitCorpusSignals(context, workspace);
     }
     const config = session?.wikircConfig?.proactiveReviews ?? null;
-    const decision = proactiveScheduler.decide({
-      workspace,
-      trigger,
-      sourceVersion: payload?.sourceVersion ?? null,
-      config,
-    });
+    let decision;
+    try {
+      decision = proactiveScheduler.decide({
+        workspace, trigger, sourceVersion: payload?.sourceVersion ?? null, config,
+      });
+    } catch (error) {
+      emitRuntimeLog(session, `proactive-review: skipped — budget state unavailable: ${error.message}`);
+      return;
+    }
     if (decision.action !== 'review') {
       const inFlight = proactiveScheduler.snapshot(workspace).inFlightTrigger;
       // The conflict detector runs first, so it can take the only slot; saying

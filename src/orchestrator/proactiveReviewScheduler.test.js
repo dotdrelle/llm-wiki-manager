@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   PROACTIVE_DEFAULTS,
@@ -163,6 +167,7 @@ test('the seen set is pruned with the daily window, not grown forever', () => {
     'duplicate',
   );
   // The window rolls: dedup starts clean rather than holding every version ever.
+  scheduler.release('w');
   clock += 24 * 60 * 60 * 1000;
   assert.equal(
     scheduler.decide({ workspace: 'w', trigger: 'knowledge.ingested', sourceVersion: 'v1', config }).action,
@@ -190,4 +195,49 @@ test('the in-flight review names itself, so a skip can say who holds the slot', 
   assert.equal(scheduler.snapshot('w').inFlightTrigger, 'knowledge.conflict_detected');
   scheduler.release('w');
   assert.equal(scheduler.snapshot('w').inFlightTrigger, null);
+});
+
+
+test('restart preserves dedup, cooldown and daily spend in SQLite', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'proactive-restart-'));
+  const path = join(dir, 'runtime.db');
+  let db = new DatabaseSync(path);
+  try {
+    let clock = 1000;
+    const make = () => createProactiveReviewScheduler({ db, now: () => clock });
+    const request = { workspace: 'w', trigger: 'knowledge.ingested', sourceVersion: 'v1',
+      config: { enabled: true, cooldownMs: 100, budget: { runsPerDay: 1 } } };
+    const first = make();
+    assert.equal(first.decide(request).action, 'review');
+    first.release('w');
+    db.close();
+    db = new DatabaseSync(path);
+    const restarted = make();
+    assert.equal(restarted.decide(request).reason, 'duplicate');
+    assert.equal(restarted.decide({ ...request, sourceVersion: 'v2' }).reason, 'cooldown');
+    clock += 101;
+    assert.equal(restarted.decide({ ...request, sourceVersion: 'v2' }).reason, 'budget');
+    clock += 24 * 60 * 60 * 1000;
+    assert.equal(restarted.decide({ ...request, sourceVersion: 'v2' }).action, 'review');
+  } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the global slot is shared across workspaces and returned on completion', () => {
+  const scheduler = createProactiveReviewScheduler();
+  const request = { trigger: 'knowledge.ingested', sourceVersion: 'v1',
+    config: { enabled: true, cooldownMs: 0, concurrency: 5 } };
+  assert.equal(scheduler.decide({ ...request, workspace: 'a' }).action, 'review');
+  assert.equal(scheduler.decide({ ...request, workspace: 'b' }).reason, 'concurrency');
+  scheduler.release('a');
+  assert.equal(scheduler.decide({ ...request, workspace: 'b' }).action, 'review');
+});
+
+
+test('recovered and queued reviews hold the global slot until terminal or cancelled', () => {
+  let pending = [{ workspace: 'old', trigger: 'knowledge.stale' }];
+  const scheduler = createProactiveReviewScheduler({ pendingReviews: () => pending });
+  const request = { workspace: 'new', trigger: 'knowledge.ingested', config: { enabled: true } };
+  assert.equal(scheduler.decide(request).reason, 'concurrency');
+  pending = [];
+  assert.equal(scheduler.decide(request).action, 'review');
 });

@@ -361,3 +361,51 @@ test('a completed proactive review is filed under .wiki/agent-reviews, never mer
     rmSync(workspacePath, { recursive: true, force: true });
   }
 });
+
+test('a gateway worktree proposal (rawStatus shape) is persisted for review', async () => {
+  const workspacePath = mkdtempSync(join(tmpdir(), 'worktree-proposal-'));
+  const session = { agentEvents: [], activities: {}, workspace: 'docs', workspacePath, headlessPlan: [] };
+  try {
+    const proposal = {
+      workspace: 'docs',
+      branch: 'agent/gateway-1',
+      worktreePath: '/workspaces/docs/.wiki/agent-worktrees/gateway-1',
+      worktreeRelativePath: '.wiki/agent-worktrees/gateway-1',
+      justification: 'dedup',
+      changedFiles: [{ status: 'M', path: 'wiki/a.md' }],
+      changes: [{ path: 'wiki/a.md', status: 'M', content: '# A' }],
+      diff: 'diff --git a/wiki/a.md b/wiki/a.md',
+    };
+    // The dispatcher wraps the agent's status payload under `rawStatus`
+    // (`taskResultFromStatus`). The fixture used to hand `{ result: {...} }`
+    // straight to accept — a shape the real gateway run never produces — so
+    // the proposal was silently dropped and no review item ever appeared.
+    const result = await accept({
+      ok: true,
+      taskId: 't-curate',
+      status: 'completed',
+      outputRefs: [],
+      rawStatus: {
+        runId: 'gateway-1',
+        status: 'completed',
+        result: { status: 'completed', content: 'report', worktreeProposal: proposal },
+      },
+    }, {
+      session,
+      runId: 'run-curate',
+      task: { id: 't-curate', requiredCapability: 'agent.curate', operation: 'run' },
+    });
+
+    assert.equal(result.ok, true);
+    const dir = join(workspacePath, '.wiki', 'agent-proposals');
+    assert.ok(existsSync(dir), 'the proposal directory is created');
+    const record = JSON.parse(readFileSync(join(dir, 't-curate.json'), 'utf8'));
+    assert.equal(record.branch, 'agent/gateway-1');
+    assert.equal(record.changes.length, 1);
+    assert.equal(record.changes[0].path, 'wiki/a.md');
+    // A proposal nobody is told about is a proposal nobody merges.
+    assert.ok(session.agentEvents.some((event) => String(event.payload?.message ?? '').includes('agent-proposal')));
+  } finally {
+    rmSync(workspacePath, { recursive: true, force: true });
+  }
+});

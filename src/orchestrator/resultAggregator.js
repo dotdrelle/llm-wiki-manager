@@ -305,7 +305,14 @@ function persistDispatch(store, event) {
  * write machinery — this function only records, it never touches wiki content.
  */
 function persistWorktreeProposal(session, result, { runId, taskId }) {
-  const proposal = result?.result?.worktreeProposal ?? result?.worktreeProposal;
+  // The dispatcher wraps the agent's status payload under `rawStatus`
+  // (`taskResultFromStatus`), so the gateway's proposal lives at
+  // `rawStatus.result.worktreeProposal`. Reading only `result.result`/
+  // `result.worktreeProposal` matched the unit-test fixture but never the real
+  // run: the proposal was silently dropped and no review item ever appeared.
+  const proposal = result?.rawStatus?.result?.worktreeProposal
+    ?? result?.result?.worktreeProposal
+    ?? result?.worktreeProposal;
   if (!proposal || typeof proposal !== 'object') return { path: null };
   const changes = Array.isArray(proposal.changes) ? proposal.changes : [];
   if (changes.length === 0) return { path: null };
@@ -353,7 +360,9 @@ function persistProactiveReview(session, result, pending, taskId) {
   if (!workspacePath || typeof workspacePath !== 'string') {
     return { error: 'no workspace path on the session — the review stays in the run result only' };
   }
-  const content = String(result?.result?.content ?? result?.content ?? '');
+  // Same wrapping as the worktree proposal above: the real dispatcher result
+  // carries the gateway's content under `rawStatus.result.content`.
+  const content = String(result?.rawStatus?.result?.content ?? result?.result?.content ?? result?.content ?? '');
   const findings = extractReviewFindings(content);
   const id = String(pending?.id ?? `review-${taskId}`).replace(/[^a-zA-Z0-9._-]/g, '_');
   const record = {

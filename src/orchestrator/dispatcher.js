@@ -523,7 +523,8 @@ function activeProfileModel(session) {
 const READ_ONLY_WIKI_TOOLS = new Set([
   'help_list', 'help_read', 'help_search',
   'profile_read', 'template_read',
-  'wiki_collect_context', 'wiki_list_ingested_sources', 'wiki_list_pages',
+  'wiki_collect_context', 'wiki_list_ingested_sources',
+  'wiki_list_provenance_locators', 'wiki_list_pages',
   'wiki_outline', 'wiki_read_deliverable', 'wiki_read_ingested_source',
   'wiki_read_page', 'wiki_read_pages', 'wiki_search_context',
   'wiki_workspace_status',

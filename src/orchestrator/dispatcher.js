@@ -2,6 +2,7 @@ import { normalizeActivity, parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { loadWorkspaceProfile } from '../core/profile.js';
+import { supportsTemperature } from '../core/llmCapabilities.js';
 import { containerReachableUrl } from '../core/wikiSetup.js';
 import { mapRuntimeEvent } from '../core/runtimeEventAdapter.js';
 import { emitRuntimeLog, pollActivitiesOnce } from '../runtime/supervisor.js';
@@ -508,6 +509,10 @@ function activeProfileModel(session) {
     ...(llm.apiKey ? { apiKey: String(llm.apiKey) } : {}),
   };
   for (const key of ['temperature', 'maxTokens', 'topP', 'seed']) {
+    // A gpt-5-class model rejects `temperature`: forwarding the profile's value
+    // would make the external runtime's model call fail (HTTP 400), same as the
+    // manager's own client.
+    if (key === 'temperature' && !supportsTemperature(llm)) continue;
     const value = Number(llm[key]);
     if (Number.isFinite(value)) model[key] = value;
   }

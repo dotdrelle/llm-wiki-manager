@@ -1,3 +1,5 @@
+import { supportsTemperature } from '../core/llmCapabilities.js';
+
 function trimTrailingSlash(value) {
   return value.replace(/\/+$/, '');
 }
@@ -25,6 +27,13 @@ export function createLlmClientFromWikiConfig(config) {
     return null;
   }
 
+  // A gpt-5-class model rejects `temperature` outright (HTTP 400, "Only the
+  // default (1) value is supported"), whether the profile sets one or not. When
+  // it is refused, the field is omitted whole rather than sent and rejected.
+  const temperatureBody = supportsTemperature(llmConfig)
+    ? { temperature: typeof llmConfig.temperature === 'number' ? llmConfig.temperature : 0.2 }
+    : {};
+
   return {
     async complete({ system, input, signal }) {
       const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -40,7 +49,7 @@ export function createLlmClientFromWikiConfig(config) {
             { role: 'system', content: system },
             { role: 'user', content: input },
           ],
-          temperature: typeof llmConfig.temperature === 'number' ? llmConfig.temperature : 0.2,
+          ...temperatureBody,
         }),
       });
 
@@ -64,7 +73,7 @@ export function createLlmClientFromWikiConfig(config) {
       const body = {
         model,
         messages: allMessages,
-        temperature: typeof llmConfig.temperature === 'number' ? llmConfig.temperature : 0.2,
+        ...temperatureBody,
       };
       if (tools.length > 0) {
         body.tools = tools;
@@ -99,7 +108,7 @@ export function createLlmClientFromWikiConfig(config) {
       const body = {
         model,
         messages: allMessages,
-        temperature: typeof llmConfig.temperature === 'number' ? llmConfig.temperature : 0.2,
+        ...temperatureBody,
         stream: true,
       };
       if (tools.length > 0) {
@@ -195,7 +204,7 @@ export function createLlmClientFromWikiConfig(config) {
         body: JSON.stringify({
           model,
           messages: allMessages,
-          temperature: typeof llmConfig.temperature === 'number' ? llmConfig.temperature : 0.2,
+          ...temperatureBody,
           stream: true,
         }),
       });

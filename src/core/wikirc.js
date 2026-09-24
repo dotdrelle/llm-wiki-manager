@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import YAML from 'yaml';
+import { supportsTemperature } from './llmCapabilities.js';
 
 const DEFAULT_WIKIRC = '.wikirc.yaml';
 
@@ -211,9 +212,13 @@ export function formatLlmConfigFact(config, profile) {
     ?? (provider === 'ai-gateway' ? 'per-model (routed by the gateway)' : 'unspecified');
   const model = llm.model ?? 'unset';
   const baseUrl = promptSafeBaseUrl(llm.baseUrl);
-  const temperature = typeof llm.temperature === 'number'
-    ? llm.temperature
-    : MANAGER_DEFAULT_TEMPERATURE;
+  // A gpt-5-class model refuses `temperature`: the manager omits it, so report
+  // the truth rather than the fallback it would have sent otherwise.
+  const temperature = !supportsTemperature(llm)
+    ? 'not sent (model refuses it)'
+    : typeof llm.temperature === 'number'
+      ? llm.temperature
+      : MANAGER_DEFAULT_TEMPERATURE;
   const profileName = typeof profile === 'string' ? profile : profile?.name;
   return [
     `Active LLM configuration (what YOU run on — answer questions about your own config from here, never from memory): provider=${provider}, engine=${engine}, model=${model}, baseUrl=${baseUrl}, temperature=${temperature}${profileName ? `, .wikirc profile=${profileName}` : ''}.`,

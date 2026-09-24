@@ -446,7 +446,11 @@ export function bareToolCallJson(content, tools = []) {
  * reached the user and nothing ran.
  */
 export function narratedToolCallText(content) {
-  const match = String(content ?? '').trim().match(/^([a-z][a-z0-9_-]*__[a-z][a-z0-9_-]*)\s*\{/i);
+  // Accept EITHER `name{...}` (bare JSON body) OR `name({...})` (function-call
+  // style). Some providers/gateways write the call with parentheses around the
+  // arguments object — `runtime__run_skill({...})` — and the old brace-only
+  // regex missed it, so the raw call surfaced to the user AND executed nothing.
+  const match = String(content ?? '').trim().match(/^([a-z][a-z0-9_-]*__[a-z][a-z0-9_-]*)\s*[({]/i);
   return match ? match[1] : null;
 }
 

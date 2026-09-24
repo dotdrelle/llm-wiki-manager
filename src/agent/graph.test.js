@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bareToolCallJson, buildAgentSystemPrompt, connectorConfigurationTarget, createAgentGraph, invalidSuggestedSlashCommands, invalidUserFacingToolNames, isOrchestrationBypassTool, knownCapabilityIds, normalizeToolArgumentsFromSchema, nothingToDoForDonna } from './graph.js';
+import { bareToolCallJson, buildAgentSystemPrompt, connectorConfigurationTarget, createAgentGraph, invalidSuggestedSlashCommands, invalidUserFacingToolNames, isOrchestrationBypassTool, knownCapabilityIds, narratedToolCallText, normalizeToolArgumentsFromSchema, nothingToDoForDonna } from './graph.js';
 
 test('user-facing response guard hides MCP identifiers generically', () => {
   const session = sessionBase();
@@ -2611,4 +2611,47 @@ test('LOT F: the guard message stays English-only for every session language', a
   assert.match(await answer('en-US'), /repeatedly printed an internal tool request/);
   assert.match(await answer(undefined), /repeatedly printed an internal tool request/);
   assert.match(await answer('fr'), /repeatedly printed an internal tool request/);
+});
+
+test('narratedToolCallText recognises the brace and the function-call forms', () => {
+  assert.equal(narratedToolCallText('runtime__delegate{"objective":"x"}'), 'runtime__delegate');
+  // Some gateways write the call with parentheses around the arguments object;
+  // the brace-only regex missed this and executed nothing.
+  assert.equal(narratedToolCallText('runtime__run_skill({"skillName":"deliver"})'), 'runtime__run_skill');
+  assert.equal(
+    narratedToolCallText('  production__production_start_job({ "type": "build" })  '),
+    'production__production_start_job',
+  );
+  assert.equal(narratedToolCallText('Bonjour, je peux vous aider.'), null);
+  assert.equal(narratedToolCallText('{"name":"runtime__run_skill"}'), null);
+});
+
+test('a skill call narrated with parentheses is neither executed nor shown', async () => {
+  // Observed: `/deliver TechSections.export.md polish` answered with the raw
+  // `runtime__run_skill({…})` text — nothing ran and the call leaked, because
+  // the guard only matched `name{`.
+  const raw =
+    'runtime__run_skill({"skillName":"deliver","arguments":{"deliverable":"TechSections.export.md","polish":"true"},"selectionKind":"explicit_name"})';
+  const ran = [];
+  let calls = 0;
+  const session = sessionBase({
+    language: 'fr-FR',
+    runtime: { url: 'http://runtime.test' },
+    _runSkillWithinRun: async (name) => { ran.push(name); return { ok: true }; },
+    _onStreamReset: () => {},
+    llm: {
+      async completeWithTools() {
+        calls += 1;
+        return { content: raw, message: { role: 'assistant', content: raw }, tool_calls: null };
+      },
+    },
+  });
+
+  const result = await createAgentGraph().invoke({ input: 'Lance le polish.', session });
+
+  assert.deepEqual(ran, [], 'a call written as text must never reach the skill runner');
+  assert.doesNotMatch(result.response, /runtime__run_skill/);
+  assert.doesNotMatch(result.response, /[{}]/, 'no JSON fragment may survive');
+  assert.match(result.response, /repeatedly printed an internal tool request/);
+  assert.ok(calls >= 2, 'the first occurrence is retried, not surfaced');
 });

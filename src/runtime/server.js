@@ -1023,6 +1023,16 @@ export function startRuntimeServer({
       context?.currentAbortController?.abort();
       await cancel?.(context);
     }
+    // A purge must wait for the aborted run to finish dispatching its terminal
+    // events, or those events re-create the run/plan after the wipe (see
+    // currentRunPromise above). Bounded: a run that ignores its abort signal
+    // must not freeze the reset.
+    if (purge && !targetRunId && typeof context?.currentRunPromise?.then === 'function') {
+      await Promise.race([
+        Promise.resolve(context.currentRunPromise).catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    }
     const runs = typeof store.interruptRuns === 'function'
       ? store.interruptRuns({ workspace: targetWorkspace, runId: targetRunId, reason: 'Runtime run killed by user.' })
       : 0;
@@ -1085,6 +1095,12 @@ export function startRuntimeServer({
       proactiveRuns.set(runId, body.proactiveReview);
     }
     const runPromise = run(context, runBody, { signal: context.currentAbortController.signal, runId });
+    // Keep a handle so a purge can wait for the aborted run to finish
+    // dispatching its terminal events BEFORE it wipes the event log. Without
+    // this, `run_cancelled`/`plan_step_updated` emitted during the unwind
+    // landed after `clearWorkspaceState` and re-created the very run/plan the
+    // user just reset — the "reset restarts at 47%" symptom.
+    context.currentRunPromise = runPromise;
     runPromise
       .catch((err) => {
         rejectReady?.(err);
@@ -1100,6 +1116,7 @@ export function startRuntimeServer({
           proactiveScheduler.release(proactive.workspace);
         }
         if (context.session?._proactiveReview?.runId === runId) context.session._proactiveReview = null;
+        if (context.currentRunPromise === runPromise) context.currentRunPromise = null;
         context.running = false;
         context.currentAbortController = null;
         context.currentRunId = null;
@@ -2067,6 +2084,15 @@ export async function classifyControlMessage(input, status, { forcedIntent = nul
   if (/\b(o[uù] en es[t-]|status|statut|progress|progression|logs?|explique|explain|inspect|show|montre|quoi de neuf)\b/i.test(lower)) {
     return { kind: 'observe', confidence: 0.86, reason: 'status_or_explanation_request' };
   }
+  // An explicit curation objective is a NEW action, never a change to the
+  // active plan. Deterministic on purpose: the empty-chat curate tile sends
+  // prose ("…pages that disagree or repeat each other…") and the word "each"
+  // used to match the modify_run rule below, turning the curation into an
+  // invisible plan patch instead of a queued run. Sits AFTER the observe rule
+  // so "explain how curation works" stays a read-only answer.
+  if (/\b(curate|curation)\b/i.test(lower)) {
+    return { kind: 'enqueue_run', confidence: 0.82, reason: 'curation_request' };
+  }
   // A bare "yes" answers the runtime's own last prompt (the launch
   // acknowledgement used to end on "check progress or cancel?"). While a run is
   // active, the only thing the runtime can act on is a status check: treating
@@ -2078,7 +2104,10 @@ export async function classifyControlMessage(input, status, { forcedIntent = nul
   if (status.running && /^\s*(oui|yes|yep|ok|okay|vas[- ]?y|d'accord|daccord|entendu)\s*[.!…]*\s*$/i.test(lower)) {
     return { kind: 'observe', confidence: 0.7, reason: 'confirmation_of_runtime_prompt' };
   }
-  if (status.running && /\b(ajoute|add|change|modifie|modify|remplace|replace|retire|remove|skip|ignore|apr[eè]s|before|after|chaque|each|plan|step|t[aâ]che)\b/i.test(lower)) {
+  // "chaque"/"each" used to sit in this group; too generic (a curation
+  // objective contains "each other"), it misrouted new tasks into an invisible
+  // plan patch. Keep only words that genuinely describe a plan CHANGE.
+  if (status.running && /\b(ajoute|add|change|modifie|modify|remplace|replace|retire|remove|skip|ignore|apr[eè]s|before|after|plan|step|t[aâ]che)\b/i.test(lower)) {
     return { kind: 'modify_run', confidence: 0.78, reason: 'active_run_change_request' };
   }
   if (!status.running) return { kind: 'converse', confidence: 0.62, reason: 'plain_conversation' };

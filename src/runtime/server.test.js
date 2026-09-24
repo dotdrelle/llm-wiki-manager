@@ -840,6 +840,77 @@ test('runtime server state exposes active run identity while running', async (t)
   }
 });
 
+// A purge used to wipe the event log while the aborted run was still emitting
+// its terminal events; those landed after the wipe and re-created the run/plan
+// ("reset restarts at 47%"). The purge must wait for the run to settle first.
+test('a purge waits for the aborted run to settle before wiping state', async (t) => {
+  const order = [];
+  const context = {
+    workspace: 'acme',
+    session: { workspace: 'acme' },
+    running: false,
+    currentAbortController: null,
+    currentRunId: null,
+  };
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'idle', plan: [] }),
+        listEvents: () => [],
+        interruptRuns: () => 0,
+        cancelActiveTasksForInterruptedRuns: () => 0,
+        clearWorkspaceState: () => {
+          order.push('clear');
+          return { runs: 0, events: 0, queue: 0 };
+        },
+      },
+      getContext: async () => context,
+      run: async (_context, _body, { signal }) => {
+        await new Promise((resolve) => {
+          if (signal.aborted) {
+            order.push('abort');
+            resolve();
+            return;
+          }
+          signal.addEventListener('abort', () => {
+            order.push('abort');
+            resolve();
+          });
+        });
+        order.push('settled');
+      },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const runResponse = await fetch(`http://127.0.0.1:${handle.port}/run?workspace=acme`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: 'build' }),
+    });
+    assert.equal(runResponse.status, 202);
+    const kill = await fetch(`http://127.0.0.1:${handle.port}/kill?workspace=acme`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ purge: true }),
+    });
+    assert.equal(kill.status, 202);
+    assert.deepEqual(order, ['abort', 'settled', 'clear']);
+  } finally {
+    await handle.close();
+  }
+});
+
 test('runtime server isolates active runs by workspace', async (t) => {
   const releases = new Map();
   const runWorkspaces = [];

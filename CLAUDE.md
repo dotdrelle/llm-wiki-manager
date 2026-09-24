@@ -689,6 +689,19 @@ the turns where the model thinks to fetch them. The loader returns `null` for a
 missing, empty or unreadable profile and never throws; a missing profile must
 degrade the reply, not break it. `profile_update` stays out of chat: it mutates.
 
+**Active LLM configuration fact.** The same two builders also inject
+`formatLlmConfigFact` (`src/core/wikirc.js`): provider, engine, model, base URL,
+temperature and profile name, so Donna answers "what model are you?" from the
+active `.wikirc`, not from memory. It never carries `apiKey`, and the base URL
+goes through `promptSafeBaseUrl`: userinfo, query and fragment are dropped and
+announced as `(… withheld)`, an unparseable value is withheld whole — a
+`baseUrl` can carry its own secret (`https://user:token@host`, `?api-key=`), and
+a system prompt is echoed, persisted and forwarded by an AI gateway. `llm-wiki
+serve` builds the same fact in `chatRoutes.ts` with its own
+`src/utils/promptSafeUrl.ts`; change both together.
+`summarizeWikircConfig` is NOT redacted: it feeds user-facing surfaces (TUI,
+`/config status`), where the real URL is needed.
+
 After any write, `refreshAllMcpContexts()` (wiki-manager.js) replays
 `refreshMcpRuntimeStatus` + `discoverAgentsOnce` on every live context.
 `buildMcpStatus` re-reads the file each time, so chat tools, agent tools and

@@ -4,7 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import YAML from 'yaml';
-import { loadWikircProfile, normalizeCapabilityRouting, patchWikircProfile } from './wikirc.js';
+import {
+  formatLlmConfigFact,
+  loadWikircProfile,
+  normalizeCapabilityRouting,
+  patchWikircProfile,
+  promptSafeBaseUrl,
+} from './wikirc.js';
 import {
   containerReachableUrl,
   finalizeCreatedWorkspace,
@@ -366,5 +372,38 @@ test('finalizeCreatedWorkspace without a source keeps scaffold defaults', async 
   } finally {
     if (previousDir === undefined) delete process.env.WIKI_WORKSPACES_DIR;
     else process.env.WIKI_WORKSPACES_DIR = previousDir;
+  }
+});
+
+test('promptSafeBaseUrl drops credentials, query and fragment, and says so', () => {
+  assert.equal(promptSafeBaseUrl('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+  assert.equal(promptSafeBaseUrl('https://api.example.com/'), 'https://api.example.com');
+  assert.equal(
+    promptSafeBaseUrl('https://alice:s3cr3t@gw.example.com/v1'),
+    'https://gw.example.com/v1 (credentials withheld)',
+  );
+  assert.equal(
+    promptSafeBaseUrl('https://gw.example.com/openai?api-key=s3cr3t#x'),
+    'https://gw.example.com/openai (query, fragment withheld)',
+  );
+  assert.equal(promptSafeBaseUrl('not a url s3cr3t'), '(withheld: not a parseable URL)');
+  assert.equal(promptSafeBaseUrl(undefined), 'unset');
+  assert.equal(promptSafeBaseUrl('  '), 'unset');
+});
+
+test('formatLlmConfigFact never carries the API key or a secret embedded in baseUrl', () => {
+  const fact = formatLlmConfigFact({
+    llm: {
+      provider: 'ai-gateway',
+      model: 'gpt-5',
+      apiKey: 'sk-top-secret',
+      baseUrl: 'https://bob:pw-secret@gw.example.com/v1?key=q-secret',
+    },
+  }, { name: 'default' });
+  assert.match(fact, /provider=ai-gateway/);
+  assert.match(fact, /model=gpt-5/);
+  assert.match(fact, /baseUrl=https:\/\/gw\.example\.com\/v1 \(credentials, query withheld\)/);
+  for (const secret of ['sk-top-secret', 'pw-secret', 'q-secret', 'bob']) {
+    assert.ok(!fact.includes(secret), `fact leaked ${secret}`);
   }
 });

@@ -27,6 +27,7 @@ import { toolResultNote, toolStartNote } from '../core/progressNotes.js';
 import { openWikiPagesPromptLine } from '../core/openWikiPages.js';
 import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
 import { loadWorkspaceProfile, updateWorkspaceProfilePreference } from '../core/profile.js';
+import { formatLlmConfigFact } from '../core/wikirc.js';
 import { artifactFromToolCall, currentArtifactFor, currentArtifactPromptLine, rememberArtifact } from '../core/currentArtifact.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
 import { objectiveForResolution } from '../orchestrator/objectiveResolver.js';
@@ -1311,6 +1312,7 @@ export function buildAgentSystemPrompt(state) {
     `Reply language: ${language}.`,
     `Current workspace: ${workspace}.`,
     `Current wikirc profile: ${wikirc}.`,
+    formatLlmConfigFact(state.session.wikircConfig, state.session.wikirc),
     `Available primitives: ${commandList(state.session)}.`,
     'Only announce or call slash commands that appear exactly in Available primitives. Do not invent command names, subcommands, or arguments.',
     'Connected MCP tools you may call directly (server__tool naming convention). Everything listed below is directly callable. When the requested action has no matching direct tool, call runtime__delegate with the original objective: the runtime resolves it against the discovered agent capability contracts, including executor-only single-task capabilities.',

@@ -2677,6 +2677,12 @@ test('narratedToolCallText recognises the brace and the function-call forms', ()
     'production__production_start_job',
   );
   assert.equal(narratedToolCallText('Bonjour, je peux vous aider.'), null);
+  // Prose ABOUT a tool, opening on its name and a parenthesis, is an answer.
+  assert.equal(
+    narratedToolCallText('runtime__delegate (the delegation tool) hands an objective to the runtime.'),
+    null,
+  );
+  assert.equal(narratedToolCallText('runtime__delegate() takes an objective.'), null);
   assert.equal(narratedToolCallText('{"name":"runtime__run_skill"}'), null);
 });
 

@@ -2048,16 +2048,35 @@ function asksForRunStatus(input) {
   return statusWord.test(text) && runNoun.test(text);
 }
 
-// Classifier for the control lane's free-text messages. The classification is
-// LLM-backed: the only deterministic matches left are the runtime's own
-// control verbs (cancel, an explicit "later/queue", status and plan-change
-// wording). Deciding "is this a NEW task to queue vs plain conversation" is a
-// semantic judgement about the workspace's domain, so it is never a keyword
-// list here — it goes to the model, bounded, and falls back to the choice menu
-// (`ambiguous`) rather than guessing when no model is available.
+// Classifier for the control lane's free-text messages, used by `/turn` (serve,
+// ShellUI) and `/control message` (legacy shell) while a run is active.
+//
+// The model decides. The only deterministic rules left match a WHOLE message
+// that can mean one thing: a bare cancel command, a bare status question, a
+// bare confirmation, an explicit "queue it". Keywords inside a sentence used
+// to decide instead, and ordinary questions typed during an ingest were
+// misrouted (measured 2026-09-25, plan-demandes-pendant-run.md): "explique /
+// montre" answered with the run status, "après / plan" proposed a patch of the
+// running plan, "modifie la page" too — and "quand est-ce qu'on stop le
+// support de X ?" cancelled the run. Every fallback is read-only
+// conversation: a wrong triage can only answer, never cancel or mutate.
+const CANCEL_COMMAND = /^\s*(?:stop|cancel|abort|annule[rz]?|arr[eê]te[rz]?|interromps)(?:\s+(?:tout|all|everything|it|[çc]a|(?:le|ce|the|this)\s+(?:run|job|build|export|traitement|pipeline)|l['’]\s?(?:ingestion|export)|la\s+t[aâ]che))?\s*[.!…]*\s*$/i;
+const STATUS_ONLY = /^\s*(?:\/status|status|statut|progress(?:ion)?|avancement|logs?|quoi de neuf|o[uù] en (?:est|es-tu|sommes-nous)(?:[- ]?(?:on|il|elle|ce|[çc]a))?)\s*[?!.…]*\s*$/i;
+const CONFIRMATION_ONLY = /^\s*(?:oui|yes|yep|ok|okay|vas[- ]?y|d['’]accord|daccord|entendu)\s*[.!…]*\s*$/i;
+const EXPLICIT_ENQUEUE = /\b(?:enqueue|mets(?:-le)? en file|met en file|apr[eè]s ce run|[aà] la fin (?:du|de ce) run|next run|after this run)\b/i;
+
+const CONTROL_CATEGORIES = {
+  question: { kind: 'converse', reason: 'llm_classified_question' },
+  conversation: { kind: 'converse', reason: 'llm_classified_question' },
+  status: { kind: 'observe', reason: 'llm_classified_status' },
+  action: { kind: 'enqueue_run', reason: 'llm_classified_action' },
+  plan_change: { kind: 'modify_run', reason: 'llm_classified_plan_change' },
+  cancel: { kind: 'cancel', reason: 'llm_classified_cancel' },
+};
+
 export async function classifyControlMessage(input, status, { forcedIntent = null, llm = null, session = null } = {}) {
   // Caller (the /control message route) already trims and rejects empty input.
-  const lower = String(input ?? '').toLowerCase();
+  const text = String(input ?? '');
   const intent = forcedIntent ? String(forcedIntent).toLowerCase() : null;
   const explicit = {
     observe: 'observe',
@@ -2073,67 +2092,47 @@ export async function classifyControlMessage(input, status, { forcedIntent = nul
   if (explicit) {
     return { kind: explicit, confidence: 1, reason: 'explicit_intent' };
   }
-  // Cancel stays a keyword: it is a runtime control verb, and an abort must not
-  // wait on a model round-trip.
-  if (/\b(cancel|annule|stop|arr[eê]te|interromps|abort)\b/i.test(lower)) {
-    return { kind: 'cancel', confidence: 0.86, reason: 'cancel_request' };
+  // A bare cancel command stays deterministic: an abort must not wait on a
+  // model round-trip. The whole message has to BE the command.
+  if (CANCEL_COMMAND.test(text)) {
+    return { kind: 'cancel', confidence: 0.9, reason: 'cancel_command' };
   }
-  if (/\b(plus tard|later|ensuite|apr[eè]s ce run|enqueue|mets en file|met en file|futur|next run|future run)\b/i.test(lower)) {
-    return { kind: 'enqueue_run', confidence: 0.8, reason: 'future_run_request' };
-  }
-  if (/\b(o[uù] en es[t-]|status|statut|progress|progression|logs?|explique|explain|inspect|show|montre|quoi de neuf)\b/i.test(lower)) {
-    return { kind: 'observe', confidence: 0.86, reason: 'status_or_explanation_request' };
-  }
-  // An explicit curation objective is a NEW action, never a change to the
-  // active plan. Deterministic on purpose: the empty-chat curate tile sends
-  // prose ("…pages that disagree or repeat each other…") and the word "each"
-  // used to match the modify_run rule below, turning the curation into an
-  // invisible plan patch instead of a queued run. Sits AFTER the observe rule
-  // so "explain how curation works" stays a read-only answer.
-  if (/\b(curate|curation)\b/i.test(lower)) {
-    return { kind: 'enqueue_run', confidence: 0.82, reason: 'curation_request' };
+  if (STATUS_ONLY.test(text) || asksForRunStatus(text)) {
+    return { kind: 'observe', confidence: 0.86, reason: 'status_request' };
   }
   // A bare "yes" answers the runtime's own last prompt (the launch
   // acknowledgement used to end on "check progress or cancel?"). While a run is
-  // active, the only thing the runtime can act on is a status check: treating
-  // the word as ordinary conversation made the read-only chat fallback lecture
-  // the user about switching modes instead of answering.
-  // Anchored at BOTH ends: "oui" is a confirmation, "oui, ajoute une étape de
-  // polish" is a plan change. Without the end anchor this branch shadowed
-  // modify_run and enqueue_run for every message merely STARTING on a yes.
-  if (status.running && /^\s*(oui|yes|yep|ok|okay|vas[- ]?y|d'accord|daccord|entendu)\s*[.!…]*\s*$/i.test(lower)) {
+  // active, the only thing the runtime can act on is a status check. Anchored
+  // at BOTH ends: "oui, ajoute une étape de polish" is not a confirmation.
+  if (status.running && CONFIRMATION_ONLY.test(text)) {
     return { kind: 'observe', confidence: 0.7, reason: 'confirmation_of_runtime_prompt' };
   }
-  // "chaque"/"each" used to sit in this group; too generic (a curation
-  // objective contains "each other"), it misrouted new tasks into an invisible
-  // plan patch. Keep only words that genuinely describe a plan CHANGE.
-  if (status.running && /\b(ajoute|add|change|modifie|modify|remplace|replace|retire|remove|skip|ignore|apr[eè]s|before|after|plan|step|t[aâ]che)\b/i.test(lower)) {
-    return { kind: 'modify_run', confidence: 0.78, reason: 'active_run_change_request' };
+  if (EXPLICIT_ENQUEUE.test(text)) {
+    return { kind: 'enqueue_run', confidence: 0.8, reason: 'explicit_enqueue_request' };
   }
   if (!status.running) return { kind: 'converse', confidence: 0.62, reason: 'plain_conversation' };
-  // A run is active and none of the runtime control verbs matched. The message
-  // is either a request to perform a NEW mutating task (→ queue it to run
-  // after the current one) or ordinary conversation — that is a judgement about
-  // the workspace's domain, so the model decides it, never a keyword list.
   if (llm && typeof llm.complete === 'function') {
     try {
       const reply = await llm.complete({
-        system: 'You classify one user message typed while a run is already active. Return exactly one word, nothing else.',
+        system: 'You classify one user message typed while a run is already active in their workspace. Return exactly one word, nothing else.',
         input: [
           `The user typed this while a run is active: "${input}"`,
           '',
           'Choose ONE of:',
-          '- "action" — a request to perform a NEW task (generate, create, ingest, build, export, convert, send, publish, produce…), which must run after the current run.',
-          '- "conversation" — ordinary conversation, a question, or an unrelated remark.',
+          '- "question" — a question or search about the workspace content or the product, an explanation request, or ordinary conversation. Words such as "plan", "after", "show", "explain" or "stop" inside a question do not make it anything else.',
+          '- "status" — a question about the progress or state of the run currently executing.',
+          '- "action" — a request to perform a NEW task: create, edit or write a file or page, ingest, build, export, convert, curate, run a doctor, rebuild an index, send, publish…',
+          '- "plan_change" — a request to change the run currently executing: add or skip one of its steps, change its target.',
+          '- "cancel" — a request to stop or cancel the run currently executing.',
           '',
           'Return only that one word.',
         ].join('\n'),
         signal: AbortSignal.timeout(8_000),
       });
-      const kind = String(reply ?? '').trim().toLowerCase();
-      if (kind.startsWith('action')) return { kind: 'enqueue_run', confidence: 0.85, reason: 'llm_classified_action' };
-      if (kind.startsWith('conversation')) return { kind: 'converse', confidence: 0.85, reason: 'llm_classified_conversation' };
-      emitRuntimeLog(session, `control-classify: LLM returned an unrecognized reply, answering as read-only conversation — ${JSON.stringify(kind).slice(0, 200)}`);
+      const word = String(reply ?? '').trim().toLowerCase().replace(/[^a-z_]/g, '');
+      const category = Object.keys(CONTROL_CATEGORIES).find((name) => word.startsWith(name));
+      if (category) return { ...CONTROL_CATEGORIES[category], confidence: 0.85 };
+      emitRuntimeLog(session, `control-classify: LLM returned an unrecognized reply, answering as read-only conversation — ${JSON.stringify(word).slice(0, 200)}`);
     } catch (err) {
       // A degradation must announce itself: silently falling through here
       // hides the difference between "no LLM configured" (expected) and "the

@@ -195,8 +195,8 @@ concurrency tuning and the `Agentic runtime` section on the **right**.
 Do not route natural-language input by keyword heuristics. The user controls
 the route with `/chat`, `/agent`, and slash commands. This is about the
 top-level Chat/Agent mode switch, not the `/control {action:"message"}`
-classifier described under Agent Runtime below — that one *is* currently
-keyword-based, by design as an interim step (see that section).
+classifier described under Agent Runtime below — that one is model-decided,
+with deterministic rules only for whole-message commands (see that section).
 
 Shell UI, deterministic command output, MCP status labels, and orchestration
 activity text must stay in English. The active workspace language is forwarded
@@ -563,9 +563,16 @@ run completes.
 
 `POST /control {action:"message", input, intent?}` (added for plan directeur
 §4.2, "conversation non bloquante") classifies free-text input via
-`classifyControlMessage` — keyword/regex control verbs plus a bounded LLM
-call for the action-vs-conversation judgement (French+English patterns) —
-into `observe | converse | mutate | enqueue | ambiguous`, or trusts
+`classifyControlMessage` — a bounded LLM call that picks one of `question |
+status | action | plan_change | cancel`; the only deterministic rules left
+match a WHOLE message (a bare cancel command, a bare status question or
+`asksForRunStatus`, a bare confirmation, an explicit "mets en file / after this
+run"). Keywords inside a sentence used to decide first and misrouted ordinary
+questions typed during an ingest — "explique" answered with the run status,
+"après / plan / modifie" proposed a patch of the running plan, "on stop le
+support de X ?" cancelled the run (`plan-demandes-pendant-run.md` at the
+wikiLLM root). Output kinds: `observe | converse | modify_run | enqueue_run |
+cancel`, or trusts
 an explicit `intent` when the caller already knows the answer (e.g. the
 ambiguous-choice UI resubmitting with a chosen intent). Status/explanation
 questions ("où en est le build ?") always classify `observe` and never create a

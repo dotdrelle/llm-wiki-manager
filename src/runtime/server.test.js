@@ -1422,6 +1422,8 @@ test('runtime server control message records active plan mutation as a proposal'
   const session = {
     workspace: 'acme',
     controlQueue: [],
+    // The model decides a plan change; no keyword does (plan-demandes-pendant-run.md).
+    llm: { complete: async () => 'plan_change' },
   };
   dispatchAgentEvent(session, createAgentEvent('run_started', {
     origin: 'runtime',

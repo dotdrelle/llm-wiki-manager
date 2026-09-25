@@ -1122,6 +1122,60 @@ test('buildAgentSystemPrompt includes .wiki/profile.md content so preferences ap
   }
 });
 
+test('buildAgentSystemPrompt answers workspace questions from the wiki instead of delegating them', () => {
+  // Observed: a wiki question delegated to the external runtime's agent.answer
+  // burned 519k tokens and failed on its budget.
+  const prompt = buildAgentSystemPrompt({ session: sessionBase({}) });
+  assert.match(prompt, /search it FIRST with the wiki search\/read tools/);
+  assert.match(prompt, /Never runtime__delegate a question those read tools can answer/);
+});
+
+async function agentFirstCallMessages(sessionOverrides, input = 'compare les options A et B') {
+  const searched = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const body = JSON.parse(init?.body ?? '{}');
+    let result = {};
+    if (body.method === 'tools/call') {
+      searched.push(body.params.arguments.question);
+      result = { content: [{ type: 'text', text: 'wiki/concepts/a.md: option A, sans tracé manuel' }] };
+    }
+    const text = JSON.stringify({ jsonrpc: '2.0', id: body.id ?? 1, result });
+    return { ok: true, status: 200, headers: { get: () => null }, text: async () => text, json: async () => JSON.parse(text) };
+  };
+  const seen = [];
+  const session = sessionBase({
+    mcp: { wiki: { status: 'connected', url: `http://agent-presearch-${Math.random()}.test/mcp`, tools: [
+      { name: 'wiki_search_context', inputSchema: { type: 'object', properties: {} } },
+    ] } },
+    llm: { async completeWithTools({ messages }) { seen.push(messages); return { tool_calls: [], content: 'ok' }; } },
+    ...sessionOverrides,
+  });
+  try {
+    await createAgentGraph().invoke({ input, session });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  return { searched, first: seen[0] ?? [] };
+}
+
+test('an agent turn searches the wiki before its first model call', async () => {
+  const { searched, first } = await agentFirstCallMessages({});
+  assert.deepEqual(searched, ['compare les options A et B']);
+  const index = first.findIndex((m) => /WIKI SEARCH RESULTS/.test(m.content));
+  assert.ok(index >= 0);
+  assert.equal(first[index + 1].content, 'compare les options A et B');
+});
+
+test('an agent turn never pre-searches a skill objective or a later run turn', async () => {
+  const skill = await agentFirstCallMessages({ _skillStack: ['pipeline'] });
+  assert.deepEqual(skill.searched, []);
+  const laterTurn = await agentFirstCallMessages({ _currentRunIdentity: { runId: 'r1', turnId: 'r1:turn-2' } });
+  assert.deepEqual(laterTurn.searched, []);
+  const firstTurn = await agentFirstCallMessages({ _currentRunIdentity: { runId: 'r1', turnId: 'r1:turn-1' } });
+  assert.deepEqual(firstTurn.searched, ['compare les options A et B']);
+});
+
 test('buildAgentSystemPrompt omits the profile section when profile.md is missing or empty', () => {
   const workspacePath = mkdtempSync(join(tmpdir(), 'donna-profile-empty-'));
   try {

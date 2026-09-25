@@ -17,6 +17,7 @@ import { extractActivity, mergePolledActivity, parseJsonText, sessionActivities 
 import { syncActivitiesToPlan } from '../core/plan.js';
 import { buildLlmTools, callMcpTool, formatMcpToolResult, parseToolCallName, resolveToolCallName } from '../core/mcp.js';
 import { runBoundedToolLoop } from '../core/toolLoop.js';
+import { isProductHelpQuestion, wikiSearchContextMessages } from '../core/wikiPresearch.js';
 import { createAgentEvent, dispatchAgentEvent, dispatchRuntimeLog } from '../core/agentEvents.js';
 import { managerMcpEndpointsFile } from '../core/env.js';
 import { togglableAgentNames } from '../core/agentsCompose.js';
@@ -391,6 +392,8 @@ function isDonnaRole(role) {
 // isOrchestrationBypassTool stays: /chat carries no plan, only direct unitary
 // actions. agent_plan/agent_execute/production_start_job and plan mutation
 // would start work outside the plan and its approval gate.
+export { isProductHelpQuestion };
+
 export function chatAllowedTools(session) {
   const servers = session?.chatAccess?.servers;
   if (!servers) return [];
@@ -547,6 +550,14 @@ export function buildDirectChatSystemPrompt(session, rawOpenWikiPages) {
     'You have a small explicitly authorized toolset — the tools provided to you for this turn, which may be none. Use them to answer questions about live state and to perform a requested direct action when a matching tool is offered. A write tool may return a preview requiring confirmation; present that preview and wait for the user before calling it again with confirmation.',
     'Questions about Donna, wikiLLM, the manager, its interfaces, commands, configuration, agents, concurrency, or troubleshooting are product-help questions, not action requests. When PRODUCT HELP REFERENCE content is attached, answer directly from it in chat mode; never redirect such a question to /agent.',
     'The prohibition on redirecting to /agent applies to product questions, which you answer from documentation. It does not apply to an ACTION request matching a skill: name that skill, state explicitly that nothing was launched, and offer the switch to Agent mode.',
+    // Nothing said the wiki is where a question about the workspace's subject
+    // is answered, so whether Donna searched it or sent the user to /agent
+    // depended on the model. Reading the wiki is exactly what chat mode is for.
+    'A question about the subject matter of this workspace (its projects, documents, tickets, people, decisions, figures, dates) is answered from the wiki: when wiki search/read tools are offered, search the wiki FIRST and answer from what they return, citing the page. Never redirect such a question to /agent — agent mode reads the same wiki with the same tools. If the wiki does not contain the answer, say so plainly.',
+    // Observed: « compare les options A et B » answered from the previous
+    // answers alone — the history carries Donna's text, not the pages — and
+    // option A was invented, the opposite of what the wiki says.
+    'Your earlier answers in this conversation are not evidence: they keep your text, not the pages. For each new question, search the wiki again for every fact you have not quoted from a tool result in this very turn. Never fill a gap (an acronym expansion, a missing option, a figure) from general knowledge.',
     'When the conversation already contains attached document content (delimited by BEGIN/END ATTACHED DOCUMENT markers), read and summarize or answer from that content directly — you do NOT need a tool for it, and must not claim you cannot read the document.',
     'If no provided tool covers the request and no attached content answers it — or the request needs a service that is not connected — say plainly you cannot do it in chat mode and to switch to agent mode (/agent). Do not pretend to execute it and never guess. An action is allowed in chat only when its matching tool is explicitly provided for this turn.',
     'Answer directly and concisely. Do not claim to have called tools or changed files beyond the tools actually provided.',
@@ -569,19 +580,6 @@ export function buildDirectChatSystemPrompt(session, rawOpenWikiPages) {
   ].join('\n');
 }
 
-export function isProductHelpQuestion(input) {
-  const text = String(input ?? '')
-    .normalize('NFKD')
-    .replace(/\p{Diacritic}/gu, '')
-    .toLowerCase();
-  if (!text.trim()) return false;
-  if (/\b(donna|wikillm|llm-wiki|wiki-manager)\b/.test(text)) return true;
-  if (/\/(status|help|chat|agent|start|services|mcp|run|approve|queue)\b/.test(text)) return true;
-  if (/\b(manager ceiling|parallelism|throughput|collection concurrency|scheduler workers?)\b/.test(text)) return true;
-  const productConcept = /\b(workspaces?|agents?|connecteurs?|connectors?|mcp|runtime|approbations?|approvals?|ingestion|deliverables?|parallelisme|concurrence)\b/.test(text);
-  const explanatoryQuestion = /\b(comment|pourquoi|a quoi|qu est ce|que signifie|explique|fonctionne|difference|combien)\b/.test(text);
-  return productConcept && explanatoryQuestion;
-}
 
 async function productHelpContextMessages(input, session, onStep) {
   if (!isProductHelpQuestion(input)) return [];
@@ -1561,7 +1559,14 @@ async function runChatToolLoop({ input, session, history, donnaMessage, onUpdate
     const { server, tool } = resolveToolCallName(session.mcp, rawName);
     const qualified = server ? `${server}__${tool}` : null;
     if (!qualified || !allowed.has(qualified)) {
-      return `Refused: "${rawName}" is not an authorized tool in chat mode. Use agent mode (/agent) for capabilities that are not explicitly available here.`;
+      // A name no connected server exposes is the model guessing (observed:
+      // `wiki_find_in_page`), not a capability agent mode would have. Telling
+      // it "use /agent" there turned a wiki question the chat could answer
+      // into a redirect; point it back at the tools it actually has.
+      const exists = Boolean(server) && (session.mcp?.[server]?.tools ?? []).some((item) => item?.name === tool);
+      return exists
+        ? `Refused: "${rawName}" is not an authorized tool in chat mode. Use agent mode (/agent) for capabilities that are not explicitly available here.`
+        : `Unknown tool "${rawName}": it does not exist. Use only the tools offered for this turn: ${[...allowed].join(', ')}.`;
     }
     let args = {};
     try { args = call.function?.arguments ? JSON.parse(call.function.arguments) : {}; } catch { args = {}; }
@@ -1611,7 +1616,10 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
   messages.push(donnaMessage);
   onUpdate?.();
   const allowedTools = chatAllowedTools(session);
-  const productHelpMessages = await productHelpContextMessages(input, session, onStep);
+  const productHelpMessages = [
+    ...await productHelpContextMessages(input, session, onStep),
+    ...await wikiSearchContextMessages(input, session, allowedTools, onStep),
+  ];
   const canUseTools = allowedTools.length > 0 && typeof session.llm.completeWithTools === 'function';
   try {
     if (canUseTools) {
@@ -1683,6 +1691,7 @@ export async function runHeadlessChatTurn(session, input, { history = [], onStep
   const contextMessages = [
     ...buildAttachedDocMessages(attachedDocs),
     ...await productHelpContextMessages(input, session, onStep),
+    ...await wikiSearchContextMessages(input, session, allowedTools, onStep),
   ];
   const canUseTools = allowedTools.length > 0 && typeof session.llm?.completeWithTools === 'function';
   if (canUseTools) {

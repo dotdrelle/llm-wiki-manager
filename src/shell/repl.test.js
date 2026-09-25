@@ -1160,6 +1160,111 @@ test('runHeadlessChatTurn (HTTP /chat) uses the read-tool path and returns text'
   assert.doesNotMatch(reply, /STREAM_FALLBACK/);
 });
 
+test('chat mode answers an invented tool without redirecting to /agent', async () => {
+  const session = createSession();
+  session.chatMode = true;
+  session.chatAccess = { maxToolIterations: 4, servers: { wiki: { allow: ['wiki_search_context'] }, production: { allow: [] } } };
+  session.mcp = {
+    wiki: { status: 'connected', tools: [{ name: 'wiki_search_context', inputSchema: { type: 'object', properties: {} } }] },
+    production: { status: 'connected', tools: [{ name: 'production_job_status', inputSchema: { type: 'object', properties: {} } }] },
+  };
+  const toolReplies = [];
+  let round = 0;
+  session.llm = {
+    async *stream() { yield ''; },
+    async completeWithTools({ messages }) {
+      round += 1;
+      if (round === 1) {
+        const calls = [
+          { id: 'a', function: { name: 'wiki__wiki_find_in_page', arguments: '{}' } },
+          { id: 'b', function: { name: 'production__production_job_status', arguments: '{}' } },
+        ];
+        return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+      }
+      toolReplies.push(...messages.filter((m) => m.role === 'tool').map((m) => m.content));
+      return { tool_calls: [], content: 'ok' };
+    },
+  };
+  await runHeadlessChatTurn(session, 'que dit le wiki ?', { history: [] });
+  assert.match(toolReplies[0], /Unknown tool "wiki__wiki_find_in_page".*wiki__wiki_search_context/);
+  assert.doesNotMatch(toolReplies[0], /\/agent/);
+  // A real tool that chat mode does not authorize still points to agent mode.
+  assert.match(toolReplies[1], /not an authorized tool in chat mode.*\/agent/);
+});
+
+function stubWikiMcp(onToolCall) {
+  const calls = [];
+  const restore = stubFetch(async (url, init) => {
+    const body = JSON.parse(init?.body ?? '{}');
+    let result = {};
+    if (body.method === 'tools/call') {
+      calls.push(body.params);
+      result = await onToolCall(body.params);
+    }
+    const text = JSON.stringify({ jsonrpc: '2.0', id: body.id ?? 1, result });
+    return { ok: true, status: 200, headers: { get: () => null }, text: async () => text, json: async () => JSON.parse(text) };
+  });
+  return { calls, restore };
+}
+
+function presearchSession(allow) {
+  const session = createSession();
+  session.chatMode = true;
+  session.chatAccess = { maxToolIterations: 4, servers: { wiki: { allow } } };
+  session.mcp = { wiki: { status: 'connected', url: `http://wiki-presearch-${allow.join('-')}.test/mcp`, tools: [
+    { name: 'wiki_search_context', inputSchema: { type: 'object', properties: {} } },
+    { name: 'wiki_read_page', inputSchema: { type: 'object', properties: {} } },
+  ] } };
+  const seen = [];
+  session.llm = {
+    async *stream() { yield ''; },
+    async completeWithTools({ messages }) { seen.push(messages); return { tool_calls: [], content: 'ok' }; },
+  };
+  return { session, seen };
+}
+
+test('chat mode searches the wiki before the model answers a workspace question', async () => {
+  const { session, seen } = presearchSession(['wiki_search_context', 'wiki_read_page']);
+  const { calls, restore } = stubWikiMcp(async () => ({ content: [{ type: 'text', text: 'wiki/concepts/a.md: option A, sans tracé manuel' }] }));
+  try {
+    await runHeadlessChatTurn(session, 'compare les options A et B', { history: [] });
+  } finally { restore(); }
+  assert.deepEqual(calls.map((c) => [c.name, c.arguments.question]), [['wiki_search_context', 'compare les options A et B']]);
+  const context = seen[0].find((m) => /WIKI SEARCH RESULTS/.test(m.content));
+  assert.ok(context, 'the search results reach the model before its first call');
+  assert.match(context.content, /sans tracé manuel/);
+  assert.equal(seen[0].at(-1).content, 'compare les options A et B');
+});
+
+test('the wiki pre-search skips greetings and follows the chat allow-list', async () => {
+  for (const [input, allow] of [['salut', ['wiki_search_context']], ['compare les options A et B', ['wiki_read_page']]]) {
+    const { session, seen } = presearchSession(allow);
+    const { calls, restore } = stubWikiMcp(async () => ({ content: [{ type: 'text', text: 'x' }] }));
+    try {
+      await runHeadlessChatTurn(session, input, { history: [] });
+    } finally { restore(); }
+    assert.equal(calls.length, 0, `${input} / ${allow}`);
+    assert.ok(!seen[0].some((m) => /WIKI SEARCH RESULTS/.test(m.content)));
+  }
+});
+
+test('a failed wiki pre-search is announced and the turn still answers', async () => {
+  const { session } = presearchSession(['wiki_search_context']);
+  const steps = [];
+  const { restore } = stubWikiMcp(async () => ({ isError: true, content: [{ type: 'text', text: 'index unavailable' }] }));
+  let reply;
+  try {
+    reply = await runHeadlessChatTurn(session, 'que dit le wiki sur la vigilance', { history: [], onStep: (m) => steps.push(m) });
+  } finally { restore(); }
+  assert.equal(reply, 'ok');
+  assert.ok(steps.some((m) => /Wiki pre-search failed.*index unavailable/.test(m)), steps.join(' | '));
+});
+
+test('both prompts tell Donna to answer workspace questions from the wiki first', () => {
+  const session = createSession();
+  assert.match(buildDirectChatSystemPrompt(session), /search the wiki FIRST[\s\S]*Never redirect such a question to \/agent/);
+});
+
 test('product-help questions are detected without treating ordinary domain questions as product help', () => {
   assert.equal(isProductHelpQuestion('À quoi correspond Parallelism & throughput ?'), true);
   assert.equal(isProductHelpQuestion('Comment fonctionne Donna ?'), true);

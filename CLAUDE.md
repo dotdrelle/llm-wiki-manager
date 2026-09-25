@@ -610,7 +610,26 @@ and when the iteration cap is reached — or a loop is detected — it asks the
 model once more **without tools** for the best answer the gathered results
 support. Before this, a long Confluence/global search burned the cap and the
 turn ended on "Could not finish within the chat mode iteration limit" instead of
-the partial answer it already had.
+the partial answer it already had. That last call also SAYS it in a user message
+(`FINAL_ANSWER_REQUEST`): omitting the toolset alone did not stop gpt-oss from
+emitting a call, which was dropped, and the empty turn told the user to switch
+to `/agent`.
+
+Both modes search the wiki BEFORE the model speaks (`wikiSearchContextMessages`,
+`src/core/wikiPresearch.js`): chat mode in `repl.js` (ShellUI chat and the
+runtime `/turn` chat used by serve), agent mode on the first model call of a
+turn in `graph.js`. One `wiki_search_context` with the user's question,
+injected as delimited data, only when that tool is offered for the turn (the
+chat allow-list in chat mode) and the input is more than a greeting — never on a
+compiled skill objective nor on a run's later continuation turns. It lives for
+the turn only; the next turn's history is rebuilt from the conversation. During
+a runtime run Donna is also offered the MCP read tools, so a question sent as a
+run can be answered instead of delegated. Left to the model, the search was skipped whenever an earlier answer
+looked close enough — the history keeps Donna's text, not the pages — and the
+gap was filled from memory. A failed pre-search is announced on the step line
+and the turn continues. A tool name no server exposes is answered "unknown
+tool", not "use /agent": only a real tool outside the chat allow-list points to
+agent mode.
 
 `mutate` (0.10.0) is now a real, event-sourced plan-patch proposal, not a
 dead-end note: `storeControlProposal` builds a patch via

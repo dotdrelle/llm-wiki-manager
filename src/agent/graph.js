@@ -28,6 +28,7 @@ import { openWikiPagesPromptLine } from '../core/openWikiPages.js';
 import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
 import { loadWorkspaceProfile, updateWorkspaceProfilePreference } from '../core/profile.js';
 import { formatLlmConfigFact } from '../core/wikirc.js';
+import { wikiSearchContextMessages } from '../core/wikiPresearch.js';
 import { artifactFromToolCall, currentArtifactFor, currentArtifactPromptLine, rememberArtifact } from '../core/currentArtifact.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
 import { objectiveForResolution } from '../orchestrator/objectiveResolver.js';
@@ -1339,6 +1340,14 @@ export function buildAgentSystemPrompt(state) {
     'Write the way a thoughtful colleague speaks: warm, plain, and to the point. For a simple factual question, 1 to 3 sentences is the sweet spot. Stay synthetic and information-dense — use only the lines needed, and never exceed roughly 15 to 20 short lines even for a detailed answer. Never expose internal reasoning, repeated checks, tool-selection commentary, or a chronological diary. Prioritize the result, essential facts, concrete errors, and actual outputs — but say them in human language, not as a field dump.',
     'Call a matching direct tool when one is offered. Otherwise, for an action backed by a discovered agent capability, call runtime__delegate with the original objective. This applies to both planner agents and executor-only single-task agents. Never call an agent orchestration-contract or plan tool directly.',
     'Configuration is not a business run. When a connected server offers a setup or configuration tool, use it directly; never delegate configuration to an export, collect, send, build, or ingest capability. Read that server status first when existing non-secret values are needed, then ask only for required values that are still missing.',
+    // Observed: « récupère le numéro de ticket depuis le wiki » delegated to
+    // the external runtime's agent.answer, which burned 519k tokens and failed
+    // on its budget, while one wiki search answers it in a second.
+    'A question about the subject matter of this workspace (its projects, documents, tickets, people, decisions, figures, dates) is answered from the wiki: search it FIRST with the wiki search/read tools and answer from what they return. Never runtime__delegate a question those read tools can answer; delegation is for actions, or for an analysis the user explicitly asks an agent to perform.',
+    // Observed: « compare les options A et B » answered from the previous
+    // answers alone — the history carries Donna's text, not the pages — and
+    // option A was invented, the opposite of what the wiki says.
+    'Your earlier answers in this conversation are not evidence: they keep your text, not the pages. For each new question, search the wiki again for every fact you have not quoted from a tool result in this very turn. Never fill a gap (an acronym expansion, a missing option, a figure) from general knowledge.',
     'For any question about the current workspace inventory or what is waiting there, call wiki__wiki_workspace_status first and answer only from its result. This is the canonical read-only workspace state; do not reconstruct it from upload, connector, or production tools.',
     'Tool identifiers are private implementation details. Never print MCP tool names such as server__tool in a user-facing answer. Describe the human result instead.',
     'Internal data shapes are private too. Never quote raw JSON field names (e.g. pendingSources.files), internal directory paths (e.g. raw/untracked/), or config keys in a user-facing answer — translate them into plain language. Say "36 pages sources sont en attente d\'ingestion", not the field or path they came from.',
@@ -1439,7 +1448,11 @@ function toolsForClassification(classification, writeTools, session = null) {
     // suite: she can answer, approve, enqueue for later, soft-cancel or
     // kill — but she must not fire new MCP jobs alongside the run (that is
     // what runtime__enqueue is for). No canned regex answers anywhere.
-    return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools];
+    // "Read" includes the MCP read tools: without them a question sent as a
+    // run (legacy shell, one-shot) could only be delegated — observed: a wiki
+    // question handed to the external runtime, which spent 519k tokens on it.
+    const readTools = ordinaryDirectTools(writeTools).filter(isDonnaReadTool);
+    return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...readTools];
   }
   if (session?.runtime?.url) {
     // Offer every connected tool directly EXCEPT orchestration-bypass tools
@@ -1620,11 +1633,28 @@ export function createAgentGraph(options = {}) {
       : toolsForClassification(classification, writeTools, state.session);
     const system = buildAgentSystemPrompt(state);
 
+    // The wiki is searched before the first model call of a turn, as in chat
+    // mode (core/wikiPresearch.js): a question about the workspace was
+    // otherwise answered from the previous answers, or delegated to an agent
+    // that burned its whole token budget on it. Only on the user's own words —
+    // never on a compiled skill objective (private material) nor on the
+    // continuation prompts of a run's later turns. It lives for this turn
+    // only: the next turn's history is rebuilt from the conversation.
+    const runTurnId = state.session._currentRunIdentity?.turnId;
+    const userWords = iterations === 0
+      && normalizedSkillStack(state.session).length === 0
+      && !state.session._responseSynthesisOnly
+      && (!state.session._currentRunIdentity || !runTurnId || String(runTurnId).endsWith(':turn-1'));
+    const userTurn = [
+      ...(userWords ? await wikiSearchContextMessages(state.input, state.session, tools, state.session._onStep) : []),
+      { role: 'user', content: state.input },
+    ];
+
     // On iteration 0: prior history is in state.messages, user input must be appended.
     // On subsequent iterations: user message was already stored in state.messages by the
     // iteration-0 return below, so use state.messages as-is.
     const conversationMessages = iterations === 0
-      ? [...(state.messages ?? []), { role: 'user', content: state.input }]
+      ? [...(state.messages ?? []), ...userTurn]
       : (state.messages ?? []);
 
     try {
@@ -1661,7 +1691,7 @@ export function createAgentGraph(options = {}) {
             return {
               pendingToolCalls: null,
               messages: [
-                ...(iterations === 0 ? [{ role: 'user', content: state.input }] : []),
+                ...(iterations === 0 ? userTurn : []),
                 {
                   role: 'user',
                   content: 'Your previous tool call was incomplete or contained invalid JSON arguments. Call the appropriate available tool again with one complete valid JSON object. Do not narrate or reproduce the broken call.',
@@ -1695,7 +1725,7 @@ export function createAgentGraph(options = {}) {
           tool_calls: result.tool_calls,
         };
         const newMessages = iterations === 0
-          ? [{ role: 'user', content: state.input }, assistantToolMessage]
+          ? [...userTurn, assistantToolMessage]
           : [assistantToolMessage];
         return {
           pendingToolCalls: result.tool_calls,
@@ -1728,7 +1758,7 @@ export function createAgentGraph(options = {}) {
           return {
             pendingToolCalls: null,
             messages: [
-              ...(iterations === 0 ? [{ role: 'user', content: state.input }] : []),
+              ...(iterations === 0 ? userTurn : []),
               {
                 role: 'user',
                 content: `You described a call to ${bareCall} as JSON text instead of calling it. Issue a real tool call now, or answer in plain language. Never print the call as text.`,
@@ -1752,7 +1782,7 @@ export function createAgentGraph(options = {}) {
         return {
           pendingToolCalls: null,
           messages: [
-            { role: 'user', content: state.input },
+            ...userTurn,
             result.message ?? { role: 'assistant', content: result.content ?? '' },
             {
               role: 'user',
@@ -1796,7 +1826,7 @@ export function createAgentGraph(options = {}) {
         return {
           pendingToolCalls: null,
           messages: [
-            { role: 'user', content: state.input },
+            ...userTurn,
             result.message ?? { role: 'assistant', content: result.content ?? '' },
             { role: 'user', content: 'This is an action request. Call runtime__delegate now with the original objective only. Do not provide instructions or narration.' },
           ],
@@ -1840,7 +1870,7 @@ export function createAgentGraph(options = {}) {
           return {
             pendingToolCalls: null,
             messages: [
-              ...(iterations === 0 ? [{ role: 'user', content: state.input }] : []),
+              ...(iterations === 0 ? userTurn : []),
               result.message ?? { role: 'assistant', content: result.content ?? '' },
               {
                 role: 'user',
@@ -1869,7 +1899,7 @@ export function createAgentGraph(options = {}) {
         emitAgentEvent(state.session, 'assistant_message', 'llm', { content: result.content ?? '' });
         // Text was streamed inline via session._onStream — no second LLM call needed.
         const newMessages = iterations === 0
-          ? [{ role: 'user', content: state.input }, result.message]
+          ? [...userTurn, result.message]
           : [result.message];
         return {
           response: null,

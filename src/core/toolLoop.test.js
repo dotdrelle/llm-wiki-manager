@@ -104,6 +104,32 @@ test('answers from the gathered results when the cap is reached', async () => {
   assert.equal(out.content, "Voici ce que j'ai trouvé.");
 });
 
+test('the final answer request is said in words, not only by omitting the tools', async () => {
+  // gpt-oss behind vLLM keeps emitting a tool call when the toolset is merely
+  // omitted: the turn ended empty and the chat told the user to use /agent.
+  let finalMessages = null;
+  const llm = {
+    async completeWithTools({ tools, messages }) {
+      if (tools.length > 0) {
+        const calls = [toolCall('x', 's__search', `{"q":"${messages.length}"}`)];
+        return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+      }
+      finalMessages = messages;
+      return { content: 'Réponse tirée des résultats.', tool_calls: [] };
+    },
+  };
+  const out = await runBoundedToolLoop({
+    llm,
+    tools: [{ function: { name: 's__search' } }],
+    executeCall: async () => 'r',
+    maxIterations: 2,
+  });
+  assert.equal(out.content, 'Réponse tirée des résultats.');
+  const last = finalMessages.at(-1);
+  assert.equal(last.role, 'user');
+  assert.match(last.content, /No more tool calls/);
+});
+
 test('bounds a wide tool result before it enters the LLM context', async () => {
   // A CME Confluence search at limit 50 can weigh ~35 kB and would otherwise be
   // re-sent on every iteration. The /agent loop already truncates at 16 kB

@@ -101,15 +101,25 @@ export async function runBoundedToolLoop({
   return { content, iterations, capped: true };
 }
 
+// Omitting the toolset is not enough on its own: a model whose transcript is
+// full of tool calls (gpt-oss behind vLLM, observed) keeps emitting one, which
+// is then dropped — the turn ended empty and the user was told to switch to
+// /agent for a question the chat had already gathered the evidence for. Say
+// it in words as well.
+const FINAL_ANSWER_REQUEST = 'No more tool calls are possible for this question. '
+  + 'Answer it now, in text, from the tool results above only. If they do not '
+  + 'contain the answer, say so plainly and state what was found.';
+
 async function finalAnswerWithoutTools({
   llm,
   system,
-  convo,
+  convo: history,
   canStream,
   onTextDelta,
   onTextReset,
   signal,
 }) {
+  const convo = [...history, { role: 'user', content: FINAL_ANSWER_REQUEST }];
   try {
     if (canStream) {
       let text = '';

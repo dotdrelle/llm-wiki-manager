@@ -1401,7 +1401,7 @@ export function buildAgentSystemPrompt(state) {
       : null,
     openWikiPagesPromptLine(state.session.openWikiPages),
     currentArtifactPromptLine(currentArtifactFor(state.session)),
-    'Runtime control: you have runtime__status, runtime__cancel, runtime__kill and runtime__enqueue. When the user asks to stop, remove, clean or kill the current run, its jobs or the queue ("supprime le job et la queue", "arr\u00eate tout"), call runtime__kill (or runtime__cancel for a soft stop of just the run) and confirm what was stopped. When the user explicitly asks to delete, reset, abandon or replace the current plan, call runtime__kill with purge=true; never set purge=true for a simple stop. For questions about what is running or queued, call runtime__status and answer from its data. You have no approval tool: a pending approval is granted only by the user through the approval button or the /approve command. Never grant, claim or report an approval yourself; when the user asks to proceed with pending mutations, tell them to use those controls. A request to approve, validate, confirm or accept a pending run is a human control action: NEVER call runtime__delegate (or any capability) for it — answer with the control to use and nothing else. When the user asks for a NEW action while a run is active, do not execute it: propose runtime__enqueue (run it after) or, if they insist it replaces the current work, runtime__kill then the new action.',
+    'Runtime control: you have runtime__status, runtime__cancel, runtime__kill and runtime__enqueue. When the user asks to stop, remove, clean or kill the current run, its jobs or the queue ("supprime le job et la queue", "arr\u00eate tout"), call runtime__kill (or runtime__cancel for a soft stop of just the run) and confirm what was stopped. When the user explicitly asks to delete, reset, abandon or replace the current plan, call runtime__kill with purge=true; never set purge=true for a simple stop. For questions about what is running or queued, call runtime__status and answer from its data. You have no approval tool: a pending approval is granted only by the user through the approval button or the /approve command. Never grant, claim or report an approval yourself; when the user asks to proceed with pending mutations, tell them to use those controls. A request to approve, validate, confirm or accept a pending run is a human control action: NEVER call runtime__delegate (or any capability) for it — answer with the control to use and nothing else. When the user asks for a NEW action while a run is active: if one of your direct tools performs it (write or edit a template, a build-context file or a wiki page; a read or a check), do it now — a write may be refused because the running job is using that part of the workspace, and then say so plainly and offer runtime__enqueue. Heavier work (ingest, build, export, curate, rebuilding an index) is queued with runtime__enqueue (it runs after), or, if the user insists it replaces the current work, runtime__kill then the new action.',
     'When the user asks to refresh, show, or update the displayed plan or status, call runtime__status. This is a state refresh request, not a new business capability, and must never be delegated.',
     'Report every runtime control outcome exactly as the tool returned it \u2014 never embellish. If runtime__kill reports 0 run(s)/0 task(s)/0 purged, say there was nothing active to stop or purge; do NOT claim a run, plan, pending approval or queue item was removed. If runtime__status returns an error or could not be read, say the runtime state could not be retrieved and do not describe a state you never obtained. Never assert that something was cleaned, cancelled, approved or purged unless that specific tool result confirms it.',
     'Durable profile updates are actions in this stabilized version: delegate them instead of writing directly.',
@@ -1452,11 +1452,14 @@ function toolsForClassification(classification, writeTools, session = null) {
     // suite: she can answer, approve, enqueue for later, soft-cancel or
     // kill — but she must not fire new MCP jobs alongside the run (that is
     // what runtime__enqueue is for). No canned regex answers anywhere.
-    // "Read" includes the MCP read tools: without them a question sent as a
-    // run (legacy shell, one-shot) could only be delegated — observed: a wiki
-    // question handed to the external runtime, which spent 519k tokens on it.
-    const readTools = ordinaryDirectTools(writeTools).filter(isDonnaReadTool);
-    return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...readTools];
+    // The direct tools stay offered — reads, and unitary writes such as a
+    // template or a page: without them a question sent as a run could only be
+    // delegated (observed: a wiki question handed to the external runtime,
+    // which spent 519k tokens on it), and a template asked for during an
+    // ingest waited for the whole ingest. ordinaryDirectTools never carries a
+    // job starter, and the engine refuses a write that would race with the
+    // running job (plan-demandes-pendant-run.md, lot 3).
+    return [SHELL_READ_COMMAND_TOOL, ...controlTools, ...capabilityRunTools, ...ordinaryDirectTools(writeTools)];
   }
   if (session?.runtime?.url) {
     // Offer every connected tool directly EXCEPT orchestration-bypass tools
@@ -1608,7 +1611,8 @@ export function createAgentGraph(options = {}) {
             kind: 'agent_turn',
             confidence: 1,
             reason: 'agent_mode_llm_decision',
-            activeRun: state.session?.agentProjection?.status === 'running'
+            activeRun: state.session?._runActive === true
+              || ['running', 'pending_approval'].includes(state.session?.agentProjection?.status)
               || sessionActivities(state.session).some((activity) => !activity.terminal),
           })
       : (state.inputClassification ?? { kind: 'modify_run', confidence: 1, reason: 'tool_iteration' });

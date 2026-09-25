@@ -5,6 +5,7 @@ import { formatPlanStatus, formatPlanStep } from '../core/plan.js';
 import { readyPlanTasks, sanitizePlanForExecution } from '../core/planPatch.js';
 import { createAssignmentManager } from '../orchestrator/assignmentManager.js';
 import { createAttemptManager } from '../orchestrator/attemptManager.js';
+import { workspaceLockRegistry } from '../orchestrator/lockManager.js';
 import { createBudgetManager, BudgetExceededError } from '../orchestrator/budgetManager.js';
 import { createDispatcher } from '../orchestrator/dispatcher.js';
 import { approvalCovered, approvalRequestForTask } from '../orchestrator/approvalPolicy.js';
@@ -419,7 +420,15 @@ export async function runRuntimeParallelPlan(agent, session, input, {
     cappedByCeiling: concurrencyDetail.cappedByCeiling,
   };
   const active = new Map();
-  const attempts = attemptManager ?? createAttemptManager();
+  // The workspace's lock registry, shared with every other run and direct
+  // action of this workspace; this run holds its locks under its own id.
+  const lockRegistry = workspaceLockRegistry(session);
+  const attempts = attemptManager ?? createAttemptManager({
+    locks: lockRegistry.locks,
+    owners: lockRegistry.owners,
+    owner: runId ?? 'run',
+  });
+  let announcedLockWait = '';
   const assigner = assignmentManager ?? createAssignmentManager({ session });
   const executor = dispatcher ?? createDispatcher({
     session,
@@ -646,6 +655,24 @@ export async function runRuntimeParallelPlan(agent, session, input, {
         if (skippedCount > 0) {
           // La boucle reprend : d'autres tâches peuvent être devenues prêtes,
           // notamment derrière une barrière de groupe désormais terminale.
+          continue;
+        }
+        // A task whose only blocker is a lock held by ANOTHER run or a direct
+        // action waits for it: that holder will release it, so this is a
+        // queue, not a stall. Said once per change of holder, never silently.
+        const lockWaits = (session.headlessPlan ?? [])
+          .filter((step) => pendingSchedulerStatus(step.status))
+          .map((step) => ({ step, holders: attempts.foreignHolders?.(step) ?? [] }))
+          .filter((entry) => entry.holders.length > 0);
+        if (lockWaits.length > 0) {
+          const held = [...new Map(lockWaits.flatMap((entry) => entry.holders)
+            .map((holder) => [holder.lock, holder])).values()];
+          const summary = held.map((holder) => `${holder.lock} (held by ${holder.owner ?? 'another action'})`).join(', ');
+          if (summary !== announcedLockWait) {
+            announcedLockWait = summary;
+            emitRuntimeLog(session, `scheduler: waiting for workspace lock(s) — ${summary}; ${lockWaits.length} task(s) queued behind`);
+          }
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
           continue;
         }
         // Any genuine approval-only block returned above. Remaining tasks are

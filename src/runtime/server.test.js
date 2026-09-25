@@ -1972,6 +1972,54 @@ test('POST /turn treats a bare confirmation during a run as a status check', asy
   }
 });
 
+// plan-demandes-pendant-run.md, lot 3: a new action typed during a run used to
+// be queued straight away, so a template waited for a whole ingest. It is an
+// agent turn now (Donna's direct tools, or runtime__enqueue from her), while a
+// question stays a read-only chat turn and nothing lands in the control queue.
+test('POST /turn hands a new action typed during a run to an agent turn, not the queue', async (t) => {
+  const session = { workspace: 'acme', controlQueue: [], llm: null };
+  const context = { workspace: 'acme', session, running: true, currentAbortController: null };
+  const status = {
+    status: 'pending_approval', running: true,
+    plan: [{ step: 1, description: 'Ingest pending sources', status: 'waiting_approval' }],
+    queue: [], controlQueue: [], approvals: [], conversation: [],
+  };
+  const turns = [];
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1', port: 0,
+      store: { dbPath: ':memory:', getState: () => status, listEvents: () => [] },
+      getContext: async () => context,
+      run: async () => new Promise(() => {}),
+      turn: async (_context, options) => { turns.push(options); return { ok: true }; },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw err;
+  }
+  try {
+    for (const [input, word] of [['crée un template pour la note de synthèse', 'action'], ['que dit le wiki sur SISBA ?', 'question']]) {
+      session.llm = { complete: async () => word };
+      const response = await fetch(`http://127.0.0.1:${handle.port}/turn?workspace=acme`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ input, mode: 'agent' }),
+      });
+      assert.equal(response.status, 202);
+      assert.equal((await response.json()).kind, 'turn');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.deepEqual(turns.map((options) => [options.input, options.mode]), [
+      ['crée un template pour la note de synthèse', 'agent'],
+      ['que dit le wiki sur SISBA ?', 'chat'],
+    ]);
+    assert.equal(session.controlQueue.length, 0, 'nothing was queued behind the run');
+  } finally {
+    context.currentAbortController?.abort();
+    await handle.close();
+  }
+});
+
 test('POST /turn answers the reserved /status command itself, never the homonymous skill', async (t) => {
   // A workspace skill named `status` exists precisely to prove the built-in
   // wins: `/status` was handed to the model, which ran that skill (English

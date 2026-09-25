@@ -136,3 +136,52 @@ test('multi-agent scheduler beats sequential on 2 independent build tasks by the
     `expected multi-agent duration (${parallelDurationMs}ms) under ${MAX_PARALLEL_TO_SEQUENTIAL_RATIO * 100}% of sequential duration (${sequentialDurationMs}ms, threshold ${thresholdMs}ms)`,
   );
 });
+
+// plan-demandes-pendant-run.md, lot 2: the lock registry is the WORKSPACE's.
+// A task whose lock another run (or a direct write) holds must wait for it and
+// say so — before, the run declared itself stalled and stopped.
+test('a task waits for a workspace lock held by another run, then runs', async () => {
+  const { workspaceLockRegistry, createLockManager } = await import('../orchestrator/lockManager.js');
+  const session = {
+    workspace: 'demo-workspace',
+    activities: {},
+    agentEvents: [],
+    headlessPlan: [{ ...plannedBuildTask(1, 'template-a'), locks: ['workspace-write'] }],
+    mcp: { production: { status: 'connected', tools: [{ name: 'agent_execute' }, { name: 'agent_status' }, { name: 'agent_cancel' }] } },
+    agentRegistrySnapshot: [productionAgent()],
+    wikircConfig: { capabilityRouting: {} },
+  };
+  const registry = workspaceLockRegistry(session);
+  const other = createLockManager(registry).acquire(['workspace-write'], 'run-ingest');
+  const RELEASE_AFTER_MS = 200;
+  const releasedAt = Date.now() + RELEASE_AFTER_MS;
+  setTimeout(() => other.release(), RELEASE_AFTER_MS);
+  let executedAt = null;
+  const callTool = async (_mcp, _serverName, toolName, args) => {
+    if (toolName === 'agent_execute') {
+      executedAt = Date.now();
+      return toolResult({ accepted: true, jobId: `job-${args.taskId}`, status: 'queued' });
+    }
+    if (toolName === 'agent_status') {
+      return toolResult({ jobId: args.jobId, status: 'done', result: { status: 'succeeded', outputRefs: [] } });
+    }
+    if (toolName === 'agent_cancel') return toolResult({ ok: true });
+    throw new Error(`unexpected tool: ${toolName}`);
+  };
+  const result = await runRuntimeParallelPlan({ invoke: async () => assert.fail('child Donna loop must not run') }, session, 'Build', {
+    runId: 'run-build',
+    timeoutMs: 10_000,
+    maxTurns: 1,
+    callTool,
+    dispatcherPollIntervalMs: 5,
+  });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.ok(executedAt >= releasedAt - 5, 'the task started only once the other run released the lock');
+  const waits = session.agentEvents
+    .filter((event) => event.type === 'runtime_log')
+    .map((event) => String(event.payload?.message ?? ''))
+    .filter((message) => message.includes('waiting for workspace lock'));
+  assert.equal(waits.length, 1, 'announced once, not on every poll');
+  assert.match(waits[0], /workspace-write \(held by run-ingest\)/);
+  assert.deepEqual(registry.locks.size, 0, 'nothing left held once both are done');
+});

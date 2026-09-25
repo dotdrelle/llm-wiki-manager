@@ -158,3 +158,22 @@ function provider(agentInstanceId, serverName, health, contractVersion) {
     },
   };
 }
+
+test('clear releases only what this run reserved on a shared workspace registry', async () => {
+  // A cancelled run drains with clear(). On the workspace registry, clearing
+  // everything freed the locks another run was still holding.
+  const { workspaceLockRegistry } = await import('./lockManager.js');
+  const { createAttemptManager } = await import('./attemptManager.js');
+  const registry = workspaceLockRegistry({});
+  const runA = createAttemptManager({ ...registry, owner: 'run-a' });
+  const runB = createAttemptManager({ ...registry, owner: 'run-b' });
+  assert.ok(runA.reserve({ id: 'ingest', locks: ['workspace-write'] }));
+  assert.ok(runB.reserve({ id: 'export', locks: ['deliverable:deliverables/a.md'] }));
+
+  runB.clear();
+
+  assert.deepEqual([...registry.locks], ['workspace-write']);
+  assert.equal(registry.owners.get('workspace-write'), 'run-a');
+  assert.equal(runB.reserve({ id: 'rebuild', locks: ['workspace-write'] }), null);
+  assert.deepEqual(runB.foreignHolders({ locks: ['workspace-write'] }), [{ lock: 'workspace-write', owner: 'run-a' }]);
+});

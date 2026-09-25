@@ -638,6 +638,32 @@ and the turn continues. A tool name no server exposes is answered "unknown
 tool", not "use /agent": only a real tool outside the chat allow-list points to
 agent mode.
 
+**Requests typed during a run** (`plan-demandes-pendant-run.md` at the wikiLLM
+root). A question stays a read-only chat turn; a status question gets the run
+facts; a NEW action the model classified `action` (`actsDuringRun` in
+`server.js`) is no longer queued straight away — it becomes an agent turn in
+which Donna holds her direct tools (`ordinaryDirectTools`: reads and unitary
+writes such as a template or a page, never a job starter) plus
+`runtime__enqueue`, and no `runtime__delegate`. She performs it now when a
+direct tool fits, or queues it herself. The engine refuses a direct write that
+would race with the running production job (`PRODUCTION_JOB_ACTIVE`, see
+`llm-wiki/CLAUDE.md` § Safety Rules), and she then offers the queue. The turn
+learns that a run is active from the runtime (`session._runActive`, set from
+`context.running`): the projection says `pending_approval` for an ingest
+waiting on its approval, and reading only `running` made such a turn believe
+the workspace idle.
+
+**Locks are the workspace's, not the run's.** `workspaceLockRegistry(session)`
+(`orchestrator/lockManager.js`) hangs one `{ locks, owners }` registry on the
+workspace session; every run's attemptManager shares it under its own
+`owner` (the runId), and interactive sessions receive the same object
+(`createInteractiveSession`). Two consequences: `attemptManager.clear()`
+releases only what that manager reserved (clearing the whole shared registry
+freed locks another holder still had), and a task whose only blocker is a lock
+held by ANOTHER owner waits for it with one `scheduler: waiting for workspace
+lock(s) — <lock> (held by <owner>)` log per change of holder, instead of the
+run declaring itself stalled. Two workspaces never share a registry.
+
 `mutate` (0.10.0) is now a real, event-sourced plan-patch proposal, not a
 dead-end note: `storeControlProposal` builds a patch via
 `buildPlanPatchFromInput` (`src/core/planPatch.js`) and dispatches

@@ -587,6 +587,10 @@ export function startRuntimeServer({
             // line pushed into the thread.
             input = runtimeStatusSynthesisPrompt(input, controlStatus(context, store));
             readOnlyChat = true;
+          } else if (actsDuringRun(classification)) {
+            // A new action: Donna takes the turn with her direct tools and
+            // performs it now when one fits (write a template, a page, run a
+            // read), or queues it after the run herself.
           } else if (classification.kind !== 'converse') {
             const result = await handleControlMessage(context, store, input, {
               intent: body.intent,
@@ -619,6 +623,8 @@ export function startRuntimeServer({
             if (classification.kind === 'observe') {
               input = runtimeStatusSynthesisPrompt(input, controlStatus(context, store));
               readOnlyChat = true;
+            } else if (actsDuringRun(classification)) {
+              // Same as above: Donna acts now or queues it herself.
             } else if (classification.kind !== 'converse') {
               const result = await handleControlMessage(context, store, input, {
                 intent: body.intent,
@@ -2064,6 +2070,17 @@ const CANCEL_COMMAND = /^\s*(?:stop|cancel|abort|annule[rz]?|arr[eê]te[rz]?|int
 const STATUS_ONLY = /^\s*(?:\/status|status|statut|progress(?:ion)?|avancement|logs?|quoi de neuf|o[uù] en (?:est|es-tu|sommes-nous)(?:[- ]?(?:on|il|elle|ce|[çc]a))?)\s*[?!.…]*\s*$/i;
 const CONFIRMATION_ONLY = /^\s*(?:oui|yes|yep|ok|okay|vas[- ]?y|d['’]accord|daccord|entendu)\s*[.!…]*\s*$/i;
 const EXPLICIT_ENQUEUE = /\b(?:enqueue|mets(?:-le)? en file|met en file|apr[eè]s ce run|[aà] la fin (?:du|de ce) run|next run|after this run)\b/i;
+
+// A NEW action typed during a run (the model said "action", not an explicit
+// "mets en file"). It used to be queued straight away, so a template to write
+// waited for a whole ingest. It now goes to an agent turn instead: Donna holds
+// her direct tools there — never a job starter (isOrchestrationBypassTool) —
+// and either performs it now or queues it with runtime__enqueue. The engine
+// refuses a write that would race with the running job, and says so
+// (plan-demandes-pendant-run.md, lot 3).
+export function actsDuringRun(classification) {
+  return classification?.kind === 'enqueue_run' && classification?.reason === 'llm_classified_action';
+}
 
 const CONTROL_CATEGORIES = {
   question: { kind: 'converse', reason: 'llm_classified_question' },

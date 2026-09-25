@@ -1176,6 +1176,27 @@ test('an agent turn never pre-searches a skill objective or a later run turn', a
   assert.deepEqual(firstTurn.searched, ['compare les options A et B']);
 });
 
+test('an agent turn during a pending run keeps its direct tools and cannot start a second run', async () => {
+  // plan-demandes-pendant-run.md, lot 3. The runtime says a run is active
+  // (_runActive): a projection in `pending_approval` used to read as idle.
+  let offered = [];
+  const session = sessionBase({
+    runtime: { url: 'http://127.0.0.1:7788' },
+    _runActive: true,
+    agentProjection: { status: 'pending_approval' },
+    mcp: { wiki: { status: 'connected', url: 'http://x.test/mcp', tools: [
+      { name: 'template_write', inputSchema: { type: 'object', properties: {} } },
+      { name: 'wiki_search_context', inputSchema: { type: 'object', properties: {} } },
+    ] }, production: sessionBase().mcp.production },
+    llm: { async completeWithTools({ tools }) { offered = tools.map((item) => item.function.name); return { tool_calls: [], content: 'ok' }; } },
+  });
+  await createAgentGraph().invoke({ input: 'salut', session });
+  assert.ok(offered.includes('wiki__template_write'), offered.join(','));
+  assert.ok(offered.includes('runtime__enqueue'), offered.join(','));
+  assert.ok(!offered.includes('runtime__delegate'), 'no second run beside the active one');
+  assert.ok(!offered.includes('production__production_start_job'), 'never a job starter');
+});
+
 test('buildAgentSystemPrompt omits the profile section when profile.md is missing or empty', () => {
   const workspacePath = mkdtempSync(join(tmpdir(), 'donna-profile-empty-'));
   try {

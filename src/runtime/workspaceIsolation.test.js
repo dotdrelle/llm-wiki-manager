@@ -161,18 +161,27 @@ test('every client subscribes with the workspace it is scoped to', () => {
   assert.match(shell, /runtimeStreamAbort\?\.abort\(\);\s*\n\s*syncRuntimeState\(\);\s*\n\s*void subscribeRuntimeEvents\(\);/);
 });
 
-test('locks are per run, so one workspace never blocks another', async () => {
-  // `ingest_apply` est sérialisé par construction. Si le gestionnaire de
-  // verrous était global au processus, deux workspaces ingérant en parallèle
-  // se bloqueraient mutuellement — pas une fuite, mais une contention
-  // invisible et très difficile à diagnostiquer.
-  const { createLockManager } = await import('../orchestrator/lockManager.js');
-  const runA = createLockManager();
-  const runB = createLockManager();
+test('locks are per workspace: shared by its runs, never across workspaces', async () => {
+  // `ingest_apply` est sérialisé par construction. Si le registre de verrous
+  // était global au processus, deux workspaces ingérant en parallèle se
+  // bloqueraient mutuellement — une contention invisible. Il est attaché à la
+  // session du workspace : partagé par ses runs et ses actions directes
+  // (plan-demandes-pendant-run.md, lot 2), jamais d'un workspace à l'autre.
+  const { workspaceLockRegistry } = await import('../orchestrator/lockManager.js');
+  const { createAttemptManager } = await import('../orchestrator/attemptManager.js');
+  const acme = { workspace: 'acme' };
+  const juno = { workspace: 'juno' };
+  const manager = (session, owner) => {
+    const registry = workspaceLockRegistry(session);
+    return createAttemptManager({ locks: registry.locks, owners: registry.owners, owner });
+  };
 
-  assert.ok(runA.acquire({ locks: ['ingest_apply'] }));
-  assert.ok(runB.acquire({ locks: ['ingest_apply'] }), 'deux runs distincts ne partagent pas leurs verrous');
+  assert.ok(manager(acme, 'run-a1').reserve({ id: 't1', locks: ['workspace-write'] }));
+  assert.ok(manager(juno, 'run-j1').reserve({ id: 't1', locks: ['workspace-write'] }), 'two workspaces never share their locks');
+  const second = manager(acme, 'run-a2');
+  assert.equal(second.reserve({ id: 't2', locks: ['workspace-write'] }), null, 'two runs of one workspace do');
+  assert.deepEqual(second.foreignHolders({ locks: ['workspace-write'] }), [{ lock: 'workspace-write', owner: 'run-a1' }]);
 
   const runner = readFileSync(new URL('./runner.js', import.meta.url), 'utf8');
-  assert.match(runner, /const attempts = attemptManager \?\? createAttemptManager\(\);/);
+  assert.match(runner, /const lockRegistry = workspaceLockRegistry\(session\);/);
 });

@@ -32,6 +32,7 @@ import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
 import { createDeltaCoalescer } from '../runtime/deltaCoalescer.js';
 import { TERMINAL_STATUS_SET } from '../orchestrator/taskStatuses.js';
 import { resolveCapabilityConcurrency } from '../orchestrator/scheduler.js';
+import { workspaceLockRegistry } from '../orchestrator/lockManager.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
 import { CapabilityUnavailableError, resolve as resolveCapability } from '../orchestrator/capabilityResolver.js';
 import { listWorkspaces } from '../core/workspaces.js';
@@ -358,6 +359,9 @@ export function createInteractiveSession(context, { runtimeUrl, turnId, signal =
   session.headlessPlan = null;
   session.turnId = turnId ?? null;
   session._abortSignal = signal;
+  // The SAME lock registry as the workspace's runs, never a copy: a direct
+  // write from this turn must see what a run holds (plan-demandes-pendant-run.md).
+  session._workspaceLocks = workspaceLockRegistry(source);
   return session;
 }
 
@@ -1741,6 +1745,10 @@ async function runRuntime(argv, agent) {
       await refreshMcpRuntimeStatus(context.session);
     }
     const ephemeral = createInteractiveSession(context, { runtimeUrl: selfRuntimeUrl, turnId, signal });
+    // Whether a run is active in this workspace, from the runtime itself: the
+    // projection says `pending_approval` for an ingest waiting on its approval,
+    // and reading only `running` made such a turn believe the workspace idle.
+    ephemeral._runActive = Boolean(context.running);
     // Seed from a freshly reduced COPY of persisted events. Interactive turn
     // events deliberately do not mutate the canonical run projection, so the
     // canonical session alone is not a reliable conversation-history source.

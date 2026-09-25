@@ -1,30 +1,46 @@
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { createLockManager, locksForTask } from './lockManager.js';
 
-export function createAttemptManager({ locks = new Set() } = {}) {
+// `locks`/`owners` are the workspace registry (workspaceLockRegistry) when a
+// run shares it; `owner` names this run in it. The defaults keep a private
+// registry for callers that do not share one.
+export function createAttemptManager({ locks = new Set(), owners = new Map(), owner = null } = {}) {
   let nextAttempt = 0;
-  const lockManager = createLockManager({ locks });
+  const lockManager = createLockManager({ locks, owners });
+  const reservations = new Set();
   return {
     reserve(task, requestedLocks = locksForTask(task)) {
       const taskId = planTaskId(task);
-      const reservation = lockManager.acquire(requestedLocks);
+      const reservation = lockManager.acquire(requestedLocks, owner);
       if (!reservation) return null;
+      reservations.add(reservation);
       nextAttempt += 1;
       return {
         taskId,
         attemptId: `${taskId}:attempt-${nextAttempt}`,
         locks: reservation.locks,
-        release: reservation.release,
+        release: () => {
+          reservations.delete(reservation);
+          reservation.release();
+        },
       };
     },
+    // Releases what THIS manager reserved, never the whole registry: on a
+    // shared registry, clearing everything freed the locks another run or a
+    // direct write was still holding.
     clear() {
-      lockManager.clear();
+      for (const reservation of reservations) reservation.release();
+      reservations.clear();
     },
     snapshot() {
       return lockManager.snapshot();
     },
     canAcquire(task) {
       return lockManager.canAcquire(task);
+    },
+    // Locks the task needs that someone OTHER than this run holds.
+    foreignHolders(task) {
+      return lockManager.holders(locksForTask(task)).filter((holder) => holder.owner !== owner);
     },
     scheduleRetry(task, failure, options = {}) {
       return scheduleRetry(task, failure, options);

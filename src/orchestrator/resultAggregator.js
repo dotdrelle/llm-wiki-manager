@@ -78,6 +78,13 @@ export async function accept(result, {
       taskId,
       payload: { message: `agent-proposal: could not persist the worktree proposal for ${taskId}: ${worktreePersisted.error}` },
     })));
+  } else if (worktreePersisted.empty) {
+    persistDispatch(store, dispatchAgentEvent(session, createAgentEvent('runtime_log', {
+      origin: 'result_aggregator',
+      runId,
+      taskId,
+      payload: { message: `⚠ agent-proposal: ${taskId} wrote no file on its branch — nothing to review; the corrections its report describes were not written` },
+    })));
   } else if (worktreePersisted.path) {
     persistDispatch(store, dispatchAgentEvent(session, createAgentEvent('runtime_log', {
       origin: 'result_aggregator',
@@ -315,7 +322,11 @@ function persistWorktreeProposal(session, result, { runId, taskId }) {
     ?? result?.worktreeProposal;
   if (!proposal || typeof proposal !== 'object') return { path: null };
   const changes = Array.isArray(proposal.changes) ? proposal.changes : [];
-  if (changes.length === 0) return { path: null };
+  // A curation that wrote nothing has nothing to review — but it must SAY so.
+  // Returning silently here left the review page empty while the run was
+  // reported a success, its report describing corrections on a branch that
+  // held none (observed on acpi).
+  if (changes.length === 0) return { path: null, empty: true };
   const workspacePath = session?.workspacePath;
   if (!workspacePath || typeof workspacePath !== 'string') {
     return { error: 'no workspace path on the session — the proposal stays in the run result only' };

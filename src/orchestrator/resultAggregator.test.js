@@ -409,3 +409,32 @@ test('a gateway worktree proposal (rawStatus shape) is persisted for review', as
     rmSync(workspacePath, { recursive: true, force: true });
   }
 });
+
+test('a curation that wrote no file says so instead of vanishing from the review page', async () => {
+  // Observed on acpi: the Redactor described its corrections in prose on a
+  // branch it invented, wrote nothing, and the run was reported a success
+  // while /agent-proposals stayed empty with no word anywhere.
+  const workspacePath = mkdtempSync(join(tmpdir(), 'worktree-proposal-'));
+  const session = { agentEvents: [], activities: {}, workspace: 'docs', workspacePath, headlessPlan: [] };
+  try {
+    await accept({
+      ok: true,
+      taskId: 't-curate',
+      status: 'completed',
+      outputRefs: [],
+      rawStatus: {
+        runId: 'gateway-1',
+        status: 'completed',
+        result: { status: 'completed', content: 'report', worktreeProposal: { branch: 'agent/gateway-1', changedFiles: [], changes: [], diff: '' } },
+      },
+    }, {
+      session,
+      runId: 'run-curate',
+      task: { id: 't-curate', requiredCapability: 'agent.curate', operation: 'run' },
+    });
+    assert.equal(existsSync(join(workspacePath, '.wiki', 'agent-proposals')), false);
+    assert.ok(session.agentEvents.some((event) => /wrote no file on its branch — nothing to review/.test(String(event.payload?.message ?? ''))));
+  } finally {
+    rmSync(workspacePath, { recursive: true, force: true });
+  }
+});

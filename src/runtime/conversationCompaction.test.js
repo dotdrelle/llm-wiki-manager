@@ -48,3 +48,25 @@ test('Donna is the one who tells the user, in the reply language', () => {
   assert.match(note, /8 oldest messages/);
   assert.match(note, /tell them so in one short sentence, in the reply language/);
 });
+
+test('the compact cut never separates a question from its answer', () => {
+  // Observed on acpi: 6 raw messages kept, the cut fell between the user's
+  // question and Donna's answer, and the summary dropped the question.
+  const conversation = [
+    ...[1, 2, 3, 4, 5].flatMap(exchange),
+    { role: 'user', content: 'comment utiliser https://github.com/gregmos/PII-Shield' },
+    { role: 'assistant', content: 'Le wiki ne décrit pas PII-Shield.' },
+    { role: 'user', content: 'cherche sur internet' },
+    { role: 'user', content: 'cherche sur internet' },
+    { role: 'assistant', content: 'Lancer la recherche.' },
+    { role: 'assistant', content: 'Je suis limité au wiki.' },
+    { role: 'assistant', content: 'Le plan est terminé.' },
+  ];
+  const plan = conversationCompactionPlan({ conversation });
+  assert.equal(plan.segment.at(-1).content, 'réponse 5');
+  assert.equal(plan.keepLast, 7, 'moved back to the question');
+  const events = conversation.map((m) => createAgentEvent(m.role === 'user' ? 'user_message' : 'assistant_message', { payload: { content: m.content } }));
+  events.push(createAgentEvent('conversation_reset', { payload: { summary: 'Résumé.', keepLast: plan.keepLast } }));
+  const seed = conversationSeed({ agentProjection: reduceAgentEvents(events) }, 'x');
+  assert.match(seed[1].content, /PII-Shield/);
+});

@@ -108,9 +108,15 @@ export function conversationCompactionPlan(projection, { limit = 12, keepLast = 
   const overflow = live.length > limit;
   const heavy = Number(budgetChars) > 0 && seedChars > Number(budgetChars) / 4;
   if (!overflow && !heavy) return null;
-  const segment = conversation.slice(seedStart, Math.max(seedStart, conversation.length - keepLast));
+  // The cut never splits an exchange: it moves back to the user message that
+  // opened it. Observed: a cut between « comment utiliser <url> » and its
+  // answer sent the question into the summary, which dropped it — Donna then
+  // held an answer without its question and asked what to search for.
+  let cut = Math.max(seedStart, conversation.length - keepLast);
+  while (cut > seedStart && conversation[cut]?.role !== 'user') cut -= 1;
+  const segment = conversation.slice(seedStart, cut);
   if (!segment.some((message) => ['user', 'assistant'].includes(message?.role) && String(message?.content ?? '').trim())) return null;
-  return { segment, keepLast, reason: overflow ? 'window' : 'budget', previousSummary: projection?.conversationSummary ?? null };
+  return { segment, keepLast: conversation.length - cut, reason: overflow ? 'window' : 'budget', previousSummary: projection?.conversationSummary ?? null };
 }
 
 /** What Donna is told after an automatic compaction — she says it, not the system. */

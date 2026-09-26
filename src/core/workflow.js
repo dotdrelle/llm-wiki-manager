@@ -11,6 +11,7 @@ import { aggregateActivity } from '../activity/activityAggregator.js';
 import { calculateWeightedProgress } from '../activity/progressCalculator.js';
 import { aggregateGraph } from '../graph/graphAggregator.js';
 import { isTerminal } from '../orchestrator/taskStatuses.js';
+import { compactLogLabel } from './logLabel.js';
 
 const RUNNING_STATUSES = new Set(['running', 'starting', 'queued', 'waiting', 'pending_approval']);
 
@@ -243,7 +244,9 @@ function taskNode(step, index) {
     type: 'task',
     step: Number(step.step ?? index + 1),
     stepId,
-    label: String(step.description ?? step.label ?? step.name ?? `Step ${index + 1}`),
+    // The label NAMES the task (first line, bounded — a delegated task's label
+    // is its whole objective); the description keeps the full text.
+    label: compactLogLabel(String(step.description ?? step.label ?? step.name ?? `Step ${index + 1}`)),
     description: String(step.description ?? step.label ?? step.name ?? `Step ${index + 1}`),
     status: normalizeStatus(step.status ?? 'pending'),
     dependsOn: Array.isArray(step.dependsOn) ? step.dependsOn.map(String) : [],

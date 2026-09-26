@@ -5,6 +5,7 @@ import { applyPlanPatch, normalizePlanPatch, normalizePlanRevision, rebasePlanPa
 import { formatRuntimeLogPayload, isDispatchPlumbingLine, normalizeRuntimeLog, shortTaskLabel } from './runtimeLog.js';
 import { projectSkillChains, TERMINAL as CONTROL_TERMINAL_STATUSES } from './skillChainView.js';
 import { projectWorkflow } from './workflow.js';
+import { compactLogLabel } from './logLabel.js';
 import { validateContractInDev } from '../contracts/schemas.js';
 import { isActive, isTerminal, isSuccessful, isUnknownStatus, normalizeTaskStatus } from '../orchestrator/taskStatuses.js';
 
@@ -1246,7 +1247,7 @@ function planTaskById(state, taskId) {
 function taskLabelFor(state, taskId) {
   const step = planTaskById(state, taskId);
   const label = step?.label ?? step?.description ?? null;
-  if (label && !/^Step \d+$/.test(label)) return label;
+  if (label && !/^Step \d+$/.test(label)) return compactLogLabel(label);
   return shortTaskLabel(taskId) || String(taskId ?? '') || 'task';
 }
 

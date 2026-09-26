@@ -87,6 +87,37 @@ export function conversationSeed(session, currentInput, { limit = 12, maxChars =
   return seed;
 }
 
+/**
+ * Decides whether the conversation memory must be compacted before a turn.
+ *
+ * `conversationSeed` keeps the last `limit` messages: anything older left
+ * Donna's context WITHOUT a summary and without a word — silence is the bug.
+ * So a compaction is due as soon as a message would fall out of that window,
+ * or when the seed alone takes more than a quarter of the model's input
+ * budget (a small-context profile). The last `keepLast` messages stay
+ * verbatim: a follow-up needs the previous answer word for word.
+ * Pure: returns the segment to summarize, or null.
+ */
+export function conversationCompactionPlan(projection, { limit = 12, keepLast = 6, maxChars = 2000, budgetChars = null } = {}) {
+  const conversation = Array.isArray(projection?.conversation) ? projection.conversation : [];
+  const seedStart = Math.max(0, Number(projection?.conversationSeedStart) || 0);
+  const live = conversation.slice(seedStart)
+    .filter((message) => ['user', 'assistant'].includes(message?.role) && String(message?.content ?? '').trim());
+  const seedChars = live.slice(-limit).reduce((total, message) => total + Math.min(maxChars, String(message.content).length), 0)
+    + String(projection?.conversationSummary ?? '').length;
+  const overflow = live.length > limit;
+  const heavy = Number(budgetChars) > 0 && seedChars > Number(budgetChars) / 4;
+  if (!overflow && !heavy) return null;
+  const segment = conversation.slice(seedStart, Math.max(seedStart, conversation.length - keepLast));
+  if (!segment.some((message) => ['user', 'assistant'].includes(message?.role) && String(message?.content ?? '').trim())) return null;
+  return { segment, keepLast, reason: overflow ? 'window' : 'budget', previousSummary: projection?.conversationSummary ?? null };
+}
+
+/** What Donna is told after an automatic compaction — she says it, not the system. */
+export function compactionNoteForDonna(count) {
+  return `[Memory note for Donna — not written by the user] The ${count} oldest messages of this conversation were just condensed automatically into the summary above, to stay within the model's context; the messages below are verbatim. After answering the user's next question, tell them so in one short sentence, in the reply language.`;
+}
+
 export async function runRuntimeAgenticLoop(agent, session, initialInput, { signal, timeoutMs, maxTurns, runId, pollBusy, parallelHandoff = false, initialMessages = [] }) {
   return runAgenticLoop(agent, session, initialInput, {
     signal,

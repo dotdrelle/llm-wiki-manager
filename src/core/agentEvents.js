@@ -362,7 +362,16 @@ function applyEvent(state, event) {
       // (length at reset time) instead of clearing state.conversation is what
       // keeps the two concerns apart: the gauge/seed read conversationSeedStart,
       // the display reads conversation.
-      state.conversationSeedStart = state.conversation.length;
+      // `keepLast` (automatic compaction): the last exchanges stay verbatim in
+      // the seed — a follow-up such as « rajoute la liste » needs the previous
+      // answer word for word, not its summary. The manual gauge sends none.
+      {
+        const keepLast = Math.max(0, Math.floor(Number(event.payload?.keepLast) || 0));
+        state.conversationSeedStart = Math.max(
+          Number(state.conversationSeedStart) || 0,
+          state.conversation.length - keepLast,
+        );
+      }
       // The summary is best-effort (an LLM call the compact route makes before
       // dispatching this event): when it succeeds it REPLACES the previous one
       // — it is a rolling summary of "everything before this point", not an

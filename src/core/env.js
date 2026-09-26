@@ -8,9 +8,13 @@ const LEGACY_DEFAULT_WIKI_CHAT_TOOLS = [
   'wiki_collect_context', 'wiki_read_ingested_source',
 ];
 const WIKI_CHAT_TOOL_ADDITIONS = [
-  'wiki_outline', 'template_read', 'template_write', 'build_context_write',
+  'wiki_outline', 'template_read',
   'wiki_read_deliverable', 'wiki_graph_query', 'wiki_graph_path',
 ];
+// Chat is read-only. 0.15.46 migrated these two writers INTO every packaged
+// allow-list; the same recognizable lists get them taken out again.
+// (`chatAllowedTools` refuses them anyway, from the engine's readOnlyHint.)
+const WIKI_CHAT_TOOL_REMOVALS = ['template_write', 'build_context_write'];
 // Same additive rule for the packaged cme allow-list: an install scaffolded
 // before the live search tools existed keeps the three legacy reads forever,
 // and /chat can never call cme_confluence_search — the LLM is offered a
@@ -155,6 +159,9 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
           const missingWikiChatTools = migrateWikiChatTools
             ? WIKI_CHAT_TOOL_ADDITIONS.filter((tool) => !wikiAllow.includes(tool))
             : [];
+          const removedWikiChatTools = migrateWikiChatTools
+            ? WIKI_CHAT_TOOL_REMOVALS.filter((tool) => wikiAllow.includes(tool))
+            : [];
           const cmeAllow = current.chatAccess?.servers?.cme?.allow;
           const migrateCmeChatTools = Array.isArray(cmeAllow)
             && LEGACY_DEFAULT_CME_CHAT_TOOLS.every((tool) => cmeAllow.includes(tool));
@@ -166,14 +173,16 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
           }
           for (const key of missingServers) currentServers[key] = exampleServers[key];
           wikiAllow?.push(...missingWikiChatTools);
+          for (const tool of removedWikiChatTools) wikiAllow.splice(wikiAllow.indexOf(tool), 1);
           cmeAllow?.push(...missingCmeChatTools);
           const missingChatTools = [...missingWikiChatTools, ...missingCmeChatTools];
-          if (missing.length > 0 || missingServers.length > 0 || missingChatTools.length > 0) {
+          if (missing.length > 0 || missingServers.length > 0 || missingChatTools.length > 0 || removedWikiChatTools.length > 0) {
             writeFileSync(endpointsFile, `${JSON.stringify(current, null, 2)}\n`);
             const changes = [
               missing.length > 0 ? `keys: ${missing.join(', ')}` : '',
               missingServers.length > 0 ? `servers: ${missingServers.join(', ')}` : '',
               missingChatTools.length > 0 ? `chat tools: ${missingChatTools.join(', ')}` : '',
+              removedWikiChatTools.length > 0 ? `chat tools removed (read-only): ${removedWikiChatTools.join(', ')}` : '',
             ].filter(Boolean).join('; ');
             created.push(`mcp.endpoints.json ${changes}`);
           }

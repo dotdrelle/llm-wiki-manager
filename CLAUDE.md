@@ -620,7 +620,64 @@ turn ended on "Could not finish within the chat mode iteration limit" instead of
 the partial answer it already had. That last call also SAYS it in a user message
 (`FINAL_ANSWER_REQUEST`): omitting the toolset alone did not stop gpt-oss from
 emitting a call, which was dropped, and the empty turn told the user to switch
-to `/agent`.
+to `/agent`. Saying it was not enough either: that final call now receives the
+turn's tool exchanges **flattened** into one plain user message (each result
+labelled by the page path or the search query, never the tool name, which the
+model then cited), because a transcript of `tool_calls` + `tool` messages is
+the pattern gpt-oss continues (reproduced on Albert: eight page reads one per
+turn, a ninth requested at the final step). A reply with neither text nor a
+tool call goes to that same final request, a tool call written as bare JSON
+text is retried once, and a failing final call returns its cause (`failure`),
+shown as an LLM error — a 429 is not an iteration limit. The chat never tells
+a consultation to switch to `/agent`.
+
+The cap (`chatAccess.maxToolIterations`, at most 8) bounds the turns that
+search or wander; it is not what bounds cost. Three rules sit beside it
+(`repl.js`): the chat system prompt tells the model to read every page it needs
+in ONE `wiki_read_pages` call; a turn whose calls are all batch reads of at
+least two pages, one of them new to the turn, is **free** — it does not consume
+the cap (`createBatchReadPolicy`; backstop: free turns ≤ cap); and the loop
+stops on the **input budget** — the request re-sent each iteration (system +
+history + every result held) against the active profile's
+`limits.maxInputTokensPerCall` × 3.5 chars (`chatInputBudgetChars`, the
+engine's own key and ratio, default 50000 tokens). No provider's figure lives
+in the code: the budget is per profile, so per model. At the budget the final
+request keeps the results that fit, in reading order, and says how many it
+left out. A batch read's result is bounded per page (16 kB × pages, ≤ half the
+budget) instead of the flat 16 kB head+tail cut that dropped the pages in the
+middle of a batch.
+
+At the budget the loop first **condenses** once (`condenseToolExchanges`): the
+turn's tool exchanges are replaced by notes (facts + wiki paths) from one
+`llm.complete` call, and the reading goes on. It is skipped when the base
+request (system + history + pre-search) already takes 60 % of the budget —
+notes could leave no room to read; that is the conversation compaction's job.
+A failed condensation, or a second overflow, stops on the budget as before.
+
+**Automatic conversation compaction** (`conversationCompactionPlan`,
+`runner.js`, run by `executeInteractiveTurn` before the turn's own message):
+`conversationSeed` keeps the last 12 messages, so anything older used to leave
+Donna's context without summary or announcement. A compaction is now due when
+a message would fall out of that window, or when the seed takes more than a
+quarter of the input budget. It reuses the manual gauge's summarizer
+(`runtime/conversationCompact.js`) and `conversation_reset`, with
+`keepLast: 6` — the last three exchanges stay verbatim, a follow-up needs the
+previous answer word for word. No compaction during a run, and none without a
+NEW summary (the boundary never moves without one).
+
+**Donna says it, the system does not.** Neither compaction writes a line in the
+thread: Donna is handed a note (`compactionNoteForDonna`; the condensed notes'
+header plus `CONDENSED_ANSWER_REQUEST` on the final request) and says it in one
+sentence, in the reply language. The step line (`Condensing…`) is Logs chrome.
+
+**Chat is read-only.** `chatAllowedTools` refuses any tool of a server that
+annotates its tools (MCP `readOnlyHint`, as the wiki engine does on every read
+and never on a write) unless that tool is marked read-only — whatever the
+allow-list or `"*"` says. 0.15.46 had migrated `template_write` and
+`build_context_write` into every packaged chat allow-list; the scaffold now
+takes them back out of a recognizable packaged list (`WIKI_CHAT_TOOL_REMOVALS`,
+`env.js`). A server that annotates nothing (cme, exa…) keeps the allow-list as
+its only policy.
 
 Both modes search the wiki BEFORE the model speaks (`wikiSearchContextMessages`,
 `src/core/wikiPresearch.js`): chat mode in `repl.js` (ShellUI chat and the

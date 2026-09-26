@@ -500,7 +500,7 @@ export function formatMcpToolResult(result) {
 
 const DEFAULT_TOOL_RESULT_MAX_CHARS = 16000;
 
-function toolResultMaxChars() {
+export function toolResultMaxChars() {
   return DEFAULT_TOOL_RESULT_MAX_CHARS;
 }
 

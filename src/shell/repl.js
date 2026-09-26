@@ -15,7 +15,7 @@ import { handleSlashCommand, rawCommandAgentPrompt, refreshMcpRuntimeStatus } fr
 import { serviceChoices as composeServiceChoices, serviceDescription } from '../core/compose.js';
 import { extractActivity, mergePolledActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { syncActivitiesToPlan } from '../core/plan.js';
-import { buildLlmTools, callMcpTool, formatMcpToolResult, parseToolCallName, resolveToolCallName } from '../core/mcp.js';
+import { buildLlmTools, callMcpTool, formatMcpToolResult, parseToolCallName, resolveToolCallName, toolResultMaxChars } from '../core/mcp.js';
 import { runBoundedToolLoop } from '../core/toolLoop.js';
 import { isProductHelpQuestion, wikiSearchContextMessages } from '../core/wikiPresearch.js';
 import { createAgentEvent, dispatchAgentEvent, dispatchRuntimeLog } from '../core/agentEvents.js';
@@ -404,10 +404,81 @@ export function chatAllowedTools(session) {
     const name = item.function.name;
     if (isOrchestrationBypassTool(name)) return false;
     const { server, tool } = parseToolCallName(name);
+    if (declaresUnannotatedWriter(scopedMcp[server], tool)) return false;
     const entry = servers[server];
     if (entry.allow === '*') return true;
     return Array.isArray(entry.allow) && entry.allow.includes(tool);
   });
+}
+
+// Observed on gpt-oss: one wiki_read_page per turn, seven product pages,
+// seven turns — the cap was spent on reading, not on wandering. Said once in
+// the system prompt, where every turn of the loop sees it.
+function batchReadingRule(toolName) {
+  return `To read wiki pages, call ${toolName} ONCE with every path you need (all the pages a search pointed to, in the same call). Never read them one per turn with wiki_read_page: each turn costs a round trip, and turns are limited.`;
+}
+
+// A turn is free — it does not consume the chat's turn cap — when every call
+// in it is a batch read of several pages, at least one of them new to this
+// turn. Re-reading what is already held, or reading one page at a time, is an
+// ordinary turn. Fresh per chat turn: the paths are this turn's, not the
+// conversation's.
+export function createBatchReadPolicy(toolName) {
+  const read = new Set();
+  return (calls) => {
+    const batches = calls.map((call) => {
+      if (call?.function?.name !== toolName) return null;
+      try {
+        const paths = JSON.parse(call.function.arguments || '{}')?.paths;
+        return Array.isArray(paths) ? paths.map(String) : null;
+      } catch {
+        return null;
+      }
+    });
+    if (batches.some((paths) => !paths || paths.length < 2)) return false;
+    const fresh = batches.flat().filter((path) => !read.has(path));
+    for (const path of fresh) read.add(path);
+    return fresh.length > 0;
+  };
+}
+
+// One result is bounded at 16 kB (truncateToolResult), which a batch of seven
+// product pages already exceeds: the head+tail cut dropped the pages in the
+// middle, so batching lost exactly what it was asked to read. A batch read is
+// bounded per page instead, and never beyond half the input budget — the
+// budget, not a per-result figure, is what bounds the turn.
+export function batchReadResultMaxChars(toolName, budgetChars) {
+  return (call) => {
+    if (call?.function?.name !== toolName) return undefined;
+    let count = 1;
+    try { count = Math.max(1, JSON.parse(call.function.arguments || '{}')?.paths?.length || 1); } catch { count = 1; }
+    return Math.min(toolResultMaxChars() * count, Math.max(toolResultMaxChars(), Math.floor(budgetChars / 2)));
+  };
+}
+
+// The engine's per-call input limit for the ACTIVE profile (`.wikirc`
+// limits.maxInputTokensPerCall), converted with the engine's own ratio
+// (llm-wiki promptBudgetService.ts: 3.5 chars per token, default 50000
+// tokens). Per profile, so per model: no provider's figure lives here.
+const CHARS_PER_TOKEN = 3.5;
+const DEFAULT_MAX_INPUT_TOKENS_PER_CALL = 50000;
+export function chatInputBudgetChars(wikircConfig) {
+  const tokens = Number(wikircConfig?.limits?.maxInputTokensPerCall);
+  return (Number.isFinite(tokens) && tokens > 0 ? tokens : DEFAULT_MAX_INPUT_TOKENS_PER_CALL) * CHARS_PER_TOKEN;
+}
+
+// Chat is read-only, and the allow-list alone did not keep it so: 0.15.46
+// migrated template_write/build_context_write into every packaged list. A
+// server that annotates its tools (MCP `readOnlyHint`, as the wiki engine
+// does on every read and never on a write) is taken at its word: a tool it
+// does not mark read-only never reaches chat, whatever the list or `"*"`
+// says. A server that annotates nothing (cme, exa…) keeps the allow-list as
+// its only policy — its silence says nothing about its writes.
+function declaresUnannotatedWriter(entry, tool) {
+  const tools = entry?.tools ?? [];
+  if (!tools.some((item) => item?.annotations?.readOnlyHint === true)) return false;
+  const descriptor = tools.find((item) => String(item?.name ?? '') === tool);
+  return descriptor?.annotations?.readOnlyHint !== true;
 }
 
 // UI-provided context: the wiki page currently open in the serve shell.
@@ -1581,25 +1652,36 @@ async function runChatToolLoop({ input, session, history, donnaMessage, onUpdate
       return `Error [${qualified}]: ${err instanceof Error ? err.message : String(err)}`;
     }
   };
-  const { content, capped } = await runBoundedToolLoop({
+  const batchReader = allowedTools.find((item) => parseToolCallName(item.function.name).tool === 'wiki_read_pages');
+  const { content, capped, failure, stopReason } = await runBoundedToolLoop({
     llm: session.llm,
-    system: buildDirectChatSystemPrompt(session, openWikiPages),
+    system: [buildDirectChatSystemPrompt(session, openWikiPages), batchReader ? batchReadingRule(batchReader.function.name) : '']
+      .filter(Boolean).join('\n'),
     messages: [...history, ...contextMessages, { role: 'user', content: input }],
     tools: allowedTools,
     executeCall,
-    maxIterations: Math.min(8, Number(session?.chatAccess?.maxToolIterations) || 4),
+    isFreeTurn: batchReader ? createBatchReadPolicy(batchReader.function.name) : undefined,
+    inputBudgetChars: chatInputBudgetChars(session.wikircConfig),
+    resultMaxChars: batchReader ? batchReadResultMaxChars(batchReader.function.name, chatInputBudgetChars(session.wikircConfig)) : undefined,
     signal: session._abortSignal,
-    onStep: () => onStep?.('Chat: consulting…'),
+    onStep: (_iteration, _cap, phase) => onStep?.(phase === 'condensed' ? 'Chat: condensed the pages read to fit the input budget…' : 'Chat: consulting…'),
     onTextDelta,
     onTextReset,
   });
   // A capped turn now asks the model for a final answer without tools, so an
   // answer may exist even when the loop hit its limit: show it. Only fall back
-  // to the honest limit notice when there is genuinely nothing to show.
+  // to the honest limit notice when there is genuinely nothing to show. A
+  // consultation is chat work: the notice names the real cause (an LLM error
+  // such as a 429 is not a limit) and never sends the reader to /agent.
   const answer = stripDsmlArtifacts(content).trim();
-  donnaMessage.content = answer || (capped
-    ? 'Could not finish within the chat mode iteration limit. Switch to /agent if needed.'
-    : formatLlmUnavailableMessage('empty response'));
+  const llmError = failure && failure !== 'tool_call' ? failure : null;
+  donnaMessage.content = answer || (llmError
+    ? formatLlmUnavailableMessage(llmError)
+    : capped
+      ? (stopReason === 'budget'
+        ? 'Could not write an answer: the pages read filled this model\'s input budget (limits.maxInputTokensPerCall). Narrow the question.'
+        : 'Could not write an answer from the pages read within the chat tool limit. Ask again, or narrow the question.')
+      : formatLlmUnavailableMessage('empty response'));
   onUpdate?.();
 }
 

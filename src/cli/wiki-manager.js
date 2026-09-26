@@ -18,7 +18,7 @@ import { ensureManagerScaffold, loadManagerEnv } from '../core/env.js';
 loadManagerEnv();
 import { createAgentGraph } from '../agent/graph.js';
 import { handleSlashCommand, printHelp, printVersion, refreshMcpRuntimeStatus } from '../commands/slash.js';
-import { runShell, runHeadlessChatTurn, sanitizeOpenWikiPages } from '../shell/repl.js';
+import { runShell, runHeadlessChatTurn, sanitizeOpenWikiPages, chatInputBudgetChars } from '../shell/repl.js';
 import { runPreflightChecks, withRuntimePreflight } from '../core/startupCheck.js';
 import { refreshRunningContainers } from '../core/wikiSetup.js';
 import { applySessionWikircProfile } from '../core/sessionConfig.js';
@@ -960,7 +960,8 @@ async function runRuntime(argv, agent) {
   const { resolveRuntimeAuthToken } = await import('../runtime/auth.js');
   const { createSqliteQueueStore } = await import('../runtime/queueStore.js');
   const { createApprovalManager } = await import('../runtime/approvals.js');
-  const { conversationSeed, runRuntimeAgenticWorkflow } = await import('../runtime/runner.js');
+  const { conversationSeed, conversationCompactionPlan, compactionNoteForDonna, runRuntimeAgenticWorkflow } = await import('../runtime/runner.js');
+  const { summarizeCompactedConversation } = await import('../runtime/conversationCompact.js');
 
   // Same default as wiki-workspace runtime up and ensureRuntime: a loopback
   // bind is invisible to the serve container.
@@ -1755,7 +1756,7 @@ async function runRuntime(argv, agent) {
     const persistedProjection = reduceAgentEvents(store.listEvents({
       workspace: context.workspace ?? ephemeral.workspace ?? null,
     }));
-    const messages = conversationSeed({ agentProjection: persistedProjection }, input);
+    let messages = conversationSeed({ agentProjection: persistedProjection }, input);
     // Streaming fragments are coalesced before they are persisted and pushed —
     // one synchronous SQLite insert (plus one SSE write) per token stalled the
     // event loop, freezing both chats (serve and ShellUI) while a long answer
@@ -1787,6 +1788,37 @@ async function runRuntime(argv, agent) {
       workspace: context.workspace ?? null,
       payload: { message },
     }));
+    // Automatic memory compaction, before this turn's own message enters the
+    // conversation. Not during a run (the manual gauge refuses it too: the
+    // boundary must not move under a run's own messages). A compaction whose
+    // summary could not be produced moves nothing — dropping messages without
+    // their summary is the silent loss this exists to end. Donna, not the
+    // system, tells the user it happened.
+    const compaction = context.running ? null : conversationCompactionPlan(persistedProjection, {
+      budgetChars: chatInputBudgetChars(context.session?.wikircConfig),
+    });
+    if (compaction) {
+      ephemeral._onStep?.('Condensing the earlier conversation…');
+      const summary = await summarizeCompactedConversation(context.session, compaction);
+      if (summary && summary !== compaction.previousSummary) {
+        dispatchAgentEvent(ephemeral, createAgentEvent('conversation_reset', {
+          origin: 'runtime_turn',
+          turnId,
+          workspace: context.workspace ?? null,
+          payload: { summary, keepLast: compaction.keepLast, automatic: true, reason: compaction.reason },
+        }));
+        const compactedProjection = reduceAgentEvents(store.listEvents({
+          workspace: context.workspace ?? ephemeral.workspace ?? null,
+        }));
+        const count = compaction.segment.filter((message) => ['user', 'assistant'].includes(message?.role)).length;
+        // Right after the summary it refers to — never last: the chat branch
+        // drops a trailing user message as the current input.
+        const seed = conversationSeed({ agentProjection: compactedProjection }, input);
+        messages = [seed[0], { role: 'user', content: compactionNoteForDonna(count) }, ...seed.slice(1)];
+      } else {
+        emitRuntimeLog(context.session, 'conversation-compact: automatic compaction skipped — no new summary; the conversation window is unchanged');
+      }
+    }
     dispatchAgentEvent(ephemeral, createAgentEvent('user_message', {
       origin: 'runtime_turn',
       turnId,

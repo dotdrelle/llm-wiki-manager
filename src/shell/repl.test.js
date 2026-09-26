@@ -970,7 +970,7 @@ test('chatAllowedTools exposes exactly the declared MCP tools to /chat', () => {
   assert.deepEqual(names, ['cme__cme_sources_list', 'cme__cme_status']);
 });
 
-test('chatAllowedTools offers every declared tool, reads and writes alike', () => {
+test('chatAllowedTools follows the allow-list alone for a server that annotates nothing', () => {
   const session = {
     chatAccess: {
       servers: {
@@ -993,6 +993,26 @@ test('chatAllowedTools offers every declared tool, reads and writes alike', () =
     names,
     ['wiki__wiki_collect_context', 'wiki__wiki_search_context', 'wiki__wiki_write_page'],
   );
+});
+
+test('chatAllowedTools never offers a tool an annotating server leaves unmarked read-only', () => {
+  // 0.15.46 migrated template_write/build_context_write into the packaged chat
+  // allow-list: chat must stay read-only whatever the list (or "*") says.
+  const readOnly = { readOnlyHint: true };
+  const tools = [
+    { name: 'wiki_read_pages', annotations: readOnly, inputSchema: { type: 'object', properties: {} } },
+    { name: 'template_read', annotations: readOnly, inputSchema: { type: 'object', properties: {} } },
+    { name: 'template_write', inputSchema: { type: 'object', properties: {} } },
+    { name: 'build_context_write', inputSchema: { type: 'object', properties: {} } },
+  ];
+  for (const allow of [['wiki_read_pages', 'template_read', 'template_write', 'build_context_write'], '*']) {
+    const session = {
+      chatAccess: { servers: { wiki: { allow } } },
+      mcp: { wiki: { status: 'connected', tools } },
+    };
+    const names = chatAllowedTools(session).map((item) => item.function.name).sort();
+    assert.deepEqual(names, ['wiki__template_read', 'wiki__wiki_read_pages'], JSON.stringify(allow));
+  }
 });
 
 test('chatAllowedTools "*" offers every tool of the server, writes included', () => {
@@ -1449,4 +1469,27 @@ test('runHeadlessChatTurn falls back to the plain stream without read tools', as
   const reply = await runHeadlessChatTurn(session, 'bonjour', { history: [] });
   assert.match(reply, /PLAIN_STREAM/);
   assert.doesNotMatch(reply, /SHOULD_NOT_APPEAR/);
+});
+
+test('a batch read of several new pages is a free turn; one page, or pages already held, is not', async () => {
+  const { createBatchReadPolicy } = await import('./repl.js');
+  const isFree = createBatchReadPolicy('wiki__wiki_read_pages');
+  const read = (paths) => [{ function: { name: 'wiki__wiki_read_pages', arguments: JSON.stringify({ paths }) } }];
+  assert.equal(isFree(read(['a.md', 'b.md'])), true);
+  assert.equal(isFree(read(['a.md', 'b.md'])), false, 'nothing new');
+  assert.equal(isFree(read(['c.md'])), false, 'a single page is an ordinary turn');
+  assert.equal(isFree(read(['a.md', 'd.md'])), true, 'one new page among several');
+  assert.equal(isFree([{ function: { name: 'wiki__wiki_search_context', arguments: '{}' } }]), false);
+  assert.equal(isFree([...read(['e.md', 'f.md']), { function: { name: 'wiki__wiki_read_page', arguments: '{"path":"g.md"}' } }]), false);
+});
+
+test('the chat input budget is the active profile\'s own per-call limit', async () => {
+  const { chatInputBudgetChars, batchReadResultMaxChars } = await import('./repl.js');
+  assert.equal(chatInputBudgetChars({ limits: { maxInputTokensPerCall: 120000 } }), 420000);
+  assert.equal(chatInputBudgetChars({}), 175000, 'engine default: 50000 tokens');
+  const limit = batchReadResultMaxChars('wiki__wiki_read_pages', 420000);
+  const call = (n) => ({ function: { name: 'wiki__wiki_read_pages', arguments: JSON.stringify({ paths: Array.from({ length: n }, (_, i) => `p${i}.md`) }) } });
+  assert.equal(limit(call(7)), 7 * 16000);
+  assert.equal(limit(call(25)), 210000, 'never beyond half the budget');
+  assert.equal(limit({ function: { name: 'wiki__wiki_read_page', arguments: '{}' } }), undefined);
 });

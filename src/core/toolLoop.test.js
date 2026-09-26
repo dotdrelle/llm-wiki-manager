@@ -266,3 +266,301 @@ test('never asks to discard text that was never emitted', async () => {
 
   assert.equal(resets, 0);
 });
+
+test('the final request carries no tool call, only the gathered results as text', async () => {
+  // Observed on Albert/gpt-oss: eight page reads one per turn, then a ninth
+  // read requested at the final step although no tool was offered. A
+  // transcript of tool_calls + tool messages is the pattern it continues.
+  let finalMessages = null;
+  const llm = {
+    async completeWithTools({ tools, messages }) {
+      if (tools.length > 0) {
+        const calls = [toolCall(`c${messages.length}`, 'wiki__wiki_read_page', `{"path":"p${messages.length}.md"}`)];
+        return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+      }
+      finalMessages = messages;
+      return { content: 'Anaplan, Pigment, Jedox.', tool_calls: [] };
+    },
+  };
+  const out = await runBoundedToolLoop({
+    llm,
+    messages: [{ role: 'user', content: 'liste des progiciels' }],
+    tools: [{ function: { name: 'wiki__wiki_read_page' } }],
+    executeCall: async (call) => `PAGE ${call.function.arguments}`,
+    maxIterations: 2,
+  });
+  assert.equal(out.content, 'Anaplan, Pigment, Jedox.');
+  assert.ok(finalMessages.every((m) => m.role !== 'tool' && !m.tool_calls), 'no tool exchange may remain');
+  assert.equal(finalMessages.length, 2);
+  const evidence = finalMessages.at(-1).content;
+  assert.match(evidence, /### Page p1\.md\nPAGE/);
+  assert.match(evidence, /p3\.md/);
+  assert.match(evidence, /No more tool calls/);
+});
+
+test('an empty reply with no tool call asks for the final answer instead of ending empty', async () => {
+  let round = 0;
+  const llm = {
+    async completeWithTools({ tools }) {
+      round += 1;
+      if (round === 1) {
+        const calls = [toolCall('c1', 'wiki__wiki_read_page')];
+        return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+      }
+      if (tools.length > 0) return { content: '', tool_calls: null };
+      return { content: 'Réponse.', tool_calls: [] };
+    },
+  };
+  const out = await runBoundedToolLoop({
+    llm,
+    tools: [{ function: { name: 'wiki__wiki_read_page' } }],
+    executeCall: async () => 'page',
+    maxIterations: 8,
+  });
+  assert.equal(out.content, 'Réponse.');
+  assert.equal(out.iterations, 2);
+});
+
+test('a failing final call reports its cause instead of passing for the limit', async () => {
+  const llm = {
+    async completeWithTools({ tools }) {
+      if (tools.length === 0) throw new Error('HTTP 429 input tokens per minute exceeded');
+      const calls = [toolCall('x', 's__status')];
+      return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+    },
+  };
+  const out = await runBoundedToolLoop({ llm, tools: [{ function: { name: 's__status' } }], executeCall: async () => 'r', maxIterations: 3 });
+  assert.equal(out.content, '');
+  assert.match(out.failure, /429/);
+});
+
+test('a tool call written as bare JSON text is not shown as the answer', async () => {
+  let finals = 0;
+  const llm = {
+    async completeWithTools({ tools }) {
+      if (tools.length > 0) {
+        const calls = [toolCall('x', 'wiki__wiki_read_page', '{"path":"a.md"}')];
+        return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+      }
+      finals += 1;
+      return finals === 1
+        ? { content: '{"path":"wiki/concepts/produit/prophix.md"}', tool_calls: null }
+        : { content: 'Anaplan et Prophix.', tool_calls: null };
+    },
+  };
+  const out = await runBoundedToolLoop({ llm, tools: [{ function: { name: 'wiki__wiki_read_page' } }], executeCall: async () => 'page', maxIterations: 1 });
+  assert.equal(finals, 2, 'one retry of the final request');
+  assert.equal(out.content, 'Anaplan et Prophix.');
+});
+
+test('an answer written beside a stray tool call at the final step is kept', async () => {
+  let finals = 0;
+  const llm = {
+    async completeWithTools({ tools }) {
+      if (tools.length > 0) {
+        const calls = [toolCall('x', 'wiki__wiki_read_page', '{"path":"a.md"}')];
+        return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+      }
+      finals += 1;
+      return { content: 'Anaplan, Pigment.', tool_calls: [toolCall('y', 'wiki__wiki_read_page', '{"path":"b.md"}')] };
+    },
+  };
+  const out = await runBoundedToolLoop({ llm, tools: [{ function: { name: 'wiki__wiki_read_page' } }], executeCall: async () => 'page', maxIterations: 1 });
+  assert.equal(out.content, 'Anaplan, Pigment.');
+  assert.equal(finals, 1, 'no retry when the text is usable');
+  assert.equal(out.failure, undefined);
+});
+
+test('a streamed answer beside a stray tool call is neither reset nor dropped', async () => {
+  let resets = 0;
+  const llm = {
+    async streamWithTools({ tools, onTextDelta }) {
+      if (tools.length > 0) {
+        const calls = [toolCall('x', 'wiki__wiki_read_page', '{"path":"a.md"}')];
+        return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+      }
+      onTextDelta('Réponse finale.');
+      return { content: 'Réponse finale.', tool_calls: [toolCall('y', 'wiki__wiki_read_page')] };
+    },
+  };
+  const out = await runBoundedToolLoop({
+    llm,
+    tools: [{ function: { name: 'wiki__wiki_read_page' } }],
+    executeCall: async () => 'page',
+    maxIterations: 1,
+    onTextDelta: () => {},
+    onTextReset: () => { resets += 1; },
+  });
+  assert.equal(out.content, 'Réponse finale.');
+  assert.equal(resets, 0);
+});
+
+test('a free turn does not consume the cap, an ordinary one does', async () => {
+  let round = 0;
+  const llm = {
+    async completeWithTools() {
+      round += 1;
+      if (round <= 3) {
+        const calls = [toolCall(`r${round}`, 'wiki__wiki_read_pages', `{"paths":["p${round}a","p${round}b"]}`)];
+        return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+      }
+      return { content: 'Réponse.', tool_calls: [] };
+    },
+  };
+  const out = await runBoundedToolLoop({
+    llm,
+    tools: [{ function: { name: 'wiki__wiki_read_pages' } }],
+    executeCall: async () => 'pages',
+    maxIterations: 2,
+    isFreeTurn: () => true,
+  });
+  assert.equal(out.content, 'Réponse.');
+  assert.equal(out.capped, false, 'three batch reads under a cap of two');
+  assert.equal(out.iterations, 4);
+});
+
+test('free turns stay bounded by the cap as a backstop', async () => {
+  let round = 0;
+  const llm = {
+    async completeWithTools({ tools }) {
+      if (tools.length === 0) return { content: 'Fin.', tool_calls: [] };
+      round += 1;
+      const calls = [toolCall(`r${round}`, 'wiki__wiki_read_pages', `{"paths":["a${round}","b${round}"]}`)];
+      return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+    },
+  };
+  const out = await runBoundedToolLoop({
+    llm,
+    tools: [{ function: { name: 'wiki__wiki_read_pages' } }],
+    executeCall: async () => 'x',
+    maxIterations: 2,
+    isFreeTurn: () => true,
+  });
+  assert.equal(out.iterations, 4, 'two free + two counted');
+  assert.equal(out.stopReason, 'cap');
+});
+
+test('the input budget stops the loop and the final request keeps what fits', async () => {
+  let finalMessages = null;
+  let round = 0;
+  const llm = {
+    async completeWithTools({ tools, messages }) {
+      if (tools.length === 0) { finalMessages = messages; return { content: 'Partiel.', tool_calls: [] }; }
+      round += 1;
+      const calls = [toolCall(`r${round}`, 'wiki__wiki_read_page', `{"path":"p${round}.md"}`)];
+      return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+    },
+  };
+  const out = await runBoundedToolLoop({
+    llm,
+    system: 'S',
+    messages: [{ role: 'user', content: 'q' }],
+    tools: [{ function: { name: 'wiki__wiki_read_page' } }],
+    executeCall: async () => 'x'.repeat(400),
+    maxIterations: 8,
+    inputBudgetChars: 1000,
+  });
+  assert.equal(out.stopReason, 'budget');
+  assert.ok(out.iterations < 8);
+  assert.equal(out.content, 'Partiel.');
+  const evidence = finalMessages.at(-1).content;
+  assert.ok(evidence.length < 1400, `final request stays near the budget (${evidence.length})`);
+  assert.match(evidence, /left out: over this model's input budget/);
+});
+
+test('at the budget the pages read are condensed once and the reading goes on', async () => {
+  let round = 0;
+  let condenseInput = null;
+  let finalMessages = null;
+  const llm = {
+    async complete({ input }) { condenseInput = input; return 'Anaplan: SaaS [src: wiki/concepts/produit/anaplan.md]'; },
+    async completeWithTools({ tools, messages }) {
+      round += 1;
+      if (round <= 3 && tools.length > 0) {
+        const calls = [toolCall(`c${round}`, 'wiki__wiki_read_page', `{"path":"p${round}.md"}`)];
+        return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+      }
+      finalMessages = messages;
+      return { content: 'Réponse, lecture en partie condensée.', tool_calls: [] };
+    },
+  };
+  const out = await runBoundedToolLoop({
+    llm,
+    system: 'S',
+    messages: [{ role: 'user', content: 'quels progiciels ?' }],
+    tools: [{ function: { name: 'wiki__wiki_read_page' } }],
+    executeCall: async () => 'x'.repeat(400),
+    maxIterations: 8,
+    inputBudgetChars: 1000,
+  });
+  assert.equal(out.condensations, 1);
+  assert.equal(out.content, 'Réponse, lecture en partie condensée.');
+  assert.match(condenseInput, /QUESTION:\nquels progiciels \?/);
+  assert.match(condenseInput, /Page p1\.md/);
+  // Donna is told to say it herself; the notes replaced the raw exchanges.
+  const notes = finalMessages.find((m) => m.role === 'user' && /condensed into the notes below/.test(m.content));
+  assert.ok(notes, 'the condensed notes reach the model');
+  assert.match(notes.content, /say in one short sentence/);
+  assert.match(notes.content, /anaplan\.md/);
+});
+
+test('a failed condensation stops on the budget as before', async () => {
+  let round = 0;
+  const llm = {
+    async complete() { throw new Error('HTTP 500'); },
+    async completeWithTools({ tools }) {
+      if (tools.length === 0) return { content: 'Partiel.', tool_calls: [] };
+      round += 1;
+      const calls = [toolCall(`c${round}`, 'wiki__wiki_read_page', `{"path":"p${round}.md"}`)];
+      return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+    },
+  };
+  const out = await runBoundedToolLoop({
+    llm, system: 'S', messages: [{ role: 'user', content: 'q' }],
+    tools: [{ function: { name: 'wiki__wiki_read_page' } }],
+    executeCall: async () => 'x'.repeat(400), maxIterations: 8, inputBudgetChars: 1000,
+  });
+  assert.equal(out.stopReason, 'budget');
+  assert.equal(out.condensations, undefined);
+  assert.equal(out.content, 'Partiel.');
+});
+
+test('the condensed notes survive into the final request', async () => {
+  let round = 0;
+  let finalEvidence = '';
+  const llm = {
+    async complete() { return 'NOTES-CONDENSEES'; },
+    async completeWithTools({ tools, messages }) {
+      if (tools.length === 0) { finalEvidence = messages.at(-1).content; return { content: 'Fin.', tool_calls: [] }; }
+      round += 1;
+      const calls = [toolCall(`c${round}`, 'wiki__wiki_read_page', `{"path":"p${round}.md"}`)];
+      return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+    },
+  };
+  await runBoundedToolLoop({
+    llm, system: 'S', messages: [{ role: 'user', content: 'q' }],
+    tools: [{ function: { name: 'wiki__wiki_read_page' } }],
+    executeCall: async () => 'x'.repeat(400), maxIterations: 4, inputBudgetChars: 1000,
+  });
+  assert.match(finalEvidence, /NOTES-CONDENSEES/);
+  assert.match(finalEvidence, /end your answer with one short sentence saying so/);
+});
+
+test('no condensation when the base request alone nearly fills the budget', async () => {
+  let condensed = false;
+  const llm = {
+    async complete() { condensed = true; return 'notes'; },
+    async completeWithTools({ tools }) {
+      if (tools.length === 0) return { content: 'Partiel.', tool_calls: [] };
+      const calls = [toolCall('c1', 'wiki__wiki_read_page', '{"path":"p.md"}')];
+      return { message: { role: 'assistant', content: '', tool_calls: calls }, tool_calls: calls };
+    },
+  };
+  const out = await runBoundedToolLoop({
+    llm, system: 'S'.repeat(700), messages: [{ role: 'user', content: 'q' }],
+    tools: [{ function: { name: 'wiki__wiki_read_page' } }],
+    executeCall: async () => 'x'.repeat(400), maxIterations: 8, inputBudgetChars: 1000,
+  });
+  assert.equal(condensed, false);
+  assert.equal(out.stopReason, 'budget');
+});

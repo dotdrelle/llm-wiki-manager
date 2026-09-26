@@ -1285,6 +1285,39 @@ test('both prompts tell Donna to answer workspace questions from the wiki first'
   assert.match(buildDirectChatSystemPrompt(session), /search the wiki FIRST[\s\S]*Never redirect such a question to \/agent/);
 });
 
+test('the chat prompt tells Donna to use an offered web tool instead of denying it', () => {
+  const session = createSession();
+  const prompt = buildDirectChatSystemPrompt(session);
+  assert.match(prompt, /use it for an internet\/web request/i);
+  assert.match(prompt, /never answer that you cannot search the internet/i);
+});
+
+test('the chat prompt names the external read tools actually offered this turn', () => {
+  const session = createSession();
+  const tools = [
+    { function: { name: 'wiki__wiki_read_page' } },
+    { function: { name: 'production__production_job_status' } },
+    { function: { name: 'search__web_search' } },
+    { function: { name: 'search__web_fetch' } },
+  ];
+  const prompt = buildDirectChatSystemPrompt(session, [], tools);
+  assert.match(prompt, /External read tools also offered for this turn[^:]*: search: search__web_search, search__web_fetch\./);
+  assert.doesNotMatch(prompt, /wiki__wiki_read_page/);
+  assert.doesNotMatch(prompt, /production__production_job_status/);
+  assert.doesNotMatch(buildDirectChatSystemPrompt(session, [], []), /External read tools/);
+});
+
+test('the wiki pre-search does not close the search when an external tool is offered', async () => {
+  const { session, seen } = presearchSession(['wiki_search_context']);
+  const { restore } = stubWikiMcp(async () => ({ content: [{ type: 'text', text: 'aucune page' }] }));
+  try {
+    await runHeadlessChatTurn(session, 'que dit internet sur cet outil', { history: [] });
+  } finally { restore(); }
+  const context = seen[0].find((m) => /WIKI SEARCH RESULTS/.test(m.content));
+  assert.ok(context);
+  assert.match(context.content, /wiki’s silence does not mean the answer is unavailable/);
+});
+
 test('product-help questions are detected without treating ordinary domain questions as product help', () => {
   assert.equal(isProductHelpQuestion('À quoi correspond Parallelism & throughput ?'), true);
   assert.equal(isProductHelpQuestion('Comment fonctionne Donna ?'), true);

@@ -604,7 +604,30 @@ export function buildAttachedDocMessages(docs) {
   }];
 }
 
-export function buildDirectChatSystemPrompt(session, rawOpenWikiPages) {
+// The chat prompt must NAME the non-wiki read tools it offers. Their schemas
+// are passed, but with the wiki tools alone described in prose, gpt-oss
+// answered "je ne dispose d'aucun outil de recherche sur le Web" while
+// web_search_exa sat in its tool list (reproduced on acpi with the real
+// 27-tool turn). Same contract as the runtime prompt: the pool is the
+// authority and the prompt reports it. No connector is named in code — the
+// list is built from the tools actually offered for this turn.
+function externalChatToolsLine(allowedTools) {
+  const byServer = new Map();
+  for (const item of allowedTools ?? []) {
+    const name = String(item?.function?.name ?? '');
+    const sep = name.indexOf('__');
+    if (sep === -1) continue;
+    const server = name.slice(0, sep);
+    if (server === 'wiki' || server === 'production') continue;
+    if (!byServer.has(server)) byServer.set(server, []);
+    byServer.get(server).push(name);
+  }
+  if (byServer.size === 0) return null;
+  const list = [...byServer].map(([server, names]) => `${server}: ${names.join(', ')}`).join('; ');
+  return `External read tools also offered for this turn (outside the workspace wiki): ${list}. For an internet/web search, call the matching tool directly — never answer that you cannot search the internet when one of these is offered, and never claim a search you did not run.`;
+}
+
+export function buildDirectChatSystemPrompt(session, rawOpenWikiPages, allowedTools = null) {
   const workspace = session.workspace ?? 'no workspace selected';
   const wikirc = session.wikirc?.profile ?? 'no profile loaded';
   const language = session.language ?? 'en-US';
@@ -625,6 +648,11 @@ export function buildDirectChatSystemPrompt(session, rawOpenWikiPages) {
     // is answered, so whether Donna searched it or sent the user to /agent
     // depended on the model. Reading the wiki is exactly what chat mode is for.
     'A question about the subject matter of this workspace (its projects, documents, tickets, people, decisions, figures, dates) is answered from the wiki: when wiki search/read tools are offered, search the wiki FIRST and answer from what they return, citing the page. Never redirect such a question to /agent — agent mode reads the same wiki with the same tools. If the wiki does not contain the answer, say so plainly.',
+    // The wiki-first rule above covered workspace facts and nothing said the
+    // other offered tools existed, so "cherche sur internet" was answered
+    // "je ne peux pas" although a web-search tool was offered for the turn
+    // (observed on acpi). The wiki stays first; the tools cover the rest.
+    'The wiki-first rule covers workspace facts only. When a web or external search/read tool is offered for this turn, use it for an internet/web request — never answer that you cannot search the internet when such a tool is provided, and never claim a search you did not run.',
     // Observed: « compare les options A et B » answered from the previous
     // answers alone — the history carries Donna's text, not the pages — and
     // option A was invented, the opposite of what the wiki says.
@@ -648,7 +676,8 @@ export function buildDirectChatSystemPrompt(session, rawOpenWikiPages) {
     ] : []),
     currentArtifactPromptLine(currentArtifactFor(session)),
     openWikiPagesPromptLine(openWikiPages),
-  ].join('\n');
+    externalChatToolsLine(allowedTools),
+  ].filter(Boolean).join('\n');
 }
 
 
@@ -1655,7 +1684,7 @@ async function runChatToolLoop({ input, session, history, donnaMessage, onUpdate
   const batchReader = allowedTools.find((item) => parseToolCallName(item.function.name).tool === 'wiki_read_pages');
   const { content, capped, failure, stopReason } = await runBoundedToolLoop({
     llm: session.llm,
-    system: [buildDirectChatSystemPrompt(session, openWikiPages), batchReader ? batchReadingRule(batchReader.function.name) : '']
+    system: [buildDirectChatSystemPrompt(session, openWikiPages, allowedTools), batchReader ? batchReadingRule(batchReader.function.name) : '']
       .filter(Boolean).join('\n'),
     messages: [...history, ...contextMessages, { role: 'user', content: input }],
     tools: allowedTools,

@@ -249,7 +249,23 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     INSERT OR IGNORE INTO events (sequence, id, ts, type, run_id, turn_id, task_id, workspace, origin, payload)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  const nextEventSequenceStatement = db.prepare('SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM events');
+  // A sequence is a CURSOR clients hold ("events after N"): it must never be
+  // handed out twice. MAX(sequence)+1 alone reused the numbers a purge or a
+  // truncation had just deleted — observed: after a purge the next run's
+  // events took 3503…3540 again, a served chat whose cursor stood at 3536
+  // never received them, and it stayed on the failed run (strip at 0 %,
+  // inspector on the old task) while the ShellUI showed the new one done.
+  // sqlite_sequence keeps the high-water mark of an AUTOINCREMENT table
+  // across deletions; a legacy table without it falls back to MAX.
+  const hasSqliteSequence = Boolean(db.prepare(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'",
+  ).get());
+  const nextEventSequenceStatement = db.prepare(hasSqliteSequence
+    ? `SELECT MAX(
+        COALESCE((SELECT MAX(sequence) FROM events), 0),
+        COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'events'), 0)
+      ) + 1 AS next_sequence`
+    : 'SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM events');
   const listEventsStatement = db.prepare(`
     SELECT sequence, id, ts, type, run_id, turn_id, task_id, workspace, origin, payload
     FROM events

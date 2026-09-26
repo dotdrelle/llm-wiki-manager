@@ -1174,3 +1174,25 @@ test('un agent restauré par hydrateSession n’est plus routable tant qu’aucu
     [],
   );
 });
+
+test('a purge never lets the next event reuse a sequence a client may hold as its cursor', () => {
+  // Observed on acpi: after a purge the next run's events took the numbers
+  // just deleted, and a served chat whose cursor stood past them never
+  // received them — it stayed on the failed run while the ShellUI showed done.
+  const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-'));
+  const store = openRuntimeStore({ stateDir });
+  const session = { activities: {}, headlessPlan: null };
+  const persist = () => store.persistEvent(dispatchAgentEvent(session, createAgentEvent('run_started', {
+    origin: 'test', workspace: 'acpi', payload: { input: 'x', workspace: 'acpi' },
+  })));
+  for (let i = 0; i < 5; i += 1) persist();
+  const cursor = Math.max(...store.listEvents().map((e) => e.sequence));
+  store.clearWorkspaceState({ workspace: 'acpi' });
+  const next = persist();
+  assert.ok(next.sequence > cursor, `sequence ${next.sequence} must be past the cursor ${cursor}`);
+  store.close();
+  const reopened = openRuntimeStore({ stateDir });
+  const after = reopened.persistEvent(createAgentEvent('run_started', { origin: 'test', workspace: 'acpi', payload: {} }));
+  assert.ok(after.sequence > next.sequence, 'the high-water mark survives a restart');
+  reopened.close();
+});

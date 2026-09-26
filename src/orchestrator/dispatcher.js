@@ -260,7 +260,7 @@ async function executeExternalRuntime(task, assignment, {
       model: activeProfileModel(session),
       language: session?.language ?? session?.wikircConfig?.language ?? null,
       mcp: mcpPool,
-      systemPrompt: activeRuntimeSystemPrompt(session, task, assignment),
+      systemPrompt: activeRuntimeSystemPrompt(session, task, assignment, mcpPool),
     });
     runtimeRunId = String(accepted?.runId ?? '');
     if (!runtimeRunId) throw new Error('runtime.execute did not return runId.');
@@ -557,8 +557,8 @@ function isReadOnlyExternalTool(toolName) {
 // The runtime's EYES, per run: the active workspace's wiki MCP (read tools
 // only) PLUS the declared external MCP endpoints that are safe to hand over
 // (connected, no approval-gated tools, not a workspace-mutating server) —
-// typically web search (exa). The allow-list here is the authority: nothing
-// else reaches the runtime.
+// typically a web-search connector. The allow-list here is the authority:
+// nothing else reaches the runtime.
 export function activeProfileMcp(session) {
   const blocks = [];
   const wiki = session?.mcp?.wiki;
@@ -590,8 +590,9 @@ export function activeProfileMcp(session) {
   }
   // External connectors ride along ONLY when the operator declared them safe
   // for the runtime's eyes. A connector added from the serve panel lands here
-  // too — without this, exa was offered in chat but the agentic path
-  // delegated to the gateway and the Deep Agent answered it had no web tools.
+  // too — without this, a web connector was offered in chat but the agentic
+  // path delegated to the gateway and the Deep Agent answered it had no web
+  // tools.
   const EXCLUDED_EXTERNAL_SERVERS = new Set(['cme', 'documents', 'connectors', 'production']);
   for (const [name, entry] of Object.entries(session?.mcp ?? {})) {
     if (!entry?.external || entry.status !== 'connected') continue;
@@ -616,21 +617,56 @@ export function activeProfileMcp(session) {
 // description), the eyes/bouche/mains boundary, the workspace profile and the
 // reply language. Without it, the runtime falls back to deepagents' generic
 // assistant prompt — which is exactly the "upload your project" hallucination.
-function activeRuntimeSystemPrompt(session, task, assignment) {
+// The runtime prompt must describe the pool the same dispatch actually hand
+// over. It used to assert "READ tools only (the workspace wiki)" whatever the
+// pool held, so a run handed an external web-search read tool still answered
+// "je suis limité aux seules sources du wiki" and made zero tool calls
+// (observed on acpi: "cherche sur internet" → agent.answer → refusal, gateway
+// /metrics tools:0). The pool is the authority; the prompt reports it, never
+// denies it.
+function describeRuntimePool(mcpPool) {
+  const blocks = Array.isArray(mcpPool) ? mcpPool : [];
+  const wiki = blocks.find((block) => block?.name === 'wiki');
+  const hasWiki = Boolean(wiki && Array.isArray(wiki.tools) && wiki.tools.length > 0);
+  const external = blocks
+    .filter((block) => block && block.name !== 'wiki' && Array.isArray(block.tools) && block.tools.length > 0)
+    .map((block) => ({
+      name: String(block.name),
+      tools: block.tools.map((tool) => `${block.name}__${String(tool)}`),
+    }));
+  return { hasWiki, external };
+}
+
+export function activeRuntimeSystemPrompt(session, task, assignment, mcpPool = null) {
   const capability = assignment?.capability ?? null;
   const description = String(capability?.description ?? '').trim();
   const language = session?.language ?? session?.wikircConfig?.language ?? null;
   const profile = loadWorkspaceProfile(session?.workspacePath);
+  const { hasWiki, external } = describeRuntimePool(mcpPool);
+  const externalTools = external.flatMap((block) => block.tools);
+  // Wiki first, then the declared external read tools. A run that has a web
+  // search tool must not refuse with "I cannot search the internet": that
+  // refusal is exactly the symptom this line exists to prevent.
+  const vision = externalTools.length > 0
+    ? [
+        `Beyond the wiki you also have these READ tools: ${externalTools.join(', ')}.`,
+        hasWiki
+          ? 'Search the workspace wiki FIRST; then use those external/web read tools for current, public or out-of-workspace facts the wiki does not cover.'
+          : 'Use those external/web read tools for facts the workspace does not cover.',
+        'Never answer that you cannot search the internet or that you are limited to the wiki: when such a tool is listed here, call it.',
+      ].join(' ')
+    : null;
   return [
     'You are the agentic analysis engine of a knowledge workspace (wikiLLM), executed behind the manager Donna.',
     `Execute exactly ONE capability: ${task?.requiredCapability ?? 'unknown'}${description ? ` — ${description}` : ''}.`,
     `Operation: ${task?.operation ?? 'run'}.`,
-    'Boundary: you have READ tools only (the workspace wiki). You never modify the workspace — structural changes are proposals you return in your final answer (a planExpansionRequest), the manager integrates them under human approval. Side-effects on the outside world are gated by approval.',
+    'Boundary: you have READ tools only (the tools this run makes available, listed in your pool). You never modify the workspace — structural changes are proposals you return in your final answer (a planExpansionRequest), the manager integrates them under human approval. Side-effects on the outside world are gated by approval.',
+    vision,
     'Ground every claim in what the read tools return. Never invent pages, names, facts, jobs or results.',
     'Tool discipline: discover real page paths with the list/search tools BEFORE reading. Never guess a path — a read refused for "path not allowed" means the path was invented, so list/search first, then read exactly what exists.',
     ...(language ? [`Reply in the workspace language: ${language}.`] : []),
     ...(profile ? [`Workspace preferences — apply them to every reply:\n${profile}`] : []),
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 function dispatchTaskActivity(session, task, assignment, jobId, statusTool, runId) {

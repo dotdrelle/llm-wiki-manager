@@ -13,7 +13,14 @@ side-effects such as email — all under approval) but **no hands on the
 workspace**: the hands are the DAG, and there is one pair per workspace.
 
 - **Eyes** — the runtime's own MCP pool: wiki read tools, and, when declared
-  there, web search tools.
+  there, web search tools. The pool travels with each run
+  (`activeProfileMcp`) and the run's system prompt is built from that same pool
+  (`activeRuntimeSystemPrompt`): it says the workspace wiki is searched
+  **first**, then names the declared external read tools. A prompt that denies
+  a tool the pool carries is the defect — observed on acpi, `agent.answer`
+  answered "je suis limité aux seules sources du wiki" to "cherche sur
+  internet" with an external web-search connector connected, making zero tool
+  calls, while its own declared description promised web search.
 - **Ideas** — free reasoning, sub-agents, memory: everything the engine does
   internally.
 - **Mouth** — side-effects on the outside world (email), gated by the

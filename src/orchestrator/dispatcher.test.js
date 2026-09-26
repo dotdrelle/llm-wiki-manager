@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { activeProfileMcp, createDispatcher, normalizeTaskError, RUNTIME_SHUTDOWN_ABORT_REASON } from './dispatcher.js';
+import { activeProfileMcp, activeRuntimeSystemPrompt, createDispatcher, normalizeTaskError, RUNTIME_SHUTDOWN_ABORT_REASON } from './dispatcher.js';
 
 test('activeProfileMcp forwards only the read-only wiki tools to the external runtime', () => {
   const session = {
@@ -112,6 +112,38 @@ test('activeProfileMcp rewrites loopback URLs for the container the runtime runs
   assert.equal(pool.find((block) => block.name === 'wiki').url, 'http://host.docker.internal:3201/mcp');
   assert.equal(pool.find((block) => block.name === 'exa').url, 'http://host.docker.internal:9999/mcp');
   assert.equal(pool.find((block) => block.name === 'hosted').url, 'https://mcp.exa.ai/mcp');
+});
+
+test('activeRuntimeSystemPrompt names the declared web tools and forbids "cannot search the internet"', () => {
+  const session = { workspace: 'acpi', language: 'fr-FR' };
+  const pool = [
+    { name: 'wiki', tools: ['wiki_read_page', 'wiki_search_context'] },
+    { name: 'exa', tools: ['web_search_exa', 'web_fetch_exa'] },
+  ];
+  const prompt = activeRuntimeSystemPrompt(
+    session,
+    { requiredCapability: 'agent.answer', operation: 'run' },
+    { capability: { description: 'wiki and web research' } },
+    pool,
+  );
+  assert.match(prompt, /exa__web_search_exa/);
+  assert.match(prompt, /exa__web_fetch_exa/);
+  assert.match(prompt, /wiki FIRST/i);
+  assert.match(prompt, /cannot search the internet/i);
+  assert.match(prompt, /agent\.answer/);
+});
+
+test('activeRuntimeSystemPrompt stays wiki-only when the pool declares no external read tools', () => {
+  const session = { workspace: 'acpi' };
+  const prompt = activeRuntimeSystemPrompt(
+    session,
+    { requiredCapability: 'agent.review' },
+    { capability: {} },
+    [{ name: 'wiki', tools: ['wiki_read_page'] }],
+  );
+  assert.doesNotMatch(prompt, /exa__/);
+  assert.doesNotMatch(prompt, /cannot search the internet/i);
+  assert.match(prompt, /the tools this run makes available/);
 });
 
 test('dispatcher returns a retryable logical failure when agent_execute reports workspace_busy', async () => {

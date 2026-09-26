@@ -1348,6 +1348,12 @@ export function buildAgentSystemPrompt(state) {
     // the external runtime's agent.answer, which burned 519k tokens and failed
     // on its budget, while one wiki search answers it in a second.
     'A question about the subject matter of this workspace (its projects, documents, tickets, people, decisions, figures, dates) is answered from the wiki: search it FIRST with the wiki search/read tools and answer from what they return. Never runtime__delegate a question those read tools can answer; delegation is for actions, or for an analysis the user explicitly asks an agent to perform.',
+    // Observed (acpi): "cherche sur internet" was delegated to the external
+    // runtime, which answered it could not search the internet — while a
+    // connected web-search read tool was available and offered right here. The
+    // wiki stays first for workspace facts; the web tools cover the rest and
+    // are never denied.
+    'A wiki-first rule covers workspace facts only. For an internet/web search the wiki cannot answer, use the connected web-search read tool directly when one is offered; otherwise delegate the objective to a research capability. Never answer that you cannot search the internet when a web-search tool is available, and never claim a search you did not run.',
     // Observed: « compare les options A et B » answered from the previous
     // answers alone — the history carries Donna's text, not the pages — and
     // option A was invented, the opposite of what the wiki says.
@@ -1502,7 +1508,7 @@ export function isDonnaReadTool(item) {
   if (tool === 'wiki_workspace_status' || tool === 'agent_describe' || tool === 'agent_status') return true;
   // Match a read verb anywhere in the underscore-tokenized name, not just as
   // a trailing suffix — third-party MCPs don't all name tools verb-last
-  // (e.g. exa's "web_search_exa"/"web_fetch_exa" put the verb in the middle).
+  // (e.g. a connector whose `web_search_x` puts the verb in the middle).
   return tool.split('_').some((segment) => DONNA_READ_VERBS.has(segment));
 }
 

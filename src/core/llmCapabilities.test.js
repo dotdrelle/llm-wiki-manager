@@ -14,6 +14,10 @@ test('gpt-5 refuses temperature behind a gateway or an openai engine', () => {
   assert.equal(supportsTemperature({ model: 'gpt-5.4-mini', provider: 'ai-gateway' }), false);
 });
 
+test('gpt-6-luna refuses temperature behind a gateway', () => {
+  assert.equal(supportsTemperature({ model: 'gpt-6-luna', provider: 'ai-gateway' }), false);
+});
+
 test('gpt-5 on a non-openai engine keeps temperature', () => {
   // A local server serving a model merely NAMED gpt-5 is not OpenAI.
   assert.equal(supportsTemperature({ model: 'gpt-5', engine: 'vllm' }), true);

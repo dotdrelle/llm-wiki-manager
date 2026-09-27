@@ -32,6 +32,19 @@ test('omits temperature for a gpt-5-class model even when the profile sets one',
   }
 });
 
+test('omits temperature for gpt-6-luna behind the gateway', async () => {
+  const { calls, restore } = captureFetch(reply);
+  try {
+    const client = createLlmClientFromWikiConfig({
+      llm: { ...gateway, model: 'gpt-6-luna', temperature: 0.1 },
+    });
+    await client.complete({ system: 's', input: 'i' });
+    assert.equal('temperature' in calls[0].body, false);
+  } finally {
+    restore();
+  }
+});
+
 test('keeps the configured temperature for a model that accepts it', async () => {
   const { calls, restore } = captureFetch(reply);
   try {

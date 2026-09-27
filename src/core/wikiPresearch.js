@@ -36,7 +36,13 @@ export async function wikiSearchContextMessages(input, session, allowedTools, on
   const { server } = parseToolCallName(qualified);
   try {
     onStep?.('Searching the wiki…');
-    const result = await callMcpTool(session.mcp, server, WIKI_PRESEARCH_TOOL, { question: text }, session._abortSignal);
+    const result = await callMcpTool(
+      session.mcp,
+      server,
+      WIKI_PRESEARCH_TOOL,
+      { question: text, includeRaw: true },
+      session._abortSignal,
+    );
     const content = truncateToolResult(formatMcpToolResult(result)).trim();
     if (!content) return [];
     return [{

@@ -1,4 +1,77 @@
-# Using wikiLLM MCP servers with Claude Desktop
+# Using wikiLLM with Claude Desktop
+
+The recommended local integration uses the two packages built in
+`plugins/llm-wiki`:
+
+- `dist/llm-wiki-claude.mcpb`: the local MCP extension. It starts the connector
+  on the Mac and discovers the workspaces registered by `wiki-manager`.
+- `dist/llm-wiki.plugin`: the Claude skill and its usage instructions.
+
+This integration does not require ShellUI, `serve`, or a manually edited MCP
+JSON file.
+
+## Install the packaged integration
+
+From the plugin directory, build the two files if necessary:
+
+```bash
+node scripts/build-mcpb.mjs
+node scripts/build-claude-plugin.mjs
+```
+
+In Claude Desktop:
+
+1. Open **Settings → Extensions → Install Extension** and select
+   `dist/llm-wiki-claude.mcpb`.
+2. Set **wiki-manager state directory** to the directory containing the
+   workspace registry.
+3. Set **wiki-workspace installation directory** to the `llm-wiki` directory
+   containing `dist/bin/wiki.js`.
+4. Open **Settings → Plugins → Import plugin** and select
+   `dist/llm-wiki.plugin`.
+5. Restart Claude Desktop, or disable and re-enable the extension.
+
+The extension discovers every initialized workspace in the manager registry.
+In a conversation, use `wiki_workspace_list`, select one with
+`wiki_workspace_select`, then use the standard `wiki_*` tools. The selection is
+kept for the extension session and prevents reads or writes from being routed
+to another workspace.
+
+The engine field expects the parent directory, not the `wiki.js` file and not
+`dist/bin` itself. For a development checkout it is the `llm-wiki/` repository
+after running `pnpm build`. For an npm-local installation it is the package
+directory under `node_modules/llm-wiki/`. For an npm-global installation, find
+it with:
+
+```bash
+npm root -g
+test -f "$(npm root -g)/llm-wiki/dist/bin/wiki.js" && echo "wiki.js trouvé"
+```
+
+Select `$(npm root -g)/llm-wiki/` in Claude Desktop. The literal `$()` is only
+for the terminal command; Claude's folder picker needs the resolved absolute
+path.
+
+Examples:
+
+```text
+Sélectionne le workspace ACPI.
+Recherche les informations sur le dernier COPIL.
+Lance l’ingestion des sources en attente.
+Exécute /wiki doctor sur ACPI.
+```
+
+`wiki_ingest` is the native ingestion command. `doctor`, `run`, `build`, and
+`export` are native `wiki-workspace` commands exposed through
+`wiki_command_run`; they are not workspace skills. A skill declared under
+`.wiki/skills/` is listed with `wiki_skill_list` and executed with
+`wiki_skill_run`.
+
+## Manual stdio configuration
+
+The packaged extension above is preferred for local multi-workspace use. The
+following manual configuration remains available when an MCP client cannot
+install `.mcpb` packages.
 
 All MCP servers in this project are compatible with Claude Desktop. The
 connection method depends on the transport each server uses.

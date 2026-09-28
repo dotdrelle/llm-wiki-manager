@@ -9,8 +9,7 @@ inspect workspaces, run safe manager commands, call MCP tools, guide production
 jobs, and run one-shot headless tasks. Its workspace registry is also the source
 of truth for the Claude Desktop integration: each MCP extension connection is
 bound to one selected workspace, and the Claude plugin uses the same registry
-when it runs a workspace skill headlessly. ChatGPT Desktop plugin support is
-not shipped; the desktop integration currently targets Claude only.
+when it runs a workspace skill headlessly.
 
 The `llm-wiki`, `llm-wiki-manager` and agent images are released together under
 one coordinated version — the one npm shows above, and the one every image tag

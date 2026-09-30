@@ -148,7 +148,7 @@ Two user-owned files live under `.wiki/compose/`:
 | File | Stack | Merged by |
 | --- | --- | --- |
 | `.wiki/compose/docker-compose.override.yml` | `serve`, `mcp-http`, `production-mcp`, `wiki` | `wiki-workspace up/wiki/config`, `/start` in the shell |
-| `.wiki/compose/agents.docker-compose.override.yml` | `cme`, `documents`, `connectors` | `wiki-workspace agents *` |
+| `.wiki/compose/agents.docker-compose.override.yml` | `cme`, `documents`, `connectors`, `gateway` | `wiki-workspace agents *` |
 
 Both are created once from the packaged `*.example.yml` templates when absent
 and **never rewritten afterwards** — your edits survive package updates. Legacy
@@ -197,6 +197,24 @@ Three things go wrong most often:
 A TLS-intercepting proxy also needs its CA *inside* the containers. Do not mount
 it from an override: pass it once with `wiki-workspace --cacert /path/to/ca.pem`
 and the manager mounts it into every service with the four CA variables.
+
+**Every packaged service is hardened**: `read_only: true` with a tmpfs `/tmp`,
+`cap_drop: [ALL]` and `no-new-privileges`, and every image runs as an
+unprivileged user (`node`, or `app` for the Python agents). State belongs in the
+mounted volumes; anything else a service writes fails with `EROFS` /
+`Read-only file system`. When an addition genuinely needs a writable path — a
+cache, a plugin directory — give it one in the override rather than lifting the
+protection:
+
+```yaml
+services:
+  documents:
+    tmpfs:
+      - /nonexistent/.cache   # merged with the packaged /tmp, not replacing it
+```
+
+`read_only: false` in an override works too, and silently gives up the
+protection for that service — keep it for debugging.
 
 Inspect the merged result before restarting:
 

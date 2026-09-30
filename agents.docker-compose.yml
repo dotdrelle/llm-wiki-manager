@@ -52,6 +52,14 @@ services:
 
   cme:
     image: dotdrelle/agent-cme:latest
+    # Hardening: read-only root filesystem (state lives in the mounted
+    # volumes; /tmp is a tmpfs), no Linux capability and no privilege gain.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     user: "${UID:-1000}:${GID:-1000}"
     ports:
       - "${CME_MCP_PORT:-3336}:8080"
@@ -69,6 +77,14 @@ services:
 
   documents:
     image: dotdrelle/agent-documents:latest
+    # Hardening: read-only root filesystem (state lives in the mounted
+    # volumes; /tmp is a tmpfs), no Linux capability and no privilege gain.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     user: "${UID:-1000}:${GID:-1000}"
     ports:
       - "${DOCUMENTS_MCP_PORT:-3337}:8080"
@@ -108,6 +124,14 @@ services:
     # surcharge GOOGLE_OAUTH_CLIENT_ID / _SECRET dans le .env du manager — sans
     # reconstruire quoi que ce soit.
     image: dotdrelle/agent-connectors:latest
+    # Hardening: read-only root filesystem (state lives in the mounted
+    # volumes; /tmp is a tmpfs), no Linux capability and no privilege gain.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     user: "${UID:-1000}:${GID:-1000}"
     ports:
       - "${CONNECTORS_MCP_PORT:-3338}:3338"
@@ -148,6 +172,14 @@ services:
   gateway:
     profiles: [gateway]
     image: dotdrelle/wiki-agentic-gateway:latest
+    # Hardening: read-only root filesystem (state lives in the mounted
+    # volumes; /tmp is a tmpfs), no Linux capability and no privilege gain.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     user: "${UID:-1000}:${GID:-1000}"
     ports:
       - "${GATEWAY_PORT:-7789}:7789"

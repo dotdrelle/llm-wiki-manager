@@ -18,6 +18,14 @@ services:
 
   wiki:
     image: dotdrelle/llm-wiki:latest
+    # Hardening: read-only root filesystem (state lives in the mounted
+    # volumes; /tmp is a tmpfs), no Linux capability and no privilege gain.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     profiles: [cli]
     volumes:
       # Compose interpolates all services before applying profiles, so this
@@ -31,6 +39,14 @@ services:
 
   serve:
     image: dotdrelle/llm-wiki:latest
+    # Hardening: read-only root filesystem (state lives in the mounted
+    # volumes; /tmp is a tmpfs), no Linux capability and no privilege gain.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     labels:
       wiki-manager.description: "Workspace web UI and local wiki browser."
     command: serve --port 3000
@@ -89,6 +105,14 @@ services:
 
   mcp-http:
     image: dotdrelle/llm-wiki:latest
+    # Hardening: read-only root filesystem (state lives in the mounted
+    # volumes; /tmp is a tmpfs), no Linux capability and no privilege gain.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     labels:
       wiki-manager.description: "llm-wiki MCP HTTP server for wiki tools."
     command: mcp-http --host 0.0.0.0 --port 3333 --path /mcp
@@ -114,6 +138,14 @@ services:
 
   production-mcp:
     image: dotdrelle/agent-production:latest
+    # Hardening: read-only root filesystem (state lives in the mounted
+    # volumes; /tmp is a tmpfs), no Linux capability and no privilege gain.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     user: "${UID:-1000}:${GID:-1000}"
     labels:
       wiki-manager.description: "Production MCP server for ingest/build/export jobs."
@@ -124,13 +156,24 @@ services:
       - WORKSPACE_NAME=${WORKSPACE_NAME:-workspace}
       - WIKI_WORKSPACE_PATH=/workspace
       - WIKI_CONFIG_PATH=${WIKI_CONFIG_PATH:-}
-      # `taxonomy` belongs here, and its absence is SILENT: agent_plan drops the
-      # taxonomy task from an ingest fragment when the step is not allowed
-      # (production_mcp_server.py, "taxonomy" in _ALLOWED_STEPS), without an
-      # error. Every compose-deployed ingest then ran without the Lot 4 barrier
-      # and left the published map stale — the very defect that work fixed.
-      # `copy` stays out on purpose: it is the legacy step, opt-in only.
+      # This value OVERRIDES the agent's in-code default, and an omission is
+      # SILENT: a step missing here is dropped from agent_plan without an error,
+      # and a capability whose every step is missing vanishes from
+      # agent_describe (`ingest_rebuild`/`lint` back the serve rebuild button,
+      # `restore` the history restore). Keep it identical to the default in
+      # production_mcp_server.py — both repositories test that.
+      # `copy` is listed because the default lists it, but it is the legacy
+      # step: it runs only when a job requests it explicitly AND a copy source
+      # is configured, never as part of the default pipeline.
       - PRODUCTION_ALLOWED_STEPS=${PRODUCTION_ALLOWED_STEPS:-doctor,doctor_apply,copy,ingest,ingest_plan,ingest_apply,ingest_rebuild,build,export,polish,restore,pipeline,lint}
+      # `false` here, `true` in the image, on purpose. Under the manager the
+      # human guard is the run approval: the scheduler never dispatches an
+      # approval-gated task before its grant, and the dispatcher then passes
+      # confirm=true (dispatcher.js). `true` stays a supported opt-in, but it
+      # also refuses a mutating job reaching the agent by any other path (a
+      # task planned without requiresApproval, a direct production_start_job
+      # call without confirm). The image keeps `true` so a standalone agent,
+      # with no manager in front, refuses an unconfirmed mutating job.
       - PRODUCTION_REQUIRE_CONFIRMATION=${PRODUCTION_REQUIRE_CONFIRMATION:-false}
       # Parallelism levers — effective concurrency ≈ recommendedConcurrency.
       # Intermediate defaults (4/8). Low profile 2/4, high profile 8/16.

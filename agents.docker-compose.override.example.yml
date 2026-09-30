@@ -69,6 +69,12 @@
 #       mailer:
 #         image: dotdrelle/agent-mailer-api:latest
 #         user: "${UID:-1000}:${GID:-1000}"
+#         read_only: true
+#         tmpfs:
+#           - /tmp
+#         cap_drop: [ALL]
+#         security_opt:
+#           - no-new-privileges:true
 #         ports:
 #           - "${MAILER_MCP_PORT:-3339}:8080"
 #         environment:

@@ -140,13 +140,15 @@ if (process.env.CHECK_GIT_TAG === '1') {
 if (process.env.CHECK_DOCKER_IMAGES === '1') {
   const registryNamespace = process.env.REGISTRY_NAMESPACE || 'dotdrelle';
   const imageSuffixes = [
+    // The images build-and-push.sh publishes. The manager has none: it ships
+    // as an npm package and its runtime runs on the host, never in a container.
     'llm-wiki',
-    'llm-wiki-manager',
     'agent-cme',
     'agent-documents',
     'agent-production',
     'agent-mailer-api',
     'agent-connectors',
+    'wiki-agentic-gateway',
   ];
   for (const suffix of imageSuffixes) {
     const image = `${registryNamespace}/${suffix}`;

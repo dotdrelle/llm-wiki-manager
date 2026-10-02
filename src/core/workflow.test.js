@@ -152,3 +152,18 @@ test('projectWorkflow renders the collective subagents as child nodes of the run
     );
   }
 });
+
+test('projectWorkflow shows a running task live tokens, then its final metrics', () => {
+  const state = { status: 'running', runId: 'run-live', plan: [{ id: 'rebuild', description: 'Rebuild', status: 'running' }], activities: [], queue: [], approvals: [] };
+  const live = (input, output) => ({ type: 'activity_upserted', runId: 'run-live', payload: { activity: { progress: { stepId: 'rebuild', inputTokens: input, outputTokens: output } } } });
+  const running = projectWorkflow(state, [live(100, 10), live(209103, 38452)]);
+  assert.equal(running.usage.inputTokens, 209103);
+  assert.equal(running.usage.outputTokens, 38452);
+  assert.equal(running.usage.byTask.rebuild.inputKnown, true);
+
+  const result = { attemptId: 'a1', metrics: { inputTokens: 250000, outputTokens: 40000 } };
+  const finished = projectWorkflow({ ...state, status: 'done' }, [live(209103, 38452), { id: 'e1', type: 'task.completed', runId: 'run-live', taskId: 'rebuild', payload: { result } }]);
+  // Final metrics win; the live count is not added on top.
+  assert.equal(finished.usage.inputTokens, 250000);
+  assert.equal(finished.usage.outputTokens, 40000);
+});

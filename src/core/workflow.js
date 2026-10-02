@@ -175,6 +175,18 @@ function summarizeTokenUsage(events = []) {
   let totalKnown = false;
   const byTask = {};
   const seen = new Set();
+  // Live figures: an agent reports its running token count in its activity
+  // progress (what the run strip shows). The final task result used to be the
+  // ONLY source here, so every panel read "— in · — out" for the whole run.
+  const live = new Map();
+  for (const event of events) {
+    if (event.type !== 'activity_upserted') continue;
+    const progress = event.payload?.activity?.progress ?? {};
+    const taskId = String(progress.stepId ?? event.taskId ?? '');
+    const input = metricNumber(progress.inputTokens);
+    const output = metricNumber(progress.outputTokens);
+    if (taskId && (input != null || output != null)) live.set(taskId, { input, output });
+  }
   for (const event of events) {
     if (!['task.result_returned', 'task.completed', 'task.failed'].includes(event.type)) continue;
     const result = event.payload?.result ?? {};
@@ -198,6 +210,17 @@ function summarizeTokenUsage(events = []) {
       current.totalKnown = true;
       byTask[taskId] = current;
     }
+  }
+  // A task without final metrics yet contributes its latest live count.
+  for (const [taskId, { input, output }] of live) {
+    if (byTask[taskId]) continue;
+    if (input != null) { inputTokens += input; inputKnown = true; }
+    if (output != null) { outputTokens += output; outputKnown = true; }
+    totalTokens += (input ?? 0) + (output ?? 0); totalKnown = true;
+    byTask[taskId] = {
+      inputTokens: input ?? 0, outputTokens: output ?? 0, totalTokens: (input ?? 0) + (output ?? 0),
+      inputKnown: input != null, outputKnown: output != null, totalKnown: true,
+    };
   }
   return { inputTokens, outputTokens, totalTokens, inputKnown, outputKnown, totalKnown, byTask };
 }

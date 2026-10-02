@@ -160,6 +160,23 @@ function orphanPagesFromRegistry(registry, wikiPages) {
   return wikiPages.map(String).filter((page) => !supported.has(page)).sort();
 }
 
+// Mirror of the engine's `isEngineOwnedWikiPage`
+// (llm-wiki/src/services/sourceRegistry.ts): the deterministic index and
+// journal, and a generated TAXO pivot (`wiki/concepts/**`, `by:
+// llm-wiki-tags`), can never appear in a source's `producedPages` — a pivot
+// aggregates fiches from many sources. Counting them as `knowledge.stale`
+// orphans asked the operator about pages a TAXO cycle regenerates or purges;
+// the engine's doctor applies the same exclusion. An unreadable page is
+// reported, never silently dropped.
+const ENGINE_OWNED_WIKI_PATHS = new Set(['wiki/index.md', 'wiki/log.md']);
+function isEngineOwnedWikiPage(rootDir, pagePath) {
+  const page = String(pagePath);
+  if (ENGINE_OWNED_WIKI_PATHS.has(page)) return true;
+  if (!page.startsWith('wiki/concepts/')) return false;
+  const head = readFileHead(join(String(rootDir), page));
+  return /^\s*by:\s*llm-wiki-tags\s*$/m.test(head ?? '');
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -216,6 +233,7 @@ export function detectStaleKnowledge(registry, {
   }
   if (Array.isArray(wikiPages)) {
     for (const page of orphanPagesFromRegistry(registry, wikiPages)) {
+      if (isEngineOwnedWikiPage(rootDir, page)) continue;
       evidence.push({ kind: 'orphan', sourceId: null, path: page });
       counts.orphan += 1;
     }

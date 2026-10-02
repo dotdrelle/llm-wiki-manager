@@ -178,6 +178,43 @@ test('a wiki page no active source backs is an orphan fact', () => {
   assert.equal(without.stale.some((entry) => entry.kind === 'orphan'), false);
 });
 
+test('engine-owned pages are never stale orphans', () => {
+  const root = mkdtempSync(join(tmpdir(), 'stale-engine-owned-'));
+  try {
+    mkdirSync(join(root, 'wiki', 'concepts', 'exigences'), { recursive: true });
+    writeFileSync(join(root, 'wiki', 'index.md'), '# Wiki Index\n');
+    writeFileSync(join(root, 'wiki', 'log.md'), '# Log\n');
+    writeFileSync(
+      join(root, 'wiki', 'concepts', 'exigences', 'audit.md'),
+      '---\ntype: concept\nfamily: Exigences\ngenerated:\n  by: llm-wiki-tags\n---\n# Audit\n[src: wiki/sources/a/audit.md]\n',
+    );
+    writeFileSync(
+      join(root, 'wiki', 'concepts', 'exigences', 'ancienne-feuille.md'),
+      '---\ntype: concept\ngenerated:\n  by: llm-wiki\n---\n# Ancienne\n',
+    );
+    writeFileSync(join(root, 'wiki', 'concepts', 'exigences', 'main.md'), '# Écrit à la main\n');
+
+    const { stale, counts } = detectStaleKnowledge({ sources: [] }, {
+      rootDir: root,
+      now: Date.now(),
+      exists: () => true,
+      wikiPages: readWikiPages(root),
+    });
+
+    // The index, the journal and the generated pivot are engine-owned — a TAXO
+    // cycle regenerates them, so they were the false positives doctor no
+    // longer reports either. The legacy leaf and the hand-written page remain
+    // questions for the operator.
+    assert.deepEqual(
+      stale.filter((entry) => entry.kind === 'orphan').map((entry) => entry.path),
+      ['wiki/concepts/exigences/ancienne-feuille.md', 'wiki/concepts/exigences/main.md'],
+    );
+    assert.equal(counts.orphan, 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('readWikiPages inventories wiki/**/*.md, names only', () => {
   const root = mkdtempSync(join(tmpdir(), 'wikipages-'));
   try {

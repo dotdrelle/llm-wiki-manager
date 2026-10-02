@@ -1122,6 +1122,15 @@ test('buildAgentSystemPrompt includes .wiki/profile.md content so preferences ap
   }
 });
 
+test('buildAgentSystemPrompt never reads a tool-less capability as unsupported', () => {
+  // The Gmail send is reachable only through agent_execute: no direct tool.
+  // Asked to email a report, the agent listed its tools and concluded the
+  // product had no send function instead of delegating the capability.
+  const prompt = buildAgentSystemPrompt({ session: sessionBase({}) });
+  assert.match(prompt, /A capability may deliberately have NO direct tool/);
+  assert.match(prompt, /Never tell the user a capability is missing or must be added to a catalogue/);
+});
+
 test('buildAgentSystemPrompt answers workspace questions from the wiki instead of delegating them', () => {
   // Observed: a wiki question delegated to the external runtime's agent.answer
   // burned 519k tokens and failed on its budget.

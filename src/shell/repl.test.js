@@ -1285,6 +1285,15 @@ test('both prompts tell Donna to answer workspace questions from the wiki first'
   assert.match(buildDirectChatSystemPrompt(session), /search the wiki FIRST[\s\S]*Never redirect such a question to \/agent/);
 });
 
+test('the chat prompt says an email send is an Agent-mode capability, never a missing feature', () => {
+  // Observed on acpi: chat mode listed the direct Gmail tools, concluded no
+  // send existed and told the user to add one to the catalogue. The send is a
+  // delegable capability performed in Agent mode.
+  const prompt = buildDirectChatSystemPrompt(createSession());
+  assert.match(prompt, /sending an email, for example, is deliberately never a chat tool/i);
+  assert.match(prompt, /never that the capability is missing or must be added to a catalogue/i);
+});
+
 test('the chat prompt tells Donna to use an offered web tool instead of denying it', () => {
   const session = createSession();
   const prompt = buildDirectChatSystemPrompt(session);

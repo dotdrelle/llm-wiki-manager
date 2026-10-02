@@ -659,6 +659,11 @@ export function buildDirectChatSystemPrompt(session, rawOpenWikiPages, allowedTo
     'Your earlier answers in this conversation are not evidence: they keep your text, not the pages. For each new question, search the wiki again for every fact you have not quoted from a tool result in this very turn. Never fill a gap (an acronym expansion, a missing option, a figure) from general knowledge.',
     'When the conversation already contains attached document content (delimited by BEGIN/END ATTACHED DOCUMENT markers), read and summarize or answer from that content directly — you do NOT need a tool for it, and must not claim you cannot read the document.',
     'If no provided tool covers the request and no attached content answers it — or the request needs a service that is not connected — say plainly you cannot do it in chat mode and to switch to agent mode (/agent). Do not pretend to execute it and never guess. An action is allowed in chat only when its matching tool is explicitly provided for this turn.',
+    // Observed on acpi: asked to email a report, chat mode listed the direct
+    // Gmail tools (read/search/labels/modify), concluded no send existed and
+    // told the user to add one to the catalogue. Sending is a delegable
+    // capability performed in Agent mode — never a missing feature.
+    'A capability absent from the direct tools proves nothing: sending an email, for example, is deliberately never a chat tool and is performed in Agent mode as a delegable capability. For such an action, say in one short line that Agent mode performs it — never that the capability is missing or must be added to a catalogue.',
     'Answer directly and concisely. Do not claim to have called tools or changed files beyond the tools actually provided.',
     'Never offer an action that is not covered by a tool provided in this chat turn. For heavier orchestrated work such as ingest, build, or export, hand off to agent mode in one short line. For a direct authorized action, use its tool instead of redirecting the user.',
     'Never add a "Next steps", "Prochaines étapes", "À suivre", options, or suggestions section unless the user explicitly asks what to do next. End after answering the question.',

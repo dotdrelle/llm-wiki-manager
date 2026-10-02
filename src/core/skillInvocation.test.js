@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { applyLegacySkillPlaceholders, explicitSkillReference, matchSkillInvocation, parseSkillArguments } from './skillInvocation.js';
+import { applyLegacySkillPlaceholders, explicitSkillReference, matchSkillInvocation, parseSkillArguments, unknownSkillInvocation } from './skillInvocation.js';
 import { formatSkillsForAgent, inspectSkills } from './skills.js';
 
 test('matchSkillInvocation resolves only a real workspace skill', () => {
@@ -70,4 +70,28 @@ test('catalog renders declared parameters and marks a missing description explic
   const inspection = inspectSkills({ workspacePath: root });
   assert.deepEqual(inspection.warnings.map((item) => item.reason), ['missing_description']);
   assert.match(formatSkillsForAgent({ workspacePath: root }), /\/deliver \[<deliverable> <polish>\]: workflow skill \[explicit name only\]/);
+});
+
+test('unknownSkillInvocation refuses a /name no skill carries, naming what exists', () => {
+  const root = mkdtempSync(join(tmpdir(), 'skill-unknown-'));
+  mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
+  writeFileSync(join(root, '.wiki', 'skills', 'wiki-ingest.md'), '---\nname: wiki-ingest\ndescription: Ingest.\n---\nIngest.');
+  const session = { workspacePath: root };
+
+  const unknown = unknownSkillInvocation(session, '/wiki-rebuild');
+  assert.equal(unknown.name, 'wiki-rebuild');
+  assert.deepEqual(unknown.available, ['/wiki-ingest']);
+  assert.match(unknown.message, /Unknown skill \/wiki-rebuild\. Skills available in this workspace: \/wiki-ingest\./);
+  // A real skill, a built-in and plain prose are not refused.
+  assert.equal(unknownSkillInvocation(session, '/wiki-ingest'), null);
+  assert.equal(unknownSkillInvocation(session, '/status'), null);
+  assert.equal(unknownSkillInvocation(session, 'rebuild the wiki please'), null);
+});
+
+test('unknownSkillInvocation says when the workspace has no skills at all', () => {
+  const root = mkdtempSync(join(tmpdir(), 'skill-none-'));
+  const unknown = unknownSkillInvocation({ workspacePath: root }, '/wiki-rebuild');
+  assert.deepEqual(unknown.available, []);
+  assert.match(unknown.message, /no skills installed \(\.wiki\/skills\/ is missing\)/);
+  assert.match(unknown.message, /wiki-workspace wiki <workspace> init/);
 });

@@ -25,7 +25,7 @@ import {
   readWikiPages,
   staleFingerprint,
 } from '../orchestrator/knowledgeSignals.js';
-import { matchSkillInvocation } from '../core/skillInvocation.js';
+import { matchSkillInvocation, unknownSkillInvocation } from '../core/skillInvocation.js';
 import { reconcileControlQueue } from './controlDrain.js';
 import { cancelControlChain, cancelQueuedControlItem } from './controlCancellation.js';
 import { generateSkillAcknowledgment, runSkillChain } from './skillRun.js';
@@ -561,6 +561,14 @@ export function startRuntimeServer({
             publishSkillInvocationFailure(context, input, error);
             sendJson(response, skillInvocationErrorStatus(err), { error, code: err?.code ?? 'skill_compile_failed' });
           }
+          return;
+        }
+        // A `/name` naming no skill is refused, never handed to the model as
+        // prose: it would improvise from the history instead of saying so.
+        const unknownSkill = unknownSkillInvocation(context.session, input);
+        if (unknownSkill) {
+          publishSkillInvocationFailure(context, input, unknownSkill.message);
+          sendJson(response, 404, { error: unknownSkill.message, code: 'skill_not_found', available: unknownSkill.available });
           return;
         }
         // A run/job status question must NEVER surface the raw system text in

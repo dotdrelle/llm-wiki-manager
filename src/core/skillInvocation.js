@@ -1,4 +1,4 @@
-import { findSkill } from './skills.js';
+import { findSkill, listSkills } from './skills.js';
 
 const INVOCATION_RE = /^\/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/;
 export const RESERVED_SLASH_COMMANDS = new Set(['status', 'stop', 'run', 'queue', 'skills', 'help', 'exit', 'quit', 'chat', 'agent']);
@@ -78,6 +78,28 @@ export function matchSkillInvocation(session, input, { allowReserved = false } =
   if (!allowReserved && RESERVED_SLASH_COMMANDS.has(match[1].toLowerCase())) return null;
   const skill = findSkill(session, match[1]);
   return skill ? { skill, rawArgs: String(match[2] ?? '').trim(), input: String(input ?? '').trim() } : null;
+}
+
+/**
+ * A `/name` that is not a built-in and names no workspace skill.
+ *
+ * Passed on as prose, it reached Donna as a bare "/wiki-rebuild" and she
+ * improvised from the conversation — re-running the previous request (a page
+ * reformat) instead of saying the command did not exist. A workspace without
+ * `.wiki/skills/` made EVERY skill command take that path silently. The caller
+ * refuses it instead, naming what does exist.
+ */
+export function unknownSkillInvocation(session, input) {
+  const match = INVOCATION_RE.exec(String(input ?? '').trim());
+  if (!match) return null;
+  const name = match[1];
+  if (RESERVED_SLASH_COMMANDS.has(name.toLowerCase()) || findSkill(session, name)) return null;
+  const available = listSkills(session).map((skill) => `/${skill.name}`);
+  const message = available.length
+    ? `Unknown skill /${name}. Skills available in this workspace: ${available.join(', ')}.`
+    : `Unknown skill /${name}: this workspace has no skills installed (.wiki/skills/ is missing). `
+      + 'Restore the default ones with "wiki-workspace wiki <workspace> init", which never overwrites existing files.';
+  return { name, available, message };
 }
 
 export function parseSkillArguments(skill, rawArgs = '') {

@@ -281,7 +281,7 @@ Slash primitives (shell):
 
 ```text
 /wiki                # inspect the wiki
-/skills              # bundled workflows: pipeline, wiki-sync, wiki-build, deliver, new-template, diagnose, status
+/skills              # bundled workflows: pipeline, wiki-sync, wiki-ingest, wiki-build, wiki-rebuild, deliver, curate, new-template, diagnose, status
 /skills run pipeline # run the shipped end-to-end example
 ```
 
@@ -352,7 +352,7 @@ just reopens the web page.)*
 The scaffold ships **ready-to-use examples**. In the shell, explore them:
 
 ```text
-/skills              list the bundled examples (pipeline, wiki-sync, wiki-build, deliver, diagnose, status…)
+/skills              list the bundled examples (pipeline, wiki-sync, wiki-ingest, wiki-build, wiki-rebuild, deliver, curate, diagnose, status…)
 /skills show <name>  see what an example does
 /skills run <name>   run it to see the result
 ```
@@ -411,10 +411,12 @@ At each step, either you **ask Donna for the action in Agent mode**, or you
    rendering.
    → *"Export and polish the deliverables"*
 
-> 💡 Even simpler: `/skills run wiki-sync` chains export + ingestion,
-> `/skills run wiki-build` regenerates the deliverables, `/skills run deliver`
-> publishes them (add `polish` to refine the rendering), and
-> `/skills run pipeline` runs the whole chain end to end. The three step skills
+> 💡 Even simpler: `/skills run wiki-sync` exports the Confluence sources into
+> Pending, `/skills run wiki-ingest` ingests what waits there (each step is
+> replayable on its own; `/skills run wiki-rebuild` re-runs TAXO over the
+> archive), `/skills run wiki-build` regenerates the deliverables,
+> `/skills run deliver` publishes them (add `polish` to refine the rendering),
+> and `/skills run pipeline` runs the whole chain end to end. The three step skills
 > take an optional argument — a source name, or a template with or without its
 > `.md` extension.
 
@@ -440,7 +442,7 @@ The scaffold ships with a working case. To discover it, in the chat or the `donn
 shell:
 
 ```text
-/skills                 list the examples (diagnose, pipeline, status, wiki-sync)
+/skills                 list the examples (diagnose, pipeline, status, wiki-sync, wiki-ingest, wiki-build, wiki-rebuild, deliver, curate)
 /skills show pipeline   show what the end-to-end example does
 /skills run pipeline    run the full chain on the example sources
 /wiki                   inspect the project's wiki

@@ -80,7 +80,7 @@ runtime:
       { "name": "agent.notify",
         "operations": ["run"],
         "description": "Read the workspace profile for the notification recipient, then send a report by email. Mutation, approval required.",
-        "aliases": ["notify", "report", "email"],
+        "aliases": ["notify", "send", "email"],
         "defaultRequiresApproval": true }
     ] }
 ] }
@@ -88,10 +88,12 @@ runtime:
 
 Capability fields: `name`, `operations`, `description` (the general, language-
 agnostic route: the LLM resolver matches any-language objectives against it),
-`aliases` (the deterministic fast path, single-language), and the governance
-pair `mutationClass` / `defaultRequiresApproval` — propagated to the synthetic
-agent so `buildExecutorOnlyFragment` produces approval-gated tasks like any
-other executor. The verbs of a read-only analysis are **aliases of one
+`aliases` (the deterministic fast path, single-language), `subagents` (the
+declared collective, propagated to the synthetic agent so the dispatcher knows
+the role total from the start), `worktree` (confined hands — see Governance),
+and the governance pair `mutationClass` / `defaultRequiresApproval` —
+propagated to the synthetic agent so `buildExecutorOnlyFragment` produces
+approval-gated tasks like any other executor. The verbs of a read-only analysis are **aliases of one
 capability**; a capability is split only when the governance profile changes.
 
 The declaration is what the manager *routes on*; what the runtime *serves* is
@@ -168,6 +170,15 @@ instead of helping it. The main thread carries the workspace's memory; the
 role threads carry one curation, and their checkpoints are deleted once the
 role finishes — bounded to the run means no reader afterwards.
 
+**Manager conversation memory is a separate, read-only input.** Before each
+agent run, the manager retrieves a bounded set of relevant, evidence-linked
+facts from its workspace SQLite store and appends them to the runtime system
+prompt as `trusted="false"` data. The gateway may use them as prior context,
+but current wiki/tool results win on conflict; the gateway does not write them
+back into its own checkpoints or dossier. No chat transcript is sent as part
+of this projection. If retrieval fails or falls back from configured vector
+search to lexical search, the manager announces that in Activity Logs.
+
 The memory is bounded so `memory.sqlite` cannot grow without end: a
 **workspace dossier** (the Archivist's factual memory + unresolved objections,
 in its own table of the same file) is what survives, injected into the next run
@@ -203,6 +214,11 @@ SSE-only and never persisted:
   the journal — one line per beat would bury what actually happened.
 - `finding` — one per `[objection]` line, carrying severity, role and the page
   path as structured fields, then the bounded statement.
+- `subagent_started` / `subagent_finished` — the collective's roles; the
+  dispatcher turns them into the external activity's percent/label
+  (`externalRoleProgress`: finished over declared/known roles, capped below 100
+  until the task ends; with no declared `subagents` list it names the role
+  instead of inventing a percentage).
 - `degraded` — a refused memory scope, a role that failed, a capability
   fallback. Always surfaced, and carried on the run RESULT so a proposal opened
   later still says what was lost when it was written.
@@ -271,8 +287,11 @@ worth a read-only audit:
   `staleAfterDays` (default 180), any registry path that no longer exists — a
   vanished archive or a vanished produced page — AND any wiki page no ACTIVE
   source backs (an orphan: hand-written or pre-registry pages included, a
-  provenance gap the operator is asked about). Existence and a join on the
-  registry, never a mirrored reconciliation algorithm;
+  provenance gap the operator is asked about). Engine-owned pages are never
+  orphans: `wiki/index.md`, `wiki/log.md` and generated TAXO pivots
+  (`wiki/concepts/**` with `by: llm-wiki-tags`) are excluded, mirroring the
+  engine's doctor; an unreadable page is still reported. Existence and a join on
+  the registry, never a mirrored reconciliation algorithm;
 - an accepted trigger queues an `agent.review` through the normal control lane
   with an EXPLICIT `capabilityPlan` naming the capability: the objective names
   evidence PATHS, which could contain another capability's alias (`report`,
@@ -337,7 +356,10 @@ stream would accelerate one phase, not the run.
   is where the human MERGES (write through the engine + history commit) or
   rejects (worktree removed). The merge IS the approval: the capability
   declares no `mutationClass`, so no pre-run pause. The manager only RECORDS
-  the proposal; it never writes wiki content.
+  the proposal; it never writes wiki content. A `worktreeProposal` with zero
+  changed files is a FAILURE, not a proposal: the task returns `ok:false` with
+  the runtime's degradation causes and the message that its report describes
+  corrections that were never written; nothing is filed for review.
 
   Gateway-side ceilings for the hands (all optional, defaults in
   parentheses): `GATEWAY_RECURSION_LIMIT` (40) graph steps, `GATEWAY_TOKEN_BUDGET`

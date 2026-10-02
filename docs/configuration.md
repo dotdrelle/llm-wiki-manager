@@ -79,6 +79,9 @@ workspace `.wikirc.yaml`.
 | `WIKI_MANAGER_RUNTIME_HOST` | yes (shipped active) | interface the host runtime binds. `0.0.0.0` by default: `serve` runs in Docker and reaches the runtime through `host.docker.internal`, which a `127.0.0.1` bind refuses. Exposing the port always generates `WIKI_MANAGER_RUNTIME_TOKEN` |
 | `WIKI_MANAGER_TOTP` | no | set to `off` to disable the TOTP login gate (default: on). The gate is the **human** lock in front of the ShellUI and `serve`; headless/CI never passes through it |
 | `WIKI_MANAGER_SESSION_TTL_HOURS` | no | TOTP session lifetime in hours of inactivity, sliding (default `12`) |
+| `WIKI_MANAGER_MEMORY_AUTO` | no | set to `off` to disable background fact extraction; explicit `/remember` remains available |
+| `WIKI_MANAGER_MEMORY_TOP_K` | no | maximum lexical or vector workspace-memory matches injected per turn (default `8`, capped at `20`) |
+| `WIKI_MANAGER_CONTEXT_MAX_CHARS` | no | maximum live workspace-context characters injected into Donna's prompt (default `6000`) |
 | `PRODUCTION_ALLOWED_STEPS` | no | comma-separated steps `production-mcp` accepts. This compose default **overrides** the agent's in-code list: it must include `ingest_rebuild` and `lint`, or `knowledge.rebuild`/`knowledge.check` silently disappear from `agent_describe` (the serve rebuild button then falls back to a plain ingest) |
 
 The TOTP secret and the session live in the manager runtime state directory
@@ -542,8 +545,10 @@ container. Keep `WIKI_MANAGER_CAPABILITY_CONCURRENCY` unset or ≥ your target.
 - Increase in steps (4 → 6 → 8) and watch for LLM timeouts; a task that times out
   is retried, but repeated timeouts mean the LLM endpoint, not the task count, is
   the bottleneck.
-- Expect the *plan* and *build/export/polish* phases to fan out; the *apply*
-  phase stays serial by design, so a pure-ingest run is gated by that phase.
+- Expect *build/export/polish* to fan out. TAXO ingestion is one
+  workspace-locked `knowledge.update` task whose section-extraction
+  concurrency is bounded inside the engine — there is no separate plan/apply
+  phase to gate a pure-ingest run.
 
 ---
 

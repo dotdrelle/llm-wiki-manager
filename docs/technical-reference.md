@@ -551,10 +551,13 @@ omission from it is **silent**: `agent_plan` simply leaves the step's task out
 of the fragment instead of failing, and a capability whose every step is
 disallowed disappears from `agent_describe` entirely. Because this value
 **overrides** the agent's own in-code default, it has drifted twice: the retired
-`taxonomy` stayed in the shipped default, and later `ingest_rebuild`/`lint` were
+`taxonomy` stayed in the shipped default, later `ingest_rebuild`/`lint` were
 missing from it — which silently removed `knowledge.rebuild` and
 `knowledge.check` from the registry, so the wiki-row rebuild button fell back to
-a plain ingest from `raw/untracked`. Keep it in step with
+a plain ingest from `raw/untracked`. The TAXO alignment also removed
+`ingest_plan`/`ingest_apply` from the shipped default and from `planValidator`:
+a stale `.env` value that still lists them plans nothing for them, silently.
+Keep it in step with
 `production_mcp_server.py`: a test here asserts `ingest_rebuild` and `lint` are
 present, and one in `agent-production` compares its own list against that
 in-code reference. An explicit value in your `.env` overrides the default
@@ -713,7 +716,10 @@ prompt by each UI. `/skills run <name>` and `/<name>` therefore use the same
 path in the Shell and in `llm-wiki serve`; headless `--skill` posts the same
 invocation to `/run`. Built-in commands keep priority (`/status` remains the
 Shell status primitive), while `/skills run status` explicitly selects a skill
-with the same name.
+with the same name. An unknown `/<name>` is refused at the runtime with **404
+`skill_not_found`** and the available list (or a "no skills installed"
+message), never forwarded to the model as prose — it would improvise from the
+conversation instead of saying the command does not exist.
 
 Donna receives only the sanitized skill catalogue (name, description and
 parameters) when selecting a skill from natural language. The runtime rereads
@@ -750,8 +756,9 @@ The runtime compiles a skill into natural-language objectives. Paragraphs alone
 do not split work: an existing complex capability such as `knowledge.pipeline`
 stays one objective, one capability resolution and one run. Strong workflow
 boundaries create a sequential execution chain instead. Every shipped scaffold
-skill (`wiki-sync`, `wiki-ingest`, `wiki-build`, `deliver`, `pipeline`,
-`diagnose`, `status`, `new-template`) compiles to a single run; a sequential
+skill (`wiki-sync`, `wiki-ingest`, `wiki-build`, `wiki-rebuild`, `deliver`,
+`pipeline`, `curate`, `diagnose`, `status`, `new-template`) compiles to a
+single run; a sequential
 chain only appears when a user-authored body opens a paragraph on a strong
 connector (`Then`, `Puis`, `if available`…). Chain items contain `chainId`,
 sequence, optionality and continuation policy, but never a precomputed
@@ -794,6 +801,9 @@ For actionable requests, the orchestrator must not answer with future intent onl
 If a connected MCP tool or safe primitive can perform the action, it must call the
 tool in the same turn. If required arguments are missing, ask for the exact
 missing values. If the tool/server is unavailable, name the concrete blocker.
+A capability may deliberately have NO direct tool — the email send is reachable
+only through `agent_execute`: chat says Agent mode performs it, agent mode
+delegates it, and neither reports it as missing or "to add to a catalogue".
 
 `shell__run_command` is limited to safe manager primitives and does not expose
 arbitrary system commands, `/wiki run`, `/start`, `/stop`, `/logs`,

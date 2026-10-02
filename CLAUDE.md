@@ -94,10 +94,10 @@ src/orchestrator/           Generic, business-agnostic orchestration core
   dispatcher.js             agent_execute/agent_status/agent_cancel driver
   assignmentManager.js      Task → agent instance assignment
   attemptManager.js         Attempts, retries, agent fallback
-  resultAggregator.js       TaskResult intake, DAG update, plan expansion, worktree proposal persistence
+  resultAggregator.js       TaskResult intake, DAG update, plan expansion, worktree proposal persistence (a zero-file proposal becomes a failure), task warnings relayed to Logs
   approvalPolicy.js         Bounded ApprovalGrants (run + revision + class)
   proactiveReviewScheduler.js Deterministic dedup/cooldown/budget for proactive agent.review audits
-  knowledgeSignals.js       Deterministic live-corpus scanners (stale sources, concept conflicts)
+  knowledgeSignals.js       Deterministic live-corpus scanners (stale sources, TAXO inconsistencies: a tag in several families, a pivot without fiche citations)
   providers/                External-runtime providers (RuntimeProvider contract), deepAgentsProvider.js
 src/activity/               Aggregated activity: synthesis, weighted progress, dedup
 src/graph/                  Run/Task graph projection + visibility policy
@@ -298,8 +298,13 @@ errors as `Error [<server>.<tool>]: <message>`.
 Workspace skills come from the active workspace manifest and `.wiki/skills/`.
 They are **executable**: `/skills run <name>` and `/<name>` both post the
 invocation to the runtime, which compiles the body and starts the resulting
-runs. Nothing injects a skill body into a local prompt any more — the only
-exception is `wiki-manager --headless --no-runtime`, kept for the legacy
+runs. A `/<name>` that is neither a reserved built-in nor a workspace skill is
+refused before the model (`unknownSkillInvocation`, `src/core/skillInvocation.js`):
+the runtime answers **404 `skill_not_found`** with the available skill list, or
+says the workspace has none and points to `wiki-workspace wiki <workspace>
+init`. It is never forwarded as prose, where the model would improvise from the
+conversation. Nothing injects a skill body into a local prompt any more — the
+only exception is `wiki-manager --headless --no-runtime`, kept for the legacy
 direct-MCP path.
 
 Documentation has three trees with three readers: `help-doc/` is shipped and
@@ -473,7 +478,9 @@ Key modules in `src/runtime/`:
   used to count only failed/cancelled/successful, so a run that had merely
   planned its mutations produced "Plan terminé avec succès — 0/N réussie",
   which the model rephrased into "le livrable a bien été publié" *before* the
-  approval that would run it.
+  approval that would run it. The fact line now also appends
+  `Bilan TAXO: <key>=<value>` aggregated from the `stats` of every successful
+  task, so Donna's synthesized run facts carry the fiches/tags/families counts.
 - **`approvals.js`**: run-level and tool-level approval gate. Run-level:
   `requireApproval: true` in the `/run` body suspends execution after the first
   plan is formed and emits `run_pending_approval`; `POST /approve?runId=...`
@@ -704,7 +711,11 @@ web-search tool sat in its tool list (reproduced on acpi with the real
 27-tool turn); naming it is what makes the model call it. Same contract as the
 runtime's `activeRuntimeSystemPrompt` (`orchestrator/dispatcher.js`): wiki
 FIRST, then the offered tools — never a refusal that a tool the run carries
-contradicts. The wiki pre-search message carries the same clause.
+contradicts. The wiki pre-search message carries the same clause. A capability
+may deliberately have NO direct tool — the email send is reachable only through
+`agent_execute` (`communication.send-email`, agent-connectors): chat mode says
+Agent mode performs it, agent mode delegates it, and neither may report the
+capability as missing or "to add to a catalogue".
 
 **Requests typed during a run** (`plan-demandes-pendant-run.md` at the wikiLLM
 root). A question stays a read-only chat turn; a status question gets the run
@@ -932,7 +943,12 @@ All plan/activity mutations go through `dispatchAgentEvent` and the reducer in
 - `subagent_started` / `subagent_finished` (lot 2) track the external
   runtime's collective as first-class state (`state.subagents`, reset per
   run) — the workflow projection renders each subagent as a child node of the
-  run node, instead of burying the roles in log lines.
+  run node, instead of burying the roles in log lines. The dispatcher also
+  maps them into the external activity's `progress.percent`/`label`
+  (`externalRoleProgress`: finished roles over the declared/known roles,
+  capped at 95% until the task itself ends; with no declared list it names the
+  role rather than inventing a percentage), and the provider exposes each
+  capability's declared `subagents` so the total is known from the start.
 - The in-memory event log is bounded (`MAX_SESSION_EVENTS` = 5000, oldest
   dropped): `/state` re-projects the whole array on every call, and an
   unbounded log made that cost grow with everything the runtime had ever
@@ -970,11 +986,23 @@ The run node's label is `summary || publicInput || input`, capped at 80
 characters — a skill run's compiled objective is never dumped into the Plan
 panel.
 
+`planStepInputs` (`src/core/plan.js`) lists a task's `inputRefs` /
+`arguments.inputs` under its plan step in both UIs, marking the file the live
+progress names; a task that declares no files still shows the document the
+live progress reports. And `summarizeTokenUsage` folds the running
+`inputTokens`/`outputTokens` an activity reports in its progress for tasks
+with no final metrics yet, so the panels show live figures instead of
+"— in · — out".
+
 Worktree proposals (agent.curate): `resultAggregator` persists the external
 runtime's `worktreeProposal` into `<workspace>/.wiki/agent-proposals/<taskId>.json`
 and announces it in the runtime log; the served `/agent-proposals` page is the
 review surface, and the merge happens there through the engine's own write
-machinery — the manager only RECORDS, it never writes wiki content.
+machinery — the manager only RECORDS, it never writes wiki content. A
+`worktreeProposal` with zero changed files is not persisted as a success:
+`failEmptyWorktreeProposal` turns the task into `ok:false` with the runtime's
+degradation causes (`<role>: <cause>`) in the error, because its report only
+describes corrections that were never written.
 
 Any MCP can opt into manager monitoring by returning additive `_activity`
 metadata with `id`, `source`, `kind`, `label`, `status`, optional `progress`,

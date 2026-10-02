@@ -2,6 +2,9 @@
 
 A skill is **executed, not injected**. `/skills run <name>` and `/<name>` post the
 invocation to the runtime, which alone rereads the private body and compiles it.
+A `/<name>` that names no built-in and no workspace skill is refused with 404
+`skill_not_found` and the available list (or a "no skills installed" message),
+never passed to the model as prose.
 The shape of that body is not cosmetic: it decides how many runs the skill
 produces, where the approval boundaries fall, and whether a capability keeps its
 own concurrency. This chapter is the contract between the prose you write and
@@ -123,8 +126,9 @@ parallelism per phase.
 
 The practical rule follows: **splitting a body is how you lose concurrency.**
 `pipeline` is one objective because the production capability owns the DAG over
-its seven steps; compiling it into seven objectives would produce seven
-sequential runs, each resolving its own capability, with the DAG gone. Its body
+its four steps (ingest, build, export, polish); compiling it into four
+objectives would produce four sequential runs, each resolving its own
+capability, with the DAG gone. Its body
 says so in as many words, and it must stay one objective.
 
 ## Chains

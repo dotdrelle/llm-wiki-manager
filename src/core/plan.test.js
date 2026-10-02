@@ -199,3 +199,11 @@ test('planStepInputs: lists a batch task input files, the one in progress runnin
   assert.ok(planStepInputs({ ...task, status: 'done' }, activities).every((row) => row.status === 'done'));
   assert.deepEqual(planStepInputs({ status: 'running', raw: {} }), []);
 });
+
+test('planStepInputs: a running task with no declared files shows the document in progress', () => {
+  const activities = [{ status: 'running', progress: { label: 'Organize section sheets', detail: 'Organize section sheets · etude-board-saas.md · Section 6/10 · kept 0' } }];
+  assert.deepEqual(planStepInputs({ status: 'running', raw: { inputRefs: [{ type: 'directory', ref: 'raw/ingested' }] } }, activities),
+    [{ name: 'etude-board-saas.md · Section 6/10', ref: '', status: 'running' }]);
+  assert.deepEqual(planStepInputs({ status: 'pending', raw: {} }, activities), []);
+  assert.deepEqual(planStepInputs({ status: 'running', raw: {} }, [{ status: 'running', progress: { label: 'Working' } }]), []);
+});

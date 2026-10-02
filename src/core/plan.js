@@ -133,6 +133,19 @@ export function formatPlanStep(step) {
 // task works on are read back from its inputRefs/arguments; only the file the
 // live progress names is known to be in flight — the others are not reported
 // per file and stay pending until the task settles, then take its status.
+function currentProgressDocument(activities) {
+  for (const item of Array.isArray(activities) ? activities : []) {
+    if (item?.terminal || String(item?.status ?? 'running').toLowerCase() !== 'running') continue;
+    const progress = item.progress ?? {};
+    const text = [progress.label, progress.detail, item.label].filter(Boolean).join(' · ');
+    const named = progress.source ?? progress.currentFile ?? progress.file ?? /([^\s·/]+\.md)\b/.exec(text)?.[1];
+    if (!named) continue;
+    const section = /\bSection \d+\/\d+/i.exec(text)?.[0];
+    return [String(named).split('/').pop(), section].filter(Boolean).join(' · ');
+  }
+  return null;
+}
+
 export function planStepInputs(task, activities = [], limit = 40) {
   const raw = task?.raw ?? task ?? {};
   const refs = (Array.isArray(raw.inputRefs) ? raw.inputRefs : [])
@@ -140,8 +153,14 @@ export function planStepInputs(task, activities = [], limit = 40) {
     .map((ref) => String(typeof ref === 'string' ? ref : ref?.ref ?? ''));
   const inputs = Array.isArray(raw.arguments?.inputs) ? raw.arguments.inputs.map(String) : [];
   const files = [...new Set([...refs, ...inputs].map((value) => value.trim()).filter(Boolean))];
-  if (files.length === 0) return [];
   const status = String(task?.status ?? raw.status ?? 'pending');
+  // A task that declares no files (a whole-archive rebuild planned by an older
+  // agent, a build…) still says what it is on: the document the live progress
+  // names, with its section counter — the same line the Activity panel shows.
+  if (files.length === 0) {
+    const current = status === 'running' ? currentProgressDocument(activities) : null;
+    return current ? [{ name: current, ref: '', status: 'running' }] : [];
+  }
   const live = status === 'running'
     ? (Array.isArray(activities) ? activities : [])
       .filter((item) => !item?.terminal && String(item?.status ?? 'running').toLowerCase() === 'running')

@@ -48,6 +48,12 @@ export async function accept(result, {
   callTool = callMcpTool,
 } = {}) {
   if (!session) throw new Error('resultAggregator.accept requires session.');
+  // A curation whose branch holds no file produced nothing to review: it is a
+  // failure, not a success with a warning in the Logs. Its report describes
+  // corrections that were never written (the Redactor ran out of steps and
+  // wrote prose instead), and calling the run a success sent the reader to an
+  // empty review page.
+  result = failEmptyWorktreeProposal(result);
   const taskId = String(result?.taskId ?? task?.id ?? task?.step ?? '');
   const ok = resultOk(result);
   const status = cancelled(result) ? 'cancelled' : ok ? 'done' : 'failed';
@@ -323,6 +329,27 @@ function persistDispatch(store, event) {
   store?.persistEvent?.(event);
 }
 
+function worktreeProposalOf(result) {
+  return result?.rawStatus?.result?.worktreeProposal
+    ?? result?.result?.worktreeProposal
+    ?? result?.worktreeProposal;
+}
+
+function failEmptyWorktreeProposal(result) {
+  const proposal = worktreeProposalOf(result);
+  if (!proposal || typeof proposal !== 'object' || !resultOk(result)) return result;
+  if (Array.isArray(proposal.changes) && proposal.changes.length > 0) return result;
+  const degradations = result?.rawStatus?.result?.degradations ?? result?.result?.degradations ?? [];
+  const causes = [...new Set((Array.isArray(degradations) ? degradations : [])
+    .map((item) => `${item?.role ?? 'runtime'}: ${item?.cause ?? 'degraded'}`))];
+  return {
+    ...result,
+    ok: false,
+    status: 'failed',
+    error: `The curation wrote no file on its review branch, so there is nothing to review or merge.${causes.length ? ` Degradations: ${causes.join('; ')}.` : ''} Its report only describes corrections; re-run with a narrower objective.`,
+  };
+}
+
 /**
  * Worktree proposals (agent.curate): the external runtime's run result carries
  * `worktreeProposal` — the confined branch's changed files, their new content
@@ -337,9 +364,7 @@ function persistWorktreeProposal(session, result, { runId, taskId }) {
   // `rawStatus.result.worktreeProposal`. Reading only `result.result`/
   // `result.worktreeProposal` matched the unit-test fixture but never the real
   // run: the proposal was silently dropped and no review item ever appeared.
-  const proposal = result?.rawStatus?.result?.worktreeProposal
-    ?? result?.result?.worktreeProposal
-    ?? result?.worktreeProposal;
+  const proposal = worktreeProposalOf(result);
   if (!proposal || typeof proposal !== 'object') return { path: null };
   const changes = Array.isArray(proposal.changes) ? proposal.changes : [];
   // A curation that wrote nothing has nothing to review — but it must SAY so.

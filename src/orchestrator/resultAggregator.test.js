@@ -425,7 +425,11 @@ test('a curation that wrote no file says so instead of vanishing from the review
       rawStatus: {
         runId: 'gateway-1',
         status: 'completed',
-        result: { status: 'completed', content: 'report', worktreeProposal: { branch: 'agent/gateway-1', changedFiles: [], changes: [], diff: '' } },
+        result: {
+          status: 'completed', content: 'report',
+          worktreeProposal: { branch: 'agent/gateway-1', changedFiles: [], changes: [], diff: '' },
+          degradations: [{ role: 'redactor', required: false, cause: 'step limit — partial handoff' }],
+        },
       },
     }, {
       session,
@@ -434,6 +438,12 @@ test('a curation that wrote no file says so instead of vanishing from the review
     });
     assert.equal(existsSync(join(workspacePath, '.wiki', 'agent-proposals')), false);
     assert.ok(session.agentEvents.some((event) => /wrote no file on its branch — nothing to review/.test(String(event.payload?.message ?? ''))));
+    // Not a success: the task fails, naming why, so the run is not announced
+    // as done while the review page is empty.
+    const failed = session.agentEvents.find((event) => event.type === 'task.failed');
+    assert.ok(failed, 'the empty curation fails its task');
+    assert.match(String(failed.payload?.result?.error ?? failed.payload?.error ?? JSON.stringify(failed.payload)), /wrote no file on its review branch.*redactor: step limit/);
+    assert.equal(session.agentEvents.some((event) => event.type === 'task.completed'), false);
   } finally {
     rmSync(workspacePath, { recursive: true, force: true });
   }

@@ -284,9 +284,21 @@ async function executeExternalRuntime(task, assignment, {
       },
     }));
     dispatchExternalRuntimeActivity(session, task, assignment, runtimeRunId, 'running', runId);
+    // The collective's roles drive the activity line: without this it stayed
+    // at the 0 % it was created with while scout, analyst and critique ran.
+    const declaredRoles = assignment?.agent?.description?.capabilities
+      ?.find((capability) => String(capability?.id ?? '') === String(task.requiredCapability ?? ''))?.subagents ?? [];
+    const roleProgress = { declared: declaredRoles.length, roles: [...declaredRoles], finished: new Set(), current: null };
     if (typeof runtimeProvider.subscribe === 'function') {
       unsubscribe = runtimeProvider.subscribe(runtimeRunId, (event) => {
         for (const mapped of mapRuntimeEvent(event)) {
+          if (mapped.type === 'subagent_started' || mapped.type === 'subagent_finished') {
+            const role = String(mapped.payload?.subagent ?? '');
+            if (!roleProgress.roles.includes(role)) roleProgress.roles.push(role);
+            if (mapped.type === 'subagent_started') roleProgress.current = role;
+            else { roleProgress.finished.add(role); if (roleProgress.current === role) roleProgress.current = null; }
+            dispatchExternalRuntimeActivity(session, task, assignment, runtimeRunId, 'running', runId, externalRoleProgress(roleProgress));
+          }
           dispatchAgentEvent(session, createAgentEvent(mapped.type, {
             origin: 'runtime_provider',
             runId,
@@ -403,14 +415,34 @@ async function executeExternalRuntime(task, assignment, {
   }
 }
 
-function dispatchExternalRuntimeActivity(session, task, assignment, runtimeRunId, status, runId) {
+/*
+ Percent and label from the collective's roles. Finished roles over the roles
+ known so far (the declared list, plus any role the run reveals), capped below
+ 100 until the task itself ends — the assembly after the last role is still work.
+ */
+export function externalRoleProgress({ declared = 0, roles, finished, current }) {
+  const total = Math.max(roles.length, finished.size + (current ? 1 : 0));
+  if (total === 0) return {};
+  const done = finished.size;
+  const step = Math.min(total, done + (current ? 1 : 0));
+  // Without a declared role list the total is unknown: name the role, never
+  // invent a percentage from the roles seen so far.
+  if (declared === 0) return { label: current ?? `${done} role(s) done`, detail: current ? `Role: ${current}` : `${done} role(s) done` };
+  return {
+    percent: Math.min(95, Math.round((done / total) * 100)),
+    label: current ? `${current} (${step}/${total})` : `${done}/${total} roles done`,
+    detail: current ? `Role ${step}/${total}: ${current}` : `${done}/${total} roles done`,
+  };
+}
+
+function dispatchExternalRuntimeActivity(session, task, assignment, runtimeRunId, status, runId, live = {}) {
   const activity = normalizeActivity({
     id: runtimeRunId,
     source: assignment.runtimeId ?? 'external-runtime',
     kind: task.operation ?? task.requiredCapability ?? 'task',
     label: task.label ?? task.description ?? String(task.id ?? task.step),
     status,
-    progress: { percent: isTerminal(status) ? 100 : 0, stepId: String(task.id ?? task.step) },
+    progress: { percent: isTerminal(status) ? 100 : 0, ...(isTerminal(status) ? {} : live), stepId: String(task.id ?? task.step) },
     outputRefs: [],
   });
   dispatchAgentEvent(session, createAgentEvent('activity_upserted', {

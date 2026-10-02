@@ -408,6 +408,9 @@ function runtimeProviderAgent(runtimeId, provider, description, capability, heal
         // that should wait for a human grant starts unapproved by construction.
         ...(typeof capability?.mutationClass === 'string' ? { mutationClass: capability.mutationClass } : {}),
         ...(capability?.defaultRequiresApproval === true ? { defaultRequiresApproval: true } : {}),
+        // The named collective this capability runs, in order: what lets the
+        // dispatcher turn role events into a progress percentage.
+        ...(Array.isArray(capability?.subagents) ? { subagents: capability.subagents.map(String).filter(Boolean) } : {}),
       }],
       orchestration: {
         canPlan: false,

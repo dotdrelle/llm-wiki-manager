@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { activeProfileMcp, activeRuntimeSystemPrompt, createDispatcher, normalizeTaskError, RUNTIME_SHUTDOWN_ABORT_REASON } from './dispatcher.js';
+import { activeProfileMcp, activeRuntimeSystemPrompt, createDispatcher, externalRoleProgress, normalizeTaskError, RUNTIME_SHUTDOWN_ABORT_REASON } from './dispatcher.js';
 
 test('activeProfileMcp forwards only the read-only wiki tools to the external runtime', () => {
   const session = {
@@ -489,4 +489,17 @@ test('dispatcher does not invent confirm=true for a non-gated task', async () =>
   );
 
   assert.equal(executeArgs.arguments.confirm, undefined);
+});
+
+test('externalRoleProgress turns the collective roles into a percentage and a label', () => {
+  const roles = ['scout', 'analyst', 'critique', 'redactor', 'archivist'];
+  assert.deepEqual(externalRoleProgress({ declared: 5, roles, finished: new Set(), current: 'scout' }),
+    { percent: 0, label: 'scout (1/5)', detail: 'Role 1/5: scout' });
+  assert.deepEqual(externalRoleProgress({ declared: 5, roles, finished: new Set(['scout', 'analyst', 'critique']), current: 'redactor' }),
+    { percent: 60, label: 'redactor (4/5)', detail: 'Role 4/5: redactor' });
+  // All roles finished: still below 100 until the task itself ends.
+  assert.equal(externalRoleProgress({ declared: 5, roles, finished: new Set(roles), current: null }).percent, 95);
+  // No declared list: the role is named, no percentage is invented.
+  assert.deepEqual(externalRoleProgress({ declared: 0, roles: ['scout'], finished: new Set(), current: 'scout' }),
+    { label: 'scout', detail: 'Role: scout' });
 });

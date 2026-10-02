@@ -28,6 +28,7 @@ import { openWikiPagesPromptLine } from '../core/openWikiPages.js';
 import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
 import { loadWorkspaceProfile, updateWorkspaceProfilePreference } from '../core/profile.js';
 import { formatLlmConfigFact } from '../core/wikirc.js';
+import { buildWorkspaceContext, CONVERSATION_READ_TOOL, CONVERSATION_SEARCH_TOOL, formatCrossConversationContext, formatWorkspaceMemoryFacts, MEMORY_TOOL_NAMES, MEMORY_TOOLS } from '../core/workspaceMemory.js';
 import { wikiSearchContextMessages } from '../core/wikiPresearch.js';
 import { artifactFromToolCall, currentArtifactFor, currentArtifactPromptLine, rememberArtifact } from '../core/currentArtifact.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
@@ -53,6 +54,8 @@ const INTERNAL_TOOL_SERVERS = {
   wiki: ['plan_set', 'plan_done'],
   shell: ['run_command', 'read_command', 'profile_update'],
   runtime: ['kill', 'cancel', 'status', 'enqueue', 'delegate', 'run_skill'],
+  memory: MEMORY_TOOL_NAMES,
+  conversation: ['search', 'read'],
 };
 
 const AGENT_SLASH_COMMANDS = new Set([
@@ -366,6 +369,7 @@ function toolDefinitionForCall(session, callName) {
     RUNTIME_RUN_SKILL_TOOL,
     WIKI_PLAN_SET_TOOL,
     WIKI_PLAN_DONE_TOOL,
+    ...MEMORY_TOOLS, CONVERSATION_SEARCH_TOOL, CONVERSATION_READ_TOOL,
   ];
   return [...internal, ...buildLlmTools(session?.mcp)]
     .find((item) => item?.function?.name === callName) ?? null;
@@ -985,7 +989,7 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
           message: `Action started (${String(inRun.runId).slice(0, 8)}) after real-plan validation: ${inRun.summary?.tasks ?? 0} task(s), ${inRun.summary?.agent ?? 'resolved agent'}. Execution in progress.`,
         });
       }
-      const result = await postRuntimeDelegate(objective, { url, workspace });
+      const result = await postRuntimeDelegate(objective, { url, workspace, conversationId: session.conversationId ?? null });
       if (result?.runId) {
         return JSON.stringify({
           delegated: true,
@@ -1322,6 +1326,10 @@ export function buildAgentSystemPrompt(state) {
     `Current workspace: ${workspace}.`,
     `Current wikirc profile: ${wikirc}.`,
     formatLlmConfigFact(state.session.wikircConfig, state.session.wikirc),
+    formatWorkspaceMemoryFacts(state.session.workspaceMemoryFacts),
+    formatCrossConversationContext(state.session.crossConversationContext),
+    buildWorkspaceContext(state.session),
+    'Memory tools are workspace-scoped. Call memory__remember/memory__forget/memory__restore only on an explicit user request; memory__remember must quote a durable fact verbatim from the current user message. memory__list and memory__history are read-only. The commands /remember <fact>, /forget <key>, /memory, /memory history <key> and /memory restore <key> <history-id> are such explicit requests: perform them with these memory tools (never through shell__run_command), then answer in the reply language with what actually changed or was found. Call conversation__search/read only when the user refers to another discussion; never imply conversations or memory are shared across workspaces.',
     `Available primitives: ${commandList(state.session)}.`,
     'Only announce or call slash commands that appear exactly in Available primitives. Do not invent command names, subcommands, or arguments.',
     'Connected MCP tools you may call directly (server__tool naming convention). Everything listed below is directly callable. When the requested action has no matching direct tool, call runtime__delegate with the original objective: the runtime resolves it against the discovered agent capability contracts, including executor-only single-task capabilities.',
@@ -1428,9 +1436,13 @@ export function formatLlmUnavailableMessage(reason) {
 }
 
 function toolsForClassification(classification, writeTools, session = null) {
-  const controlTools = session?.runtime?.url
-    ? [RUNTIME_STATUS_TOOL, RUNTIME_CANCEL_TOOL, RUNTIME_KILL_TOOL, RUNTIME_ENQUEUE_TOOL]
-    : [];
+  const controlTools = [
+    ...(session?.memoryActions ? MEMORY_TOOLS : []),
+    ...(session?.conversationActions ? [CONVERSATION_SEARCH_TOOL, CONVERSATION_READ_TOOL] : []),
+  ];
+  if (session?.runtime?.url) controlTools.push(
+    RUNTIME_STATUS_TOOL, RUNTIME_CANCEL_TOOL, RUNTIME_KILL_TOOL, RUNTIME_ENQUEUE_TOOL,
+  );
   // Provider discovery and validation belong to the runtime. Hiding
   // delegation while the shell snapshot is temporarily empty forced Donna
   // to invent commands instead of submitting the objective.
@@ -1646,7 +1658,7 @@ export function createAgentGraph(options = {}) {
       WIKI_PLAN_SET_TOOL,
       WIKI_PLAN_DONE_TOOL,
       ...buildLlmTools(state.session.mcp),
-    ];
+];
     const tools = state.terminalToolFailure || state.session._responseSynthesisOnly
       ? []
       : toolsForClassification(classification, writeTools, state.session);
@@ -1981,7 +1993,7 @@ export function createAgentGraph(options = {}) {
       // already-validated, already-approved delegated task via provider tools.
       const runtimeExecutionTurn = Boolean(state.session._currentRunIdentity);
       const allowedNames = !runtimeExecutionTurn && Array.isArray(state.allowedToolNames) ? state.allowedToolNames : null;
-      const isInternalCall = server === 'shell' || server === 'runtime' || isInternalWikiTool;
+      const isInternalCall = server === 'shell' || server === 'runtime' || server === 'memory' || server === 'conversation' || isInternalWikiTool;
       if (allowedNames && server && !isInternalCall && !allowedNames.includes(`${server}__${tool}`)) {
         const refusal = `${server}__${tool} is not available in interactive mode. Do not call provider tools directly. For any action or mutation, call runtime__delegate with the user objective; only read-only tools and runtime controls may be called directly.`;
         state.session._onStep?.(`tool call refused (not offered): ${server}__${tool}`);
@@ -2056,6 +2068,15 @@ export function createAgentGraph(options = {}) {
         } else if (server === 'shell' && tool === 'profile_update') {
           const result = await updateWorkspaceProfilePreference(state.session, args.preference);
           resultText = JSON.stringify(result, null, 2);
+        } else if (server === 'memory') {
+          if (!state.session.memoryActions) throw new Error('Workspace memory is unavailable: no workspace-scoped memory store is attached.');
+          if (typeof state.session.memoryActions[tool] !== 'function') throw new Error(`Unknown memory tool: memory__${tool}.`);
+          resultText = await state.session.memoryActions[tool](args);
+        } else if (server === 'conversation') {
+          if (!state.session.conversationActions) throw new Error('Conversation history is unavailable for this workspace.');
+          resultText = tool === 'search'
+            ? await state.session.conversationActions.search(args)
+            : await state.session.conversationActions.read(args);
         } else if (server === 'runtime') {
           const isCapabilityQuestion = tool === 'delegate'
             && !state.session._currentRunIdentity

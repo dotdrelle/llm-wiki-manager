@@ -56,6 +56,7 @@ export async function postRuntimeRun(input, {
   replans = undefined,
   capabilityPlan = undefined,
   skillName = undefined,
+  conversationId = undefined,
 } = {}) {
   const response = await fetch(runtimeEndpoint(url, '/run', workspace), {
     method: 'POST',
@@ -63,7 +64,7 @@ export async function postRuntimeRun(input, {
       ...runtimeHeaders(token),
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(Object.assign({ input, workspace }, evaluate !== undefined && { evaluate }, replans !== undefined && { replans }, capabilityPlan !== undefined && { capabilityPlan }, skillName !== undefined && { skillName })),
+    body: JSON.stringify(Object.assign({ input, workspace }, evaluate !== undefined && { evaluate }, replans !== undefined && { replans }, capabilityPlan !== undefined && { capabilityPlan }, skillName !== undefined && { skillName }, conversationId !== undefined && { conversationId })),
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -117,6 +118,7 @@ export async function postRuntimeTurn(input, {
   token = runtimeToken(),
   workspace = null,
   mode = 'agent',
+  conversationId = null,
 } = {}) {
   const response = await fetch(runtimeEndpoint(url, '/turn', workspace), {
     method: 'POST',
@@ -124,7 +126,7 @@ export async function postRuntimeTurn(input, {
       ...runtimeHeaders(token),
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ input, workspace, mode }),
+    body: JSON.stringify({ input, workspace, mode, ...(conversationId ? { conversationId } : {}) }),
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -135,15 +137,28 @@ export async function postRuntimeTurn(input, {
   return payload;
 }
 
+export async function requestRuntimeMemory(path, { method = 'GET', workspace = null, body = null, url = runtimeUrlFromEnv(), token = runtimeToken() } = {}) {
+  if (!String(path).startsWith('/memory/')) throw new Error('Invalid runtime memory path.');
+  const response = await fetch(runtimeEndpoint(url, path, workspace), {
+    method,
+    headers: { ...runtimeHeaders(token), 'Content-Type': 'application/json' },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error ?? `Runtime memory request failed: HTTP ${response.status}`);
+  return payload;
+}
+
 export async function postRuntimeDelegate(objective, {
   url = runtimeUrlFromEnv(),
   token = runtimeToken(),
   workspace = null,
+  conversationId = null,
 } = {}) {
   const response = await fetch(runtimeEndpoint(url, '/delegate', workspace), {
     method: 'POST',
     headers: { ...runtimeHeaders(token), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ objective, workspace }),
+    body: JSON.stringify({ objective, workspace, ...(conversationId ? { conversationId } : {}) }),
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -317,4 +332,3 @@ export async function* streamRuntimeEvents({
     reader.releaseLock();
   }
 }
-

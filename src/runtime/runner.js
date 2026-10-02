@@ -186,12 +186,13 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
   maxReplans = resolveMaxReplans(),
   callTool = null,
   dispatcherPollIntervalMs = 2500,
+  conversationProjection = null,
 } = {}) {
   let currentInput = initialInput ?? input;
   let replansLeft = Math.max(0, Math.floor(Number(maxReplans) || 0));
   // Computed ONCE at run start: the pre-run chat. Re-computing inside the
   // loop would re-ingest this run's own turns and duplicate them.
-  const runConversationSeed = conversationSeed(session, currentInput);
+  const runConversationSeed = conversationSeed(conversationProjection ? { agentProjection: conversationProjection } : session, currentInput);
 
   // The conversational loop path ends with the agent's own natural-language
   // reply; the deterministic parallel scheduler has no agent voice, so only

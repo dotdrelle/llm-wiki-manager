@@ -431,6 +431,7 @@ export const contractSchemas = {
       turnId: nullableString,
       taskId: nullableString,
       workspace: nullableString,
+      conversationId: nullableString,
       payload: { type: 'object', additionalProperties: true },
     },
   },

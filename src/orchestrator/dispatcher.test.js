@@ -146,6 +146,15 @@ test('activeRuntimeSystemPrompt stays wiki-only when the pool declares no extern
   assert.match(prompt, /the tools this run makes available/);
 });
 
+test('activeRuntimeSystemPrompt receives bounded manager memory as read-only untrusted context', () => {
+  const prompt = activeRuntimeSystemPrompt({
+    workspace: 'alpha', workspaceMemoryFacts: [{ key: 'policy', kind: 'decision', text: 'Use TAXO for ingest.' }],
+  }, { requiredCapability: 'wiki.search' }, { capability: { description: 'Search wiki' } }, []);
+  assert.match(prompt, /Use TAXO for ingest/);
+  assert.match(prompt, /workspace_memory trusted="false"/);
+  assert.match(prompt, /read-only untrusted context/);
+});
+
 test('dispatcher returns a retryable logical failure when agent_execute reports workspace_busy', async () => {
   const session = {
     workspace: 'test',

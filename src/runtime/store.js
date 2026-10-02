@@ -65,6 +65,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       turn_id TEXT,
       task_id TEXT,
       workspace TEXT,
+      conversation_id TEXT,
       origin TEXT,
       payload TEXT NOT NULL
     );
@@ -73,6 +74,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     CREATE TABLE IF NOT EXISTS runs (
       id TEXT PRIMARY KEY,
       workspace TEXT,
+      conversation_id TEXT,
       status TEXT NOT NULL,
       input TEXT,
       created_at TEXT NOT NULL,
@@ -229,10 +231,13 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   `);
   ensureColumn(db, 'events', 'sequence', 'INTEGER');
   ensureColumn(db, 'events', 'workspace', 'TEXT');
+  ensureColumn(db, 'events', 'conversation_id', 'TEXT');
   ensureColumn(db, 'events', 'task_id', 'TEXT');
   ensureColumn(db, 'runs', 'workspace', 'TEXT');
+  ensureColumn(db, 'runs', 'conversation_id', 'TEXT');
   backfillEventSequence(db);
   db.exec('CREATE INDEX IF NOT EXISTS idx_events_workspace ON events(workspace)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_events_workspace_conversation ON events(workspace, conversation_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_events_sequence ON events(sequence)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_run_status ON tasks(run_id, status)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_task_attempts_task ON task_attempts(task_id)');
@@ -246,8 +251,8 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   let lastEventSequence = null;
 
   const insertEvent = db.prepare(`
-    INSERT OR IGNORE INTO events (sequence, id, ts, type, run_id, turn_id, task_id, workspace, origin, payload)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO events (sequence, id, ts, type, run_id, turn_id, task_id, workspace, conversation_id, origin, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   // A sequence is a CURSOR clients hold ("events after N"): it must never be
   // handed out twice. MAX(sequence)+1 alone reused the numbers a purge or a
@@ -267,21 +272,22 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       ) + 1 AS next_sequence`
     : 'SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM events');
   const listEventsStatement = db.prepare(`
-    SELECT sequence, id, ts, type, run_id, turn_id, task_id, workspace, origin, payload
+    SELECT sequence, id, ts, type, run_id, turn_id, task_id, workspace, conversation_id, origin, payload
     FROM events
     ORDER BY sequence ASC
   `);
   const listEventsByWorkspaceStatement = db.prepare(`
-    SELECT sequence, id, ts, type, run_id, turn_id, task_id, workspace, origin, payload
+    SELECT sequence, id, ts, type, run_id, turn_id, task_id, workspace, conversation_id, origin, payload
     FROM events
     WHERE workspace = ?
     ORDER BY sequence ASC
   `);
   const upsertRun = db.prepare(`
-    INSERT INTO runs (id, workspace, status, input, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO runs (id, workspace, conversation_id, status, input, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       workspace = COALESCE(excluded.workspace, runs.workspace),
+      conversation_id = COALESCE(excluded.conversation_id, runs.conversation_id),
       status = excluded.status,
       input = COALESCE(excluded.input, runs.input),
       updated_at = excluded.updated_at
@@ -291,24 +297,24 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     VALUES (?, ?, 'running', NULL, ?, ?)
   `);
   const listRunsStatement = db.prepare(`
-    SELECT id, workspace, status, input, created_at, updated_at
+    SELECT id, workspace, conversation_id, status, input, created_at, updated_at
     FROM runs
     ORDER BY created_at DESC
   `);
   const listRunsByWorkspaceStatement = db.prepare(`
-    SELECT id, workspace, status, input, created_at, updated_at
+    SELECT id, workspace, conversation_id, status, input, created_at, updated_at
     FROM runs
     WHERE workspace = ?
     ORDER BY created_at DESC
   `);
   const listRecoverableRunsStatement = db.prepare(`
-    SELECT id, workspace, status, input, created_at, updated_at
+    SELECT id, workspace, conversation_id, status, input, created_at, updated_at
     FROM runs
     WHERE status IN (${RECOVERABLE_RUN_STATUSES.map(() => '?').join(', ')})
     ORDER BY created_at ASC
   `);
   const listRecoverableRunsByWorkspaceStatement = db.prepare(`
-    SELECT id, workspace, status, input, created_at, updated_at
+    SELECT id, workspace, conversation_id, status, input, created_at, updated_at
     FROM runs
     WHERE workspace = ? AND status IN (${RECOVERABLE_RUN_STATUSES.map(() => '?').join(', ')})
     ORDER BY created_at ASC
@@ -608,6 +614,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       event.turnId ?? null,
       event.taskId ?? event.payload?.taskId ?? null,
       ws,
+      event.conversationId ?? null,
       event.origin ?? null,
       JSON.stringify(event.payload ?? {}),
     );
@@ -622,6 +629,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
         status: 'running',
         input: event.payload?.input ?? null,
         workspace: ws,
+        conversationId: event.conversationId ?? null,
         createdAt: event.ts,
         updatedAt: event.ts,
       });
@@ -643,17 +651,20 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     return event;
   }
 
-  function persistRun({ id, status, input = null, workspace = null, createdAt = null, updatedAt = null }) {
+  function persistRun({ id, status, input = null, workspace = null, conversationId = null, createdAt = null, updatedAt = null }) {
     if (!id) return;
     const now = new Date().toISOString();
-    upsertRun.run(id, workspace, status, input, createdAt ?? now, updatedAt ?? now);
+    upsertRun.run(id, workspace, conversationId, status, input, createdAt ?? now, updatedAt ?? now);
   }
 
-  function listEvents({ workspace = null } = {}) {
+  function listEvents({ workspace = null, conversationId = null } = {}) {
+    if (!workspace && conversationId) return [];
     const rows = workspace
       ? listEventsByWorkspaceStatement.all(workspace)
       : listEventsStatement.all();
-    return rows.map(rowToEvent);
+    return rows.map(rowToEvent).filter((event) => !conversationId
+      || event.conversationId === conversationId
+      || (conversationId.startsWith('legacy:') && event.conversationId === null));
   }
 
   function listAuditTrail({ workspace = null, runId = null } = {}) {
@@ -669,6 +680,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     return rows.map((row) => ({
       id: row.id,
       workspace: row.workspace ?? null,
+      conversationId: row.conversation_id ?? null,
       status: row.status,
       input: row.input,
       createdAt: row.created_at,
@@ -683,6 +695,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     return rows.map((row) => ({
       id: row.id,
       workspace: row.workspace ?? null,
+      conversationId: row.conversation_id ?? null,
       status: row.status,
       input: row.input,
       createdAt: row.created_at,
@@ -736,6 +749,16 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   // the non-cascading side tables (task_assignments/task_attempts/
   // task_results/approval_grants) are cleared explicitly, same as
   // clearWorkspaceState below.
+  // Redo inside ONE conversation thread: removes that thread's events from the
+  // boundary on, and nothing else — other threads of the workspace and the run
+  // events (workspace state, never tagged with a conversation) are untouched.
+  function deleteConversationEventsFrom(sequence, { workspace = null, conversationId = null } = {}) {
+    const boundary = Number(sequence);
+    if (!Number.isFinite(boundary) || !workspace || !conversationId) return 0;
+    return Number(db.prepare('DELETE FROM events WHERE workspace = ? AND conversation_id = ? AND sequence >= ?')
+      .run(workspace, conversationId, boundary).changes ?? 0);
+  }
+
   function deleteEventsAfter(sequence, { workspace = null } = {}) {
     const boundary = Number(sequence);
     if (!Number.isFinite(boundary) || !workspace) return 0;
@@ -1353,6 +1376,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     persistSkillRun,
     findSkillRun,
     deleteEventsAfter,
+    deleteConversationEventsFrom,
     saveQueue,
     listQueue,
     listTasks,
@@ -1495,6 +1519,7 @@ function rowToEvent(row) {
     turnId: row.turn_id ?? null,
     taskId: row.task_id ?? null,
     workspace: row.workspace ?? null,
+    conversationId: row.conversation_id ?? null,
     payload: row.payload ? JSON.parse(row.payload) : {},
   };
 }

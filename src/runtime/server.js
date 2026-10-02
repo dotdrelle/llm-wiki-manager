@@ -31,6 +31,7 @@ import { cancelControlChain, cancelQueuedControlItem } from './controlCancellati
 import { generateSkillAcknowledgment, runSkillChain } from './skillRun.js';
 import { emitRuntimeLog } from './supervisor.js';
 import { summarizeCompactedConversation } from './conversationCompact.js';
+import { embedMemoryTexts } from './vectorMemory.js';
 import { findSkill, listSkills } from '../core/skills.js';
 import {
   enrollment,
@@ -73,6 +74,7 @@ export function startRuntimeServer({
   port = 7788,
   token = runtimeTokenFromEnv(),
   store,
+  memoryStore = null,
   session = null,
   getContext,
   run,
@@ -435,6 +437,13 @@ export function startRuntimeServer({
       }
       if (request.method === 'POST' && url.pathname === '/run') {
         const { body, context } = await resolveBodyContext(request, url);
+        const requestedConversationId = String(body.conversationId ?? '').trim();
+        if (requestedConversationId && !/^[A-Za-z0-9_-]{6,80}$/.test(requestedConversationId)) {
+          sendJson(response, 400, { error: 'Invalid conversationId.' });
+          return;
+        }
+        body.conversationId = requestedConversationId || `legacy:${context.workspace ?? randomUUID()}`;
+        if (!requestedConversationId) emitRuntimeLog(context.session, `conversation.legacy-id: run request omitted conversationId; using ${body.conversationId}`);
         try {
           const input = String(body.input ?? body.prompt ?? '').trim();
           if (!input) {
@@ -472,7 +481,7 @@ export function startRuntimeServer({
           });
           if (skillMatch) {
             try {
-              const result = await enqueueSkillInvocation(context, skillMatch);
+              const result = await enqueueSkillInvocation(context, skillMatch, body.conversationId ?? null);
               const explanation = await generateSkillAcknowledgment(context.session, result);
               sendJson(response, 202, { accepted: true, kind: 'skill_chain', explanation, ...result, ...controlStatus(context, store) });
             } catch (err) {
@@ -535,6 +544,13 @@ export function startRuntimeServer({
           sendJson(response, 400, { error: 'Missing input.' });
           return;
         }
+        const rawConversationId = String(body.conversationId ?? '').trim();
+        if (rawConversationId && !/^[A-Za-z0-9_-]{6,80}$/.test(rawConversationId)) {
+          sendJson(response, 400, { error: 'Invalid conversationId.' });
+          return;
+        }
+        body.conversationId = rawConversationId || `legacy:${context.workspace ?? randomUUID()}`;
+        if (!rawConversationId) emitRuntimeLog(context.session, `conversation.legacy-id: client omitted conversationId; using ${body.conversationId}`);
         // What the reader actually typed. `input` below may be replaced by a
         // system fact block for the model; the THREAD must still show the
         // reader's own words — the replacement was persisted as the
@@ -553,7 +569,7 @@ export function startRuntimeServer({
         const skillMatch = !readOnlyChat ? matchSkillInvocation(context.session, input) : null;
         if (skillMatch) {
           try {
-            const result = await enqueueSkillInvocation(context, skillMatch);
+            const result = await enqueueSkillInvocation(context, skillMatch, body.conversationId ?? null);
             const explanation = await generateSkillAcknowledgment(context.session, result);
             sendJson(response, 202, { accepted: true, kind: 'skill_chain', explanation, ...result, ...controlStatus(context, store) });
           } catch (err) {
@@ -695,11 +711,20 @@ export function startRuntimeServer({
           return;
         }
         try {
+          const rawConversationId = String(body.conversationId ?? '').trim();
+          if (rawConversationId && !/^[A-Za-z0-9_-]{6,80}$/.test(rawConversationId)) {
+            sendJson(response, 400, { error: 'Invalid conversationId.' });
+            return;
+          }
+          const runConversationId = rawConversationId || `legacy:${context.workspace ?? randomUUID()}`;
+          if (!rawConversationId) emitRuntimeLog(context.session, `conversation.legacy-id: delegation request omitted conversationId; using ${runConversationId}`);
           const prepared = await delegate(context, { objective, workspace: body.workspace ?? context.workspace ?? null });
           const started = startRuntimeRun(context, {
             input: objective,
             workspace: body.workspace ?? context.workspace ?? null,
+            conversationId: runConversationId,
             preparedDelegation: prepared,
+            extractMemory: false,
             evaluate: false,
           }, { waitForPlan: true });
           await started.ready;
@@ -796,7 +821,15 @@ export function startRuntimeServer({
           sendJson(response, 400, { truncated: false, reason: 'invalid_index' });
           return;
         }
-        const events = store.listEvents({ workspace: resolvedWorkspace });
+        // With a conversationId the index counts within that thread (what the
+        // served chat displays) and only that thread's events are removed;
+        // without one, the legacy workspace-wide index and deletion apply.
+        const conversationId = String(body.conversationId ?? '').trim();
+        if (conversationId && !/^[A-Za-z0-9_-]{6,80}$/.test(conversationId)) {
+          sendJson(response, 400, { truncated: false, reason: 'invalid_conversation_id' });
+          return;
+        }
+        const events = store.listEvents(conversationId ? { workspace: resolvedWorkspace, conversationId } : { workspace: resolvedWorkspace });
         const sequences = conversationEventSequences(events);
         const boundary = sequences[index];
         if (!Number.isFinite(boundary)) {
@@ -807,7 +840,9 @@ export function startRuntimeServer({
         // strictly after `boundary - 1` removes it along with its answers.
         // Sequences are integers and strictly increasing, so this cannot catch
         // an unrelated event between the two values.
-        const removedEvents = store.deleteEventsAfter(boundary - 1, { workspace: resolvedWorkspace });
+        const removedEvents = conversationId
+          ? store.deleteConversationEventsFrom(boundary, { workspace: resolvedWorkspace, conversationId })
+          : store.deleteEventsAfter(boundary - 1, { workspace: resolvedWorkspace });
         // getState prefers the in-memory projection over the event log, so the
         // deleted answers would survive in RAM without this rehydration.
         if (context?.session) {
@@ -828,7 +863,7 @@ export function startRuntimeServer({
       // on every turn, future turns stop seeing anything before this point
       // while the displayed conversation (and the ShellUI thread) stays whole.
       if (request.method === 'POST' && url.pathname === '/conversation/compact') {
-        const { workspace, context } = await resolveBodyContext(request, url);
+        const { body, workspace, context } = await resolveBodyContext(request, url);
         if (context?.running) {
           sendJson(response, 409, { compacted: false, reason: 'run_active' });
           return;
@@ -840,11 +875,17 @@ export function startRuntimeServer({
         }
         let summary = null;
         if (context?.session) {
-          const conversation = Array.isArray(context.session.agentProjection?.conversation)
-            ? context.session.agentProjection.conversation
-            : [];
-          const seedStart = Math.max(0, Number(context.session.agentProjection?.conversationSeedStart) || 0);
-          const previousSummary = context.session.agentProjection?.conversationSummary ?? null;
+          const conversationId = String(body.conversationId ?? '').trim();
+          if (conversationId && !/^[A-Za-z0-9_-]{6,80}$/.test(conversationId)) {
+            sendJson(response, 400, { compacted: false, reason: 'invalid_conversation_id' });
+            return;
+          }
+          const resolvedConversationId = conversationId || `legacy:${resolvedWorkspace}`;
+          if (!conversationId) emitRuntimeLog(context.session, `conversation.legacy-id: compact request omitted conversationId; using ${resolvedConversationId}`);
+          const projection = reduceAgentEvents(store.listEvents({ workspace: resolvedWorkspace, conversationId: resolvedConversationId }));
+          const conversation = Array.isArray(projection.conversation) ? projection.conversation : [];
+          const seedStart = Math.max(0, Number(projection.conversationSeedStart) || 0);
+          const previousSummary = projection.conversationSummary ?? null;
           // Summarize BEFORE dispatching: the event's payload carries the
           // result so the reducer only ever has to store a plain string, and
           // a run cannot start concurrently (already refused with 409 above)
@@ -856,11 +897,90 @@ export function startRuntimeServer({
           dispatchAgentEvent(context.session, createAgentEvent('conversation_reset', {
             origin: 'user',
             workspace: resolvedWorkspace,
+            conversationId: resolvedConversationId,
             payload: summary ? { summary } : {},
           }));
         }
         publishState(resolvedWorkspace, context);
         sendJson(response, 200, { compacted: true, summary });
+        return;
+      }
+      if (url.pathname === '/memory/facts' && request.method === 'GET') {
+        const workspace = workspaceFromUrl(url);
+        if (!workspace || !memoryStore) {
+          sendJson(response, workspace ? 503 : 400, { error: workspace ? 'Memory store unavailable.' : 'workspace_required' });
+          return;
+        }
+        const query = url.searchParams.get('q');
+        const context = await resolveContext({ workspace });
+        let queryEmbedding = null;
+        const vectorConfig = context?.session?.wikircConfig?.retrieval?.vector;
+        if (query && vectorConfig?.enabled) {
+          try { queryEmbedding = (await embedMemoryTexts([query], vectorConfig))?.[0] ?? null; }
+          catch (error) { emitRuntimeLog(context.session, error instanceof Error ? error.message : 'memory.vector-unavailable: lexical search is active'); }
+        }
+        sendJson(response, 200, { workspace, facts: query
+          ? memoryStore.search({ workspace, query, queryEmbedding, limit: Number(url.searchParams.get('limit')) || 8 })
+          : memoryStore.list(workspace) });
+        return;
+      }
+      if (url.pathname === '/memory/facts' && request.method === 'POST') {
+        const { body, context } = await resolveBodyContext(request, url);
+        const workspace = context?.workspace;
+        if (!workspace || !memoryStore) {
+          sendJson(response, workspace ? 503 : 400, { error: workspace ? 'Memory store unavailable.' : 'workspace_required' });
+          return;
+        }
+        try {
+          const vectorConfig = context.session?.wikircConfig?.retrieval?.vector;
+          let embedding = null;
+          if (vectorConfig?.enabled) {
+            try { embedding = (await embedMemoryTexts([body.text], vectorConfig))?.[0] ?? null; }
+            catch { emitRuntimeLog(context.session, 'memory.vector-unavailable: saved fact retained without an embedding'); }
+          }
+          const fact = memoryStore.save({ workspace, key: body.key, text: body.text, kind: body.kind,
+            conversationId: body.conversationId ?? null, turnId: body.turnId ?? null,
+            evidence: body.evidence ?? [], embedding });
+          emitRuntimeLog(context.session, `memory: saved « ${fact.text} »`);
+          sendJson(response, 200, { fact });
+        } catch (error) { sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) }); }
+        return;
+      }
+      if (url.pathname === '/memory/workspace' && request.method === 'DELETE') {
+        const workspace = workspaceFromUrl(url);
+        if (!workspace || !memoryStore) { sendJson(response, 400, { error: 'workspace_required' }); return; }
+        const cleared = memoryStore.clearWorkspace(workspace);
+        const context = await resolveContext({ workspace });
+        if (context?.session) emitRuntimeLog(context.session, `memory: workspace purge removed ${cleared.items} fact(s) and ${cleared.versions} history record(s)`);
+        sendJson(response, 200, { cleared, workspace });
+        return;
+      }
+      const memoryHistoryMatch = url.pathname.match(/^\/memory\/history\/([^/]+)$/);
+      if (memoryHistoryMatch && request.method === 'GET') {
+        const workspace = workspaceFromUrl(url);
+        const key = decodeURIComponent(memoryHistoryMatch[1]);
+        sendJson(response, workspace && memoryStore ? 200 : 400, workspace && memoryStore
+          ? { workspace, key, history: memoryStore.history(workspace, key) } : { error: 'workspace_required' });
+        return;
+      }
+      const memoryFactMatch = url.pathname.match(/^\/memory\/facts\/([^/]+)$/);
+      if (memoryFactMatch && ['DELETE', 'POST'].includes(request.method)) {
+        const { body, context } = await resolveBodyContext(request, url);
+        const workspace = context?.workspace;
+        const key = decodeURIComponent(memoryFactMatch[1]);
+        if (!workspace || !memoryStore) { sendJson(response, 400, { error: 'workspace_required' }); return; }
+        if (request.method === 'DELETE') {
+          const removed = memoryStore.remove({ workspace, key, conversationId: body.conversationId ?? null, turnId: body.turnId ?? null });
+          if (removed && context?.session) emitRuntimeLog(context.session, `memory: removed fact ${key} (history retained)`);
+          sendJson(response, removed ? 200 : 404, removed ? { removed } : { removed: false, error: 'No saved fact with that key exists in this workspace.' });
+        } else {
+          try {
+            const fact = memoryStore.restore({ workspace, key, historyId: body.historyId });
+            if (context?.session) emitRuntimeLog(context.session, `memory: restored « ${fact.text} »`);
+            sendJson(response, 200, { fact });
+          }
+          catch (error) { sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) }); }
+        }
         return;
       }
       if (request.method === 'POST' && url.pathname === '/resume') {
@@ -1162,6 +1282,7 @@ export function startRuntimeServer({
         input: takePrivateControlInput(context.session, item),
         publicInput: item.input,
         workspace: item.workspace ?? context.workspace ?? null,
+        ...(item.conversationId ? { conversationId: item.conversationId } : {}),
         // Interactive skill runs never approve their own mutations. Headless
         // may still grant the pending run explicitly through --auto-approve.
         ...(item.chainId ? { requireApproval: true } : {}),
@@ -1367,18 +1488,20 @@ export function startRuntimeServer({
     return input;
   }
 
-  async function enqueueSkillInvocation(context, match) {
+  async function enqueueSkillInvocation(context, match, conversationId = null) {
     const result = await runSkillChain(context, match.skill, {
       rawArgs: match.rawArgs,
       enqueueControlRequest,
       drainControlQueue,
       selectionKind: 'explicit_name',
+      conversationId,
     });
     // Publish only after compilation succeeds. The marker prevents an
     // invocation queued during another run from inheriting that run's id.
     dispatchAgentEvent(context.session, createAgentEvent('user_message', {
       origin: 'user',
       workspace: context.workspace ?? null,
+      conversationId,
       payload: { content: `/${match.skill.name}${match.rawArgs ? ` ${match.rawArgs}` : ''}`, independent: true },
     }));
     return result;
@@ -1821,7 +1944,7 @@ function announceControlLaunch(session, input, workspace) {
  Une file est un passage de témoin : ce qui doit survivre au parent voyage avec
  le message, pas dans l'état de celui qui l'a posté.
 */
-function enqueueControlRequest(context, input, { publicInput = null, capabilityPlan, chainId, chainSequence, skillName, skillExecution, skillStack, selectionKind, optional = false, continueOnFailure = false, proactiveReview = null } = {}) {
+function enqueueControlRequest(context, input, { publicInput = null, capabilityPlan, chainId, chainSequence, skillName, skillExecution, skillStack, selectionKind, conversationId = null, optional = false, continueOnFailure = false, proactiveReview = null } = {}) {
   const now = new Date().toISOString();
   const item = {
     id: `control-${randomUUID()}`,
@@ -1841,6 +1964,7 @@ function enqueueControlRequest(context, input, { publicInput = null, capabilityP
     // The proactive marker rides on the ITEM, so it survives projection and a
     // runtime restart, and the drain can hand it back to the run it starts.
     ...(proactiveReview ? { proactiveReview } : {}),
+    ...(conversationId ? { conversationId } : {}),
     optional: optional === true,
     continueOnFailure: continueOnFailure === true,
   };

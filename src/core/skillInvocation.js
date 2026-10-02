@@ -1,7 +1,9 @@
 import { findSkill, listSkills } from './skills.js';
 
 const INVOCATION_RE = /^\/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/;
-export const RESERVED_SLASH_COMMANDS = new Set(['status', 'stop', 'run', 'queue', 'skills', 'help', 'exit', 'quit', 'chat', 'agent']);
+// remember/forget/memory are memory requests Donna performs with her tools, not
+// skills: an unknown-skill refusal would stop them before she sees them.
+export const RESERVED_SLASH_COMMANDS = new Set(['status', 'stop', 'run', 'queue', 'skills', 'help', 'exit', 'quit', 'chat', 'agent', 'remember', 'forget', 'memory']);
 
 export function explicitSkillReference(input, skillName, language = null) {
   const name = escapeRegExp(String(skillName ?? '').trim());

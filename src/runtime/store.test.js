@@ -1083,6 +1083,23 @@ test('deleteEventsAfter without a workspace is a no-op, never an unscoped wipe',
   store.close();
 });
 
+test('conversation event queries are isolated by workspace and conversation, with a legacy bridge', () => {
+  const stateDir = runtimeStateDir();
+  const store = openRuntimeStore({ stateDir });
+  const save = (workspace, conversationId, content) => store.persistEvent(createAgentEvent('user_message', {
+    origin: 'user', workspace, conversationId, payload: { content },
+  }));
+  save('alpha', 'conv_alpha_1', 'A only');
+  save('alpha', 'conv_alpha_2', 'B only');
+  save('beta', 'conv_alpha_1', 'other workspace');
+  save('alpha', null, 'legacy thread');
+  assert.deepEqual(store.listEvents({ workspace: 'alpha', conversationId: 'conv_alpha_1' }).map((event) => event.payload.content), ['A only']);
+  assert.deepEqual(store.listEvents({ workspace: 'alpha', conversationId: 'conv_alpha_2' }).map((event) => event.payload.content), ['B only']);
+  assert.deepEqual(store.listEvents({ workspace: 'beta', conversationId: 'conv_alpha_1' }).map((event) => event.payload.content), ['other workspace']);
+  assert.deepEqual(store.listEvents({ workspace: 'alpha', conversationId: 'legacy:alpha' }).map((event) => event.payload.content), ['legacy thread']);
+  store.close();
+});
+
 test('deleteEventsAfter removes bookkeeping only for runs entirely produced by the deleted range', () => {
   const stateDir = runtimeStateDir();
   const store = openRuntimeStore({ stateDir });
@@ -1195,4 +1212,23 @@ test('a purge never lets the next event reuse a sequence a client may hold as it
   const after = reopened.persistEvent(createAgentEvent('run_started', { origin: 'test', workspace: 'acpi', payload: {} }));
   assert.ok(after.sequence > next.sequence, 'the high-water mark survives a restart');
   reopened.close();
+});
+
+test('a thread-scoped redo deletes only that thread, from the boundary on', () => {
+  const store = openRuntimeStore({ stateDir: runtimeStateDir() });
+  const save = (conversationId, content) => store.persistEvent(createAgentEvent('user_message', {
+    origin: 'user', workspace: 'alpha', conversationId, payload: { content },
+  }));
+  save('conv_alpha_1', 'A1');
+  save('conv_alpha_2', 'B1');
+  save('conv_alpha_1', 'A2');
+  save('conv_alpha_2', 'B2');
+  const boundary = store.listEvents({ workspace: 'alpha', conversationId: 'conv_alpha_1' })[1].sequence;
+
+  assert.equal(store.deleteConversationEventsFrom(boundary, { workspace: 'alpha', conversationId: 'conv_alpha_1' }), 1);
+  assert.deepEqual(store.listEvents({ workspace: 'alpha', conversationId: 'conv_alpha_1' }).map((event) => event.payload.content), ['A1']);
+  // The other thread keeps its later message.
+  assert.deepEqual(store.listEvents({ workspace: 'alpha', conversationId: 'conv_alpha_2' }).map((event) => event.payload.content), ['B1', 'B2']);
+  assert.equal(store.deleteConversationEventsFrom(boundary, { workspace: 'alpha' }), 0);
+  store.close();
 });

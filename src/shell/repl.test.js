@@ -16,6 +16,7 @@ import {
   conversationMessages,
   recordRuntimeUnavailableAgentInput,
   runLine,
+  runtimeMemoryActions,
   sanitizeRuntimeStateForDisplay,
   runtimeStatusLine,
   runtimeUnavailableAgentMessage,
@@ -580,7 +581,10 @@ test('submitRuntimeRun reports acceptance without throwing', async () => {
 test('submitRuntimeTurn sends agent free text through the decision lane before starting a run', async () => {
   const restore = stubFetch(async (url, init) => {
     assert.equal(pathOf(url), '/turn');
-    assert.deepEqual(JSON.parse(String(init.body)), {
+    const body = JSON.parse(String(init.body));
+    const { conversationId, ...turn } = body;
+    assert.match(conversationId, /^shell_[A-Za-z0-9_-]{6,80}$/);
+    assert.deepEqual(turn, {
       input: 'charge les 10 derniers mails',
       workspace: 'docs',
       mode: 'agent',
@@ -1535,3 +1539,27 @@ test('the chat input budget is the active profile\'s own per-call limit', async 
   assert.equal(limit(call(25)), 210000, 'never beyond half the budget');
   assert.equal(limit({ function: { name: 'wiki__wiki_read_page', arguments: '{}' } }), undefined);
 });
+
+test('shell memory actions go through the runtime and refuse an unquoted fact', async () => {
+  const calls = [];
+  const request = async (path, options) => { calls.push({ path, ...options }); return path === '/memory/facts' && !options.method
+    ? { facts: [{ key: 'k1', kind: 'convention', text: 'Reports are in English' }, { key: 'k2', kind: 'decision', text: 'Budget 20k' }] }
+    : { fact: { key: 'k1', text: 'Reports are in English' }, removed: true, history: [{ id: 'h1' }] }; };
+  const session = { workspace: 'demo', conversationId: 'conv-abc123', _currentUserInput: '/remember Reports are in English' };
+  const actions = runtimeMemoryActions(session, { url: 'http://runtime.test' }, { request });
+
+  await assert.rejects(() => actions.remember({ text: 'Something never said' }), /quote an exact/);
+  assert.equal(calls.length, 0);
+  assert.equal(JSON.parse(await actions.remember({ text: 'Reports are in English' })).saved, true);
+  assert.deepEqual(calls[0], { path: '/memory/facts', workspace: 'demo', url: 'http://runtime.test', method: 'POST',
+    body: { text: 'Reports are in English', kind: 'convention', conversationId: 'conv-abc123' } });
+  await actions.forget({ key: 'k1' });
+  assert.deepEqual(calls[1].body, { conversationId: 'conv-abc123' });
+  assert.equal(calls[1].method, 'DELETE');
+  assert.deepEqual(JSON.parse(await actions.list({ query: 'budget' })).facts.map((fact) => fact.key), ['k2']);
+  await actions.history({ key: 'k1' });
+  assert.equal(calls.at(-1).path, '/memory/history/k1');
+  await actions.restore({ key: 'k1', historyId: 'h1' });
+  assert.deepEqual(calls.at(-1).body, { historyId: 'h1' });
+});
+

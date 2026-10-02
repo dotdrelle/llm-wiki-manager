@@ -113,6 +113,55 @@ test('interactive runtime sessions carry the current artifact across turns', () 
   assert.deepEqual(session.currentArtifact, artifact);
 });
 
+test('interactive memory tools require verbatim user evidence and constrain conversation reads to the workspace store', async () => {
+  const saved = [];
+  const removed = [];
+  const memoryStore = {
+    save: (fact) => { saved.push(fact); return { ...fact, key: 'fact-1' }; },
+    remove: (fact) => { removed.push(fact); return true; },
+  };
+  const eventStore = { listEvents: ({ workspace }) => workspace === 'alpha' ? [
+    { workspace, conversationId: 'thread_alpha', type: 'user_message', payload: { content: 'We decided to use TAXO.' }, ts: '2026-01-01' },
+  ] : [] };
+  const source = { workspace: 'alpha', mcp: {}, commands: [], packageJson: {}, queueStore: {} };
+  const session = createInteractiveSession({ session: source }, {
+    conversationId: 'current_alpha', turnId: 'turn-1', memoryStore, eventStore,
+  });
+  session._currentUserInput = 'Please remember: we decided to use TAXO.';
+  await assert.rejects(session.memoryActions.remember({ text: 'we will use Another System.' }), /exact, durable fact/);
+  const result = JSON.parse(await session.memoryActions.remember({ text: 'we decided to use TAXO.', kind: 'decision' }));
+  assert.equal(result.saved, true);
+  assert.equal(saved[0].workspace, 'alpha');
+  assert.deepEqual(saved[0].evidence[0], { conversationId: 'current_alpha', turnId: 'turn-1', excerpt: 'we decided to use TAXO.' });
+  assert.match(await session.conversationActions.search({ query: 'TAXO decision' }), /thread_alpha/);
+  assert.equal(JSON.parse(await session.conversationActions.read({ conversationId: 'thread_beta' })).found, false);
+  assert.equal(JSON.parse(await session.conversationActions.read({ conversationId: 'thread_alpha' })).messages[0].content, 'We decided to use TAXO.');
+  await session.memoryActions.forget({ key: 'fact-1' });
+  assert.deepEqual(removed[0], { workspace: 'alpha', key: 'fact-1', conversationId: 'current_alpha', turnId: 'turn-1' });
+});
+
+test('interactive memory tools also list, read a history and restore, within the workspace', async () => {
+  const calls = [];
+  const memoryStore = {
+    list: (workspace) => { calls.push(['list', workspace]); return [{ key: 'k1', kind: 'convention', text: 'Reports are in English', updatedAt: 't1' }]; },
+    search: ({ workspace, query }) => { calls.push(['search', workspace, query]); return []; },
+    history: (workspace, key) => { calls.push(['history', workspace, key]); return [{ id: 'h1', operation: 'update' }]; },
+    restore: ({ workspace, key, historyId }) => { calls.push(['restore', workspace, key, historyId]); return { key, text: 'Reports are in French' }; },
+  };
+  const session = createInteractiveSession({ session: { workspace: 'alpha', mcp: {}, commands: [], packageJson: {}, queueStore: {} } }, {
+    conversationId: 'current_alpha', turnId: 'turn-1', memoryStore,
+  });
+  const listed = JSON.parse(await session.memoryActions.list({}));
+  assert.equal(listed.count, 1);
+  assert.deepEqual(listed.facts[0], { key: 'k1', kind: 'convention', text: 'Reports are in English', updatedAt: 't1' });
+  assert.match(listed.note, /untrusted data/);
+  await session.memoryActions.list({ query: 'budget' });
+  assert.deepEqual(JSON.parse(await session.memoryActions.history({ key: 'k1' })).history, [{ id: 'h1', operation: 'update' }]);
+  assert.equal(JSON.parse(await session.memoryActions.restore({ key: 'k1', historyId: 'h1' })).restored, true);
+  assert.deepEqual(calls, [['list', 'alpha'], ['search', 'alpha', 'budget'], ['history', 'alpha', 'k1'], ['restore', 'alpha', 'k1', 'h1']]);
+  await assert.rejects(session.memoryActions.history({}), /needs the key/);
+});
+
 test('interactive turns publish a fallback assistant message exactly once', () => {
   const published = [];
   const session = { agentEvents: [], _onAgentEvent: (event) => published.push(event) };
@@ -585,6 +634,19 @@ test('runtime server returns the accepted run id and passes it to the runner', a
   }
 });
 
+// The control queue is event-sourced: a raw session array is wiped the moment
+// any later event applies the projection (here, the run's own log line). Seed
+// the item the way the runtime does.
+function controlQueueSession() {
+  const session = {};
+  dispatchAgentEvent(session, createAgentEvent('control_enqueued', {
+    origin: 'user',
+    workspace: 'docs',
+    payload: { id: 'control-1', input: 'queued work', workspace: 'docs', createdAt: new Date().toISOString() },
+  }));
+  return session;
+}
+
 test('runtime server kill aborts active run and interrupts workspace work', async (t) => {
   let abortSeen = false;
   let cancelCalled = false;
@@ -608,7 +670,7 @@ test('runtime server kill aborts active run and interrupts workspace work', asyn
           return 3;
         },
       },
-      session: { controlQueue: [{ id: 'control-1', workspace: 'docs', status: 'queued' }] },
+      session: controlQueueSession(),
       run: async (_context, _body, { signal }) => {
         signal.addEventListener('abort', () => { abortSeen = true; }, { once: true });
         await new Promise(() => {});
@@ -1714,7 +1776,7 @@ test('POST /run compiles a workspace skill into a sequential runtime chain', asy
     assert.equal(startedBody.requireApproval, true);
     assert.notEqual(startedBody.autoApprove, true);
     assert.deepEqual(session.agentProjection.conversation, [
-      { role: 'user', content: '/sync-ingest docs' },
+      { role: 'user', content: '/sync-ingest docs', conversationId: 'legacy:acme' },
     ]);
     assert.doesNotMatch(JSON.stringify(session.agentEvents), /Export the source|Then ingest the files/);
   } finally {
@@ -1756,7 +1818,7 @@ test('POST /turn deterministically compiles an explicit skill invocation', async
     assert.equal(session.controlQueue.length, 1);
     assert.equal(session.controlQueue[0].input, '/wiki-build template="overview"');
     assert.deepEqual(session.agentProjection.conversation, [
-      { role: 'user', content: '/wiki-build overview' },
+      { role: 'user', content: '/wiki-build overview', conversationId: 'legacy:acme' },
     ]);
   } finally {
     context.currentAbortController?.abort();
@@ -2628,3 +2690,48 @@ test('redo truncation refuses when no workspace can be resolved', async (t) => {
     await handle.close();
   }
 });
+
+test('redo truncation with a conversationId counts and deletes within that thread only', async (t) => {
+  const thread = [
+    { ...createAgentEvent('user_message', { origin: 'user', conversationId: 'conv-mine01', payload: { content: 'q1' } }), sequence: 5 },
+    { ...createAgentEvent('assistant_message', { origin: 'runtime', conversationId: 'conv-mine01', payload: { content: 'a1' } }), sequence: 9 },
+  ];
+  let listed = null;
+  let scoped = null;
+  let workspaceWide = false;
+  const store = {
+    dbPath: ':memory:',
+    getState: () => ({ status: 'idle' }),
+    listEvents: (options) => { listed = options; return thread; },
+    deleteConversationEventsFrom: (sequence, options) => { scoped = { sequence, ...options }; return 2; },
+    deleteEventsAfter: () => { workspaceWide = true; return 0; },
+    hydrateSession: () => {},
+  };
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1', port: 0, store, session: {},
+      getContext: async () => ({ workspace: 'demo', session: {}, running: false }),
+      run: async () => {},
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw err;
+  }
+  try {
+    const post = (body) => fetch(`http://127.0.0.1:${handle.port}/conversation/truncate`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const ok = await post({ index: 0, conversationId: 'conv-mine01' });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(listed, { workspace: 'demo', conversationId: 'conv-mine01' });
+    assert.deepEqual(scoped, { sequence: 5, workspace: 'demo', conversationId: 'conv-mine01' });
+    assert.equal(workspaceWide, false);
+    const bad = await post({ index: 0, conversationId: 'x' });
+    assert.equal(bad.status, 400);
+    assert.equal((await bad.json()).reason, 'invalid_conversation_id');
+  } finally {
+    await handle.close();
+  }
+});
+

@@ -38,6 +38,7 @@ import { CapabilityUnavailableError, resolve as resolveCapability } from '../orc
 import { listWorkspaces } from '../core/workspaces.js';
 import { findSkill } from '../core/skills.js';
 import { rememberArtifact } from '../core/currentArtifact.js';
+import { loadWorkspaceHelpIndex, memoryListResult, readConversationEvents, searchConversationEvents } from '../core/workspaceMemory.js';
 // Runtime modules use node:sqlite (Node.js built-in unavailable in Bun).
 // They are imported dynamically so the shell / TUI path never loads them.
 
@@ -45,7 +46,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageJsonPath = resolve(__dirname, '../../package.json');
 const workspaceCliPath = resolve(__dirname, '../../wiki-workspace');
 const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
-const SHELL_COMMANDS = ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'connector', 'wiki', 'skills', 'clear', 'chat', 'agent', 'approve'];
+const SHELL_COMMANDS = ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'connector', 'wiki', 'skills', 'clear', 'chat', 'agent', 'approve', 'remember', 'memory', 'forget'];
 
 function valueAfter(argv, flag) {
   const index = argv.indexOf(flag);
@@ -336,7 +337,7 @@ function createSession() {
   };
 }
 
-export function createInteractiveSession(context, { runtimeUrl, turnId, signal = null } = {}) {
+export function createInteractiveSession(context, { runtimeUrl, turnId, signal = null, conversationId = null, memoryStore = null, eventStore = null, embedMemory = null, onMemoryNotice = null } = {}) {
   const source = context.session;
   const session = createSession();
   for (const key of [
@@ -345,6 +346,9 @@ export function createInteractiveSession(context, { runtimeUrl, turnId, signal =
     'packageJson', 'queueStore', 'systemPrompt',
     '_runSkillWithinRun', 'currentArtifact',
   ]) {
+    if (source[key] !== undefined) session[key] = source[key];
+  }
+  for (const key of ['helpIndex', 'helpIndexStatus', '_helpIndexLoaded', '_helpIndexProvider']) {
     if (source[key] !== undefined) session[key] = source[key];
   }
   session.runtime = runtimeUrl ? { url: runtimeUrl } : null;
@@ -358,7 +362,67 @@ export function createInteractiveSession(context, { runtimeUrl, turnId, signal =
   session.jobQueue = [];
   session.headlessPlan = null;
   session.turnId = turnId ?? null;
+  session.conversationId = conversationId;
+  if (memoryStore && session.workspace) {
+    session.memoryActions = {
+      remember: async ({ text, kind = 'convention' } = {}) => {
+        const factText = String(text ?? '').trim();
+        const sourceText = String(session._currentUserInput ?? '');
+        if (!factText || !sourceText.includes(factText)) {
+          throw new Error('Memory write refused: quote an exact, durable fact from the current user message as evidence.');
+        }
+        let embedding = null;
+        const vectorConfig = session.wikircConfig?.retrieval?.vector;
+        if (vectorConfig?.enabled && embedMemory) {
+          try { embedding = (await embedMemory([factText], vectorConfig))?.[0] ?? null; }
+          catch { onMemoryNotice?.('memory.vector-unavailable: explicit fact saved without an embedding'); }
+        }
+        const fact = memoryStore.save({ workspace: session.workspace, text: factText, kind, embedding,
+          conversationId, turnId, evidence: [{ conversationId, turnId, excerpt: factText }] });
+        session._memoryExplicitlyChanged = true;
+        onMemoryNotice?.(`memory: saved « ${fact.text} »`);
+        return JSON.stringify({ saved: true, fact });
+      },
+      forget: async ({ key } = {}) => {
+        const factKey = String(key ?? '').trim();
+        const removed = factKey ? memoryStore.remove({ workspace: session.workspace, key: factKey, conversationId, turnId }) : false;
+        if (!removed) throw new Error('No saved fact with that key exists in this workspace.');
+        session._memoryExplicitlyChanged = true;
+        onMemoryNotice?.(`memory: removed fact ${factKey} (history retained)`);
+        return JSON.stringify({ removed: true, key: factKey, restorable: true });
+      },
+      list: async ({ query } = {}) => {
+        const text = String(query ?? '').trim();
+        const facts = text ? memoryStore.search({ workspace: session.workspace, query: text, limit: 20 }) : memoryStore.list(session.workspace);
+        return memoryListResult(facts);
+      },
+      history: async ({ key } = {}) => {
+        const factKey = String(key ?? '').trim();
+        if (!factKey) throw new Error('memory__history needs the key of a saved fact (see memory__list).');
+        return JSON.stringify({ key: factKey, history: memoryStore.history(session.workspace, factKey) });
+      },
+      restore: async ({ key, historyId } = {}) => {
+        const fact = memoryStore.restore({ workspace: session.workspace, key: String(key ?? '').trim(), historyId: String(historyId ?? '').trim() });
+        session._memoryExplicitlyChanged = true;
+        onMemoryNotice?.(`memory: restored « ${fact.text} »`);
+        return JSON.stringify({ restored: true, fact });
+      },
+    };
+  }
+  if (eventStore && session.workspace) {
+    session.conversationActions = {
+      search: ({ query } = {}) => JSON.stringify(searchConversationEvents(
+        eventStore.listEvents({ workspace: session.workspace }), query,
+        { excludeConversationId: conversationId, limit: 3 },
+      )),
+      read: ({ conversationId: id, limit = 12 } = {}) => {
+        const result = readConversationEvents(eventStore.listEvents({ workspace: session.workspace }), id, { limit });
+        return JSON.stringify(result ?? { found: false, reason: 'No conversation with that id in this workspace.' });
+      },
+    };
+  }
   session._abortSignal = signal;
+  if (typeof onMemoryNotice === 'function') session._onContextNotice = onMemoryNotice;
   // The SAME lock registry as the workspace's runs, never a copy: a direct
   // write from this turn must see what a run holds (plan-demandes-pendant-run.md).
   session._workspaceLocks = workspaceLockRegistry(source);
@@ -953,6 +1017,8 @@ async function runRuntime(argv, agent) {
     return;
   }
   const { defaultRuntimeStateDir, openRuntimeStore, RECOVERABLE_QUEUE_STATUSES } = await import('../runtime/store.js');
+  const { openMemoryStore } = await import('../runtime/memoryStore.js');
+  const { embedMemoryTexts } = await import('../runtime/vectorMemory.js');
   const { startRuntimeServer } = await import('../runtime/server.js');
   const { recoverActiveRuns } = await import('../runtime/recoveryManager.js');
   const { emitRuntimeLog, startActivitySupervisor, cancelActiveActivityJobs, discoverAgentsOnce } = await import('../runtime/supervisor.js');
@@ -982,6 +1048,8 @@ async function runRuntime(argv, agent) {
     ?? `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`;
 
   const store = openRuntimeStore({ stateDir });
+  const memoryStore = openMemoryStore({ stateDir });
+  let memoryFallbackAnnounced = false;
   let serverHandle = null;
   const contexts = new Map();
 
@@ -1130,6 +1198,7 @@ async function runRuntime(argv, agent) {
       runId,
       turnId: `${runId}:resume-0`,
       workspace: context.workspace,
+      ...(run.conversationId ? { conversationId: run.conversationId } : {}),
     };
     session._abortSignal = context.currentAbortController.signal;
     supervisor?.setRunSignal(context.currentAbortController.signal);
@@ -1142,6 +1211,9 @@ async function runRuntime(argv, agent) {
       timeoutMs: 3600 * 1000,
       maxTurns: 20,
       runId,
+      conversationProjection: run.conversationId
+        ? reduceAgentEvents(store.listEvents({ workspace: context.workspace, conversationId: run.conversationId }))
+        : null,
       pollBusy: supervisor?.pollBusy,
     })
       .catch((err) => {
@@ -1418,12 +1490,38 @@ async function runRuntime(argv, agent) {
     // Déclarée hors du try : le finally doit pouvoir restaurer la pile même
     // quand le run échoue avant de l'avoir installée.
     const parentStack = Array.isArray(session._skillStack) ? session._skillStack : [];
+    const previousWorkspaceMemoryFacts = session.workspaceMemoryFacts;
+    const hadWorkspaceMemoryFacts = Object.hasOwn(session, 'workspaceMemoryFacts');
     try {
       if (workspace && session.workspace !== workspace) {
         const result = await handleSlashCommand(`/use ${workspace}`, { packageJson, session });
         if (!session.workspacePath) throw new Error(result.output || `Workspace not loaded: ${workspace}`);
       }
       context.workspace = session.workspace ?? workspace ?? context.workspace ?? null;
+      await loadWorkspaceHelpIndex(session, { onNotice: (message) => emitRuntimeLog(session, message) });
+      if (context.workspace && memoryStore) {
+        try {
+          const query = String(body.publicInput ?? input).slice(0, 5000);
+          const vectorConfig = session.wikircConfig?.retrieval?.vector;
+          let queryEmbedding = null;
+          if (vectorConfig?.enabled) {
+            try { queryEmbedding = (await embedMemoryTexts([query], vectorConfig))?.[0] ?? null; }
+            catch { emitRuntimeLog(session, 'memory.vector-unavailable: agent-run projection uses lexical workspace-memory search'); }
+          }
+          session.workspaceMemoryFacts = memoryStore.search({ workspace: context.workspace, query, queryEmbedding,
+            limit: Math.max(1, Math.min(20, Number(process.env.WIKI_MANAGER_MEMORY_TOP_K) || 8)) });
+          if (vectorConfig?.enabled && session.workspaceMemoryFacts.length
+            && !session.workspaceMemoryFacts.every((fact) => Number.isFinite(fact.vectorScore))) {
+            emitRuntimeLog(session, 'memory.vector-unavailable: agent-run projection uses lexical workspace-memory search');
+          }
+        } catch (error) {
+          session.workspaceMemoryFacts = [];
+          emitRuntimeLog(session, `memory.search-degraded: agent-run projection unavailable (${error instanceof Error ? error.message : String(error)})`);
+        }
+      } else {
+        session.workspaceMemoryFacts = [];
+        emitRuntimeLog(session, 'memory.unavailable: agent run has no resolved workspace; shared memory was not consulted');
+      }
       /*
        Pile des compétences en cours d'exécution.
 
@@ -1455,11 +1553,13 @@ async function runRuntime(argv, agent) {
         runId,
         turnId: `${runId}:turn-0`,
         workspace: context.workspace,
+        ...(body.conversationId ? { conversationId: body.conversationId } : {}),
         ...(skillChain ? { skillChain } : {}),
       };
       dispatchAgentEvent(session, createAgentEvent('run_started', {
         origin: 'runtime',
         runId,
+        conversationId: body.conversationId ?? null,
         payload: { input: String(body.publicInput ?? input), workspace: session._currentRunIdentity.workspace },
       }));
       // Compiled skill objectives are private execution material. The
@@ -1468,6 +1568,7 @@ async function runRuntime(argv, agent) {
         dispatchAgentEvent(session, createAgentEvent('user_message', {
           origin: 'user',
           runId,
+          conversationId: body.conversationId ?? null,
           payload: { content: input },
         }));
       }
@@ -1679,6 +1780,9 @@ async function runRuntime(argv, agent) {
         timeoutMs,
         maxTurns,
         runId,
+        conversationProjection: body.conversationId
+          ? reduceAgentEvents(store.listEvents({ workspace: context.workspace, conversationId: body.conversationId }))
+          : null,
         pollBusy: supervisor?.pollBusy,
         evaluate: body.evaluate !== false,
         ...(maxReplans === undefined ? {} : { maxReplans }),
@@ -1713,12 +1817,33 @@ async function runRuntime(argv, agent) {
       }));
     } finally {
       supervisor?.setRunSignal(null);
+      const memorySourceText = String(body.publicInput ?? (body.skillChain ? '' : input)).trim();
+      if (body.extractMemory !== false && process.env.WIKI_MANAGER_MEMORY_AUTO !== 'off' && context.workspace && memorySourceText) {
+        const runConversationEvents = body.conversationId
+          ? store.listEvents({ workspace: context.workspace, conversationId: body.conversationId })
+          : [];
+        const assistantText = [...runConversationEvents].reverse()
+          .find((event) => event.type === 'assistant_message' && (!event.runId || event.runId === runId))?.payload?.content ?? '';
+        void import('../runtime/memoryExtract.js').then(({ extractAndApplyMemory }) => extractAndApplyMemory({
+          llm: session.llm,
+          memoryStore,
+          workspace: context.workspace,
+          conversationId: body.conversationId ?? null,
+          turnId: `${runId}:turn-0`,
+          userText: memorySourceText,
+          assistantText: String(assistantText),
+          vectorConfig: session.wikircConfig?.retrieval?.vector ?? null,
+          onNotice: (message) => emitRuntimeLog(session, message),
+        }));
+      }
       delete session._abortSignal;
       delete session._onStep;
       delete session._currentRunIdentity;
       delete session._runApprovalRequired;
       delete session._runApprovalResolved;
       delete session._approvalTimeoutMs;
+      if (hadWorkspaceMemoryFacts) session.workspaceMemoryFacts = previousWorkspaceMemoryFacts;
+      else delete session.workspaceMemoryFacts;
       // La session survit au run : une pile laissée en place bloquerait une
       // invocation parfaitement légitime au run suivant, et le diagnostic
       // serait incompréhensible.
@@ -1744,8 +1869,34 @@ async function runRuntime(argv, agent) {
     // stale-session recovery handles later server restarts cheaply.
     if (mcpStatusNeedsRefresh(context.session.mcp)) {
       await refreshMcpRuntimeStatus(context.session);
+      context.session._helpIndexLoaded = false;
     }
-    const ephemeral = createInteractiveSession(context, { runtimeUrl: selfRuntimeUrl, turnId, signal });
+    await loadWorkspaceHelpIndex(context.session, { onNotice: (message) => emitRuntimeLog(context.session, message) });
+    const conversationId = body.conversationId || `legacy:${context.workspace ?? 'unknown'}`;
+    const ephemeral = createInteractiveSession(context, { runtimeUrl: selfRuntimeUrl, turnId, signal, conversationId, memoryStore, eventStore: store, embedMemory: embedMemoryTexts,
+      onMemoryNotice: (message) => emitRuntimeLog(context.session, message) });
+    ephemeral._currentUserInput = input;
+    if (!context.workspace) {
+      ephemeral.workspaceMemoryFacts = [];
+      emitRuntimeLog(context.session, 'memory.unavailable: workspace is not resolved; shared memory was not consulted');
+    } else try {
+      const vectorConfig = context.session.wikircConfig?.retrieval?.vector;
+      let queryEmbedding = null;
+      if (vectorConfig?.enabled) {
+        try { queryEmbedding = (await embedMemoryTexts([input], vectorConfig))?.[0] ?? null; }
+        catch (error) { emitRuntimeLog(context.session, error instanceof Error ? error.message : 'memory.vector-unavailable: embedding request failed'); }
+      }
+      ephemeral.workspaceMemoryFacts = memoryStore.search({ workspace: context.workspace, query: input, queryEmbedding,
+        limit: Math.max(1, Math.min(20, Number(process.env.WIKI_MANAGER_MEMORY_TOP_K) || 8)) });
+      const vectorBacked = ephemeral.workspaceMemoryFacts.length > 0 && ephemeral.workspaceMemoryFacts.every((fact) => Number.isFinite(fact.vectorScore));
+      if ((!queryEmbedding || !vectorBacked) && !memoryFallbackAnnounced) {
+        emitRuntimeLog(context.session, 'memory.vector-unavailable: lexical workspace-memory retrieval is active');
+        memoryFallbackAnnounced = true;
+      }
+    } catch (error) {
+      emitRuntimeLog(context.session, `memory.search-degraded: ${error instanceof Error ? error.message : String(error)}`);
+      ephemeral.workspaceMemoryFacts = [];
+    }
     // Whether a run is active in this workspace, from the runtime itself: the
     // projection says `pending_approval` for an ingest waiting on its approval,
     // and reading only `running` made such a turn believe the workspace idle.
@@ -1755,6 +1906,7 @@ async function runRuntime(argv, agent) {
     // canonical session alone is not a reliable conversation-history source.
     const persistedProjection = reduceAgentEvents(store.listEvents({
       workspace: context.workspace ?? ephemeral.workspace ?? null,
+      conversationId,
     }));
     let messages = conversationSeed({ agentProjection: persistedProjection }, input);
     // Streaming fragments are coalesced before they are persisted and pushed —
@@ -1766,6 +1918,7 @@ async function runRuntime(argv, agent) {
       origin: 'runtime_turn',
       turnId,
       workspace: context.workspace ?? null,
+      conversationId,
       payload: { delta },
     })), { intervalMs: 80 });
     ephemeral._onAgentEvent = (event) => {
@@ -1778,6 +1931,7 @@ async function runRuntime(argv, agent) {
         turnId,
         runId: null,
         workspace: context.workspace ?? ephemeral.workspace ?? null,
+        conversationId,
       };
       store.persistEvent(interactiveEvent);
       serverHandle?.publish(interactiveEvent);
@@ -1785,7 +1939,8 @@ async function runRuntime(argv, agent) {
     ephemeral._onStep = (message) => dispatchAgentEvent(ephemeral, createAgentEvent('runtime_log', {
       origin: 'runtime_turn',
       turnId,
-      workspace: context.workspace ?? null,
+        workspace: context.workspace ?? null,
+        conversationId,
       payload: { message },
     }));
     // Automatic memory compaction, before this turn's own message enters the
@@ -1799,16 +1954,18 @@ async function runRuntime(argv, agent) {
     });
     if (compaction) {
       ephemeral._onStep?.('Condensing the earlier conversation…');
-      const summary = await summarizeCompactedConversation(context.session, compaction);
+        const summary = await summarizeCompactedConversation(context.session, compaction);
       if (summary && summary !== compaction.previousSummary) {
         dispatchAgentEvent(ephemeral, createAgentEvent('conversation_reset', {
           origin: 'runtime_turn',
           turnId,
           workspace: context.workspace ?? null,
+          conversationId,
           payload: { summary, keepLast: compaction.keepLast, automatic: true, reason: compaction.reason },
         }));
         const compactedProjection = reduceAgentEvents(store.listEvents({
           workspace: context.workspace ?? ephemeral.workspace ?? null,
+          conversationId,
         }));
         const count = compaction.segment.filter((message) => ['user', 'assistant'].includes(message?.role)).length;
         // Right after the summary it refers to — never last: the chat branch
@@ -1823,6 +1980,7 @@ async function runRuntime(argv, agent) {
       origin: 'runtime_turn',
       turnId,
       workspace: context.workspace ?? null,
+      conversationId,
       payload: { content: displayInput },
     }));
     // Read-only chat turn: same chatAccess policy as the Shell UI's /chat, now
@@ -1889,6 +2047,21 @@ async function runRuntime(argv, agent) {
       turnId,
       workspace: context.workspace ?? null,
     });
+    if (ephemeral._memoryExplicitlyChanged) {
+      emitRuntimeLog(context.session, 'memory.extract-skipped: this turn already made an explicit memory change');
+    } else if (process.env.WIKI_MANAGER_MEMORY_AUTO !== 'off' && !/^(hi|hello|hey|bonjour|salut|merci|thanks|ok|okay)[!. ]*$/i.test(displayInput)) {
+      void import('../runtime/memoryExtract.js').then(({ extractAndApplyMemory }) => extractAndApplyMemory({
+        llm: context.session.llm,
+        memoryStore,
+        workspace: context.workspace,
+        conversationId,
+        turnId,
+        userText: displayInput,
+        assistantText: String(response ?? ''),
+        vectorConfig: context.session.wikircConfig?.retrieval?.vector ?? null,
+        onNotice: (message) => emitRuntimeLog(context.session, message),
+      }));
+    }
     return response;
   }
 
@@ -1896,6 +2069,7 @@ async function runRuntime(argv, agent) {
     host,
     port,
     store,
+    memoryStore,
     getContext: getWorkspaceContext,
     listActiveRuns: () => [...contexts.values()]
       .filter((context) => context?.running)
@@ -1959,6 +2133,7 @@ async function runRuntime(argv, agent) {
     await Promise.all([...new Set(contexts.values())].map(async (v) => { (await v).supervisor?.stop(); }));
     await serverHandle.close();
     store.close();
+    memoryStore.close();
     process.exit(0);
   };
   process.once('SIGINT', shutdown);

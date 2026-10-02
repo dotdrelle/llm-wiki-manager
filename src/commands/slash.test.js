@@ -531,3 +531,10 @@ test('refreshMcpRuntimeStatus reports a degraded MCP endpoint once, not on every
   );
 });
 
+test('memory commands are not deterministic primitives: they point to a Donna turn', async () => {
+  for (const command of ['/remember the reports are in English', '/forget k1', '/memory']) {
+    const result = await handleSlashCommand(command, { packageJson: { version: 'test' }, session: { workspace: 'demo' } });
+    assert.match(result.output, /handled by Donna in a conversation turn/);
+  }
+});
+

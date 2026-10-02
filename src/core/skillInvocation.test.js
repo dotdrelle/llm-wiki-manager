@@ -95,3 +95,10 @@ test('unknownSkillInvocation says when the workspace has no skills at all', () =
   assert.match(unknown.message, /no skills installed \(\.wiki\/skills\/ is missing\)/);
   assert.match(unknown.message, /wiki-workspace wiki <workspace> init/);
 });
+
+test('memory commands are not refused as unknown skills: Donna receives them', () => {
+  const session = { workspacePath: mkdtempSync(join(tmpdir(), 'skills-memory-')) };
+  for (const input of ['/remember the reports are in English', '/forget k1', '/memory', '/memory history k1']) {
+    assert.equal(unknownSkillInvocation(session, input), null, input);
+  }
+});

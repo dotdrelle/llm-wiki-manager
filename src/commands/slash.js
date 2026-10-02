@@ -30,6 +30,7 @@ import { findSkill, inspectSkills, listSkills } from '../core/skills.js';
 import { extractActivity, formatActivityError, formatActivityLine, formatActivitySummary, parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { emitRuntimeLog } from '../runtime/supervisor.js';
+import { requestRuntimeMemory } from '../runtime/client.js';
 import { discoverRuntimeProvidersOnce } from '../orchestrator/providers/runtimeProviders.js';
 import {
   cancelQueueItem,
@@ -1052,6 +1053,13 @@ export async function handleSlashCommand(line, context) {
   };
 
   switch (command) {
+    case 'remember':
+    case 'forget':
+    case 'memory':
+      // Never a deterministic primitive: the shell routes these to a Donna turn
+      // (MEMORY_COMMAND_RE in repl.js) before reaching here. A caller that lands
+      // here bypassed that routing, so say so instead of writing memory itself.
+      return { output: `/${command} is handled by Donna in a conversation turn: type it in the chat.` };
     case '':
     case 'help':
       return { output: helpText(context.packageJson) };
@@ -1671,6 +1679,15 @@ export async function handleSlashCommand(line, context) {
         try {
           step(`Workspace: deleting ${workspace.name}…`);
           const result = await deleteWorkspaceAndFiles(workspace, workspace.workspacePath);
+          let memoryCleanupNote = null;
+          if (context.runtime?.url) {
+            try {
+              const cleanup = await requestRuntimeMemory('/memory/workspace', { method: 'DELETE', workspace: workspace.name, url: context.runtime.url });
+              memoryCleanupNote = `Removed ${cleanup.cleared?.items ?? 0} workspace-memory fact(s) and ${cleanup.cleared?.versions ?? 0} history version(s).`;
+            } catch (error) {
+              memoryCleanupNote = `Workspace memory cleanup was not confirmed: ${error instanceof Error ? error.message : String(error)}.`;
+            }
+          } else memoryCleanupNote = 'Workspace memory cleanup was not confirmed because the runtime is unavailable.';
           const wasCurrent = context.session.workspace === workspace.name
             || context.session.workspacePath === workspace.workspacePath;
           if (wasCurrent) clearWorkspaceSession(context.session);
@@ -1678,6 +1695,7 @@ export async function handleSlashCommand(line, context) {
             output: [
               `Deleted workspace: ${workspace.name}`,
               `Removed registry entry and files at: ${result.deletedPath}`,
+              memoryCleanupNote,
               wasCurrent ? 'Current session cleared. Use /use <workspace> or /workspace init <name> [path].' : null,
             ].filter(Boolean).join('\n'),
           };

@@ -77,6 +77,7 @@ export function createAgentEvent(type, {
   turnId = null,
   taskId = null,
   workspace = null,
+  conversationId = null,
 } = {}) {
   return validateContractInDev('agentRunEvent', {
     id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
@@ -87,6 +88,7 @@ export function createAgentEvent(type, {
     turnId,
     taskId,
     workspace,
+    conversationId,
     payload,
   });
 }
@@ -169,14 +171,18 @@ function withSessionRunIdentity(event, session) {
   // assistant messages — used to leave with workspace=null and never reached
   // the UI, which then displayed a stale plan from the previous action.
   const workspace = event.workspace ?? identity?.workspace ?? session?.workspace ?? null;
+  const conversationId = event.conversationId ?? identity?.conversationId ?? (['user_message', 'assistant_message', 'assistant_delta', 'assistant_delta_reset', 'conversation_reset'].includes(event.type) ? session?.conversationId : null) ?? null;
   if (event.payload?.independent === true) {
-    return { ...event, runId: null, turnId: event.turnId ?? null, taskId: event.taskId ?? null, workspace };
+    return { ...event, runId: null, turnId: event.turnId ?? null, taskId: event.taskId ?? null, workspace, ...(conversationId ? { conversationId } : {}) };
   }
   if (!identity) {
-    return workspace === (event.workspace ?? null) ? event : { ...event, workspace };
+    return workspace === (event.workspace ?? null) && !conversationId
+      ? event
+      : { ...event, workspace, ...(conversationId ? { conversationId } : {}) };
   }
   return {
     ...event,
+    ...(conversationId ? { conversationId } : {}),
     runId: event.runId ?? identity.runId ?? null,
     turnId: event.turnId ?? identity.turnId ?? null,
     taskId: event.taskId ?? identity.taskId ?? null,
@@ -352,7 +358,7 @@ function applyEvent(state, event) {
       state.lastHeartbeatElapsedMs = Number(event.payload?.elapsedMs) || 0;
       return;
     case 'user_message':
-      state.conversation.push({ role: 'user', content: String(event.payload?.content ?? '') });
+      state.conversation.push({ role: 'user', content: String(event.payload?.content ?? ''), ...(event.conversationId ? { conversationId: event.conversationId } : {}) });
       return;
     case 'conversation_reset':
       // A deliberate user action (the served chat's memory gauge): everything
@@ -383,10 +389,10 @@ function applyEvent(state, event) {
       }
       return;
     case 'assistant_message':
-      finalizeAssistantMessage(state, String(event.payload?.content ?? ''));
+      finalizeAssistantMessage(state, String(event.payload?.content ?? ''), event.conversationId);
       return;
     case 'assistant_delta':
-      appendAssistantDelta(state, String(event.payload?.delta ?? ''));
+      appendAssistantDelta(state, String(event.payload?.delta ?? ''), event.conversationId);
       return;
     case 'assistant_delta_reset':
       discardStreamingAssistantMessage(state);
@@ -909,13 +915,13 @@ function pruneTerminalControlItems(queue) {
   }
 }
 
-function appendAssistantDelta(state, delta) {
+function appendAssistantDelta(state, delta, conversationId = null) {
   if (!delta) return;
   const last = state.conversation.at(-1);
   if (last?.role === 'assistant' && last.streaming) {
     last.content += delta;
   } else {
-    state.conversation.push({ role: 'assistant', content: delta, streaming: true });
+    state.conversation.push({ role: 'assistant', content: delta, streaming: true, ...(conversationId ? { conversationId } : {}) });
   }
 }
 
@@ -939,14 +945,15 @@ function discardStreamingAssistantMessage(state) {
   if (last?.role === 'assistant' && last.streaming) last.content = '';
 }
 
-function finalizeAssistantMessage(state, content) {
+function finalizeAssistantMessage(state, content, conversationId = null) {
   const last = state.conversation.at(-1);
   if (last?.role === 'assistant' && last.streaming) {
     last.content = content || last.content;
+    if (conversationId) last.conversationId = conversationId;
     delete last.streaming;
     return;
   }
-  if (content) state.conversation.push({ role: 'assistant', content });
+  if (content) state.conversation.push({ role: 'assistant', content, ...(conversationId ? { conversationId } : {}) });
 }
 
 function finishToolCall(state, payload = {}) {
@@ -1307,4 +1314,3 @@ function sortedActivities(activities) {
   return Object.values(activities ?? {})
     .sort((a, b) => String(a.updatedAt ?? '').localeCompare(String(b.updatedAt ?? '')));
 }
-

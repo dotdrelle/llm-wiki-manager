@@ -40,6 +40,7 @@ export async function runSkillChain(context, skill, {
   enqueueControlRequest,
   drainControlQueue,
   selectionKind = null,
+  conversationId = null,
   /**
    * Compétences déjà en cours d'exécution au-dessus de celle-ci. Chaque élément
    * mis en file la porte, augmentée de la compétence courante : c'est ce qui
@@ -117,6 +118,7 @@ export async function runSkillChain(context, skill, {
     skillName: skill.name,
     skillExecution: skill.execution === 'direct' ? 'direct' : 'orchestrated',
     skillStack: nestedStack,
+    ...(conversationId ? { conversationId } : {}),
     ...(selectionKind ? { selectionKind } : {}),
     ...(declaredPlan ? { capabilityPlan: declaredPlan } : {}),
     optional: objective.optional,

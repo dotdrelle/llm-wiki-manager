@@ -349,6 +349,7 @@ export async function announceRunOutcome(session, { runId, ok, signal = null } =
   let skipped = 0;
   let completed = 0;
   let pending = 0;
+  const knowledgeStats = {};
   let firstError = null;
   for (const step of plan) {
     const status = String(step?.status ?? '').toLowerCase();
@@ -368,6 +369,13 @@ export async function announceRunOutcome(session, { runId, ok, signal = null } =
       skipped += 1;
     } else if (isSuccessful(status)) {
       completed += 1;
+      const stats = step?.result?.stats ?? step?.result?.result?.stats;
+      if (stats && typeof stats === 'object') {
+        for (const [key, value] of Object.entries(stats)) {
+          const number = Number(value);
+          if (Number.isFinite(number)) knowledgeStats[key] = (knowledgeStats[key] ?? 0) + number;
+        }
+      }
     } else if (isPending(status) || !isTerminal(status)) {
       // pending_approval, waiting_approval, running, unknown: the work has NOT
       // happened. Counting these as neither success nor failure is what made a
@@ -380,14 +388,17 @@ export async function announceRunOutcome(session, { runId, ok, signal = null } =
   const total = plan.length;
   const finished = ok && failed === 0 && cancelled === 0 && skipped === 0
     && pending === 0 && completed === total;
-  const factLine = finished
+  const statsLine = Object.keys(knowledgeStats).length > 0
+    ? ` Bilan TAXO: ${Object.entries(knowledgeStats).map(([key, value]) => `${key}=${value}`).join(', ')}.`
+    : '';
+  const factLine = (finished
     ? `Plan terminé avec succès — ${completed}/${total} tâche(s) réussie(s).`
     : `Plan non terminé — ${completed}/${total} tâche(s) réussie(s)` +
       `${pending ? `, ${pending} en attente (approbation ou exécution)` : ''}` +
       `${failed ? `, ${failed} en erreur` : ''}` +
       `${cancelled ? `, ${cancelled} annulée(s)` : ''}` +
       `${skipped ? `, ${skipped} abandonnée(s) faute d'une étape précédente` : ''}.` +
-      `${firstError ? ` Première erreur : ${firstError}.` : ''}`;
+      `${firstError ? ` Première erreur : ${firstError}.` : ''}`) + statsLine;
   let content = factLine;
   const llm = session.llm;
   if (llm && typeof llm.completeWithTools === 'function') {

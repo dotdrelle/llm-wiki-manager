@@ -285,7 +285,8 @@ maxConcurrency, WIKI_MANAGER_CAPABILITY_CONCURRENCY, per-task limits)` — a
 minimum, so the manager ceiling can only lower it. The production agent ships
 intermediate defaults (`PRODUCTION_RECOMMENDED_CONCURRENCY=4` /
 `PRODUCTION_MAX_CONCURRENCY=8`, ≈ 4 parallel); locks then cap real parallelism
-per phase (`ingest_apply` stays serial). The resolved value is shown in both
+per phase (TAXO ingestion is one workspace-locked task; extraction concurrency
+is bounded inside the engine). The resolved value is shown in both
 UIs' run summary and on the run node of the execution graph, with an amber
 "(ceiling)" marker when the manager ceiling binds. Low/high profiles, the lock
 model and the LLM-backend caveat are in

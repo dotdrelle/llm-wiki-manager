@@ -47,24 +47,16 @@ test('every shipped scaffold skill compiles to a single intention, deterministic
   }
 });
 
-test('the shipped wiki-rebuild skill resolves through the deterministic alias path only', async () => {
-  // The objective resolver's fast path fires only when EXACTLY ONE capability
-  // alias phrase matches the objective. Bare words other agents alias ('build',
-  // 'rebuild', 'ingest', 'check', 'export'…) would make the LLM resolver decide
-  // instead. The shipped body is worded to stay on the deterministic path: it
-  // must carry the agent-production knowledge.rebuild alias phrase and none of
-  // the colliding words — verified against the alias lists actually shipped in
-  // agent-production (knowledge.rebuild / knowledge.check) and the other
-  // agents (cme: 'export sources'…, gateway: 'check'…).
+test('the shipped wiki-rebuild skill requests one complete TAXO cycle', async () => {
   const raw = readFileSync(resolve('../llm-wiki/scaffold/workspace/.wiki/skills', 'wiki-rebuild.md'), 'utf8');
   const { body } = parseFrontmatter(raw);
   const objectives = await compileSkillObjectives({ body }, {});
   assert.equal(objectives.length, 1);
   const text = objectives[0].text;
-  assert.match(text, /file the archived sources/i);
-  for (const word of ['ingest', 'build', 'rebuild', 'export', 'publish', 'okf', 'frontmatter', 'diagnose', 'restore', 'pipeline', 'check', 'audit', 'review', 'analyze', 'compare']) {
-    assert.doesNotMatch(text, new RegExp(`\\b${word}\\b`, 'i'), `word "${word}" must not appear in the objective`);
-  }
+  assert.match(text, /TAXO operation over every archived source/i);
+  assert.match(text, /section fiches/i);
+  assert.match(text, /tag-family pivots/i);
+  assert.match(text, /Do not split analysis, writes and regrouping into separate tasks/i);
 });
 
 test('every orchestrated scaffold skill declares the capability it targets', () => {

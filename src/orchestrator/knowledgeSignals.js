@@ -3,16 +3,7 @@ import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync } 
 import { join, relative, sep } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 
-/*
- Deterministic corpus signals: what the LIVE wiki says about itself, with no
- model and no ingest plan in the loop.
-
- `detectConceptSplits` only ever saw the current ingest plan, and
- `subjectMatchInventory` builds a prompt context without producing a
- persistent diagnosis — so two homonym leaves already written under one concept
- folder were invisible until now. This reads the corpus on disk and reports the
- paths, nothing else.
-*/
+/* Deterministic TAXO corpus signals; no model or intermediate ingest plan. */
 
 // Case, accents and punctuation are not meaning.
 export function normalizeSubject(value) {
@@ -20,33 +11,45 @@ export function normalizeSubject(value) {
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
     .replace(/^-+|-+$/g, '');
 }
 
 /**
- * Two homonym leaves under one concept are ONE conflict. The result is bounded
- * for display, but `total` counts the whole set and `dropped` names what the
- * ceiling hid — a silent cap would also freeze the fingerprint below.
+ * Report cross-family tags and concept pages that have no fiche citation.
+ * Output is bounded for display, but `total` includes the full set.
  */
-export function detectConceptConflicts(leaves, { max = 50 } = {}) {
+export function detectTaxoConflicts(pages, { max = 50 } = {}) {
   const groups = new Map();
-  for (const leaf of leaves ?? []) {
-    const concept = String(leaf?.concept ?? '').trim();
-    const subject = normalizeSubject(leaf?.subject);
-    const path = String(leaf?.path ?? '').trim();
+  const conflicts = [];
+  for (const page of pages ?? []) {
+    const concept = String(page?.concept ?? '').trim();
+    const subject = normalizeSubject(page?.subject);
+    const path = String(page?.path ?? '').trim();
     if (!concept || !subject || !path) continue;
-    const key = `${concept}\u0000${subject}`;
-    const group = groups.get(key) ?? { concept, subject, paths: [] };
-    group.paths.push(path);
+    const key = subject;
+    const group = groups.get(key) ?? { subject, families: new Map() };
+    const paths = group.families.get(concept) ?? [];
+    paths.push(path);
+    group.families.set(concept, paths);
     groups.set(key, group);
+    if (Number(page?.ficheCount ?? 1) === 0) {
+      conflicts.push({ concept, subject, paths: [path], issue: 'concept-without-fiche' });
+    }
   }
-  const all = [...groups.values()]
-    .map((group) => ({ ...group, paths: [...new Set(group.paths)].sort() }))
-    .filter((group) => group.paths.length > 1)
-    .sort((a, b) => a.concept.localeCompare(b.concept) || a.subject.localeCompare(b.subject));
-  const conflicts = all.slice(0, max);
-  return { conflicts, total: all.length, dropped: all.length - conflicts.length };
+  for (const group of groups.values()) {
+    if (group.families.size < 2) continue;
+    conflicts.push({
+      concept: [...group.families.keys()].sort().join(', '),
+      subject: group.subject,
+      paths: [...group.families.values()].flat().sort(),
+      issue: 'tag-in-multiple-families',
+    });
+  }
+  conflicts.sort((a, b) => a.issue.localeCompare(b.issue)
+    || a.concept.localeCompare(b.concept) || a.subject.localeCompare(b.subject));
+  const visible = conflicts.slice(0, max);
+  return { conflicts: visible, total: conflicts.length, dropped: conflicts.length - visible.length };
 }
 
 /**
@@ -55,9 +58,9 @@ export function detectConceptConflicts(leaves, { max = 50 } = {}) {
  * the display ceiling — otherwise it would dedup as already-seen and the corpus
  * could degrade with no review.
  */
-export function conflictFingerprint(conflicts, total = Array.isArray(conflicts) ? conflicts.length : 0) {
+export function taxoConflictFingerprint(conflicts, total = Array.isArray(conflicts) ? conflicts.length : 0) {
   const lines = (conflicts ?? [])
-    .map((conflict) => `${conflict.concept}/${conflict.subject}:${[...conflict.paths].sort().join('|')}`)
+    .map((conflict) => `${conflict.issue ?? 'conflict'}:${conflict.concept}/${conflict.subject}:${[...conflict.paths].sort().join('|')}`)
     .sort();
   lines.push(`total:${total}`);
   return createHash('sha1').update(lines.join('\n')).digest('hex').slice(0, 16);
@@ -96,10 +99,8 @@ function readFileHead(filePath, maxBytes = 4_096) {
 }
 
 /**
- * Every `.md` under `wiki/concepts/`, with its top-level concept folder, its
- * subject (frontmatter `subject`, else the file name) and its path RELATIVE to
- * `wiki/concepts/` — nested folders included, so two leaves in different
- * sub-folders still report two DISTINCT paths.
+ * Read generated/navigation pages under `wiki/concepts/`, extracting their
+ * family, tag and count of section-fiche citations.
  */
 /**
  * The engine's source registry (`.wiki/source-registry.json`), read as the
@@ -234,7 +235,7 @@ export function staleFingerprint(stale, total = Array.isArray(stale) ? stale.len
   return createHash('sha1').update(lines.join('\n')).digest('hex').slice(0, 16);
 }
 
-export function readConceptLeaves(rootDir) {
+export function readTaxoConceptPages(rootDir) {
   const base = join(String(rootDir), 'wiki', 'concepts');
   const leaves = [];
   let entries;
@@ -250,11 +251,25 @@ export function readConceptLeaves(rootDir) {
     if (!parent) continue;
     const rel = toPosix(relative(base, join(parent, entry.name)));
     if (!rel || rel.startsWith('..')) continue;
-    const concept = rel.split('/')[0];
-    if (!concept) continue;
-    const head = readFileHead(join(parent, entry.name));
-    const subject = frontmatterSubject(head) ?? entry.name.replace(/\.md$/, '');
-    leaves.push({ path: rel, concept, subject });
+    const fallbackFamily = rel.split('/')[0];
+    if (!fallbackFamily) continue;
+    const absolute = join(parent, entry.name);
+    let raw;
+    try { raw = readFileSync(absolute, 'utf8'); } catch { continue; }
+    const head = raw.slice(0, 4_096);
+    let data = {};
+    if (head.startsWith('---')) {
+      const end = head.indexOf('\n---', 3);
+      if (end !== -1) {
+        try { data = parseYaml(head.slice(3, end)) ?? {}; } catch { data = {}; }
+      }
+    }
+    const subject = Array.isArray(data.tags) && data.tags.length
+      ? String(data.tags[0])
+      : frontmatterSubject(head) ?? entry.name.replace(/\.md$/, '');
+    const concept = String(data.family ?? fallbackFamily);
+    const ficheCount = (raw.match(/\[src:\s*wiki\/sources\//g) ?? []).length;
+    leaves.push({ path: rel, concept, subject, ficheCount });
   }
   return leaves;
 }

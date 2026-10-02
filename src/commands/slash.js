@@ -244,7 +244,7 @@ function collectWorkspaceStats(session) {
   const workspacePath = session.workspacePath;
   const wiki = markdownFiles(workspacePath, 'wiki');
   const concepts = markdownFiles(workspacePath, join('wiki', 'concepts'));
-  const sourceNotes = markdownFiles(workspacePath, join('wiki', 'sources'));
+  const sourceFiches = markdownFiles(workspacePath, join('wiki', 'sources'));
   const answers = markdownFiles(workspacePath, join('wiki', 'answers'));
   const untracked = markdownFiles(workspacePath, join('raw', 'untracked'));
   const ingested = markdownFiles(workspacePath, join('raw', 'ingested'));
@@ -255,7 +255,7 @@ function collectWorkspaceStats(session) {
   return {
     wiki: folderStats(wiki),
     concepts: folderStats(concepts),
-    sourceNotes: folderStats(sourceNotes),
+    sourceFiches: folderStats(sourceFiches),
     answers: folderStats(answers),
     untracked: folderStats(untracked),
     ingested: folderStats(ingested),
@@ -336,7 +336,7 @@ function workspaceStatsColumns(stats, session) {
   const wikiLatest = formatDate(Math.max(
       stats.wiki.latest?.mtimeMs ?? 0,
       stats.concepts.latest?.mtimeMs ?? 0,
-      stats.sourceNotes.latest?.mtimeMs ?? 0,
+      stats.sourceFiches.latest?.mtimeMs ?? 0,
       stats.answers.latest?.mtimeMs ?? 0,
   ));
   const deliverablesLatest = formatDate(Math.max(
@@ -347,7 +347,7 @@ function workspaceStatsColumns(stats, session) {
   const wikiColumn = sectionBlock(`Wiki content: ${wikiLatest}`, [
     statLine('wiki pages', stats.wiki),
     statLine('concepts', stats.concepts),
-    statLine('source notes', stats.sourceNotes),
+    statLine('section fiches', stats.sourceFiches),
     statLine('answers', stats.answers),
     `index: ${stats.index.exists ? 'ok' : 'missing'} (${stats.index.links} links)`,
   ]);

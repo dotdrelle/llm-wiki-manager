@@ -14,15 +14,11 @@ import {
 } from './proactiveReviewScheduler.js';
 
 test('triggerForTask derives the two knowledge facts from the real capabilities', () => {
-  assert.equal(triggerForTask({ capability: 'knowledge.update', operation: 'ingest_apply' }), 'knowledge.ingested');
+  assert.equal(triggerForTask({ capability: 'knowledge.update', operation: 'ingest' }), 'knowledge.ingested');
   assert.equal(triggerForTask({ operation: 'ingest' }), 'knowledge.ingested');
   assert.equal(triggerForTask({ capability: 'knowledge.rebuild', operation: 'run' }), 'knowledge.rebuilt');
   assert.equal(triggerForTask({ operation: 'ingest_rebuild' }), 'knowledge.rebuilt');
   assert.equal(triggerForTask({ capability: 'knowledge.pipeline', operation: 'pipeline' }), 'knowledge.ingested');
-  // A dry-run takes a read lock and writes only .wiki/ingest-plans/: the corpus
-  // has not moved, so there is nothing new to audit.
-  assert.equal(triggerForTask({ capability: 'knowledge.update', operation: 'ingest_plan' }), null);
-  assert.equal(triggerForTask({ operation: 'ingest_plan' }), null);
   assert.equal(triggerForTask({ capability: 'document.build', operation: 'build' }), null);
   assert.equal(triggerForTask({ capability: 'knowledge.check', operation: 'lint' }), null);
   assert.equal(triggerForTask({}), null);
@@ -142,6 +138,22 @@ test('the proactive objective names the evidence the scan already found', () => 
   const noEvidence = buildProactiveReviewObjective({ trigger: 'knowledge.ingested', sourceVersion: 'v1' });
   assert.match(noEvidence, /audit the workspace/);
   assert.doesNotMatch(noEvidence, /deterministic scan/);
+});
+
+test('the proactive objective describes TAXO family and fiche inconsistencies', () => {
+  const objective = buildProactiveReviewObjective({
+    trigger: 'knowledge.conflict_detected',
+    evidence: {
+      kind: 'conflict',
+      items: [
+        { issue: 'tag-in-multiple-families', subject: 'jedox', concept: 'cost, product', paths: ['cost/jedox.md', 'product/jedox.md'] },
+        { issue: 'concept-without-fiche', subject: 'orphan', concept: 'unfiled', paths: ['unfiled/orphan.md'] },
+      ],
+    },
+  });
+  assert.match(objective, /tag-in-multiple-families: jedox/);
+  assert.match(objective, /concept-without-fiche: orphan/);
+  assert.doesNotMatch(objective, /homonym leaf/);
 });
 
 test('reading the budget, or releasing an unknown workspace, never allocates', () => {

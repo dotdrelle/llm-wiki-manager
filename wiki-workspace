@@ -134,7 +134,7 @@ wiki CLI commands reachable through `wiki <workspace> run`:
   restore --run <sha> [--dry-run]   Revert every file changed by a run commit
   restore --file <path> --to <sha> [--dry-run]
                                     Restore one versioned file to a revision
-  query "<question>"                Answer from the wiki and its cited source notes
+  query "<question>"                Answer from the wiki and its cited section fiches
   index                             Create or update the local vector index
   refresh                           Regenerate only the stale deliverables
   lint                              Static checks: dead links, orphans, stale deliverables

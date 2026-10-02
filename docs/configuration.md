@@ -484,25 +484,20 @@ manager ceiling (`WIKI_MANAGER_CAPABILITY_CONCURRENCY`) does nothing: that
 variable can only *lower* the result, never raise it above what the agent
 advertises.
 
-Then, independently, **locks cap real parallelism per phase** — even at a high
-number, two tasks only run together if their write scopes do not overlap:
-
-- **Ingest — planning** (`ingest_plan`, read-only): fully parallel. This is the
-  phase your concurrency number actually buys.
-- **Ingest — apply** (`ingest_apply`): takes the global `workspace-write` lock,
-  so applies are **strictly serialized (1 at a time), by design** to keep wiki
-  writes consistent. Its group also declares `recommendedConcurrency: 1`. No
-  setting parallelizes this. (The applies are no longer chained to each other
-  on top of the lock: one failed plan used to skip every apply behind it in the
-  chain. The lock alone already prevents two applies from running together.)
+Then, independently, **locks cap real parallelism** — two ingestion jobs
+cannot write the same workspace concurrently. `knowledge.update` is one
+workspace-locked TAXO operation: it extracts sections, writes the fiches, and
+regenerates tag-family pages as one cycle. The concurrency setting does not
+split that user-visible operation into separate analysis and apply tasks;
+section extraction concurrency is bounded inside the ingestion job.
 - **Build** (per template): scoped to `template:<name>`, so distinct templates
   build in parallel.
 - **Export / Polish** (per deliverable): scoped to `deliverable:<path>`, so
   distinct deliverables run in parallel; the same deliverable is serialized.
 
 Finally, the **LLM backend is the real throughput ceiling**: each build / polish /
-apply task calls the wiki's model. If your model endpoint only serves one request
-at a time, N parallel tasks just queue on the model (or time out). Match the
+TAXO extraction task calls the wiki's model. If your model endpoint only serves one request
+at a time, parallel section calls just queue on the model (or time out). Match the
 concurrency to what your LLM endpoint can serve concurrently (e.g. vLLM/llama.cpp
 `--parallel`/`n_parallel`, or multiple replicas).
 

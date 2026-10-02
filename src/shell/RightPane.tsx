@@ -3,7 +3,8 @@ import { createMemo, createSignal, Index, Show } from 'solid-js';
 import { compactRuntimeLogForDisplay, filterRuntimeLogs, isAgentTraceLine, isDispatchPlumbingLine } from '../core/runtimeLog.js';
 import { fit } from './textFit';
 
-type PlanStep = { step: number; description: string; status: string };
+type PlanStepInput = { name: string; ref: string; status: string };
+type PlanStep = { step: number; description: string; status: string; inputs?: PlanStepInput[] };
 type QueueItem = {
   id: string;
   workspace?: string | null;
@@ -213,7 +214,10 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
     return status === 'running' ? `[${props.spinnerFrame ?? '…'}]` : '[ ]';
   };
   const visualRows = createMemo(() => props.plan.reduce((total, step) =>
-    total + wrapLine(`${icon(step.status)} ${step.step}. ${step.description}`, stepTextWidth(step)).slice(0, 2).length, 0));
+    total + wrapLine(`${icon(step.status)} ${step.step}. ${step.description}`, stepTextWidth(step)).slice(0, 2).length + (step.inputs?.length ?? 0), 0));
+  // A TAXO ingest is one step over the whole batch: its input files are listed
+  // under it, the one the live progress names marked running.
+  const inputColor = (input: PlanStepInput) => planStepColor({ step: -1, description: '', status: input.status }, null);
   const title = () => {
     const label = props.jobName ? `Plan : ${props.jobName}` : 'Plan';
     return visualRows() > PLAN_MIN_VIEWPORT_ROWS ? `${label} (${props.plan.length}) · scroll` : label;
@@ -252,6 +256,9 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
                 <Show when={lines()[1]}>
                   <text width={textWidth()} fg={planStepColor(step(), firstPending())} content={`    ${fit(lines()[1], Math.max(8, textWidth() - 4))}`} />
                 </Show>
+                <Index each={step().inputs ?? []}>
+                  {(input) => <text width={textWidth()} fg={inputColor(input())} content={fit(`    ${icon(input().status)} ${input().name}`, textWidth())} />}
+                </Index>
               </box>
             );
           }}

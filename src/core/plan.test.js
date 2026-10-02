@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ensurePlanFromActivity, syncActivitiesToPlan, extractHeadlessPlan, formatConfigValue, formatPlanStatus, formatPlanStep } from './plan.js';
+import { ensurePlanFromActivity, syncActivitiesToPlan, extractHeadlessPlan, formatConfigValue, formatPlanStatus, formatPlanStep, planStepInputs } from './plan.js';
 
 test('ensurePlanFromActivity: creates multi-step plan from activity.plan.steps', () => {
   const session = { headlessPlan: null };
@@ -180,4 +180,22 @@ test('formatConfigValue renders objects as key-value text', () => {
   assert.equal(formatConfigValue({ requestsPerMinute: 60 }), 'requestsPerMinute: 60');
   assert.equal(formatConfigValue({ limits: { requestsPerMinute: 60 } }), 'limits: requestsPerMinute: 60');
   assert.doesNotMatch(formatConfigValue({ requestsPerMinute: 60 }), /\[object Object\]/);
+});
+
+test('planStepInputs: lists a batch task input files, the one in progress running', () => {
+  const task = {
+    status: 'running',
+    raw: {
+      inputRefs: [{ type: 'file', ref: 'raw/untracked/Etude EPM.md' }, { type: 'file', ref: 'raw/untracked/Comparaison Sécurité.md' }],
+      arguments: { inputs: ['raw/untracked/Etude EPM.md', 'raw/untracked/Synthèse.md'] },
+    },
+  };
+  const activities = [{ status: 'running', progress: { label: 'Comparaison Sécurité.md · Section 1/2' } }];
+  assert.deepEqual(planStepInputs(task, activities).map((row) => [row.name, row.status]), [
+    ['Etude EPM.md', 'pending'],
+    ['Comparaison Sécurité.md', 'running'],
+    ['Synthèse.md', 'pending'],
+  ]);
+  assert.ok(planStepInputs({ ...task, status: 'done' }, activities).every((row) => row.status === 'done'));
+  assert.deepEqual(planStepInputs({ status: 'running', raw: {} }), []);
 });

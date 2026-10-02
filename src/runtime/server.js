@@ -17,10 +17,10 @@ import {
   normalizeProactiveConfig,
 } from '../orchestrator/proactiveReviewScheduler.js';
 import {
-  conflictFingerprint,
-  detectConceptConflicts,
+  taxoConflictFingerprint,
+  detectTaxoConflicts,
   detectStaleKnowledge,
-  readConceptLeaves,
+  readTaxoConceptPages,
   readSourceRegistry,
   readWikiPages,
   staleFingerprint,
@@ -1267,13 +1267,13 @@ export function startRuntimeServer({
   }
 
   /*
-   The live-corpus read: two homonym leaves under one concept folder are a
-   conflict the ingest plan never sees (they are already written). Pure fs +
-   string work, no model. A conflict set is a stable fingerprint, so the same
-   conflict dedups instead of re-firing every time the corpus is touched.
+   The live-corpus read finds TAXO-specific inconsistencies: a tag filed into
+   multiple families or a concept pivot with no fiche citations. Pure fs +
+   string work, no model. A conflict set is fingerprinted so unchanged facts
+   deduplicate instead of re-firing every time the corpus is touched.
   */
   function emitConflictSignal(context, workspace, session, workspacePath) {
-    const { conflicts, total, dropped } = detectConceptConflicts(readConceptLeaves(workspacePath));
+    const { conflicts, total, dropped } = detectTaxoConflicts(readTaxoConceptPages(workspacePath));
     if (total === 0) return;
     if (dropped > 0) {
       emitRuntimeLog(
@@ -1286,7 +1286,7 @@ export function startRuntimeServer({
       trigger: 'knowledge.conflict_detected',
       // The fingerprint includes the full count, so a conflict beyond the cap
       // still moves the version and is not deduped away.
-      sourceVersion: conflictFingerprint(conflicts, total),
+      sourceVersion: taxoConflictFingerprint(conflicts, total),
       // The exact facts travel to the agent and the filed note.
       evidence: { kind: 'conflict', items: conflicts },
     });
@@ -1327,12 +1327,12 @@ export function startRuntimeServer({
    workspace that stops ingesting — precisely the one whose knowledge ages —
    would otherwise never re-run the detector. Conflicts and vanished paths are
    caused by edits, so the ingest moment is enough for them; `staleOnly` keeps
-   the periodic tick from re-walking every leaf it does not need.
+   the periodic tick from re-walking every concept page it does not need.
   */
   function emitCorpusSignals(context, workspace, { staleOnly = false } = {}) {
     const session = context?.session ?? null;
     // Stay OFF the corpus until the workspace actually opted in: reading every
-    // leaf synchronously on the event loop that also serves both chats' SSE is
+    // page synchronously on the event loop that also serves both chats' SSE is
     // a cost the default (disabled) must not pay.
     const config = normalizeProactiveConfig(session?.wikircConfig?.proactiveReviews);
     if (!config.enabled) return;

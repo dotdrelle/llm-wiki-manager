@@ -5,8 +5,6 @@ const SUPPORTED_CONTRACT_VERSIONS = new Set(['1']);
 const MUTATING_OPERATIONS = new Set([
   'copy',
   'ingest',
-  'ingest_plan',
-  'ingest_apply',
   'build',
   'export',
   'polish',
@@ -529,4 +527,3 @@ function markValidated(fragment) {
 function issue(code, message, details = {}) {
   return { code, message, details };
 }
-

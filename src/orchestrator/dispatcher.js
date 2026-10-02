@@ -452,7 +452,7 @@ function executeRequest(task, session, runId, assignment) {
       // (dependencyResolver.readyTasks), so reaching dispatch IS the
       // approval. Without this, an operator who enables the guard sees every
       // mutating production job fail with "requires confirm=true" — the
-      // first E2E ingest plan dispatched by the deep agent's
+      // first E2E mutation dispatched by the runtime's
       // planExpansionRequest failed exactly that way, 19 tasks in one batch.
       ...(task.requiresApproval === true ? { confirm: true } : {}),
       // The ACTIVE profile must reach the job: a task planned without an

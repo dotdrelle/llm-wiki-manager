@@ -5,11 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  conflictFingerprint,
-  detectConceptConflicts,
+  taxoConflictFingerprint,
+  detectTaxoConflicts,
   detectStaleKnowledge,
   normalizeSubject,
-  readConceptLeaves,
+  readTaxoConceptPages,
   readSourceRegistry,
   readWikiPages,
   staleFingerprint,
@@ -21,81 +21,81 @@ test('normalizeSubject folds case, accents and punctuation', () => {
   assert.equal(normalizeSubject('Souveraineté'), 'souverainete');
 });
 
-test('two homonym leaves under one concept are one conflict, not two', () => {
-  const { conflicts, total } = detectConceptConflicts([
-    { path: 'saas/jedox.md', concept: 'saas', subject: 'Jedox' },
-    { path: 'saas/jedox-cloud.md', concept: 'saas', subject: 'jedox' },
-    { path: 'cout/jedox.md', concept: 'cout', subject: 'Jedox' },
-    { path: 'saas/anaplan.md', concept: 'saas', subject: 'Anaplan' },
+test('a tag assigned to multiple families is one conflict', () => {
+  const { conflicts, total } = detectTaxoConflicts([
+    { path: 'saas/jedox.md', concept: 'saas', subject: 'Jedox', ficheCount: 1 },
+    { path: 'cout/jedox.md', concept: 'cout', subject: 'jedox', ficheCount: 2 },
+    { path: 'saas/anaplan.md', concept: 'saas', subject: 'Anaplan', ficheCount: 1 },
   ]);
   assert.equal(total, 1);
   assert.deepEqual(conflicts, [
-    { concept: 'saas', subject: 'jedox', paths: ['saas/jedox-cloud.md', 'saas/jedox.md'] },
+    { concept: 'cout, saas', subject: 'jedox', paths: ['cout/jedox.md', 'saas/jedox.md'], issue: 'tag-in-multiple-families' },
   ]);
 });
 
-test('a conflict in nested sub-folders keeps both distinct paths', () => {
-  const { conflicts, total } = detectConceptConflicts([
-    { path: 'saas/produits/jedox.md', concept: 'saas', subject: 'Jedox' },
-    { path: 'saas/vendors/jedox.md', concept: 'saas', subject: 'Jedox' },
+test('pages with no fiche citations are reported independently', () => {
+  const { conflicts, total } = detectTaxoConflicts([
+    { path: 'saas/jedox.md', concept: 'saas', subject: 'Jedox', ficheCount: 0 },
   ]);
   assert.equal(total, 1);
-  assert.deepEqual(conflicts[0].paths, ['saas/produits/jedox.md', 'saas/vendors/jedox.md']);
+  assert.deepEqual(conflicts[0], {
+    concept: 'saas', subject: 'jedox', paths: ['saas/jedox.md'], issue: 'concept-without-fiche',
+  });
 });
 
 test('the conflict fingerprint is stable and moves past the display ceiling', () => {
-  const a = [{ concept: 'saas', subject: 'jedox', paths: ['saas/b.md', 'saas/a.md'] }];
-  const b = [{ concept: 'saas', subject: 'jedox', paths: ['saas/a.md', 'saas/b.md'] }];
-  assert.equal(conflictFingerprint(a, 1), conflictFingerprint(b, 1));
+  const a = [{ concept: 'cout, saas', subject: 'jedox', issue: 'tag-in-multiple-families', paths: ['saas/b.md', 'saas/a.md'] }];
+  const b = [{ concept: 'cout, saas', subject: 'jedox', issue: 'tag-in-multiple-families', paths: ['saas/a.md', 'saas/b.md'] }];
+  assert.equal(taxoConflictFingerprint(a, 1), taxoConflictFingerprint(b, 1));
   // A 51st conflict beyond the cap must change the version, or it dedups away.
-  assert.notEqual(conflictFingerprint(a, 50), conflictFingerprint(a, 51));
+  assert.notEqual(taxoConflictFingerprint(a, 50), taxoConflictFingerprint(a, 51));
 });
 
 test('the ceiling reports what it dropped instead of hiding it', () => {
   const leaves = Array.from({ length: 60 }, (_, index) => [
-    { path: `c/s${index}-a.md`, concept: 'c', subject: `s${index}` },
-    { path: `c/s${index}-b.md`, concept: 'c', subject: `s${index}` },
+    { path: `a/s${index}.md`, concept: 'a', subject: `s${index}`, ficheCount: 1 },
+    { path: `b/s${index}.md`, concept: 'b', subject: `s${index}`, ficheCount: 1 },
   ]).flat();
-  const { conflicts, total, dropped } = detectConceptConflicts(leaves);
+  const { conflicts, total, dropped } = detectTaxoConflicts(leaves);
   assert.equal(conflicts.length, 50);
   assert.equal(total, 60);
   assert.equal(dropped, 10);
 });
 
-test('readConceptLeaves takes the folder as the concept and the frontmatter as the subject', () => {
+test('readTaxoConceptPages reads tag, family and fiche links from concept pages', () => {
   const root = mkdtempSync(join(tmpdir(), 'signals-'));
   try {
     mkdirSync(join(root, 'wiki', 'concepts', 'saas', 'produits'), { recursive: true });
     mkdirSync(join(root, 'wiki', 'concepts', 'saas', 'vendors'), { recursive: true });
     mkdirSync(join(root, 'wiki', 'concepts', 'cout'), { recursive: true });
-    writeFileSync(join(root, 'wiki', 'concepts', 'saas', 'produits', 'jedox.md'), '---\nsubject: Jedox\n---\nbody');
-    writeFileSync(join(root, 'wiki', 'concepts', 'saas', 'vendors', 'jedox.md'), '---\nsubject: Jedox\n---\nbody');
-    writeFileSync(join(root, 'wiki', 'concepts', 'cout', 'jedox.md'), 'no frontmatter\n');
+    mkdirSync(join(root, 'wiki', 'concepts', 'orphan'), { recursive: true });
+    writeFileSync(join(root, 'wiki', 'concepts', 'saas', 'produits', 'jedox.md'), '---\nsubject: Jedox\ntags: [Jedox]\nfamily: saas\n---\n[src: wiki/sources/a.md]');
+    writeFileSync(join(root, 'wiki', 'concepts', 'cout', 'jedox.md'), '---\nsubject: Jedox\ntags: [Jedox]\nfamily: cout\n---\n[src: wiki/sources/b.md]');
+    writeFileSync(join(root, 'wiki', 'concepts', 'orphan', 'empty.md'), '---\nsubject: Empty\ntags: [empty]\nfamily: orphan\n---\nno fiches');
     writeFileSync(join(root, 'wiki', 'concepts', 'README.txt'), 'ignore me');
 
-    const leaves = readConceptLeaves(root);
+    const leaves = readTaxoConceptPages(root);
     assert.deepEqual(
       leaves.map((leaf) => leaf.path).sort(),
-      ['cout/jedox.md', 'saas/produits/jedox.md', 'saas/vendors/jedox.md'],
+      ['cout/jedox.md', 'orphan/empty.md', 'saas/produits/jedox.md'],
     );
-    const { conflicts, total } = detectConceptConflicts(leaves);
-    assert.equal(total, 1);
-    assert.equal(conflicts[0].concept, 'saas');
-    assert.deepEqual(conflicts[0].paths, ['saas/produits/jedox.md', 'saas/vendors/jedox.md']);
+    const { conflicts, total } = detectTaxoConflicts(leaves);
+    assert.equal(total, 2);
+    assert.deepEqual(conflicts.map((item) => item.issue), ['concept-without-fiche', 'tag-in-multiple-families']);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('a corpus without homonyms produces no signal', () => {
+test('a consistent family with cited fiches produces no conflict signal', () => {
   assert.equal(
-    detectConceptConflicts([
-      { path: 'saas/a.md', concept: 'saas', subject: 'A' },
-      { path: 'saas/b.md', concept: 'saas', subject: 'B' },
+    detectTaxoConflicts([
+      { path: 'saas/a.md', concept: 'saas', subject: 'A', ficheCount: 1 },
+      { path: 'saas/b.md', concept: 'saas', subject: 'B', ficheCount: 2 },
     ]).total,
     0,
   );
-  assert.equal(detectConceptConflicts([]).total, 0);
+  assert.equal(detectTaxoConflicts([]).total, 0);
 });
 
 test('stale knowledge is aged sources plus registry paths that no longer exist', () => {

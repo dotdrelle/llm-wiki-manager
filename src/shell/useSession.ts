@@ -4,7 +4,7 @@ import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import { formatMcpToolResult, callMcpTool } from '../core/mcp.js';
 import { versionWithBuild } from '../core/buildInfo.js';
 import { extractActivity, mergePolledActivity, parseJsonText, sessionActivities } from '../core/activity.js';
-import { formatPlanStatus, formatCompletedActivities, formatPlanStep } from '../core/plan.js';
+import { formatPlanStatus, formatCompletedActivities, formatPlanStep, planStepInputs } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { projectQueue, queueCounts, startNextQueuedJob, syncQueueWithActivity } from '../core/jobQueue.js';
 import { queueStoreFor } from '../core/queueStore.js';
@@ -352,6 +352,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
           step: Number(node.step ?? index + 1),
           description: formatPlanStep(node) || `Step ${index + 1}`,
           status: String(node.status ?? 'pending'),
+          inputs: planStepInputs(node, activities()),
         }));
     }
     const runtimePlan = nonEmptyRuntimeArray(runtimeState()?.plan);
@@ -360,6 +361,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
         step: Number(step.step ?? index + 1),
         description: formatPlanStep(step) || `Step ${index + 1}`,
         status: String(step.status ?? 'pending'),
+        inputs: planStepInputs(step, activities()),
       }));
     }
     const p = (session as any).headlessPlan as Array<{ step: number; description: string; status: string }> | null;

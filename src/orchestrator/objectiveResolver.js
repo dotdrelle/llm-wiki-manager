@@ -93,8 +93,8 @@ function phraseIn(phrase, words, text) {
 }
 
 // Deterministic fast path, safe by construction:
-// - whole-word/phrase matching only — no sub-token split (so `ingest_plan`
-//   never matches the generic word "plan") and no prefix stemming (so
+// - whole-word/phrase matching only, with no sub-token split or prefix
+//   stemming (so
 //   "exported"/"builds" never match "export"/"build");
 // - aliases (declared by each agent in agent_describe) are authoritative and
 //   disambiguate overloaded verbs ("export" CME vs publish);

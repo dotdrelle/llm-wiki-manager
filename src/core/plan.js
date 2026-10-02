@@ -128,6 +128,37 @@ export function formatPlanStep(step) {
   return '';
 }
 
+// A TAXO ingest is ONE task over the whole batch, so the per-file "Analyze X"
+// steps that used to list the pending inputs no longer exist. The files the
+// task works on are read back from its inputRefs/arguments; only the file the
+// live progress names is known to be in flight — the others are not reported
+// per file and stay pending until the task settles, then take its status.
+export function planStepInputs(task, activities = [], limit = 40) {
+  const raw = task?.raw ?? task ?? {};
+  const refs = (Array.isArray(raw.inputRefs) ? raw.inputRefs : [])
+    .filter((ref) => !ref?.type || ref.type === 'file')
+    .map((ref) => String(typeof ref === 'string' ? ref : ref?.ref ?? ''));
+  const inputs = Array.isArray(raw.arguments?.inputs) ? raw.arguments.inputs.map(String) : [];
+  const files = [...new Set([...refs, ...inputs].map((value) => value.trim()).filter(Boolean))];
+  if (files.length === 0) return [];
+  const status = String(task?.status ?? raw.status ?? 'pending');
+  const live = status === 'running'
+    ? (Array.isArray(activities) ? activities : [])
+      .filter((item) => !item?.terminal && String(item?.status ?? 'running').toLowerCase() === 'running')
+      .map((item) => [item.label, item.progress?.label, item.progress?.detail, item.progress?.currentFile, item.progress?.file, item.progress?.source].filter(Boolean).join(' '))
+      .join(' | ')
+      .toLowerCase()
+    : '';
+  const rows = files.slice(0, limit).map((ref) => {
+    const name = ref.split('/').pop() || ref;
+    const stem = name.replace(/\.[^.]+$/, '').toLowerCase();
+    const current = Boolean(live) && (live.includes(name.toLowerCase()) || (stem.length > 3 && live.includes(stem)));
+    return { name, ref, status: status === 'running' ? (current ? 'running' : 'pending') : status };
+  });
+  if (files.length > limit) rows.push({ name: `+${files.length - limit} more file(s)`, ref: '', status: status === 'running' ? 'pending' : status });
+  return rows;
+}
+
 export function formatConfigValue(value) {
   if (value == null) return '';
   if (Array.isArray(value)) return value.map(formatConfigValue).join(', ');

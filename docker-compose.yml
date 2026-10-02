@@ -165,7 +165,7 @@ services:
       # `copy` is listed because the default lists it, but it is the legacy
       # step: it runs only when a job requests it explicitly AND a copy source
       # is configured, never as part of the default pipeline.
-      - PRODUCTION_ALLOWED_STEPS=${PRODUCTION_ALLOWED_STEPS:-doctor,doctor_apply,copy,ingest,ingest_plan,ingest_apply,ingest_rebuild,build,export,polish,restore,pipeline,lint}
+      - PRODUCTION_ALLOWED_STEPS=${PRODUCTION_ALLOWED_STEPS:-doctor,doctor_apply,copy,ingest,ingest_rebuild,build,export,polish,restore,pipeline,lint}
       # `false` here, `true` in the image, on purpose. Under the manager the
       # human guard is the run approval: the scheduler never dispatches an
       # approval-gated task before its grant, and the dispatcher then passes

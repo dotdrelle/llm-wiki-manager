@@ -238,10 +238,10 @@ export async function cancelActiveActivityJobs(session, { callTool = callMcpTool
   return cancelled;
 }
 
-// Trace events worth surfacing in the chat-side log: plan/apply milestones,
+// Trace events worth surfacing in the chat-side log: TAXO ingest/write milestones,
 // LLM calls (with token counts), warnings and errors. The raw trace is far
 // chattier — streaming everything would recreate the noise the dedupe killed.
-const TRACE_EVENT_PATTERN = /\b(llm:start|llm:end|llm:json|llm:error|ingest:plan|ingest:operations|ingest:apply|ingest:source|build:template|retrieval:|embedding:|WARN|ERROR)\b/;
+const TRACE_EVENT_PATTERN = /\b(llm:start|llm:end|llm:json|llm:error|ingest:apply|ingest:source|ingest:sheet|ingest:regroup|build:template|retrieval:|embedding:|WARN|ERROR)\b/;
 const TRACE_MAX_BYTES_PER_POLL = 64 * 1024;
 const TRACE_MAX_LINES_PER_POLL = 12;
 

@@ -34,16 +34,11 @@ export const PROACTIVE_DEFAULTS = {
 export function triggerForTask({ capability, operation } = {}) {
   const cap = String(capability ?? '').trim();
   const op = String(operation ?? '').trim();
-  // `ingest_plan` is a dry-run under `knowledge.update` (read lock, writes only
-  // `.wiki/ingest-plans/`): the corpus has not moved, so it must be excluded
-  // BEFORE the capability check that would otherwise accept it.
-  if (op === 'ingest_plan') return null;
   if (cap === 'knowledge.rebuild' || op === 'ingest_rebuild') return 'knowledge.rebuilt';
   if (
     cap === 'knowledge.update'
     || cap === 'knowledge.pipeline' // the default one-shot path: it ingests too
     || op === 'ingest'
-    || op === 'ingest_apply'
     || op === 'pipeline'
   ) {
     return 'knowledge.ingested';
@@ -61,11 +56,11 @@ function evidenceDetail(evidence) {
   if (!evidence || typeof evidence !== 'object') return '';
   const items = Array.isArray(evidence.items) ? evidence.items : [];
   const listed = evidence.kind === 'conflict'
-    ? items.slice(0, 5).map((item) => `${item.concept}/${item.subject} (${(item.paths ?? []).join(', ')})`)
+    ? items.slice(0, 5).map((item) => `${item.issue}: ${item.subject} [${item.concept}] (${(item.paths ?? []).join(', ')})`)
     : items.slice(0, 5).map((item) => `${item.kind}: ${item.path}`);
   const more = items.length > 5 ? '; …' : '';
   if (evidence.kind === 'conflict') {
-    return `${items.length} homonym leaf group(s): ${listed.join('; ')}${more}`;
+    return `${items.length} TAXO inconsistency/inconsistencies: ${listed.join('; ')}${more}`;
   }
   if (evidence.kind === 'stale') {
     const counts = evidence.counts ?? {};

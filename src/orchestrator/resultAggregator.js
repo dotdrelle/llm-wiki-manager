@@ -104,6 +104,26 @@ export async function accept(result, {
       result,
     },
   })));
+  const warnings = Array.isArray(result?.warnings)
+    ? result.warnings.map(String)
+    : Array.isArray(result?.result?.warnings) ? result.result.warnings.map(String) : [];
+  const warningsTotal = Number(result?.warningsTotal ?? result?.result?.warningsTotal ?? warnings.length);
+  for (const warning of warnings.slice(0, 20)) {
+    persistDispatch(store, dispatchAgentEvent(session, createAgentEvent('runtime_log', {
+      origin: 'result_aggregator',
+      runId,
+      taskId,
+      payload: { message: `ingest warning (${taskId}): ${warning}` },
+    })));
+  }
+  if (warningsTotal > warnings.length) {
+    persistDispatch(store, dispatchAgentEvent(session, createAgentEvent('runtime_log', {
+      origin: 'result_aggregator',
+      runId,
+      taskId,
+      payload: { message: `ingest warning (${taskId}): +${warningsTotal - warnings.length} more` },
+    })));
+  }
   persistDispatch(store, dispatchAgentEvent(session, createAgentEvent(ok ? 'task.completed' : 'task.failed', {
     origin: 'result_aggregator',
     runId,

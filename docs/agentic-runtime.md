@@ -258,14 +258,14 @@ worth a read-only audit:
   (`{ enabled, triggers, cooldownMs, budget: { runsPerDay }, concurrency }`).
   Anything missing or malformed is DISABLED, and every refusal is logged;
 - beyond task facts, a deterministic CORPUS read runs when an ingest/rebuild
-  completes: two homonym leaves under one top-level concept folder (same
-  normalized subject, nested sub-folders included) publish
-  `knowledge.conflict_detected` with a stable fingerprint computed over the
-  FULL conflict set — the display ceiling (50) names what it hides and never
-  freezes the version, so a later conflict still moves it. The scan runs ONLY
-  when the workspace opted in (never on the default), and reads a bounded file
-  head, not whole pages. No model is involved. When the conflict review takes
-  the only concurrency slot, the ingest fact's skip says so by name. A second
+  completes: a tag filed into multiple families or a concept pivot with no
+  fiche citations publishes `knowledge.conflict_detected` with a stable
+  fingerprint computed over the FULL conflict set — the display ceiling (50)
+  names what it hides and never freezes the version, so a later conflict still
+  moves it. The scan runs ONLY when the workspace opted in (never on the
+  default), reads family/tag metadata and fiche citations, and uses no model.
+  When the conflict review takes the only concurrency slot, the ingest fact's
+  skip says so by name. A second
   deterministic read publishes `knowledge.stale` from the engine's source
   registry: it names an active source whose `lastIngestedAt` is older than
   `staleAfterDays` (default 180), any registry path that no longer exists — a

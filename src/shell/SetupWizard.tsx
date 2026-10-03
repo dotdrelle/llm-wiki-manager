@@ -64,7 +64,6 @@ const PROVIDERS = [
 ];
 const ENGINE_OPTIONS = [
   'OpenAI',
-  'Anthropic',
   'Ollama (local)',
   'vLLM (local)',
   'MLX (local)',
@@ -664,7 +663,8 @@ export function SetupWizard(props: {
         setLlm({
           provider: normalizeProvider(config.llm.provider),
           // Un wikirc pré-0.16 porte le moteur dans `provider`
-          // (`ollama`, `anthropic`, `openai`). Sans cette déduction, l'étape
+          // (`ollama`, `openai`; l'ancien `anthropic` retombe sur `generic`).
+          // Sans cette déduction, l'étape
           // moteur ne présélectionne rien et propose OpenAI en tête — au
           // risque d'écraser une configuration qui marchait.
           engine: config.llm.engine

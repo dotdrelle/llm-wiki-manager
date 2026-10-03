@@ -12,7 +12,6 @@
 
 const FALLBACK_MODELS = {
   openai: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-4.1', 'gpt-4.1-mini'],
-  anthropic: ['claude-sonnet-4-5', 'claude-opus-4-1', 'claude-3-7-sonnet-latest'],
   ollama: ['llama3.2', 'qwen2.5', 'mistral', 'nomic-embed-text'],
   vllm: ['Qwen/Qwen2.5-7B-Instruct', 'meta-llama/Llama-3.1-8B-Instruct'],
   mlx: ['mlx-community/Qwen2.5-7B-Instruct-4bit'],
@@ -22,7 +21,6 @@ const FALLBACK_MODELS = {
 
 const FALLBACK_EMBEDDINGS = {
   openai: ['text-embedding-3-small', 'text-embedding-3-large'],
-  anthropic: ['text-embedding-3-small'],
   ollama: ['nomic-embed-text', 'mxbai-embed-large'],
   vllm: ['BAAI/bge-m3'],
   mlx: ['BAAI/bge-m3'],
@@ -38,7 +36,6 @@ export const ENGINES = [
   'mlx',
   'albert',
   'openai',
-  'anthropic',
   'generic',
 ];
 
@@ -47,7 +44,6 @@ const ENGINES_REQUIRING_BASE_URL = new Set(['ollama', 'vllm', 'mlx', 'generic'])
 
 const ENGINE_DEFAULT_BASE_URL = {
   openai: 'https://api.openai.com/v1',
-  anthropic: 'https://api.anthropic.com/v1',
   albert: 'https://albert.api.etalab.gouv.fr/v1',
   ollama: 'http://127.0.0.1:11434/v1',
   vllm: 'http://127.0.0.1:8000/v1',
@@ -82,7 +78,6 @@ export function normalizeProvider(provider) {
  */
 const ENGINE_LABELS = new Map([
   ['openai', 'openai'],
-  ['anthropic', 'anthropic'],
   ['ollama (local)', 'ollama'],
   ['vllm (local)', 'vllm'],
   ['mlx (local)', 'mlx'],
@@ -92,8 +87,8 @@ const ENGINE_LABELS = new Map([
 
 /**
  * Moteur. Accepte les libellés du wizard, les valeurs canoniques, et les
- * anciennes valeurs de `provider` (`openai`, `ollama`, `anthropic`) devenues
- * des moteurs.
+ * anciennes valeurs de `provider` (`openai`, `ollama`) devenues des moteurs.
+ * L'ancien moteur `anthropic`, retiré de la config, retombe sur `generic`.
  */
 export function normalizeEngine(engine) {
   const value = String(engine ?? '').trim().toLowerCase();
@@ -132,7 +127,6 @@ function endpointFor(provider, engine, baseUrl) {
     return `${rootOf(baseUrl)}/v1/models`;
   }
   const normalized = normalizeEngine(engine);
-  if (normalized === 'anthropic') return 'https://api.anthropic.com/v1/models';
   const root = rootOf(baseUrl) || 'https://api.openai.com';
   return normalized === 'ollama' ? `${root}/api/tags` : `${root}/v1/models`;
 }
@@ -143,9 +137,6 @@ function headersFor(provider, engine, apiKey) {
   }
   const normalized = normalizeEngine(engine);
   if (normalized === 'ollama') return {};
-  if (normalized === 'anthropic') {
-    return { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' };
-  }
   return { Authorization: `Bearer ${apiKey}` };
 }
 
@@ -328,15 +319,6 @@ async function getJson(url, headers, timeoutMs) {
 export async function fetchModels(provider, baseUrl, apiKey, options = {}) {
   const routing = normalizeProvider(provider);
   const normalizedEngine = normalizeEngine(options.engine ?? provider);
-
-  if (routing === 'openai-compatible' && normalizedEngine === 'anthropic') {
-    return {
-      ok: false,
-      models: fallbackFor(normalizedEngine, options.kind),
-      source: 'fallback',
-      error: 'Anthropic model listing is not supported',
-    };
-  }
 
   const timeoutMs = options.timeoutMs ?? DISCOVERY_TIMEOUT_MS;
   try {

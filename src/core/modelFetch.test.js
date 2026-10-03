@@ -321,6 +321,8 @@ test('a partially typed catalog falls back to the full list, never to an empty o
 test('requiresBaseUrl follows the engine, and the gateway always needs one', () => {
   assert.equal(requiresBaseUrl('openai-compatible', 'ollama'), true);
   assert.equal(requiresBaseUrl('openai-compatible', 'openai'), false);
-  assert.equal(requiresBaseUrl('openai-compatible', 'anthropic'), false);
+  // L'ancien moteur `anthropic` a été retiré : la valeur retombe sur `generic`,
+  // qui exige une baseUrl explicite.
+  assert.equal(requiresBaseUrl('openai-compatible', 'anthropic'), true);
   assert.equal(requiresBaseUrl('ai-gateway', 'openai'), true);
 });

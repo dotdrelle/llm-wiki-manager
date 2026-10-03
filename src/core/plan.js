@@ -168,11 +168,24 @@ export function planStepInputs(task, activities = [], limit = 40) {
       .join(' | ')
       .toLowerCase()
     : '';
+  // Per-file states the production agent reads from the engine trace
+  // (basename -> running/done/failed): a TAXO ingest is ONE task, so this is how
+  // finished files show done and several in-flight sources show running.
+  const reported = new Map();
+  if (status === 'running') {
+    for (const item of Array.isArray(activities) ? activities : []) {
+      const map = item?.progress?.sourceStates;
+      if (map && typeof map === 'object') {
+        for (const [file, value] of Object.entries(map)) reported.set(String(file).toLowerCase(), String(value));
+      }
+    }
+  }
   const rows = files.slice(0, limit).map((ref) => {
     const name = ref.split('/').pop() || ref;
     const stem = name.replace(/\.[^.]+$/, '').toLowerCase();
     const current = Boolean(live) && (live.includes(name.toLowerCase()) || (stem.length > 3 && live.includes(stem)));
-    return { name, ref, status: status === 'running' ? (current ? 'running' : 'pending') : status };
+    const known = reported.get(name.toLowerCase());
+    return { name, ref, status: status === 'running' ? (known ?? (current ? 'running' : 'pending')) : status };
   });
   if (files.length > limit) rows.push({ name: `+${files.length - limit} more file(s)`, ref: '', status: status === 'running' ? 'pending' : status });
   return rows;

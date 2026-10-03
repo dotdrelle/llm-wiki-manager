@@ -198,6 +198,12 @@ test('planStepInputs: lists a batch task input files, the one in progress runnin
   ]);
   assert.ok(planStepInputs({ ...task, status: 'done' }, activities).every((row) => row.status === 'done'));
   assert.deepEqual(planStepInputs({ status: 'running', raw: {} }), []);
+  const reported = [{ status: 'running', progress: { sourceStates: { 'Etude EPM.md': 'done', 'Synthèse.md': 'running' } } }];
+  assert.deepEqual(planStepInputs(task, reported).map((row) => [row.name, row.status]), [
+    ['Etude EPM.md', 'done'],
+    ['Comparaison Sécurité.md', 'pending'],
+    ['Synthèse.md', 'running'],
+  ]);
 });
 
 test('planStepInputs: a running task with no declared files shows the document in progress', () => {

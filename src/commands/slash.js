@@ -1395,6 +1395,12 @@ export async function handleSlashCommand(line, context) {
             { workspace: context.session.workspace },
           );
           const payload = parseJsonText(formatMcpToolResult(result));
+          if (payload?.status === 'unavailable' || payload?.reason) {
+            const reason = String(payload.reason ?? 'connection_check_failed');
+            const repair = ['google_reauthorization_required', 'google_refresh_token_missing'].includes(reason)
+              ? ' Run `/connector auth google` to renew the authorization.' : '';
+            return connectorResult(`google (Gmail): unavailable (${reason}).${repair}`);
+          }
           if (payload?.status !== 'configured') {
             return connectorResult('google (Gmail): not authorized. Run `/connector auth google` to authorize reading and sending.');
           }

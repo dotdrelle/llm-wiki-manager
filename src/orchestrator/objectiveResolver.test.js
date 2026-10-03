@@ -283,3 +283,34 @@ test('resolveObjective rejects invented capability and operation', async () => {
     /unknown capability "ingest"/,
   );
 });
+
+test('an email request resolves to communication.send-email, not the report notifier', async () => {
+  // Observed on juno: agent.notify declared the generic aliases "send"/"email"
+  // and communication.send-email declared none — an email request went to the
+  // external runtime's report notifier.
+  const sendEmail = makeCapability('communication.send-email', {
+    operations: ['send'],
+    aliases: ['send email', 'send an email', 'envoyer un mail', 'envoie un mail', "envoi d'un mail"],
+    description: 'Send a single plain-text email.',
+  });
+  const notify = makeCapability('agent.notify', {
+    operations: ['run'],
+    aliases: ['notify', 'notification', 'send the report', 'email the report'],
+    description: 'Send the report by email to the profile recipient.',
+  });
+  const session = sessionWith([provider('connectors-1', sendEmail), provider('deepagents-1', notify)], { capability: 'agent.notify', operation: 'run' });
+  for (const objective of ['envoie un mail de test à alice@example.test', "Fais l'envoi d'un mail à alice@example.test", 'send an email to alice@example.test']) {
+    const resolved = await resolveObjective(objective, session);
+    assert.equal(resolved.capability, 'communication.send-email', objective);
+  }
+  assert.equal((await resolveObjective('send the report to the team', session)).capability, 'agent.notify');
+});
+
+test('resolver candidates carry the argument names each capability accepts, never values', () => {
+  // "fais un envoi à blanc (dryRun) d'un mail" was declined as "no capability
+  // supports dry-run email sending": the resolver saw descriptions only.
+  const sendEmail = { ...makeCapability('communication.send-email', { operations: ['send'] }),
+    inputSchema: { type: 'object', properties: { to: {}, subject: {}, body: {}, dryRun: { type: 'boolean' } } } };
+  const [candidate] = capabilityCandidates(sessionWith([provider('connectors-1', sendEmail)]));
+  assert.deepEqual(candidate.arguments, ['body', 'dryRun', 'subject', 'to']);
+});

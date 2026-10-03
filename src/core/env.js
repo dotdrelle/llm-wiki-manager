@@ -14,6 +14,7 @@ const WIKI_CHAT_TOOL_ADDITIONS = [
 // Chat is read-only. 0.15.46 migrated these two writers INTO every packaged
 // allow-list; the same recognizable lists get them taken out again.
 // (`chatAllowedTools` refuses them anyway, from the engine's readOnlyHint.)
+const NOTIFY_ALIASES = ['notify', 'notification', 'send the report', 'email the report'];
 const WIKI_CHAT_TOOL_REMOVALS = ['template_write', 'build_context_write'];
 // Same additive rule for the packaged cme allow-list: an install scaffolded
 // before the live search tools existed keeps the three legacy reads forever,
@@ -201,6 +202,33 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
   if (existsSync(runtimesExample) && !existsSync(runtimesFile)) {
     copyFileSync(runtimesExample, runtimesFile);
     created.push('agent-runtimes.json');
+  }
+  // One recognizable packaged value is migrated, nothing else: agent.notify
+  // used to claim the generic aliases "send"/"email" (and "report"), which the
+  // resolver ranks first — every email request went to the report notifier
+  // instead of communication.send-email. A hand-edited alias list is left alone.
+  else if (existsSync(runtimesFile)) {
+    try {
+      const runtimes = JSON.parse(readFileSync(runtimesFile, 'utf8'));
+      const legacy = [['notify', 'send', 'email'], ['notify', 'send', 'email', 'report']];
+      let migrated = false;
+      for (const runtime of Array.isArray(runtimes?.runtimes) ? runtimes.runtimes : []) {
+        for (const capability of Array.isArray(runtime?.capabilities) ? runtime.capabilities : []) {
+          const aliases = Array.isArray(capability?.aliases) ? capability.aliases : null;
+          if (capability?.name === 'agent.notify' && aliases
+            && legacy.some((list) => list.length === aliases.length && list.every((alias, index) => aliases[index] === alias))) {
+            capability.aliases = [...NOTIFY_ALIASES];
+            migrated = true;
+          }
+        }
+      }
+      if (migrated) {
+        writeFileSync(runtimesFile, `${JSON.stringify(runtimes, null, 2)}\n`);
+        created.push('agent-runtimes.json agent.notify aliases narrowed (send/email now reach communication.send-email)');
+      }
+    } catch {
+      // Unreadable operator file: discovery reports it; the scaffold never rewrites it.
+    }
   }
   const envFile = managerEnvFile();
   const envExample = join(packageRoot, '.env.example');

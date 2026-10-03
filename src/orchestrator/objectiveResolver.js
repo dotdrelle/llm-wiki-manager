@@ -29,6 +29,7 @@ export async function resolveObjective(objective, session) {
       'You resolve one user objective against a closed capability registry.',
       'Select exactly one listed capability and one of its supported operations.',
       'The aliases of a capability are the strongest signal: match them before the generic description.',
+      'A capability\'s `arguments` are the options it accepts: an option the objective names (a dry run, a target, a mode) belongs to the capability that lists it — never a reason to decline it.',
       // Without an explicit way out, the model has to pick SOMETHING: an
       // objective no listed capability covers ("authorize Gmail") came back as
       // workspace.diagnose/doctor and launched an unrelated job. Declining is
@@ -89,7 +90,9 @@ function phraseIn(phrase, words, text) {
   if (!phrase) return false;
   if (!phrase.includes(' ')) return words.includes(phrase);
   const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`).test(text);
+  // Any non-alphanumeric boundary, not only whitespace: "l'envoi d'un mail"
+  // or "un mail, merci" must still match their phrase.
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`).test(text);
 }
 
 // Deterministic fast path, safe by construction:
@@ -159,7 +162,14 @@ export function capabilityCandidates(session) {
       ...(providers ?? []).map((provider) => provider?.capability?.aliasOperations ?? {}),
     );
     const description = (providers ?? []).map((provider) => provider?.capability?.description).find(Boolean) ?? '';
-    byId.set(id, { id, description, operations, aliases, aliasOperations });
+    // The argument NAMES a capability accepts (never their values): an option
+    // the user names — "dry run", "stabilize", "templates" — tells the resolver
+    // which capability carries it. Without them, "fais un envoi à blanc
+    // (dryRun) d'un mail" was declined as "no capability supports dry-run
+    // email sending" while communication.send-email declares dryRun.
+    const argumentNames = [...new Set((providers ?? []).flatMap((provider) =>
+      Object.keys(provider?.capability?.inputSchema?.properties ?? {})))].sort().slice(0, 24);
+    byId.set(id, { id, description, operations, aliases, aliasOperations, ...(argumentNames.length ? { arguments: argumentNames } : {}) });
   }
   return [...byId.values()].filter((item) => item.operations.length > 0).sort((a, b) => a.id.localeCompare(b.id));
 }

@@ -69,7 +69,7 @@
           "name": "agent.notify",
           "operations": ["run"],
           "description": "Read the workspace profile for the notification recipient, then send the report by email. Mutation, approval required.",
-          "aliases": ["notify", "send", "email"],
+          "aliases": ["notify", "notification", "send the report", "email the report"],
           "defaultRequiresApproval": true
         }
       ]

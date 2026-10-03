@@ -2829,3 +2829,16 @@ test('a skill call narrated with parentheses is neither executed nor shown', asy
   assert.match(result.response, /repeatedly printed an internal tool request/);
   assert.ok(calls >= 2, 'the first occurrence is retried, not surfaced');
 });
+
+test('a delegation failure names its kind: nothing connected, agent not answering, nothing covers it, or a failure on the way', async () => {
+  const { delegationBlockerForDonna } = await import('./graph.js');
+  const kind = (raw) => JSON.parse(delegationBlockerForDonna(raw)).blocker;
+  assert.equal(kind('Delegation failed during objective_resolution: Error No orchestrable capability is currently available.'), 'no_agent_connected');
+  assert.equal(kind('Delegation failed during objective_resolution: Error No healthy agent provides communication.send-email/send.'), 'agent_unavailable');
+  // Observed on juno with the connector container stopped: the capability
+  // resolved, its agent_plan could not be reached. The agent exists — it is
+  // not answering; "a failure on the way" hid "start it and retry".
+  assert.equal(kind('Delegation failed during agent_plan: provider=connectors endpoint=http://127.0.0.1:3338/mcp/ TypeError fetch failed'), 'agent_unavailable');
+  assert.equal(kind('Delegation failed during agent_plan: provider=connectors endpoint=x Error invalid_arguments:to_required'), 'delegation_failed');
+  assert.equal(kind('Delegation failed during objective_resolution: ObjectiveNotOrchestrableError No connected agent can do that.'), 'unsupported_action');
+});

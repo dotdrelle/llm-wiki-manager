@@ -241,3 +241,29 @@ test('scaffold leaves an invalid endpoints file strictly alone', () => {
     assert.equal(readFileSync(endpointsFile, 'utf8'), '{ not json');
   });
 });
+
+test('legacy agent.notify aliases are narrowed so email requests reach communication.send-email', () => {
+  withTempManagerDir((dir) => {
+    ensureManagerScaffold();
+    const file = join(dir, 'agent-runtimes.json');
+    const legacy = { runtimes: [{ capabilities: [
+      { name: 'agent.notify', aliases: ['notify', 'send', 'email', 'report'] },
+      { name: 'agent.review', aliases: ['review'] },
+    ] }, { capabilities: [{ name: 'agent.notify', aliases: ['notify', 'ping me'] }] }] };
+    writeFileSync(file, JSON.stringify(legacy));
+    const created = ensureManagerScaffold();
+    assert.ok(created.some((line) => /agent\.notify aliases narrowed/.test(line)), 'the migration is announced');
+    const after = JSON.parse(readFileSync(file, 'utf8'));
+    assert.deepEqual(after.runtimes[0].capabilities[0].aliases, ['notify', 'notification', 'send the report', 'email the report']);
+    assert.deepEqual(after.runtimes[0].capabilities[1].aliases, ['review']);
+    assert.deepEqual(after.runtimes[1].capabilities[0].aliases, ['notify', 'ping me'], 'an operator alias list is never rewritten');
+    // Idempotent: a second boot changes nothing.
+    assert.ok(!ensureManagerScaffold().some((line) => /agent\.notify/.test(line)));
+  });
+});
+
+test('the packaged agent.notify aliases never claim a generic send or email', () => {
+  const example = JSON.parse(readFileSync(new URL('../../agent-runtimes.example.json', import.meta.url), 'utf8'));
+  const notify = example.runtimes.flatMap((runtime) => runtime.capabilities).find((capability) => capability.name === 'agent.notify');
+  assert.deepEqual(notify.aliases, ['notify', 'notification', 'send the report', 'email the report']);
+});

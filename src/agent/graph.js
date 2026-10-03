@@ -475,6 +475,7 @@ async function classifyRequestedAction(llm, input, signal) {
     'Actions include starting, stopping, importing, ingesting, building, exporting, configuring, writing, deleting, or sending.',
     'Questions, explanations, status questions, greetings, hypothetical discussions, and bare capability questions are not actions.',
     'Requests to refresh, show, or update the displayed plan/status are status reads, not state-changing actions.',
+    'Reading, fetching, listing, searching, summarizing or showing existing data — "lis-moi mon dernier mail", "liste mes 3 derniers mails", "show my labels" — changes nothing: not an action.',
     'A bare capability question such as "can you send an email?" or "peux-tu envoyer un mail ?" asks what the assistant can do; it does not request execution.',
     'A concrete imperative or polite request such as "send this email to Alice" or "peux-tu envoyer ce message à Alice ?" is an action.',
     'Return JSON only: {"action":true} or {"action":false}.',
@@ -1343,6 +1344,10 @@ export function buildAgentSystemPrompt(state) {
     // buried far from the tool list did not change it; it sits here, next to
     // the list it is about, and says how to recognise the tools concerned.
     'A request about a service the user names (a mailbox, a calendar, a source system…) is served by the listed tools whose name contains that service: call them FIRST and directly — status or setup to check or configure it, its read tools to fetch from it. Do not web-search, read the product help or delegate before trying them. A connection or setup request whose status tool already reports the access configured is answered from that result: there is nothing to delegate.',
+    // Observed on juno: gmail_read returned the full message, then Donna
+    // delegated the same request, got "no agent covers this" and told the user
+    // it was impossible — contradicting the data she already held.
+    'Once a direct tool has returned the data the user asked for, answer from that data. Never delegate the same request afterwards, and never claim it is impossible.',
     mcpTools,
     'Current local MCP job queue:',
     formatQueue(state.session),
@@ -1390,12 +1395,9 @@ export function buildAgentSystemPrompt(state) {
       ? 'The runtime is connected and runtime__delegate is available for any requested capability action that has no matching direct tool. When a matching direct tool is offered, call it directly; otherwise let the runtime resolve the objective from discovered capability contracts.'
       : 'No runtime is connected, so you cannot execute actions. State that plainly and name the runtime connection as the missing capability — do not invent a workaround.',
     'If the connector or service needed for a requested read or action is absent from the Connected MCP tools above (its service is not running — e.g. CME, documents, or production), say plainly that this service is not connected and name it as the missing capability. Never redirect a simple read (e.g. "give me the CME config") to an "agent action", never invent its result, and never propose a workaround. Only requests you can actually serve with a listed tool are answered with data.',
-    // Cas observé : « récupère ce mail » et « envoie un mail » refusés comme
-    // impossibles, alors que l'agent connectors déclare `external-source.collect`
-    // (écrit dans raw/untracked/) et `communication.send-email`. Les outils de
-    // lecture directs ne rendent que des métadonnées : les prendre pour la
-    // limite de l'agent transforme un travail délégable en refus.
-    'The direct read tools of a connector are a preview, not the measure of what its agent can do. Bringing external content INTO the workspace (retrieve, import, fetch, save, "récupère") is a collect capability, and acting on the outside world (send, publish, notify) is an action capability: both are delegated through runtime__delegate, not answered from a read tool. Never conclude that something is impossible because the listed read tool returns only metadata — check the capabilities the agents declare, and delegate the objective as stated.',
+    // Reading a message in chat uses search + full read. Only an explicit
+    // workspace import or outbound action belongs to the execution runtime.
+    'Read external messages directly with the offered search/read tools when the user asks to see, read or retrieve a message in the conversation (including "récupère mon dernier mail"). Search for its ID, then read its body; metadata alone is not the full message. Importing or saving external content INTO the workspace is a collect capability; acting on the outside world (send, publish, notify) is an action capability. Delegate these mutations through runtime__delegate. Never conclude that an action is impossible from the direct read tools alone — check the declared agent capabilities.',
     // Un droit manquant n'est pas une fonctionnalité absente : l'un se
     // réautorise en une commande, l'autre n'existe pas. Les confondre envoie
     // l'utilisateur croire que le produit ne sait pas faire.
@@ -1594,6 +1596,32 @@ function hasExecutedActionTool(messages, session) {
     }
   }
   return false;
+}
+
+/*
+ Servers consulted by this turn's read-only calls that ALSO offer a direct
+ action tool in this turn. When such a server exists, the model held a direct
+ way to act and chose not to (often rightly: "configure my gmail" when its
+ status already reports the access granted). Forcing a delegation there
+ overrode a correct answer — and, for a read request misread as an action,
+ discarded the mail Donna had just read and replied "impossible".
+ */
+function consultedServerOffersActionTool(messages, session, tools) {
+  const consulted = new Set();
+  for (const message of messages ?? []) {
+    for (const call of message?.tool_calls ?? []) {
+      const { server, tool } = resolveToolCallName(session?.mcp, call?.function?.name ?? '', INTERNAL_TOOL_SERVERS);
+      if (server && !['runtime', 'shell', 'memory', 'conversation'].includes(server) && isReadOnlyMcpCall(session, server, tool)) consulted.add(server);
+    }
+  }
+  if (!consulted.size) return false;
+  return (tools ?? []).some((item) => {
+    const name = String(item?.function?.name ?? '');
+    const separator = name.indexOf('__');
+    if (separator <= 0) return false;
+    const server = name.slice(0, separator);
+    return consulted.has(server) && !isReadOnlyMcpCall(session, server, name.slice(separator + 2));
+  });
 }
 
 function hasExecutedReadOnlyTool(messages, session) {
@@ -1847,6 +1875,7 @@ export function createAgentGraph(options = {}) {
       if (iterations > 0 && canDelegate && !state.forceDelegation
         && hasExecutedReadOnlyTool(conversationMessages, state.session)
         && !hasExecutedActionTool(conversationMessages, state.session)
+        && !consultedServerOffersActionTool(conversationMessages, state.session, tools)
         && await classifyRequestedAction(llm, state.input, state.session._abortSignal)) {
         state.session._onStreamReset?.();
         state.session._onStep?.('Agent: read-only checks completed but requested action not executed — delegating…');
@@ -2011,8 +2040,20 @@ export function createAgentGraph(options = {}) {
       const allowedNames = !runtimeExecutionTurn && Array.isArray(state.allowedToolNames) ? state.allowedToolNames : null;
       const isInternalCall = server === 'shell' || server === 'runtime' || server === 'memory' || server === 'conversation' || isInternalWikiTool;
       if (allowedNames && server && !isInternalCall && !allowedNames.includes(`${server}__${tool}`)) {
-        const refusal = `${server}__${tool} is not available in interactive mode. Do not call provider tools directly. For any action or mutation, call runtime__delegate with the user objective; only read-only tools and runtime controls may be called directly.`;
-        state.session._onStep?.(`tool call refused (not offered): ${server}__${tool}`);
+        // A name the server does not expose at all is a guessed name, not a
+        // withheld tool. Telling the model to delegate it sent "list my last
+        // 3 mails" (guessed connectors_gmail_status) into an external-source
+        // collect run — an import into the wiki — followed by invented mail
+        // subjects. Name the real tools of that server instead.
+        const exposed = Array.isArray(state.session.mcp?.[server]?.tools)
+          ? state.session.mcp[server].tools.map((item) => String(item?.name ?? '')).filter(Boolean)
+          : [];
+        const unknownTool = !exposed.includes(tool);
+        const offeredOfServer = allowedNames.filter((name) => name.startsWith(`${server}__`));
+        const refusal = unknownTool
+          ? `Unknown tool: ${server}__${tool} does not exist. ${offeredOfServer.length ? `Tools of ${server} you can call now: ${offeredOfServer.join(', ')}. Call the one that matches the request.` : `No tool of ${server} is offered in this turn.`} Do not delegate a read request because of a wrong tool name.`
+          : `${server}__${tool} is not available in interactive mode. Do not call provider tools directly. For any action or mutation, call runtime__delegate with the user objective; only read-only tools and runtime controls may be called directly.`;
+        state.session._onStep?.(`tool call refused (${unknownTool ? 'unknown tool' : 'not offered'}): ${server}__${tool}`);
         emitAgentEvent(state.session, 'tool_call_result', 'tool', {
           callId: call.id, name: toolName, ok: false, result: refusal, summary: 'refused',
         });

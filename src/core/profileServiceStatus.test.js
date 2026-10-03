@@ -145,12 +145,10 @@ test('an agent can be started and stopped on its own', () => {
 
 test('a connector read tool is not mistaken for the limit of its agent', () => {
   const graph = readFileSync(fileURLToPath(new URL('../agent/graph.js', import.meta.url)), 'utf8');
-  // « récupère ce mail » et « envoie un mail » ont été refusés comme
-  // impossibles, alors que l'agent connectors déclare `external-source.collect`
-  // et `communication.send-email`. Donna raisonnait sur les outils de lecture
-  // exposés au chat — qui ne rendent que des métadonnées — au lieu de déléguer.
-  assert.match(graph, /direct read tools of a connector are a preview/);
-  assert.match(graph, /delegated through runtime__delegate, not answered from a read tool/);
+  // Reading in chat must not import; importing and sending remain delegated.
+  assert.match(graph, /Search for its ID, then read its body/);
+  assert.match(graph, /Importing or saving external content INTO the workspace is a collect capability/);
+  assert.match(graph, /Delegate these mutations through runtime__delegate/);
   // Et un droit manquant doit être nommé comme tel, pas présenté comme une
   // fonctionnalité absente.
   assert.match(graph, /lack of an authorization grant or scope/);

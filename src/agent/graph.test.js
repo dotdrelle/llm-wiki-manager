@@ -1140,6 +1140,7 @@ test('buildAgentSystemPrompt makes Donna re-check a connector instead of repeati
   assert.match(prompt, /served by the listed tools whose name contains that service: call them FIRST and directly/);
   assert.match(prompt, /Do not web-search, read the product help or delegate before trying them/);
   assert.match(prompt, /already reports the access configured is answered from that result: there is nothing to delegate/);
+  assert.match(prompt, /Once a direct tool has returned the data the user asked for, answer from that data/);
 });
 
 test('buildAgentSystemPrompt answers workspace questions from the wiki instead of delegating them', () => {
@@ -2480,6 +2481,78 @@ test('Donna refuses a direct mutating provider tool in interactive mode and is s
     assert.equal(calls, 2, 'the model must get a second turn after the refusal');
     assert.equal(result.response, 'Objectif transmis au runtime.');
     assert.ok(!fetchedHosts.includes('127.0.0.1:3000'), 'the refused provider tool must never be executed');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a guessed tool name is answered "unknown tool" with the real tools, never steered to delegation', async () => {
+  // Observed on juno: "list my last 3 mails" guessed connectors_gmail_status;
+  // the refusal said "call runtime__delegate", which started an external-source
+  // collect run (an import) and Donna then invented the mail subjects.
+  let calls = 0;
+  let refusal = '';
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    llm: {
+      async completeWithTools({ messages }) {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: null,
+            message: { role: 'assistant', content: null },
+            tool_calls: [{ id: 'guess', type: 'function', function: { name: 'production__production_guessed_status', arguments: '{}' } }],
+          };
+        }
+        refusal ||= (messages ?? []).filter((message) => message.role === 'tool').map((message) => String(message.content ?? '')).find((content) => content.includes('production_guessed_status')) ?? '';
+        return { content: 'ok', message: { role: 'assistant', content: 'ok' }, tool_calls: null };
+      },
+    },
+  });
+  await createAgentGraph().invoke({ input: 'état de la production ?', session });
+  assert.match(refusal, /Unknown tool: production__production_guessed_status does not exist/);
+  assert.match(refusal, /Do not delegate a read request because of a wrong tool name/);
+  assert.doesNotMatch(refusal, /call runtime__delegate/);
+});
+
+test('a read answered by a service that offers its own action tool is kept, not forced into delegation', async () => {
+  // Observed on juno: "lis-moi le contenu complet de mon dernier mail" read the
+  // mail, the action classifier still said "action", and the guard discarded
+  // the answer, forced runtime__delegate and replied "impossible".
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => '{}', headers: { get: () => null } });
+  const nudges = [];
+  let calls = 0;
+  const session = sessionBase({
+    runtime: { url: 'http://runtime.test' },
+    mcp: {
+      connectors: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3338/mcp/',
+        tools: [
+          { name: 'connectors_gmail_read', description: 'Read one Gmail message', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } },
+          { name: 'connectors_google_oauth_start', description: 'Configure Gmail', inputSchema: { type: 'object', properties: {} } },
+        ],
+      },
+    },
+    llm: {
+      async completeWithTools({ tools, messages }) {
+        if ((tools ?? []).some((tool) => tool.function?.name === 'classify_action_request')) {
+          return { content: null, message: { role: 'assistant', content: null }, tool_calls: [{ id: 'c', type: 'function', function: { name: 'classify_action_request', arguments: '{"action":true}' } }] };
+        }
+        for (const message of messages ?? []) if (message.role === 'user' && /did not execute the requested action|Call runtime__delegate now/.test(String(message.content))) nudges.push(message.content);
+        calls += 1;
+        if (calls === 1) {
+          return { content: null, message: { role: 'assistant', content: null }, tool_calls: [{ id: 'read', type: 'function', function: { name: 'connectors__connectors_gmail_read', arguments: '{"messageId":"m1"}' } }] };
+        }
+        return { content: 'Voici votre dernier mail : Bonjour…', message: { role: 'assistant', content: 'Voici votre dernier mail : Bonjour…' }, tool_calls: null };
+      },
+    },
+  });
+  try {
+    const result = await createAgentGraph().invoke({ input: 'lis-moi le contenu complet de mon dernier mail', session });
+    assert.equal(result.response, 'Voici votre dernier mail : Bonjour…');
+    assert.deepEqual(nudges, [], 'no forced delegation after the read');
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -487,7 +487,12 @@ function executeRequest(task, session, runId, assignment) {
       // mutating production job fail with "requires confirm=true" — the
       // first E2E mutation dispatched by the runtime's
       // planExpansionRequest failed exactly that way, 19 tasks in one batch.
-      ...(task.requiresApproval === true ? { confirm: true } : {}),
+      //
+      // …but only where the capability's declared contract admits the field.
+      // A closed schema (additionalProperties:false) that does not declare
+      // `confirm` rejects it: communication.send-email failed every approved
+      // send with `invalid_arguments:unsupported_field:confirm`.
+      ...(task.requiresApproval === true && acceptsArgument(capabilityObject?.inputSchema, 'confirm') ? { confirm: true } : {}),
       // The ACTIVE profile must reach the job: a task planned without an
       // explicit configPath (the common case) otherwise runs on the workspace
       // default .wikirc, so /config use <profile> changes the runtime's own
@@ -668,6 +673,18 @@ function describeRuntimePool(mcpPool) {
       tools: block.tools.map((tool) => `${block.name}__${String(tool)}`),
     }));
   return { hasWiki, external };
+}
+
+/**
+ * Whether a capability's declared input schema admits `field`: declared, or
+ * not forbidden (no schema, or additionalProperties not false). The schema is
+ * the agent's own contract — never send what it says it will refuse.
+ */
+export function acceptsArgument(inputSchema, field) {
+  if (!inputSchema || typeof inputSchema !== 'object') return true;
+  const properties = inputSchema.properties && typeof inputSchema.properties === 'object' ? inputSchema.properties : {};
+  if (Object.hasOwn(properties, field)) return true;
+  return inputSchema.additionalProperties !== false;
 }
 
 export function activeRuntimeSystemPrompt(session, task, assignment, mcpPool = null) {

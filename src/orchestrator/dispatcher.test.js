@@ -512,3 +512,40 @@ test('externalRoleProgress turns the collective roles into a percentage and a la
   assert.deepEqual(externalRoleProgress({ declared: 0, roles: ['scout'], finished: new Set(), current: 'scout' }),
     { label: 'scout', detail: 'Role: scout' });
 });
+
+async function executeArgsFor(task, capability) {
+  let executeArgs;
+  const dispatcher = createDispatcher({
+    session: { workspace: 'test', mcp: { agent: { tools: [{ name: 'agent_execute' }, { name: 'agent_status' }, { name: 'agent_cancel' }] } }, activities: {} },
+    pollIntervalMs: 1,
+    callTool: async (_mcp, _server, tool, args) => {
+      if (tool === 'agent_execute') { executeArgs = args; return { accepted: true, jobId: 'job-1', status: 'queued' }; }
+      return { jobId: 'job-1', status: 'succeeded', terminal: true, result: { status: 'succeeded' } };
+    },
+  });
+  await dispatcher.execute(
+    task,
+    { serverName: 'agent', agentInstanceId: 'agent-1', capability },
+    { runId: 'run-contract', attempt: { attemptId: `${task.id}:attempt-1`, locks: [], release() {} } },
+  );
+  return executeArgs;
+}
+
+test('an approved task never receives confirm when its capability schema forbids it', async () => {
+  // Observed on juno: every approved email send failed with
+  // invalid_arguments:unsupported_field:confirm — the send-email schema is
+  // closed and does not declare confirm.
+  const args = await executeArgsFor(
+    { id: 'send-1', requiredCapability: 'communication.send-email', operation: 'send', arguments: { to: 'me@example.test', subject: 'Test', body: 'Hi' }, requiresApproval: true },
+    { id: 'communication.send-email', inputSchema: { type: 'object', properties: { to: {}, subject: {}, body: {} }, additionalProperties: false } },
+  );
+  assert.deepEqual(args.arguments, { to: 'me@example.test', subject: 'Test', body: 'Hi' });
+});
+
+test('an approved task receives confirm when its closed schema declares it', async () => {
+  const args = await executeArgsFor(
+    { id: 'ingest-1', requiredCapability: 'knowledge.update', operation: 'ingest', arguments: {}, requiresApproval: true },
+    { id: 'knowledge.update', inputSchema: { type: 'object', properties: { operation: {}, confirm: { type: 'boolean' } }, additionalProperties: false } },
+  );
+  assert.equal(args.arguments.confirm, true);
+});

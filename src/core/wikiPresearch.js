@@ -35,7 +35,7 @@ export async function wikiSearchContextMessages(input, session, allowedTools, on
   if (!qualified) return [];
   const { server } = parseToolCallName(qualified);
   try {
-    onStep?.('Searching the wiki…');
+    onStep?.('Donna Searching...');
     const result = await callMcpTool(
       session.mcp,
       server,

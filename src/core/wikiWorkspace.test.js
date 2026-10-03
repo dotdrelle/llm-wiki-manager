@@ -169,3 +169,19 @@ test('reset re-scaffolds through run_wiki, which requires the workspace env', as
   assert.match(script, /run_wiki "\$workspace" init/);
   assert.match(script, /workspace_env_file\(\) \{\n  local workspace="\$1"\n  printf '%s\/%s\/\.env\\n'/);
 });
+
+test('runtime down posts to /shutdown, not to /health/shutdown', async () => {
+  // runtime_health_url ends with /health. Appending /shutdown to it hit a 404:
+  // the node fetch exited 1, `set -e` ended the script silently and the
+  // runtime kept running with its old code.
+  const script = await readFile(new URL('../../wiki-workspace', import.meta.url), 'utf8');
+  assert.doesNotMatch(script, /RUNTIME_URL="\$\(runtime_health_url\)\/shutdown"/);
+  assert.match(script, /runtime_health_url \| sed 's#\/health\$##'\)\/shutdown/);
+});
+
+test('agents up offers the Gmail read tool to chat with the other read-only Gmail tools', async () => {
+  // The chat allow-list is explicit; agents up unions it with this list, which
+  // is how a tool added to the connectors agent reaches existing installs.
+  const script = await readFile(new URL('../../wiki-workspace', import.meta.url), 'utf8');
+  assert.match(script, /'connectors_gmail_search',\n\s+'connectors_gmail_read',\n\s+'connectors_gmail_labels',/);
+});

@@ -658,6 +658,7 @@ if (enabled === 'true') {
       'connectors_google_oauth_start',
       'connectors_gmail_summary',
       'connectors_gmail_search',
+      'connectors_gmail_read',
       'connectors_gmail_labels',
     ]),
   ];
@@ -853,7 +854,7 @@ runtime_command() {
       [[ $# -eq 0 ]] || die "runtime down does not take arguments"
       token="$(ensure_manager_runtime_token)"
       if runtime_health_check; then
-        RUNTIME_URL="$(runtime_health_url)/shutdown" RUNTIME_TOKEN="$token" "$node_bin" --input-type=module -e \
+        RUNTIME_URL="$(runtime_health_url | sed 's#/health$##')/shutdown" RUNTIME_TOKEN="$token" "$node_bin" --input-type=module -e \
           "const h=process.env.RUNTIME_TOKEN?{Authorization:'Bearer '+process.env.RUNTIME_TOKEN}:{}; const r=await fetch(process.env.RUNTIME_URL,{method:'POST',headers:h}); process.exit(r.ok?0:1);"
         local wait_count=0
         while runtime_health_check && (( wait_count < 40 )); do

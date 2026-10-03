@@ -1131,6 +1131,17 @@ test('buildAgentSystemPrompt never reads a tool-less capability as unsupported',
   assert.match(prompt, /Never tell the user a capability is missing or must be added to a catalogue/);
 });
 
+test('buildAgentSystemPrompt makes Donna re-check a connector instead of repeating an earlier failure', () => {
+  // Observed on juno: after the user authorized Gmail, two turns repeated
+  // "not configured" from history with no tool call.
+  const prompt = buildAgentSystemPrompt({ session: sessionBase({}) });
+  assert.match(prompt, /availability can change between turns/);
+  assert.match(prompt, /call the relevant tool again in THIS turn/);
+  assert.match(prompt, /served by the listed tools whose name contains that service: call them FIRST and directly/);
+  assert.match(prompt, /Do not web-search, read the product help or delegate before trying them/);
+  assert.match(prompt, /already reports the access configured is answered from that result: there is nothing to delegate/);
+});
+
 test('buildAgentSystemPrompt answers workspace questions from the wiki instead of delegating them', () => {
   // Observed: a wiki question delegated to the external runtime's agent.answer
   // burned 519k tokens and failed on its budget.

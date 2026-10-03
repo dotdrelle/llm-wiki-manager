@@ -1337,6 +1337,12 @@ export function buildAgentSystemPrompt(state) {
     `Available primitives: ${commandList(state.session)}.`,
     'Only announce or call slash commands that appear exactly in Available primitives. Do not invent command names, subcommands, or arguments.',
     'Connected MCP tools you may call directly (server__tool naming convention). Everything listed below is directly callable. When the requested action has no matching direct tool, call runtime__delegate with the original objective: the runtime resolves it against the discovered agent capability contracts, including executor-only single-task capabilities.',
+    // Observed on juno, twice: asked "configure my gmail", Donna ran a web
+    // search, then a refused delegation, and only then the connector's own
+    // setup tool — the right answer after three useless round trips. A rule
+    // buried far from the tool list did not change it; it sits here, next to
+    // the list it is about, and says how to recognise the tools concerned.
+    'A request about a service the user names (a mailbox, a calendar, a source system…) is served by the listed tools whose name contains that service: call them FIRST and directly — status or setup to check or configure it, its read tools to fetch from it. Do not web-search, read the product help or delegate before trying them. A connection or setup request whose status tool already reports the access configured is answered from that result: there is nothing to delegate.',
     mcpTools,
     'Current local MCP job queue:',
     formatQueue(state.session),
@@ -1400,6 +1406,12 @@ export function buildAgentSystemPrompt(state) {
     // asked to email a report, the agent listed its direct tools and concluded
     // the product had no send function instead of delegating the capability.
     'A capability may deliberately have NO direct tool — sending an email is never exposed as a chat tool. The absence of a tool proves nothing: delegate the action and let the runtime resolve the capability. Never tell the user a capability is missing or must be added to a catalogue.',
+    // Observed on juno: Gmail search answered google_not_configured, the user
+    // authorized through the OAuth link Donna gave, and the next two "get my
+    // last mail" turns repeated "not configured" with NO tool call — copied
+    // from her own earlier answer while the status tool already said
+    // configured. A past failure is history, not a current fact.
+    'A connector\'s availability can change between turns — the user may have just authorized it, or a service may have come back. Never answer that a connector or tool is not configured, unauthorized or unavailable from an earlier turn of this conversation: call the relevant tool again in THIS turn and answer from its result.',
     'Do not ask the user which sources, files, connectors, or templates to use for an ingest, build, or export: the specialized agent discovers them from the workspace. When the objective is clear (e.g. "lance une ingestion"), delegate it as stated, without a clarifying question.',
     'The concept map is not a deliverable. TAXO ingestion is the single knowledge-organization cycle: it splits source sections into fiches, assigns tags and regenerates tag/family pivots. There is no separate analysis, write, group or taxonomy user step. So "rebuild / refresh / redo the concepts" means run the TAXO ingestion (the wiki-ingest skill, or a delegated ingest objective) — never a build or export. Do not offer a separate concept regrouping step alongside build/export.',
     'Templates are instruction-only specs and deliverables are regenerated from them. A template is an OKF-style frontmatter (title, description, and an explicit build_context list — [] when none) followed by headings and [[INSTRUCTION: ...]] blocks, nothing else. [src: ...] citations are optional, never required, and must point at wiki pages when used. Instructions state WHAT to produce and HOW to format it (sections, tables, bullet lists, length, language) — never facts, vendor comparisons, figures, dates, conclusions or any claim: those are pulled from the wiki at build time. Never write finished prose into a template, because a build copies it verbatim and it can no longer be refreshed from the wiki. template_write refuses prose outside an instruction block, so keep every sentence inside one.',

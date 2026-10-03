@@ -673,6 +673,13 @@ export function buildDirectChatSystemPrompt(session, rawOpenWikiPages, allowedTo
     // told the user to add one to the catalogue. Sending is a delegable
     // capability performed in Agent mode — never a missing feature.
     'A capability absent from the direct tools proves nothing: sending an email, for example, is deliberately never a chat tool and is performed in Agent mode as a delegable capability. For such an action, say in one short line that Agent mode performs it — never that the capability is missing or must be added to a catalogue.',
+    // Same stale-answer trap as the agent prompt (graph.js): a connector
+    // reported unconfigured in an earlier turn may be authorized now.
+    'A connector\'s availability can change between turns — the user may have just authorized it, or a service may have come back. Never answer that a connector or tool is not configured, unauthorized or unavailable from an earlier turn of this conversation: call the relevant tool again in THIS turn and answer from its result.',
+    // Observed on juno: asked "configure my gmail", Donna ran a web search,
+    // fetched the GitHub docs and read the help before calling the connector's
+    // own setup tool — right answer, three useless round trips.
+    'A request about a service the user names (a mailbox, a calendar, a source system…) is served by the listed tools whose name contains that service: call them FIRST and directly — status or setup to check or configure it, its read tools to fetch from it. Do not web-search or read the product help before trying them.',
     'Answer directly and concisely. Do not claim to have called tools or changed files beyond the tools actually provided.',
     'Never offer an action that is not covered by a tool provided in this chat turn. For heavier orchestrated work such as ingest, build, or export, hand off to agent mode in one short line. For a direct authorized action, use its tool instead of redirecting the user.',
     'Never add a "Next steps", "Prochaines étapes", "À suivre", options, or suggestions section unless the user explicitly asks what to do next. End after answering the question.',

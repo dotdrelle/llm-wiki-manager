@@ -241,8 +241,13 @@ test('runtime logs have a separator and a concise Runtime tab label', async () =
   // The panel keeps a floor so a long plan running above it cannot shrink it
   // to zero rows — the Queue tab's fixed height is what used to keep it
   // visible, and a treatment must not make the tabs vanish.
-  assert.match(logPanel, /flexGrow=\{2\} minHeight=\{10\}/);
+  assert.match(logPanel, /flexBasis=\{0\} minHeight=\{10\}/);
   assert.match(logPanel, /minHeight=\{4\}/);
+  // The Plan and the logs share the column by grow ratio, not by content: with
+  // a content basis a long log made the Plan as tall as its list — no scroll,
+  // its bottom off screen — and pushed the logs below the window.
+  const planPanel = source.slice(source.indexOf('export function PlanPanel'), source.indexOf('export function ActivityPanel'));
+  assert.match(planPanel, /flexBasis=\{0\} minHeight=\{PLAN_MIN_VIEWPORT_ROWS \+ 2\} maxHeight=/);
 });
 
 test('ShellUI turns HTTP URLs into valid links without trailing punctuation', () => {
@@ -1296,6 +1301,13 @@ test('the chat prompt says an email send is an Agent-mode capability, never a mi
   const prompt = buildDirectChatSystemPrompt(createSession());
   assert.match(prompt, /sending an email, for example, is deliberately never a chat tool/i);
   assert.match(prompt, /never that the capability is missing or must be added to a catalogue/i);
+});
+
+test('the chat prompt makes Donna re-check a connector instead of repeating an earlier failure', () => {
+  const prompt = buildDirectChatSystemPrompt(createSession());
+  assert.match(prompt, /availability can change between turns/);
+  assert.match(prompt, /call the relevant tool again in THIS turn/);
+  assert.match(prompt, /served by the listed tools whose name contains that service: call them FIRST and directly/);
 });
 
 test('the chat prompt tells Donna to use an offered web tool instead of denying it', () => {

@@ -43,6 +43,29 @@ test('GET /login shows the enrollment QR before any code was verified', async ()
   assert.deepEqual({ enabled: status.enabled, enrolled: status.enrolled }, { enabled: true, enrolled: false });
 });
 
+test('GET /login is the front door: what the app does and a public status', async () => {
+  const html = await (await fetch(`${baseUrl()}/login`)).text();
+  assert.match(html, /What it does/);
+  assert.match(html, /After signing in/);
+  assert.match(html, /aria-label="Service status"/);
+  const { version } = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+  assert.ok(html.includes(version), 'the status block names the running version');
+  assert.match(html, /Awaiting enrollment/);
+  assert.match(html, /Not encrypted/);
+  const status = await (await fetch(`${baseUrl()}/login/status`)).json();
+  assert.equal(status.about.version, version);
+  assert.ok(status.about.startedAt <= Date.now());
+  assert.ok(status.about.sessionTtlHours > 0);
+  // Public surface: nothing about workspaces, runs or agents.
+  assert.deepEqual(Object.keys(status.about).sort(), ['sessionTtlHours', 'startedAt', 'version']);
+});
+
+test('GET /login reports an encrypted connection behind an HTTPS reverse proxy', async () => {
+  const html = await (await fetch(`${baseUrl()}/login`, { headers: { 'x-forwarded-proto': 'https' } })).text();
+  assert.match(html, /Encrypted \(TLS\)/);
+  assert.doesNotMatch(html, /Not encrypted/);
+});
+
 test('the first verified code enrolls and issues a session', async () => {
   const pending = enrollment();
   const code = totpCode(pending.secret);

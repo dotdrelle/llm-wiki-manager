@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { conversationEventSequences, createAgentEvent, dispatchAgentEvent, resetSessionProjection, reduceAgentEvents } from '../core/agentEvents.js';
@@ -44,9 +45,23 @@ import {
   pruneLoginAttempts,
   resetLoginAttempts,
   revokeSession,
+  SESSION_TTL_MS,
   verifySessionToken,
 } from './loginSession.js';
-import { loginPageHtml } from './loginPage.js';
+import { loginPageHtml, loginSuccessFragment } from './loginPage.js';
+
+/*
+ What the public login page and `/login/status` may say about this runtime:
+ version, start time and session lifetime. Nothing about workspaces, runs or
+ agents — the login surface sits before the bearer gate.
+ */
+const RUNTIME_PACKAGE_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version ?? null;
+  } catch {
+    return null;
+  }
+})();
 
 function loginErrorText(code) {
   const messages = {
@@ -103,6 +118,11 @@ export function startRuntimeServer({
   listActiveRuns = null,
   exitOnShutdown = process.env.WIKI_MANAGER_RUNTIME_CHILD === '1',
 } = {}) {
+  const loginAbout = {
+    version: RUNTIME_PACKAGE_VERSION,
+    startedAt: Date.now(),
+    sessionTtlHours: Math.round(SESSION_TTL_MS / 36e5 * 10) / 10,
+  };
   const clients = new Set();
   // Deterministic dedup/cooldown/budget for proactive reviews; the run itself
   // stays the normal control-lane path.
@@ -147,18 +167,25 @@ export function startRuntimeServer({
         const remoteAddress = request.socket?.remoteAddress ?? null;
         const current = enrollment();
         const status = loginStatus();
+        // The runtime is plain node:http, so behind an HTTPS reverse proxy the
+        // socket is never encrypted: honour X-Forwarded-Proto too. Display only
+        // — a forged header changes a label on a public page, nothing more.
+        const forwardedProto = String(request.headers['x-forwarded-proto'] ?? '').split(',')[0].trim().toLowerCase();
+        const tls = Boolean(request.socket?.encrypted) || forwardedProto === 'https';
         if (!status.enabled) {
-          sendHtml(response, 200, loginPageHtml({ error: 'TOTP login is disabled on this manager.' }));
+          sendHtml(response, 200, loginPageHtml({ enabled: false, error: 'TOTP login is disabled on this manager.', about: loginAbout, tls }));
           return;
         }
         if (!status.enrolled && !isLoopbackAddress(remoteAddress)) {
-          sendHtml(response, 403, loginPageHtml({ error: 'Enrollment must be done from the machine running the manager.' }));
+          sendHtml(response, 403, loginPageHtml({ error: 'Enrollment must be done from the machine running the manager.', about: loginAbout, tls }));
           return;
         }
         sendHtml(response, 200, loginPageHtml({
           enrolled: status.enrolled,
           secret: current?.secret ?? null,
           uri: current?.uri ?? null,
+          about: loginAbout,
+          tls,
         }));
         return;
       }
@@ -186,12 +213,12 @@ export function startRuntimeServer({
           ok: true,
           token: result.token,
           expiresAt: result.expiresAt,
-          page: loginPageHtml({ enrolled: true, sessionExpiresAt: result.expiresAt }),
+          page: loginSuccessFragment(result.expiresAt),
         });
         return;
       }
       if (url.pathname === '/login/status' && request.method === 'GET') {
-        sendJson(response, 200, { ok: true, ...loginStatus() });
+        sendJson(response, 200, { ok: true, ...loginStatus(), about: loginAbout });
         return;
       }
       if (url.pathname === '/logout' && request.method === 'POST') {

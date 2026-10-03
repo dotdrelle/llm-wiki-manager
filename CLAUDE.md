@@ -1,6 +1,6 @@
 # Repository Guide
 
-Current coordinated release: **0.15.66** (see `package.json`, the only source
+Current coordinated release: **0.16.01** (see `package.json`, the only source
 of truth — this line keeps drifting, so trust the file, not the prose). Keep
 manager handshakes and the local `llm-wiki` engine version aligned across the
 coordinated repositories; `npm run check-versions` covers the fifteen places a
@@ -103,7 +103,7 @@ src/activity/               Aggregated activity: synthesis, weighted progress, d
 src/graph/                  Run/Task graph projection + visibility policy
 src/runtime/                Agentic runtime HTTP/SSE server + SQLite store
   store.js                  SQLite persistence (events, runs, queue_items, agents, tasks, task_groups, task_dependencies, task_assignments, task_attempts, task_results, approval_grants, plan_revisions)
-  server.js                 HTTP/SSE endpoints: /health /state /events/stream /run /cancel /resume /approve /control /config/profiles /config/use
+  server.js                 HTTP/SSE endpoints: /health /state /events/stream /run /turn /cancel /kill /resume /approve /delegate /control /conversation/truncate /conversation/compact /memory/facts /memory/history /memory/workspace /config/profiles /config/use /mcp/endpoints (+ the public /login routes)
   runner.js                 runRuntimeAgenticWorkflow: loop → evaluate → replan; parallel plan execution delegates to the orchestrator dispatcher (no child LLM sessions)
   recoveryManager.js        Boot-time re-attachment of active tasks via agent_status
   approvals.js              Run-level and tool-level approval gate; POST /approve handler
@@ -112,6 +112,12 @@ src/runtime/                Agentic runtime HTTP/SSE server + SQLite store
   auth.js                   Bearer token resolution and validation
   client.js                 HTTP client for /run /cancel /resume /approve /state /events/stream
   queueStore.js             SQLite-backed QueueStore for runtime sessions
+  memoryStore.js            Workspace-scoped memory in the runtime SQLite (facts, history, search, extraction neighbours)
+  memoryExtract.js          One bounded extraction call after a completed turn/run; exact user-evidence quote required
+  vectorMemory.js           Embeddings adapter for memory retrieval (errors never carry keys or URLs)
+  conversationCompact.js    Rolling summary that backs the compact boundary
+  totp.js / loginSession.js / loginPage.js / qrCode.js / totpLogin.js
+                            TOTP core, session, public front door and the wiki-manager login flow
 docs/                       Architecture and usage docs
 ```
 
@@ -425,6 +431,30 @@ Headless and runtime provide different callbacks for logging/events and
 different activity waiters, but both use the same turn → plan fallback →
 activity wait → continuation prompt flow.
 
+**Conversations are isolated, memory is the workspace's.** Every runtime turn
+and run carries a `conversationId` (validated; `legacy:<workspace>` when a
+client omits it, announced in the log), and persisted turns, compaction and run
+outcomes stay in that thread — `/conversation/truncate` and
+`/conversation/compact` operate per thread. The control lane carries the id
+from `/control` and `runtime__enqueue` through the projected queue item to the
+run, so a request queued during another run keeps the thread that asked for it;
+workspace-level turns (a proactive review, the `legacy:` fallback) belong to no
+thread and are shown in the open one. Beside it, a workspace-scoped memory
+store (`memoryStore.js`, in the runtime SQLite) keeps durable facts with their
+originating conversation/turn and a verbatim user excerpt; retrieval is bounded
+and uses embeddings when the vector config is enabled. Background extraction is
+one bounded model call after a completed turn/run, over user-authored text only
+— a compiled skill-step objective or a proactive-review objective is never
+admissible evidence, since a quote pulled from it could never fail the
+verbatim check — skips greetings and credential-shaped messages, and can be
+disabled with `WIKI_MANAGER_MEMORY_AUTO=off`; `/remember` stays explicit and
+applies the same credential-shaped refusal. Updates and deletions keep history;
+`/memory/facts`, `/memory/history` and `/memory/workspace` back the Shell
+`/memory` commands and Serve Activity → Memory. Facts live until forgotten or
+the workspace is deleted: both `/workspace delete` and the setup wizard purge
+`/memory/workspace` through `deleteWorkspaceAndFiles`, and a purge the runtime
+cannot confirm is announced.
+
 Key modules in `src/runtime/`:
 
 - **`store.js`**: SQLite persistence via `node:sqlite` `DatabaseSync`. Tables:
@@ -445,6 +475,13 @@ Key modules in `src/runtime/`:
   `POST /run`, `POST /turn`, `POST /cancel`, `POST /kill`, `POST /resume`,
   `POST /approve`, `POST /conversation/truncate`, `POST /conversation/compact`,
   `GET`/`POST /control`, `GET /config/profiles`, and `POST /config/use`.
+  Memory routes (`GET`/`POST /memory/facts`, `GET /memory/history/:key`,
+  `POST`/`DELETE /memory/facts/:key`, `DELETE /memory/workspace`) back the
+  Shell `/memory` commands and Serve Activity → Memory; a missing store answers
+  503, and an explicit write refuses credential-shaped text. The public login
+  routes (`/login`, `/login/verify`, `/login/status`, `/logout`,
+  `/session/verify`) sit before the bearer gate and are covered by the TOTP
+  surface below.
   `POST /conversation/compact` (the served chat's memory gauge) dispatches one
   `conversation_reset`: the reducer moves `conversationSeedStart` so later turns
   stop grounding on earlier messages while the displayed thread stays whole, and
@@ -880,7 +917,11 @@ the secret or the session logic anywhere else.
   disable with `WIKI_MANAGER_TOTP=off`.
 - `src/runtime/loginPage.js` + `src/runtime/qrCode.js` — the login page
   (English chrome) with the enrollment QR (vendored MIT `qrcode-generator` in
-  `vendor/qrcode.cjs`).
+  `vendor/qrcode.cjs`). The page is also the product's front door: what wikiLLM
+  does, what opens after signing in, and a public status block (service
+  reachable, version, up since, enrollment, session lifetime, TLS) fed by
+  `/login/status`'s `about`. The page is public, so it never carries a
+  workspace, a run, an agent or a path.
 - `server.js` routes **before the bearer gate** (public by design — the door,
   not a room): `GET /login`, `POST /login/verify`, `GET /login/status`,
   `POST /logout`, and `GET /session/verify?token=`. The verify endpoint is

@@ -122,6 +122,12 @@ in isolated workspaces.
 
 ![wikiLLM functional diagram — inputs, MCP calls and outputs around the agentic orchestrator and workspaces](https://raw.githubusercontent.com/dotdrelle/llm-wiki-manager/main/docs/architecture.png)
 
+Under the hood, every conversation is isolated in its own thread while durable
+facts live in a workspace-scoped memory: Donna retrieves the relevant ones for
+chat, agent mode and runs, `/remember` saves explicitly, and Activity → Memory
+lets you inspect, forget or restore them. Deleting a workspace purges that
+memory with it.
+
 ## How wikiLLM compares
 
 Several open projects now build an LLM-maintained knowledge layer over your
@@ -247,6 +253,13 @@ wiki-workspace up demo --open             # wiki + graph + built-in chat, in you
 wiki-manager                              # then: /use demo
 ```
 
+> **Two-step login (TOTP).** The first interactive start enrolls your
+> authenticator: `wiki-manager login` opens the manager's login page (QR code +
+> secret) — also the product's front door, with a live status block. One session
+> covers the shell and the served wiki, sliding for 12 h of inactivity;
+> `WIKI_MANAGER_TOTP=off` disables the gate, and headless/CI runs or a
+> standalone `serve` without the manager runtime never pass through it.
+
 **6 — Check everything is live.**
 Before doing real work, confirm the wiring from the `donna` shell:
 
@@ -275,6 +288,7 @@ Plain-language prompts (the web **Agent/Donna** mode or the `donna` shell):
 "Summarize wiki/index.md and list the pages it links to."
 "What sources is this page grounded on?"
 "Build the deliverable from the current wiki."
+"Remember that our reports are always in English."   # saved in workspace memory
 ```
 
 Slash primitives (shell):
@@ -283,6 +297,7 @@ Slash primitives (shell):
 /wiki                # inspect the wiki
 /skills              # bundled workflows: pipeline, wiki-sync, wiki-ingest, wiki-build, wiki-rebuild, deliver, curate, new-template, diagnose, status
 /skills run pipeline # run the shipped end-to-end example
+/memory              # list saved workspace facts (/remember, /forget)
 ```
 
 **8 — See a concrete result.**

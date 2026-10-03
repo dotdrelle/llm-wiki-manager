@@ -770,6 +770,11 @@ function applyEvent(state, event) {
           : {}),
         ...(event.payload?.selectionKind ? { selectionKind: event.payload.selectionKind } : {}),
         ...(Number.isInteger(event.payload?.chainSequence) ? { chainSequence: event.payload.chainSequence } : {}),
+        // The thread that queued the item must survive projection and replay,
+        // exactly like the skill stack: the drain hands it to the run, and a
+        // run queued during another run would otherwise resurface in no
+        // thread's served chat after any projection refresh or restart.
+        ...(event.payload?.conversationId ? { conversationId: event.payload.conversationId } : {}),
         // A proactive review's identity must survive projection and replay: the
         // drain hands it back to the run it starts, which is what lets the
         // result be filed as a review rather than lost as an anonymous audit.

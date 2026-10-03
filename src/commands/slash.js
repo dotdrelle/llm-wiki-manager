@@ -30,7 +30,6 @@ import { findSkill, inspectSkills, listSkills } from '../core/skills.js';
 import { extractActivity, formatActivityError, formatActivityLine, formatActivitySummary, parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { emitRuntimeLog } from '../runtime/supervisor.js';
-import { requestRuntimeMemory } from '../runtime/client.js';
 import { discoverRuntimeProvidersOnce } from '../orchestrator/providers/runtimeProviders.js';
 import {
   cancelQueueItem,
@@ -1678,16 +1677,13 @@ export async function handleSlashCommand(line, context) {
         }
         try {
           step(`Workspace: deleting ${workspace.name}…`);
-          const result = await deleteWorkspaceAndFiles(workspace, workspace.workspacePath);
-          let memoryCleanupNote = null;
-          if (context.runtime?.url) {
-            try {
-              const cleanup = await requestRuntimeMemory('/memory/workspace', { method: 'DELETE', workspace: workspace.name, url: context.runtime.url });
-              memoryCleanupNote = `Removed ${cleanup.cleared?.items ?? 0} workspace-memory fact(s) and ${cleanup.cleared?.versions ?? 0} history version(s).`;
-            } catch (error) {
-              memoryCleanupNote = `Workspace memory cleanup was not confirmed: ${error instanceof Error ? error.message : String(error)}.`;
-            }
-          } else memoryCleanupNote = 'Workspace memory cleanup was not confirmed because the runtime is unavailable.';
+          const result = await deleteWorkspaceAndFiles(workspace, workspace.workspacePath, { runtimeUrl: context.runtime?.url ?? null });
+          const cleanup = result.memoryCleanup;
+          const memoryCleanupNote = cleanup?.removed
+            ? `Removed ${cleanup.items} workspace-memory fact(s) and ${cleanup.versions} history version(s).`
+            : cleanup?.error === 'runtime unavailable'
+              ? 'Workspace memory cleanup was not confirmed because the runtime is unavailable.'
+              : `Workspace memory cleanup was not confirmed: ${cleanup?.error ?? 'unknown error'}.`;
           const wasCurrent = context.session.workspace === workspace.name
             || context.session.workspacePath === workspace.workspacePath;
           if (wasCurrent) clearWorkspaceSession(context.session);

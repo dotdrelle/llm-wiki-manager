@@ -882,8 +882,18 @@ export function SetupWizard(props: {
     if (currentRoute === 'delete-confirm') {
       if (value === 'Cancel') return goBack();
       await runAction(async () => {
-        await deleteWorkspaceAndFiles(targetWorkspace()?.name, targetWorkspace()?.workspacePath);
+        const deleted = await deleteWorkspaceAndFiles(
+          targetWorkspace()?.name,
+          targetWorkspace()?.workspacePath,
+          { runtimeUrl: props.session?.runtime?.url ?? null },
+        );
         setLogs((items) => [...items, { icon: '✓', label: 'Workspace deleted', detail: targetWorkspace()?.name }]);
+        // The files are gone either way; a memory purge the runtime could not
+        // confirm is a degradation and must be said, not swallowed — a
+        // recreated workspace under the same name would inherit the facts.
+        if (deleted?.memoryCleanup && deleted.memoryCleanup.removed === false) {
+          setLogs((items) => [...items, { icon: '!', label: 'Workspace memory cleanup was not confirmed', detail: deleted.memoryCleanup.error ?? '' }]);
+        }
         jumpTo('workspaces');
       });
     }

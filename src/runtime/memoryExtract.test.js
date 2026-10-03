@@ -46,3 +46,41 @@ test('messages containing credential-shaped values are skipped before extraction
   assert.equal(calls, 0);
   assert.match(notices[0], /credential or secret/);
 });
+
+test('a second extraction sees the fact the first one just wrote', async () => {
+  // Regression: the neighbours were read before awaiting the previous
+  // extraction, so two close extractions both saw the pre-write list — the
+  // second ADDed a duplicate instead of seeing the key to UPDATE.
+  const facts = [];
+  const inputs = [];
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const store = {
+    search: () => facts.map((fact) => ({ ...fact })),
+    extractionNeighbors: () => facts.map((fact) => ({ ...fact })),
+    save: ({ key, text, kind }) => {
+      const fact = { key: key ?? `key-${facts.length}`, text, kind };
+      facts.push(fact);
+      return fact;
+    },
+  };
+  let call = 0;
+  const llm = { complete: async ({ input }) => {
+    call += 1;
+    inputs.push(input);
+    if (call === 1) {
+      await firstGate;
+      return JSON.stringify({ operations: [
+        { op: 'ADD', kind: 'decision', text: 'Use TAXO.', evidence: 'use TAXO' },
+      ] });
+    }
+    return JSON.stringify({ operations: [] });
+  } };
+  const first = extractAndApplyMemory({ llm, memoryStore: store, workspace: 'alpha', userText: 'We use TAXO.' });
+  const second = extractAndApplyMemory({ llm, memoryStore: store, workspace: 'alpha', userText: 'We use TAXO.' });
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.equal(call, 2);
+  assert.equal(facts.length, 1);
+  assert.match(inputs[1], /Use TAXO\./);
+});

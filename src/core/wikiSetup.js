@@ -322,11 +322,30 @@ export async function renameWorkspace(name, nextName) {
   return { previousName: name, name: nextName, registryPath: nextRegistryPath };
 }
 
-export async function deleteWorkspaceAndFiles(name, workspacePath) {
+export async function deleteWorkspaceAndFiles(name, workspacePath, { runtimeUrl = null } = {}) {
   const workspace = await unregisterWorkspace(name);
   const target = workspacePath || workspace.workspacePath;
   await rm(target, { recursive: true, force: true });
-  return { workspace, deletedPath: target };
+  // Memory lives in the runtime's database, not under the workspace path:
+  // deleting the files alone left a recreated workspace under the same name
+  // inheriting the previous facts, contradicting "facts remain until …
+  // the workspace is deleted". Every deletion path goes through here, so the
+  // purge lives here too — the setup wizard and /workspace delete included.
+  let memoryCleanup = null;
+  if (!runtimeUrl) {
+    memoryCleanup = { removed: false, error: 'runtime unavailable' };
+  } else {
+    try {
+      // Dynamic import: this core module is also used from plain CLI paths
+      // that must not pull in the runtime HTTP client at load time.
+      const { requestRuntimeMemory } = await import('../runtime/client.js');
+      const cleanup = await requestRuntimeMemory('/memory/workspace', { method: 'DELETE', workspace: workspace.name, url: runtimeUrl });
+      memoryCleanup = { removed: true, items: cleanup.cleared?.items ?? 0, versions: cleanup.cleared?.versions ?? 0 };
+    } catch (error) {
+      memoryCleanup = { removed: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+  return { workspace, deletedPath: target, memoryCleanup };
 }
 
 export function writeLanguageConfig(workspacePath, profileName, language) {

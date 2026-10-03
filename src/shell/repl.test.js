@@ -621,7 +621,7 @@ test('submitRuntimeRun routes busy runtime input through the control lane', asyn
     const outcome = await submitRuntimeRun('Où en est le build ?', { runtime: { url: 'http://runtime.test' }, session });
     assert.equal(outcome.kind, 'observe');
     assert.equal(outcome.result.explanation, 'Runtime run is active.');
-    assert.deepEqual(controlBody, { action: 'message', input: 'Où en est le build ?' });
+    assert.deepEqual(controlBody, { action: 'message', input: 'Où en est le build ?', conversationId: session.conversationId });
   } finally {
     restore();
   }

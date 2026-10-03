@@ -176,6 +176,7 @@ export async function postRuntimeControl(action, {
   input = undefined,
   intent = undefined,
   id = undefined,
+  conversationId = undefined,
 } = {}) {
   const response = await fetch(runtimeEndpoint(url, '/control', workspace), {
     method: 'POST',
@@ -183,7 +184,7 @@ export async function postRuntimeControl(action, {
       ...runtimeHeaders(token),
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(Object.assign({ action }, input !== undefined && { input }, intent !== undefined && { intent }, id !== undefined && { id })),
+    body: JSON.stringify(Object.assign({ action }, input !== undefined && { input }, intent !== undefined && { intent }, id !== undefined && { id }, conversationId !== undefined && conversationId !== null && { conversationId })),
   });
   if (!response.ok) {
     const err = new Error(`Runtime control failed: HTTP ${response.status}`);

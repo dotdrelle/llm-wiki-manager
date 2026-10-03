@@ -129,6 +129,12 @@ test('interactive memory tools require verbatim user evidence and constrain conv
   });
   session._currentUserInput = 'Please remember: we decided to use TAXO.';
   await assert.rejects(session.memoryActions.remember({ text: 'we will use Another System.' }), /exact, durable fact/);
+  session._currentUserInput = 'Remember exactly: my api key is sk-abcdefghijklmnop1234.';
+  await assert.rejects(
+    session.memoryActions.remember({ text: 'my api key is sk-abcdefghijklmnop1234' }),
+    /credential or secret/,
+  );
+  session._currentUserInput = 'Please remember: we decided to use TAXO.';
   const result = JSON.parse(await session.memoryActions.remember({ text: 'we decided to use TAXO.', kind: 'decision' }));
   assert.equal(result.saved, true);
   assert.equal(saved[0].workspace, 'alpha');
@@ -1335,17 +1341,27 @@ test('runtime server control enqueue emits events but does not patch an active p
     const response = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'enqueue', input: 'run this after current work' }),
+      body: JSON.stringify({ action: 'enqueue', input: 'run this after current work', conversationId: 'conv_after01' }),
     });
     assert.equal(response.status, 202);
     const body = await response.json();
     assert.equal(body.accepted, true);
     assert.equal(body.item.status, 'queued');
+    assert.equal(body.item.conversationId, 'conv_after01');
     assert.equal(body.controlQueue.length, 1);
     assert.equal(body.plan[0].description, 'Active step');
     assert.equal(session.controlQueue[0].input, 'run this after current work');
+    assert.equal(session.controlQueue[0].conversationId, 'conv_after01');
     assert.equal(events.filter((event) => event.type === 'control_enqueued').length, 1);
     assert.equal(runCount, 0);
+
+    // An invalid id is refused instead of silently queued workspace-level.
+    const invalid = await fetch(`http://127.0.0.1:${handle.port}/control?workspace=acme`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'enqueue', input: 'x', conversationId: 'x' }),
+    });
+    assert.equal(invalid.status, 400);
   } finally {
     await handle.close();
   }
@@ -2730,8 +2746,55 @@ test('redo truncation with a conversationId counts and deletes within that threa
     const bad = await post({ index: 0, conversationId: 'x' });
     assert.equal(bad.status, 400);
     assert.equal((await bad.json()).reason, 'invalid_conversation_id');
+    // The runtime's own fallback id (`legacy:<workspace>`) is handed back to
+    // callers verbatim, so it must not be refused by our own validation.
+    const legacy = await post({ index: 0, conversationId: 'legacy:demo' });
+    assert.equal(legacy.status, 200);
+    assert.deepEqual(scoped, { sequence: 5, workspace: 'demo', conversationId: 'legacy:demo' });
   } finally {
     await handle.close();
+  }
+});
+
+test('memory routes refuse credential-shaped facts and say 503 when the store is absent', async (t) => {
+  const saved = [];
+  const session = { workspace: 'acme' };
+  const store = {
+    dbPath: ':memory:',
+    getState: () => ({ status: 'idle', conversation: [] }),
+    listEvents: () => [],
+  };
+  let withStore;
+  let withoutStore;
+  try {
+    withStore = await startRuntimeServer({
+      host: '127.0.0.1', port: 0, store, session,
+      memoryStore: { save: (fact) => { saved.push(fact); return { ...fact, key: 'k1' }; } },
+      getContext: async () => ({ workspace: 'acme', session, running: false }),
+      run: async () => {},
+    });
+    withoutStore = await startRuntimeServer({
+      host: '127.0.0.1', port: 0, store, session,
+      getContext: async () => ({ workspace: 'acme', session, running: false }),
+      run: async () => {},
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw err;
+  }
+  try {
+    const secret = await fetch(`http://127.0.0.1:${withStore.port}/memory/facts?workspace=acme`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'My api key is sk-abcdefghijklmnop1234' }),
+    });
+    assert.equal(secret.status, 400);
+    assert.equal(saved.length, 0);
+
+    const unavailable = await fetch(`http://127.0.0.1:${withoutStore.port}/memory/workspace?workspace=acme`, { method: 'DELETE' });
+    assert.equal(unavailable.status, 503);
+  } finally {
+    await withStore.close();
+    await withoutStore.close();
   }
 });
 

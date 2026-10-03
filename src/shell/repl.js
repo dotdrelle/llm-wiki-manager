@@ -1322,7 +1322,7 @@ export async function submitRuntimeRun(line, { runtime, session }) {
       // "stop le job" / "annule" ended up in the queue instead of being
       // classified. Send an explicit control message: the server classifies
       // it (cancel aborts the run, approve grants, modify proposes a patch).
-      const result = await postRuntimeControl('message', { url: runtime.url, workspace, input: line });
+      const result = await postRuntimeControl('message', { url: runtime.url, workspace, input: line, conversationId: session.conversationId });
       // The client-side "run active" flag can be STALE (projection still says
       // running right after a run ended). The server's answer carries the
       // truth: if the runtime is actually idle and only produced a canned
@@ -1350,7 +1350,7 @@ export async function submitRuntimeRun(line, { runtime, session }) {
       return { kind: 'error', message: err instanceof Error ? err.message : String(err) };
     }
     try {
-      const result = await postRuntimeControl('message', { url: runtime.url, workspace, input: line });
+      const result = await postRuntimeControl('message', { url: runtime.url, workspace, input: line, conversationId: session.conversationId });
       return { kind: result?.kind ?? 'control', result };
     } catch (queueErr) {
       return { kind: 'error', message: queueErr instanceof Error ? queueErr.message : String(queueErr) };

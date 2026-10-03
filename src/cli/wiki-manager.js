@@ -30,6 +30,7 @@ import { syncActivitiesToPlan, formatPlanStatus } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../core/agentEvents.js';
 import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
 import { createDeltaCoalescer } from '../runtime/deltaCoalescer.js';
+import { containsSensitiveMemoryMaterial } from '../runtime/memoryExtract.js';
 import { TERMINAL_STATUS_SET } from '../orchestrator/taskStatuses.js';
 import { resolveCapabilityConcurrency } from '../orchestrator/scheduler.js';
 import { workspaceLockRegistry } from '../orchestrator/lockManager.js';
@@ -370,6 +371,11 @@ export function createInteractiveSession(context, { runtimeUrl, turnId, signal =
         const sourceText = String(session._currentUserInput ?? '');
         if (!factText || !sourceText.includes(factText)) {
           throw new Error('Memory write refused: quote an exact, durable fact from the current user message as evidence.');
+        }
+        // Same credential-shaped guard as the background extractor: explicit
+        // /remember must not be a side door for a secret.
+        if (containsSensitiveMemoryMaterial(factText)) {
+          throw new Error('Memory write refused: this looks like a credential or secret; workspace memory never stores secrets.');
         }
         let embedding = null;
         const vectorConfig = session.wikircConfig?.retrieval?.vector;
@@ -1817,7 +1823,14 @@ async function runRuntime(argv, agent) {
       }));
     } finally {
       supervisor?.setRunSignal(null);
-      const memorySourceText = String(body.publicInput ?? (body.skillChain ? '' : input)).trim();
+      // Only what the USER said is admissible evidence. `publicInput` carries
+      // the compiled objective of a skill step or the system-written review
+      // objective, and an extractor quoting those would quote the same string
+      // it was handed — the verbatim-evidence check can never fail. It also
+      // paid one model call per skill step for text nobody typed.
+      const memorySourceText = body.proactiveReview || body.skillChain
+        ? ''
+        : String(body.publicInput ?? input).trim();
       if (body.extractMemory !== false && process.env.WIKI_MANAGER_MEMORY_AUTO !== 'off' && context.workspace && memorySourceText) {
         const runConversationEvents = body.conversationId
           ? store.listEvents({ workspace: context.workspace, conversationId: body.conversationId })

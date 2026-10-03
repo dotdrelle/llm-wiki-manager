@@ -31,6 +31,7 @@ import { cancelControlChain, cancelQueuedControlItem } from './controlCancellati
 import { generateSkillAcknowledgment, runSkillChain } from './skillRun.js';
 import { emitRuntimeLog } from './supervisor.js';
 import { summarizeCompactedConversation } from './conversationCompact.js';
+import { containsSensitiveMemoryMaterial } from './memoryExtract.js';
 import { embedMemoryTexts } from './vectorMemory.js';
 import { findSkill, listSkills } from '../core/skills.js';
 import {
@@ -58,6 +59,17 @@ function loginErrorText(code) {
 }
 
 const PRIVATE_CONTROL_INPUTS = new WeakMap();
+
+// A conversation id comes from a client (`conv_…`, `shell_…`) or is the
+// runtime's own fallback for a request that omitted one (`legacy:<workspace>`).
+// The fallback is handed back to callers verbatim, so it must pass the same
+// validation as a client id — refusing it with a 400 turned a legitimate
+// runtime choice into a dead end for /conversation/truncate and /compact.
+const CONVERSATION_ID_PATTERN = /^(?:legacy:[A-Za-z0-9_.-]{1,80}|[A-Za-z0-9_-]{6,80})$/;
+
+function isConversationId(value) {
+  return CONVERSATION_ID_PATTERN.test(String(value ?? ''));
+}
 
 function privateControlInputsFor(session) {
   if (!session || (typeof session !== 'object' && typeof session !== 'function')) return new Map();
@@ -287,6 +299,15 @@ export function startRuntimeServer({
       if (request.method === 'POST' && url.pathname === '/control') {
         const { body, context } = await resolveBodyContext(request, url);
         const action = String(body.action ?? 'status').trim().toLowerCase();
+        // The control lane must attribute what it queues and announces to the
+        // thread that typed it; without this a run queued during another run
+        // was workspace-level and the served chat, which reads ONE thread,
+        // showed neither its launch nor its outcome.
+        const controlConversationId = String(body.conversationId ?? '').trim();
+        if (controlConversationId && !isConversationId(controlConversationId)) {
+          sendJson(response, 400, { error: 'Invalid conversationId.' });
+          return;
+        }
         if (action === 'status') {
           validateContractInDev('controlMessage', { ...body, action });
           sendJson(response, 200, controlStatus(context, store));
@@ -307,6 +328,7 @@ export function startRuntimeServer({
           validateContractInDev('controlMessage', { ...body, action, input });
           const result = await handleControlMessage(context, store, input, {
             intent: body.intent,
+            conversationId: controlConversationId || null,
             startNextControlRequest,
             cancel,
             approve,
@@ -338,7 +360,7 @@ export function startRuntimeServer({
             return;
           }
           validateContractInDev('controlMessage', { ...body, action, input });
-          const item = enqueueControlRequest(context, input);
+          const item = enqueueControlRequest(context, input, { conversationId: controlConversationId || null });
           void startNextControlRequest(context);
           sendJson(response, 202, {
             accepted: true,
@@ -438,7 +460,7 @@ export function startRuntimeServer({
       if (request.method === 'POST' && url.pathname === '/run') {
         const { body, context } = await resolveBodyContext(request, url);
         const requestedConversationId = String(body.conversationId ?? '').trim();
-        if (requestedConversationId && !/^[A-Za-z0-9_-]{6,80}$/.test(requestedConversationId)) {
+        if (requestedConversationId && !isConversationId(requestedConversationId)) {
           sendJson(response, 400, { error: 'Invalid conversationId.' });
           return;
         }
@@ -486,7 +508,7 @@ export function startRuntimeServer({
               sendJson(response, 202, { accepted: true, kind: 'skill_chain', explanation, ...result, ...controlStatus(context, store) });
             } catch (err) {
               const error = skillInvocationErrorMessage(err);
-              publishSkillInvocationFailure(context, input, error);
+              publishSkillInvocationFailure(context, input, error, body.conversationId ?? null);
               sendJson(response, skillInvocationErrorStatus(err), { error, code: err?.code ?? 'skill_compile_failed' });
             }
             return;
@@ -521,6 +543,7 @@ export function startRuntimeServer({
             // (body.intent = 'enqueue') → enqueue as before.
             const result = await handleControlMessage(context, store, input, {
               intent: body.intent,
+              conversationId: body.conversationId ?? null,
               startNextControlRequest,
               cancel,
               approve,
@@ -545,7 +568,7 @@ export function startRuntimeServer({
           return;
         }
         const rawConversationId = String(body.conversationId ?? '').trim();
-        if (rawConversationId && !/^[A-Za-z0-9_-]{6,80}$/.test(rawConversationId)) {
+        if (rawConversationId && !isConversationId(rawConversationId)) {
           sendJson(response, 400, { error: 'Invalid conversationId.' });
           return;
         }
@@ -574,7 +597,7 @@ export function startRuntimeServer({
             sendJson(response, 202, { accepted: true, kind: 'skill_chain', explanation, ...result, ...controlStatus(context, store) });
           } catch (err) {
             const error = skillInvocationErrorMessage(err);
-            publishSkillInvocationFailure(context, input, error);
+            publishSkillInvocationFailure(context, input, error, body.conversationId ?? null);
             sendJson(response, skillInvocationErrorStatus(err), { error, code: err?.code ?? 'skill_compile_failed' });
           }
           return;
@@ -583,7 +606,7 @@ export function startRuntimeServer({
         // prose: it would improvise from the history instead of saying so.
         const unknownSkill = unknownSkillInvocation(context.session, input);
         if (unknownSkill) {
-          publishSkillInvocationFailure(context, input, unknownSkill.message);
+          publishSkillInvocationFailure(context, input, unknownSkill.message, body.conversationId ?? null);
           sendJson(response, 404, { error: unknownSkill.message, code: 'skill_not_found', available: unknownSkill.available });
           return;
         }
@@ -619,6 +642,7 @@ export function startRuntimeServer({
           } else if (classification.kind !== 'converse') {
             const result = await handleControlMessage(context, store, input, {
               intent: body.intent,
+              conversationId: body.conversationId ?? null,
               startNextControlRequest,
               cancel,
               approve,
@@ -661,6 +685,7 @@ export function startRuntimeServer({
                 origin: 'runtime_turn',
                 turnId,
                 workspace: context.workspace ?? null,
+                conversationId: body.conversationId ?? null,
                 payload: { content: result.body?.explanation ?? 'Runtime control request processed.' },
               }));
               return result.body;
@@ -712,7 +737,7 @@ export function startRuntimeServer({
         }
         try {
           const rawConversationId = String(body.conversationId ?? '').trim();
-          if (rawConversationId && !/^[A-Za-z0-9_-]{6,80}$/.test(rawConversationId)) {
+          if (rawConversationId && !isConversationId(rawConversationId)) {
             sendJson(response, 400, { error: 'Invalid conversationId.' });
             return;
           }
@@ -825,7 +850,7 @@ export function startRuntimeServer({
         // served chat displays) and only that thread's events are removed;
         // without one, the legacy workspace-wide index and deletion apply.
         const conversationId = String(body.conversationId ?? '').trim();
-        if (conversationId && !/^[A-Za-z0-9_-]{6,80}$/.test(conversationId)) {
+        if (conversationId && !isConversationId(conversationId)) {
           sendJson(response, 400, { truncated: false, reason: 'invalid_conversation_id' });
           return;
         }
@@ -876,7 +901,7 @@ export function startRuntimeServer({
         let summary = null;
         if (context?.session) {
           const conversationId = String(body.conversationId ?? '').trim();
-          if (conversationId && !/^[A-Za-z0-9_-]{6,80}$/.test(conversationId)) {
+          if (conversationId && !isConversationId(conversationId)) {
             sendJson(response, 400, { compacted: false, reason: 'invalid_conversation_id' });
             return;
           }
@@ -931,6 +956,12 @@ export function startRuntimeServer({
           sendJson(response, workspace ? 503 : 400, { error: workspace ? 'Memory store unavailable.' : 'workspace_required' });
           return;
         }
+        // The same credential-shaped guard the background extractor applies:
+        // an explicit /remember must not be a side door for a secret.
+        if (containsSensitiveMemoryMaterial(body.text)) {
+          sendJson(response, 400, { error: 'Memory write refused: this looks like a credential or secret; workspace memory never stores secrets.' });
+          return;
+        }
         try {
           const vectorConfig = context.session?.wikircConfig?.retrieval?.vector;
           let embedding = null;
@@ -948,7 +979,8 @@ export function startRuntimeServer({
       }
       if (url.pathname === '/memory/workspace' && request.method === 'DELETE') {
         const workspace = workspaceFromUrl(url);
-        if (!workspace || !memoryStore) { sendJson(response, 400, { error: 'workspace_required' }); return; }
+        if (!workspace) { sendJson(response, 400, { error: 'workspace_required' }); return; }
+        if (!memoryStore) { sendJson(response, 503, { error: 'Memory store unavailable.' }); return; }
         const cleared = memoryStore.clearWorkspace(workspace);
         const context = await resolveContext({ workspace });
         if (context?.session) emitRuntimeLog(context.session, `memory: workspace purge removed ${cleared.items} fact(s) and ${cleared.versions} history record(s)`);
@@ -959,8 +991,9 @@ export function startRuntimeServer({
       if (memoryHistoryMatch && request.method === 'GET') {
         const workspace = workspaceFromUrl(url);
         const key = decodeURIComponent(memoryHistoryMatch[1]);
-        sendJson(response, workspace && memoryStore ? 200 : 400, workspace && memoryStore
-          ? { workspace, key, history: memoryStore.history(workspace, key) } : { error: 'workspace_required' });
+        if (!workspace) { sendJson(response, 400, { error: 'workspace_required' }); return; }
+        if (!memoryStore) { sendJson(response, 503, { error: 'Memory store unavailable.' }); return; }
+        sendJson(response, 200, { workspace, key, history: memoryStore.history(workspace, key) });
         return;
       }
       const memoryFactMatch = url.pathname.match(/^\/memory\/facts\/([^/]+)$/);
@@ -968,7 +1001,8 @@ export function startRuntimeServer({
         const { body, context } = await resolveBodyContext(request, url);
         const workspace = context?.workspace;
         const key = decodeURIComponent(memoryFactMatch[1]);
-        if (!workspace || !memoryStore) { sendJson(response, 400, { error: 'workspace_required' }); return; }
+        if (!workspace) { sendJson(response, 400, { error: 'workspace_required' }); return; }
+        if (!memoryStore) { sendJson(response, 503, { error: 'Memory store unavailable.' }); return; }
         if (request.method === 'DELETE') {
           const removed = memoryStore.remove({ workspace, key, conversationId: body.conversationId ?? null, turnId: body.turnId ?? null });
           if (removed && context?.session) emitRuntimeLog(context.session, `memory: removed fact ${key} (history retained)`);
@@ -1218,7 +1252,7 @@ export function startRuntimeServer({
       // this is not gated on having waited. Skill-chain steps are skipped: they
       // already announced the whole skill at invocation.
       if (announceLaunch) {
-        announceControlLaunch(context.session, body.publicInput ?? body.input, runWorkspace);
+        announceControlLaunch(context.session, body.publicInput ?? body.input, runWorkspace, body.conversationId ?? null);
       }
     }
     // The trigger hook and the proactive marker belong to THIS run on the
@@ -1507,13 +1541,16 @@ export function startRuntimeServer({
     return result;
   }
 
-  function publishSkillInvocationFailure(context, input, error) {
+  function publishSkillInvocationFailure(context, input, error, conversationId = null) {
     const workspace = context.workspace ?? context.session?.workspace ?? null;
+    // The failing skill was typed in ONE thread: publish there, not in the
+    // thread of whatever run is currently active (its identity would otherwise
+    // capture these independent messages).
     dispatchAgentEvent(context.session, createAgentEvent('user_message', {
-      origin: 'user', workspace, payload: { content: input, independent: true },
+      origin: 'user', workspace, conversationId, payload: { content: input, independent: true },
     }));
     dispatchAgentEvent(context.session, createAgentEvent('assistant_message', {
-      origin: 'runtime', workspace, payload: { content: error, independent: true },
+      origin: 'runtime', workspace, conversationId, payload: { content: error, independent: true },
     }));
   }
 }
@@ -1800,7 +1837,7 @@ export function approvalRequestFromStatus(status) {
   };
 }
 
-async function handleControlMessage(context, store, input, { intent = null, startNextControlRequest = () => false, cancel = null, approve = null } = {}) {
+async function handleControlMessage(context, store, input, { intent = null, conversationId = null, startNextControlRequest = () => false, cancel = null, approve = null } = {}) {
   const status = controlStatus(context, store);
   const classification = await classifyControlMessage(input, status, {
     forcedIntent: intent,
@@ -1839,7 +1876,7 @@ async function handleControlMessage(context, store, input, { intent = null, star
     };
   }
   if (classification.kind === 'enqueue_run') {
-    const item = enqueueControlRequest(context, input);
+    const item = enqueueControlRequest(context, input, { conversationId });
     // Unlike `modify_run`, this may synchronously start a queued run (see
     // startNextControlRequest), which can change running/plan/status — a full
     // controlStatus() recompute is required here, not just controlQueue.
@@ -1917,12 +1954,15 @@ async function generateControlAcknowledgment(session, { kind, input }) {
   return fallback;
 }
 
-function announceControlLaunch(session, input, workspace) {
+function announceControlLaunch(session, input, workspace, conversationId = null) {
   void generateControlAcknowledgment(session, { kind: 'started', input })
     .then((content) => {
       dispatchAgentEvent(session, createAgentEvent('assistant_message', {
         origin: 'runtime',
         workspace,
+        // The queued item's own thread: a run queued from thread A must not
+        // have its launch announced in thread B just because B is open.
+        conversationId,
         payload: { content, independent: true },
       }));
     })

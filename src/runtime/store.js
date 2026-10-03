@@ -750,8 +750,10 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   // task_results/approval_grants) are cleared explicitly, same as
   // clearWorkspaceState below.
   // Redo inside ONE conversation thread: removes that thread's events from the
-  // boundary on, and nothing else — other threads of the workspace and the run
-  // events (workspace state, never tagged with a conversation) are untouched.
+  // boundary on, and nothing else — other threads keep their history. Run
+  // events carry the run's conversationId, so a thread's own run events are
+  // removed with it (other threads' runs are not); workspace-level events with
+  // no conversationId are never matched by this scoped delete.
   function deleteConversationEventsFrom(sequence, { workspace = null, conversationId = null } = {}) {
     const boundary = Number(sequence);
     if (!Number.isFinite(boundary) || !workspace || !conversationId) return 0;

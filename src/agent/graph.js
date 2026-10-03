@@ -1116,7 +1116,11 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
       }
     }
     if (tool === 'enqueue') {
-      const result = await postRuntimeControl('message', { url, workspace, input: String(args.input ?? ''), intent: 'enqueue' });
+      // The queued run must stay in the thread that asked for it: without the
+      // conversationId the item was workspace-level, and the served chat — a
+      // single-thread reader — showed neither its launch nor its result.
+      const conversationId = session?.conversationId ?? session?._currentRunIdentity?.conversationId ?? null;
+      const result = await postRuntimeControl('message', { url, workspace, input: String(args.input ?? ''), intent: 'enqueue', conversationId });
       return String(result?.explanation ?? 'Request queued for after the current run.');
     }
     if (tool === 'status') {

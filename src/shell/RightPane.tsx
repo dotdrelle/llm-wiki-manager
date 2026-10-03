@@ -223,8 +223,16 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
     return visualRows() > PLAN_MIN_VIEWPORT_ROWS ? `${label} (${props.plan.length}) · scroll` : label;
   };
   const summaryLines = () => props.summary ? wrapLine(props.summary, lineWidth()).slice(0, 2) : [];
+  // flexBasis 0: the Plan and the run logs share the column by their grow
+  // ratio, never by their content. With a content basis, a long log (hundreds
+  // of lines) and a long plan both claimed their full height: the Plan box
+  // took every row, its scrollbox viewport became as tall as its content —
+  // nothing left to scroll, the bottom of the list off screen — and the logs
+  // vanished below. maxHeight keeps a short plan at its own size, giving the
+  // rest to the logs.
+  const naturalRows = () => visualRows() + 1 + summaryLines().length + 2;
   return (
-    <box flexGrow={1} flexShrink={1} minHeight={PLAN_MIN_VIEWPORT_ROWS + 2} flexDirection="column" padding={1}>
+    <box flexGrow={1} flexShrink={1} flexBasis={0} minHeight={PLAN_MIN_VIEWPORT_ROWS + 2} maxHeight={Math.max(PLAN_MIN_VIEWPORT_ROWS + 2, naturalRows())} flexDirection="column" padding={1}>
       <text width={lineWidth()} fg="#D6DEE8" content={fit(title(), lineWidth())} />
       <Show when={summaryLines().length > 0}>
         <box flexShrink={0} flexDirection="column">
@@ -236,6 +244,7 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
       <scrollbox
         flexGrow={1}
         flexShrink={1}
+        flexBasis={0}
         minHeight={Math.min(PLAN_MIN_VIEWPORT_ROWS, Math.max(1, visualRows()))}
         focusable={false}
         scrollY={true}
@@ -438,7 +447,7 @@ export function LogPanel(props: { logs: string[]; width: number; filter?: string
     // no floor the flex column shrank it to zero rows during a treatment — the
     // plan grew, the Runtime/Agent status tabs vanished — while the Queue tab
     // (fixed height, no shrink) kept them visible.
-    <box flexGrow={2} minHeight={10} flexDirection="column" paddingX={1} focusable={false}>
+    <box flexGrow={1} flexShrink={1} flexBasis={0} minHeight={10} flexDirection="column" paddingX={1} focusable={false}>
       <text width={lineWidth()} fg="#4B5563" content={'─'.repeat(lineWidth())} />
       <box height={1} flexDirection="row">
         <text
@@ -457,6 +466,7 @@ export function LogPanel(props: { logs: string[]; width: number; filter?: string
       </box>
       <scrollbox
         flexGrow={1}
+        flexBasis={0}
         minHeight={4}
         focusable={false}
         scrollY={true}

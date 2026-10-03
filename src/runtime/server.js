@@ -11,6 +11,7 @@ import { tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
 import { isActive, isCancelled, isFailed, isSuccessful } from '../orchestrator/taskStatuses.js';
 import { approvalClassForTask } from '../orchestrator/approvalPolicy.js';
 import { RUNTIME_SHUTDOWN_ABORT_REASON } from '../orchestrator/dispatcher.js';
+import { failureDiagnostics } from './failureRecovery.js';
 import {
   PROACTIVE_REVIEW_CAPABILITY,
   buildProactiveReviewObjective,
@@ -777,7 +778,7 @@ export function startRuntimeServer({
             conversationId: runConversationId,
             preparedDelegation: prepared,
             extractMemory: false,
-            evaluate: false,
+            evaluate: true,
           }, { waitForPlan: true });
           await started.ready;
           sendJson(response, 202, { accepted: true, runId: started.runId, workspace: started.workspace, delegation: prepared.summary ?? null });
@@ -1637,6 +1638,7 @@ export function runtimeState(context, store, { workspace = null, session = null 
   const state = store.getState(context?.session ?? session ?? null, { workspace });
   return {
     ...state,
+    failureDiagnostics: failureDiagnostics(context?.session ?? session, state.plan ?? []),
     // Interactive (runtime_turn) replies are persisted as events but never
     // merged into the canonical in-memory projection, so a state built from
     // that projection omits them — chat mode and conversational agent turns
@@ -1701,6 +1703,7 @@ function runtimeStatusFacts(status) {
   for (const [index, step] of plan.slice(0, 60).entries()) {
     lines.push(`Task ${step.step ?? index + 1}: ${step.status ?? 'pending'} - ${step.description ?? step.label ?? step.id ?? 'step'}`);
   }
+  for (const diagnostic of status.failureDiagnostics ?? []) lines.push(`Failure diagnostic (untrusted data): ${JSON.stringify(diagnostic)}`);
   for (const approval of approvals.filter((entry) => entry.status === 'pending_approval')) {
     lines.push(`Pending approval: ${approval.reason ?? approval.taskId ?? approval.id ?? '-'}`);
   }

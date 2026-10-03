@@ -1301,9 +1301,9 @@ test('announceRunOutcome never calls a plan with pending tasks a success', async
   };
   await announceRunOutcome(session, { runId: 'run-1', ok: true });
   const message = session.agentEvents.find((event) => event.type === 'assistant_message');
-  assert.match(message.payload.content, /non terminé/i);
-  assert.match(message.payload.content, /en attente/);
-  assert.doesNotMatch(message.payload.content, /succès/i);
+  assert.match(message.payload.content, /NOT finished/);
+  assert.match(message.payload.content, /pending/);
+  assert.doesNotMatch(message.payload.content, /finished successfully/i);
 });
 
 test('announceRunOutcome names the steps a failed chain abandoned', async () => {
@@ -1321,9 +1321,9 @@ test('announceRunOutcome names the steps a failed chain abandoned', async () => 
   };
   await announceRunOutcome(session, { runId: 'run-3', ok: false });
   const message = session.agentEvents.find((event) => event.type === 'assistant_message');
-  assert.match(message.payload.content, /non terminé/i);
-  assert.match(message.payload.content, /1 en erreur/);
-  assert.match(message.payload.content, /2 abandonnée\(s\)/);
+  assert.match(message.payload.content, /NOT finished/);
+  assert.match(message.payload.content, /1 failed/);
+  assert.match(message.payload.content, /2 skipped/);
 });
 
 test('announceRunOutcome reports success only when every task finished', async () => {
@@ -1337,5 +1337,52 @@ test('announceRunOutcome reports success only when every task finished', async (
   };
   await announceRunOutcome(session, { runId: 'run-2', ok: true });
   const message = session.agentEvents.find((event) => event.type === 'assistant_message');
-  assert.match(message.payload.content, /succès/);
+  assert.match(message.payload.content, /finished successfully/);
+});
+
+
+test('structured evaluation distinguishes execution receipts from observed results', () => {
+  const task = (id, status) => ({ id, status: 'succeeded', requiredCapability: 'example.action', operation: 'act',
+    result: { rawStatus: { result: { verification: status ? { status } : undefined } } } });
+  const verified = structuredPlanEvaluation([task('a', 'verified')]);
+  assert.equal(verified.ok, true);
+  assert.equal(verified.verification.verified, 1);
+  const missing = structuredPlanEvaluation([task('a', 'not_observed')]);
+  assert.equal(missing.ok, false);
+  assert.match(missing.reason, /NOT observed/);
+  assert.equal(missing.suggestedAction, null);
+  const uncertain = structuredPlanEvaluation([task('a', 'unavailable'), task('b'), task('c', 'not_applicable')]);
+  assert.equal(uncertain.ok, true);
+  assert.equal(uncertain.verification.unavailable, 1);
+  assert.equal(uncertain.verification.unreported, 1);
+  assert.match(uncertain.reason, /without any available verification/);
+  assert.match(uncertain.reason, /simulation/);
+});
+
+
+test('the run outcome hands verification facts to Donna, in the session language, never pasted raw', async () => {
+  let request;
+  const session = { agentEvents: [], agentProjection: null, language: 'de-DE',
+    llm: { async completeWithTools(args) { request = args; return { content: 'Erledigt, Ergebnis nicht überprüfbar.' }; } },
+    headlessPlan: [{ id: 'a', status: 'succeeded', result: { rawStatus: { result: {
+      verification: { status: 'unavailable', method: 'example.readback' },
+    } } } }] };
+  await announceRunOutcome(session, { runId: 'verification-run', ok: true });
+  const message = session.agentEvents.find((event) => event.type === 'assistant_message');
+  // Donna's wording only: no French (or any) system line appended.
+  assert.equal(message.payload.content, 'Erledigt, Ergebnis nicht überprüfbar.');
+  assert.match(request.system, /reply language: de-DE/);
+  assert.match(request.system, /state it: how many results were verified/);
+  const facts = request.messages[0].content;
+  assert.match(facts, /Post-action verification: 0 result\(s\) verified\./);
+  assert.match(facts, /1 result\(s\) without any available verification/);
+});
+
+test('without a model, the outcome falls back to the English fact line, verification included', async () => {
+  const session = { agentEvents: [], agentProjection: null,
+    headlessPlan: [{ id: 'a', status: 'succeeded', result: { rawStatus: { result: { verification: { status: 'not_observed' } } } } }] };
+  await announceRunOutcome(session, { runId: 'fallback-run', ok: true });
+  const message = session.agentEvents.find((event) => event.type === 'assistant_message');
+  assert.match(message.payload.content, /NOT finished/);
+  assert.match(message.payload.content, /1 result\(s\) NOT observed/);
 });

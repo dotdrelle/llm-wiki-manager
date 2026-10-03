@@ -463,6 +463,14 @@ Key modules in `src/runtime/`:
   restarts the loop on the partial plan. `finishRuntimeRun` provides the same
   evaluate-and-finish tail for legacy/external callers. Takes `pollBusy` from
   the supervisor to prevent double-polling.
+  Structured graphs use `runtime/objectiveSupervisor.js` instead of prose
+  replans: bounded read-only investigation, corrections or contract-validated
+  replans (`adaptivePlan.js`), fresh task identities and revision-bound human
+  approval, at most 3 checkpoints per run; after a success it checks the
+  objective only when a mutation is unverified or the evaluation doubts.
+  Notices are facts worded by Donna (`userFacts.js`). `/delegate` enables
+  deterministic final evaluation. Contract and limitations:
+  `docs/agentic-runtime.md` § Objective supervisor.
   `runner.e2e.test.js` (plan 0.11.4 §3 exit criterion) runs the same
   `runRuntimeParallelPlan` code path against a 2-task plan with a fixed
   simulated per-task latency, once at `concurrency: 1` and once at
@@ -479,8 +487,13 @@ Key modules in `src/runtime/`:
   planned its mutations produced "Plan terminé avec succès — 0/N réussie",
   which the model rephrased into "le livrable a bien été publié" *before* the
   approval that would run it. The fact line now also appends
-  `Bilan TAXO: <key>=<value>` aggregated from the `stats` of every successful
-  task, so Donna's synthesized run facts carry the fiches/tags/families counts.
+  `TAXO totals: <key>=<value>` aggregated from the `stats` of every successful
+  task, so Donna's synthesized run facts carry the fiches/tags/families counts. The fact line is
+  English DATA, post-action verification included (`Post-action verification:
+  …`); Donna words it in the session language (`session.language`) and nothing
+  is appended to her sentence. The facts used to be French and the model
+  answered "in the language of the facts", so every workspace got its run
+  outcomes in French. Without a model, the English fact line is the message.
 - **`approvals.js`**: run-level and tool-level approval gate. Run-level:
   `requireApproval: true` in the `/run` body suspends execution after the first
   plan is formed and emits `run_pending_approval`; `POST /approve?runId=...`

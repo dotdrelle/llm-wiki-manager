@@ -71,6 +71,7 @@ const capabilityDescriptionSchema = {
     supportedOperations: stringArraySchema,
     mutationClass: { type: 'string' },
     defaultRequiresApproval: { type: 'boolean' },
+    readOnly: { type: 'boolean' },
     estimatedCost: {
       type: 'object',
       additionalProperties: false,

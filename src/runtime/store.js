@@ -282,6 +282,11 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     WHERE workspace = ?
     ORDER BY sequence ASC
   `);
+  const supervisorIncidentsStatement = db.prepare(`
+    SELECT payload FROM events WHERE workspace = ? AND origin = 'objective_supervisor'
+      AND type = 'runtime_log' AND json_extract(payload, '$.supervisorIncident') IS NOT NULL
+    ORDER BY sequence DESC LIMIT 5
+  `);
   const upsertRun = db.prepare(`
     INSERT INTO runs (id, workspace, conversation_id, status, input, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -1354,6 +1359,9 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     // « disponibles » après un redémarrage, endpoint éteint compris.
     markPersistedAgentsStale(session);
     session.jobQueue = listQueue({ workspace });
+    Object.defineProperty(session, '_readOrchestrationIncidents', { configurable: true,
+      value: () => workspace && workspace === session.workspace
+        ? supervisorIncidentsStatement.all(workspace).map((row) => JSON.parse(row.payload).supervisorIncident).reverse() : [] });
     return projection;
   }
 

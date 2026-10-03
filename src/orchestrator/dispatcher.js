@@ -69,6 +69,7 @@ export async function execute(task, assignment, {
   const deadline = Date.now() + taskTimeoutMs;
   let jobId = null;
   let lastStatus = null;
+  const request = executeRequest(task, session, runId, assignment);
 
   try {
     emitRuntimeLog(session, taskLogPayload('agent_execute', task, assignment, {
@@ -80,11 +81,12 @@ export async function execute(task, assignment, {
       session.mcp,
       serverName,
       executeTool,
-      executeRequest(task, session, runId, assignment),
+      request,
       signal,
     ));
     if (accepted?.accepted === false || accepted?.ok === false) {
-      return rejectedTaskResult(task, assignment, accepted, attempt);
+      return withExecutionContext(rejectedTaskResult(task, assignment, accepted, attempt), request,
+        accepted.accepted === false && !accepted.jobId && !accepted.activeJobId);
     }
     jobId = String(accepted.jobId ?? '');
     if (!jobId) throw new Error('agent_execute did not return jobId.');
@@ -145,7 +147,7 @@ export async function execute(task, assignment, {
           error: normalizeTaskError(lastStatus?.result?.error)?.code ?? null,
           detail: 'terminal status',
         }));
-        return taskResultFromStatus(task, assignment, jobId, lastStatus, attempt);
+        return withExecutionContext(taskResultFromStatus(task, assignment, jobId, lastStatus, attempt), request);
       }
       await delay(pollIntervalMs, signal);
       emitRuntimeLog(session, taskLogPayload('agent_status', task, assignment, {
@@ -165,7 +167,7 @@ export async function execute(task, assignment, {
           error: normalizeTaskError(lastStatus?.result?.error)?.code ?? null,
           detail: 'terminal status',
         }));
-        return taskResultFromStatus(task, assignment, jobId, lastStatus, attempt);
+        return withExecutionContext(taskResultFromStatus(task, assignment, jobId, lastStatus, attempt), request);
       }
     }
   } catch (error) {
@@ -182,6 +184,17 @@ export async function execute(task, assignment, {
     }));
     attempt?.release?.();
   }
+}
+
+function withExecutionContext(result, request, rejectedBeforeExecution = false) {
+  if (!result.ok) {
+    // Ephemeral diagnosis evidence: never duplicate wire arguments into logs
+    // or persisted events (they can contain credentials or message contents).
+    Object.defineProperty(result, 'executionContext', { value: {
+      rejectedBeforeExecution, arguments: structuredClone(request.arguments),
+    } });
+  }
+  return result;
 }
 
 function isExternalRuntimeAssignment(assignment) {

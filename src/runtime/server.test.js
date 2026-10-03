@@ -15,6 +15,31 @@ function startRuntimeServer(options) {
   return startRuntimeServerImpl({ token: '', ...options });
 }
 
+test('chat delegation enables evaluation and retains the prepared structured plan', async (t) => {
+  let received;
+  const prepared = { fragment: { tasks: [] }, summary: { tasks: 0 } };
+  let handle;
+  try {
+    handle = await startRuntimeServer({ host: '127.0.0.1', port: 0,
+      store: { getState: () => ({ status: 'idle' }), listEvents: () => [] }, session: {},
+      delegate: async () => prepared,
+      run: async (_context, body) => { received = body; body._planReady.resolve(); },
+    });
+  } catch (error) {
+    if (error.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw error;
+  }
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/delegate`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ objective: 'Perform the requested task', workspace: 'demo', conversationId: 'conv_test' }),
+    });
+    assert.equal(response.status, 202);
+    assert.equal(received.evaluate, true);
+    assert.equal(received.preparedDelegation, prepared);
+  } finally { await handle.close(); }
+});
+
 test('runtime run client surfaces the server error instead of only the HTTP status', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({
@@ -2797,4 +2822,3 @@ test('memory routes refuse credential-shaped facts and say 503 when the store is
     await withoutStore.close();
   }
 });
-

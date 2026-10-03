@@ -16,13 +16,15 @@ import { createResultAggregator } from '../orchestrator/resultAggregator.js';
 import { describePlanConcurrency, drainActive, startReadyTasks } from '../orchestrator/scheduler.js';
 import { emitRuntimeLog, pollActivitiesOnce } from './supervisor.js';
 import { shortLogId } from '../core/runtimeLog.js';
+import { superviseObjective, successCheckWarranted, MAX_SUPERVISOR_CHECKPOINTS } from './objectiveSupervisor.js';
+import { phraseFactsForUser } from './userFacts.js';
 
 // 0 by default: automatic replans turn evaluator/replanner TEXT into
 // executable pseudo-tasks (no capability, no operation) that stall at 0%
 // and pile up as replan-1/2/3 ghost work — the same disease as the removed
-// text-plan extraction. Failures now end with an honest report; the user
-// (or a stronger model) decides what to do next. Re-enable explicitly with
-// WIKI_MANAGER_REPLANNER_MAX_REPLANS if desired.
+// text-plan extraction. Structured failures use bounded contract-validated
+// recovery instead. WIKI_MANAGER_REPLANNER_MAX_REPLANS enables only the
+// legacy conversational replan path.
 const DEFAULT_MAX_REPLANS = 0;
 
 async function waitForRuntimeActivities(session, startedActivities, { timeoutMs, signal, pollBusy }) {
@@ -187,6 +189,7 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
   callTool = null,
   dispatcherPollIntervalMs = 2500,
   conversationProjection = null,
+  budgets = {},
 } = {}) {
   let currentInput = initialInput ?? input;
   let replansLeft = Math.max(0, Math.floor(Number(maxReplans) || 0));
@@ -198,6 +201,9 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
   // reply; the deterministic parallel scheduler has no agent voice, so only
   // that path gets a synthesized outcome summary (announceRunOutcome).
   let usedParallelScheduler = false;
+  const supervisorState = { checkpoints: 0, fingerprints: new Set(), correctedTasks: new Set() };
+  // The same budget spans all plan revisions: replanning cannot replenish it.
+  const workflowBudget = createBudgetManager({ budgets, runId });
   while (true) {
     sanitizeSessionPlanForExecution(session, runId);
     usedParallelScheduler = shouldUseParallelScheduler(session.headlessPlan);
@@ -210,6 +216,7 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
         pollBusy,
         callTool,
         dispatcherPollIntervalMs,
+        budgetManager: workflowBudget,
       })
       : await runRuntimeAgenticLoop(agent, session, currentInput, {
         signal,
@@ -223,7 +230,14 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
     if (result.ok && result.handoff) continue;
     if (!result.ok) {
       const trigger = replanTriggerFromLoopResult(result);
-      if (trigger && replansLeft > 0) {
+      let diagnosed = false;
+      if (usedParallelScheduler && trigger && !signal?.aborted && !result.budgetExceeded) {
+        const recovery = await superviseObjective(session, input, result, { runId, signal, callTool, state: supervisorState });
+        diagnosed = recovery.diagnosed;
+        if (recovery.recovered) continue;
+      }
+      // Legacy prose replans are never valid replacements for a TaskGraph.
+      if (!usedParallelScheduler && trigger && replansLeft > 0) {
         const replanned = await replanRuntimeRun(session, input, trigger, {
           runId,
           signal,
@@ -248,7 +262,7 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
         emitRuntimeLog(session, 'runtime: run ended by user cancellation (no replan)');
         return { ok: false, result, cancelled: true };
       }
-      if (usedParallelScheduler) await announceRunOutcome(session, { runId, ok: false, signal });
+      if (usedParallelScheduler && !diagnosed) await announceRunOutcome(session, { runId, ok: false, signal });
       dispatchAgentEvent(session, createAgentEvent('run_error', {
         origin: 'runtime',
         runId,
@@ -263,6 +277,16 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
     const evaluation = session.headlessPlan
       ? await evaluateRuntimeRun(session, input, { runId, signal, evaluate })
       : null;
+    const checkWarranted = usedParallelScheduler && evaluation
+      && successCheckWarranted(session, session.headlessPlan, evaluation);
+    if (usedParallelScheduler && evaluation && !checkWarranted) {
+      emitRuntimeLog(session, 'orchestrator: objective check skipped — read-only run or every mutation verified by its agent');
+    }
+    if (checkWarranted && supervisorState.checkpoints < MAX_SUPERVISOR_CHECKPOINTS && !signal?.aborted) {
+      const followUp = await superviseObjective(session, input, result, { runId, signal, callTool, state: supervisorState, evaluation });
+      if (followUp.recovered) continue;
+      if (followUp.blocked) { evaluation.ok = false; evaluation.reason = followUp.reason; }
+    }
     if (evaluation) {
       dispatchAgentEvent(session, createAgentEvent('run_evaluated', {
         origin: 'runtime',
@@ -288,7 +312,7 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
           }));
           return { ok: true, evaluation, clarified: true };
         }
-        if (replansLeft > 0) {
+        if (!usedParallelScheduler && replansLeft > 0) {
           const trigger = {
             kind: 'evaluation',
             reason: evaluation.reason,
@@ -387,40 +411,29 @@ export async function announceRunOutcome(session, { runId, ok, signal = null } =
     }
   }
   const total = plan.length;
+  const verification = verificationCounts(plan.filter((step) => isSuccessful(step?.status)));
   const finished = ok && failed === 0 && cancelled === 0 && skipped === 0
-    && pending === 0 && completed === total;
+    && pending === 0 && completed === total && verification.notObserved === 0;
   const statsLine = Object.keys(knowledgeStats).length > 0
-    ? ` Bilan TAXO: ${Object.entries(knowledgeStats).map(([key, value]) => `${key}=${value}`).join(', ')}.`
+    ? ` TAXO totals: ${Object.entries(knowledgeStats).map(([key, value]) => `${key}=${value}`).join(', ')}.`
     : '';
+  // Facts are DATA for Donna, in English like every system fact; she words
+  // them in the session language. They used to be French and the model was
+  // told to answer "in the same language as the facts", so every workspace —
+  // whatever its language — got its run outcomes in French.
+  const verificationLine = verificationFacts(verification);
   const factLine = (finished
-    ? `Plan terminé avec succès — ${completed}/${total} tâche(s) réussie(s).`
-    : `Plan non terminé — ${completed}/${total} tâche(s) réussie(s)` +
-      `${pending ? `, ${pending} en attente (approbation ou exécution)` : ''}` +
-      `${failed ? `, ${failed} en erreur` : ''}` +
-      `${cancelled ? `, ${cancelled} annulée(s)` : ''}` +
-      `${skipped ? `, ${skipped} abandonnée(s) faute d'une étape précédente` : ''}.` +
-      `${firstError ? ` Première erreur : ${firstError}.` : ''}`) + statsLine;
-  let content = factLine;
-  const llm = session.llm;
-  if (llm && typeof llm.completeWithTools === 'function') {
-    try {
-      const result = await llm.completeWithTools({
-        system: [
-          'You are Donna, an orchestration assistant reporting a run result to the user.',
-          'Rephrase the outcome facts in ONE short, natural sentence, in the same language as the facts.',
-          'No lists, no headers, no raw job ids — just a concise human summary.',
-          'If the facts say the plan is NOT finished, say so plainly and name what is still pending or failed: never claim the work was completed, published or successful.',
-        ].join('\n'),
-        tools: [],
-        messages: [{ role: 'user', content: `Run outcome facts:\n${factLine}` }],
-        signal,
-      });
-      const phrased = String(result?.content ?? '').trim();
-      if (phrased) content = phrased;
-    } catch {
-      // Degrade to the templated fact line — never fail the run on the summary.
-    }
-  }
+    ? `Plan finished successfully — ${completed}/${total} task(s) succeeded.`
+    : `Plan NOT finished — ${completed}/${total} task(s) succeeded` +
+      `${pending ? `, ${pending} pending (approval or execution)` : ''}` +
+      `${failed ? `, ${failed} failed` : ''}` +
+      `${cancelled ? `, ${cancelled} cancelled` : ''}` +
+      `${skipped ? `, ${skipped} skipped because an earlier step did not succeed` : ''}.` +
+      `${firstError ? ` First error: ${firstError}.` : ''}`) + statsLine + verificationLine;
+  const content = await phraseFactsForUser(session, factLine, { signal, rules: [
+    'If the facts say the plan is NOT finished, say so plainly and name what is still pending or failed: never claim the work was completed, published or successful.',
+    'When the facts carry a post-action verification, state it: how many results were verified, and say plainly when a result was not observed or could not be verified. A success receipt alone is never an observed result.',
+  ] });
   dispatchAgentEvent(session, createAgentEvent('assistant_message', {
     origin: 'runtime',
     runId,
@@ -1315,6 +1328,7 @@ export function structuredPlanEvaluation(plan) {
   const failed = plan.filter((step) => isFailed(step?.status) || isCancelledStatus(step?.status));
   const skipped = plan.filter((step) => isSkipped(step?.status));
   const unfinished = plan.filter((step) => !isTerminal(step?.status));
+  const verification = verificationCounts(done);
   const label = (step) => step.label ?? step.description ?? step.id ?? step.step;
   /*
    Les compteurs sont rendus tels quels, en plus de la phrase.
@@ -1361,11 +1375,30 @@ export function structuredPlanEvaluation(plan) {
     };
   }
   return {
-    ok: plan.length > 0,
+    ok: plan.length > 0 && verification.notObserved === 0,
     counts,
-    reason: `${plan.length} tâche(s) du plan terminées avec succès.`,
+    verification,
+    reason: `${plan.length} tâche(s) déclarée(s) réussie(s) par les agents.${verificationFacts(verification)}`,
     suggestedAction: null,
   };
+}
+
+function verificationCounts(done) {
+  const observations = done.map((step) => step.result?.rawStatus?.result?.verification ?? step.result?.verification);
+  return {
+    verified: observations.filter((item) => item?.status === 'verified').length,
+    notObserved: observations.filter((item) => item?.status === 'not_observed').length,
+    unavailable: observations.filter((item) => item?.status === 'unavailable').length,
+    notApplicable: observations.filter((item) => item?.status === 'not_applicable').length,
+    unreported: observations.filter((item) => !['verified', 'not_observed', 'unavailable', 'not_applicable'].includes(item?.status)).length,
+  };
+}
+
+// Post-action verification as an English fact line (data for Donna and for
+// the evaluator), never pasted into the conversation as raw text.
+function verificationFacts(v) {
+  if (!Object.values(v).some(Boolean)) return '';
+  return ` Post-action verification: ${v.verified} result(s) verified.${v.notObserved ? ` ${v.notObserved} result(s) NOT observed; nothing was re-run automatically.` : ''}${v.unavailable + v.unreported ? ` ${v.unavailable + v.unreported} result(s) without any available verification.` : ''}${v.notApplicable ? ` ${v.notApplicable} simulation(s), no real action.` : ''}`;
 }
 
 function transientRuntimeError(error) {

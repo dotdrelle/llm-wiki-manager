@@ -412,7 +412,7 @@ function isMutatingTask(task, registry) {
   });
 }
 
-function validateJsonSchema(schema, value, path) {
+export function validateJsonSchema(schema, value, path = 'arguments') {
   const errors = [];
   validateSchema(schema || {}, value, path, errors);
   return errors;

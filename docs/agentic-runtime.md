@@ -403,3 +403,81 @@ stream would accelerate one phase, not the run.
 RAG feeds the eyes (retrieval read tools); the orchestration is the hands; the
 agentic runtime is the analyst; DONNA is the single conversational surface and
 the governor that routes, integrates and applies the approval rules.
+
+## Objective supervisor (structured runs)
+
+`runtime/objectiveSupervisor.js` is the checkpoint the runner calls when a
+structured run settles. It replaced the one-shot recovery below in the runner;
+`recoverFailedRun` survives only as the tested core of `installRecoveryPlan`.
+
+- **Investigate.** `orchestrationDiagnostics.js` gives the model the run facts
+  (objective, every task with its status, arguments and evidence, failure
+  diagnostics, published contracts, the last runtime logs, recent incidents)
+  and the read-only MCP tools of the connected agents — annotation-gated,
+  workspace-bound, limited to the run's own jobs, at most 3 model turns, 6 tool
+  calls and 25 s. Tool output is untrusted data.
+- **Decide.** `explain`, `retry` (pre-execution `invalid_arguments` only, one
+  correction per task), `replan` (`adaptivePlan.js`: replace the diagnosed
+  failure or append missing work, 1–6 tasks over published capabilities,
+  completed tasks immutable, a repeated proposal refused), `complete` or
+  `blocked`. A started mutation, a timeout or a missing authorization is never
+  replayed. Mutating follow-ups need fresh revision-bound approval; read-only
+  follow-ups proceed only when the capability declares `readOnly`.
+- **Bound.** At most `MAX_SUPERVISOR_CHECKPOINTS` (3) per run, then an
+  explicit stop with what was accomplished and what remains.
+- **After a success** the objective check runs only when the success is not
+  already established (`successCheckWarranted`): the evaluation has a doubt, or
+  a mutating task succeeded without its agent's `verified` observation. A
+  read-only run or a fully verified one costs no extra model call; the skip is
+  logged (`orchestrator: objective check skipped`).
+- **Say it through Donna.** Every supervisor notice is an English fact line
+  worded by Donna in the session language (`userFacts.js`).
+
+## Structured failure recovery in the manager
+
+`runtime/failureRecovery.js` adds one bounded, tool-less model diagnosis after a
+structured scheduler run settles. It receives the original objective, error,
+selected provider input schema and exact wire arguments. The dispatcher remains
+deterministic; its rejected-request context is non-enumerable and ephemeral,
+so wire arguments are not duplicated into the event log. Credential-shaped
+material is redacted, context and response sizes are capped, and the call has a
+20-second deadline. Redacted or truncated context is diagnosis-only.
+
+A correction is admissible only for `invalid_arguments` with an explicit
+`accepted:false`, no job identifier and no active job. Existing schema-valid
+fields remain verbatim. The manager fixes the capability/operation/provider,
+validates the entire replacement graph against the published contracts, creates
+new task identities and idempotency keys, and requires fresh revision-bound
+approval even when the original run was auto-approved. Completed tasks retain
+their evidence; only unexecuted skipped descendants with explicit dependencies
+are revived. Group-dependent recovery is refused with a diagnostic. Historical
+failed-task events remain authoritative in the audit. Cancellation, exhausted
+budgets and jobs with possible effects cannot trigger this recovery.
+
+`runtime__status` exposes up to five compact failure diagnostics with errors,
+argument names and bounded input schemas; message bodies and recipient values
+are not duplicated into this diagnostic view. Contract availability and omitted
+context are explicit. The operational workflow is documented once in the
+engine's shipped `help-doc/06-troubleshooting.md`.
+
+Chat `/delegate` enables final evaluation. Structured evaluation remains based
+on deterministic TaskGraph results, not a model's reinterpretation of success.
+It consumes optional structured `verification` observations reported by agents
+after action (`verified`, `not_observed`, `unavailable`, `not_applicable`). Missing
+observations remain explicitly unverified. `not_observed` fails evaluation,
+without replaying any action; unavailable reads preserve the execution receipt
+and announce uncertainty. These facts are part of the English fact line Donna
+words in the session language (`runtime/userFacts.js`); nothing is appended
+raw to her sentence, and without a model the fact line itself is the message. Legacy
+prose replanning is never used to replace a structured graph, including when
+`WIKI_MANAGER_REPLANNER_MAX_REPLANS` is explicitly enabled. Independent
+post-action verification belongs to the executing provider, not a business-specific
+manager tool call. The connectors provider reads the exact acknowledged Gmail
+message ID with `format=minimal`, checking its ID and `SENT` label (10-second
+HTTP deadline, no send retry on read failure). This observes Sent presence,
+not delivery to the recipient. A send-only grant still works but cannot verify.
+Dry runs contact no provider and are marked `not_applicable`. Collection reads
+back the final unique output paths byte-for-byte and reports their observed
+count; this verifies raw collected files, not the subsequent ingestion/rebuild.
+Verification status survives persisted idempotent replay. Other agents without
+this observation contract remain explicitly unverified.

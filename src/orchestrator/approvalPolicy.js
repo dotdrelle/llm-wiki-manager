@@ -37,7 +37,8 @@ export function grantCoversTask(grant, task, {
   planRevision = null,
 } = {}) {
   if (task?.requiresApproval !== true) return true;
-  if (task?.approved === true || task?.approvalStatus === 'approved') return true;
+  if (task?.recoveryRevision != null && (!grant || Number(grant.planRevision) !== Number(task.recoveryRevision))) return false;
+  if (task?.recoveryRevision == null && (task?.approved === true || task?.approvalStatus === 'approved')) return true;
   if (!grant || !GRANTED_STATUSES.has(normalizeStatus(grant.status))) return false;
   if (grant.runId != null && runId != null && String(grant.runId) !== String(runId)) return false;
   const grantWorkspace = grant.workspaceId ?? grant.workspace ?? null;
@@ -60,6 +61,7 @@ export function grantCoversTask(grant, task, {
 }
 
 export function approvalCovered(task, approvals = [], context = {}) {
+  if (task?.recoveryRevision != null) return approvals.some((approval) => grantCoversTask(approval, task, context));
   return task?.requiresApproval !== true
     || task?.approved === true
     || task?.approvalStatus === 'approved'

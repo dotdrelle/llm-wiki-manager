@@ -149,6 +149,7 @@ for (const secondFails of [false, true]) test(`the workflow waits for fresh appr
         return { content: JSON.stringify({ action: 'complete', summary: 'The email was accepted by the agent.' }) };
       }
       diagnosisCalls++;
+      if (diagnosisCalls > 1) return { content: JSON.stringify({ action: secondFails ? 'blocked' : 'complete', summary: secondFails ? 'The correction also failed; intervention is required.' : 'Execution completed; no independent observation is available.' }) };
       assert.equal(facts.arguments.confirm, true);
       return { content: JSON.stringify({ action: 'retry', summary: 'The integration field confirm is unsupported.', arguments: task.arguments }) };
     }

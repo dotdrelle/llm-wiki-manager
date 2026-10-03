@@ -51,6 +51,7 @@ const SESSION_PROJECTION_EVENTS = new Set([
   'run_error',
   'run_cancelled',
   'runtime_log',
+  'orchestration.checkpoint',
 ]);
 
 // Events that can mutate state.plan in applyEvent() — only these warrant the
@@ -819,6 +820,7 @@ function applyEvent(state, event) {
         health: event.payload?.health ?? event.payload?.agent?.health,
       }, event.ts);
       return;
+    case 'orchestration.checkpoint':
     case 'runtime_log':
       appendLog(state, formatRuntimeLogPayload(event.payload ?? {}, event.ts));
       return;

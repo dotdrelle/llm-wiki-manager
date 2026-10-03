@@ -213,3 +213,13 @@ test('planStepInputs: a running task with no declared files shows the document i
   assert.deepEqual(planStepInputs({ status: 'pending', raw: {} }, activities), []);
   assert.deepEqual(planStepInputs({ status: 'running', raw: {} }, [{ status: 'running', progress: { label: 'Working' } }]), []);
 });
+
+
+test('late activity cannot revive a completed TaskGraph task after a follow-up is added', () => {
+  const plan = [{ id: 'done', step: 1, description: 'Same target', requiredCapability: 'example.act', operation: 'act', status: 'done', result: { status: 'succeeded' } },
+    { id: 'verify', step: 2, description: 'Same target', requiredCapability: 'example.read', operation: 'read', status: 'pending' }];
+  syncActivitiesToPlan(plan, [{ key: 'old', status: 'queued', terminal: false, progress: { stepId: 'done' } }]);
+  assert.equal(plan[0].status, 'done'); assert.equal(plan[1].status, 'pending');
+  syncActivitiesToPlan(plan, [{ key: 'unknown', label: 'Same target', status: 'running', terminal: false, progress: { stepId: 'removed-task' } }]);
+  assert.equal(plan[0].status, 'done'); assert.equal(plan[1].status, 'pending');
+});

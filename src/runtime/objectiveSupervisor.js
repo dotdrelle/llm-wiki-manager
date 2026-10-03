@@ -52,7 +52,7 @@ export async function superviseObjective(session, objective, result, { runId, si
   const history = session._readOrchestrationIncidents?.() ?? (session.agentEvents ?? []).slice(-1000)
     .filter((event) => event.payload?.supervisorIncident && event.payload.supervisorIncident.workspace === session.workspace)
     .slice(-5).map((event) => event.payload.supervisorIncident);
-  const facts = { objective, checkpoint: state.checkpoints, evaluation,
+  const facts = { objective, workspace: session.workspace, checkpoint: state.checkpoints, evaluation,
     task: task ? { id: task.id, label: task.label, capability: task.requiredCapability, operation: task.operation } : null,
     arguments: failure?.result?.executionContext?.arguments ?? task?.arguments,
     rejectedBeforeExecution: failure?.result?.executionContext?.rejectedBeforeExecution === true,
@@ -99,10 +99,13 @@ export async function superviseObjective(session, objective, result, { runId, si
   if (failedPlan || recovery.recovered || blocked) await announce(session, runId,
     `Diagnosis: ${summary}${suffix}${diagnosis.degraded ? ' Investigation degraded or bounded; missing evidence is not a success proof.' : ''}`, signal);
   const incident = { workspace: session.workspace, capability: task?.requiredCapability ?? null,
-    errorCode: safeSummary(failure?.result?.error?.code), decision: recovery.recovered ? 'follow-up' : 'stop',
+    errorCode: /^[a-zA-Z0-9_-]+/.exec(String(failure?.result?.error?.code ?? ''))?.[0] ?? null,
+    removedArgumentNames: recovery.recovered && proposal?.action === 'retry'
+      ? Object.keys(failure.result.executionContext.arguments ?? {}).filter((key) => /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(key) && !Object.hasOwn(proposal.arguments, key)) : [],
+    decision: recovery.recovered ? 'follow-up' : 'stop',
     revisedCapabilities: recovery.recovered ? [...new Set(session.headlessPlan.filter((item) => item.recoveryRevision > revision).map((item) => item.requiredCapability))] : [],
     diagnosticCalls: diagnosis.calls, checkpoint: state.checkpoints };
-  dispatchAgentEvent(session, createAgentEvent('runtime_log', { origin: 'objective_supervisor', runId,
+  dispatchAgentEvent(session, createAgentEvent('orchestration.checkpoint', { origin: 'objective_supervisor', runId, workspace: session.workspace,
     payload: { message: `orchestrator: checkpoint ${state.checkpoints}/${MAX_SUPERVISOR_CHECKPOINTS}; ${incident.decision}; diagnostics=${diagnosis.calls}`, supervisorIncident: incident } }));
   return { ...recovery, diagnosed: failedPlan, blocked, reason: summary, degraded: diagnosis.degraded };
 }

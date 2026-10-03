@@ -4,7 +4,7 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { createCapabilityRegistry } from '../orchestrator/capabilityRegistry.js';
 import { approvalCovered } from '../orchestrator/approvalPolicy.js';
 import { installAdaptivePlan } from './adaptivePlan.js';
-import { investigateRun } from './orchestrationDiagnostics.js';
+import { investigateRun, parseSupervisorDecision } from './orchestrationDiagnostics.js';
 import { superviseObjective, successCheckWarranted } from './objectiveSupervisor.js';
 import { runRuntimeAgenticWorkflow } from './runner.js';
 
@@ -194,4 +194,91 @@ test('supervisor notices are worded by Donna in the session language, never past
   assert.equal(notices[0].payload.content, 'Échec : le service ne répond pas, rien n’a été relancé.');
   assert.match(phrasings[0].system, /reply language: fr-FR/);
   assert.match(phrasings[0].facts, /Diagnosis: The provider is unavailable\./);
+});
+
+test('successful execution can lead to an autonomous read-only verification tail', async () => {
+  const { session, task } = fixture();
+  dispatchAgentEvent(session, createAgentEvent('plan_set', { runId: 'run', payload: { planRevision: 0, steps: [{ ...task, status: 'pending' }] } }));
+  dispatchAgentEvent(session, createAgentEvent('approval.granted', { runId: 'run', payload: { scope: 'run', runId: 'run', planRevision: 0, status: 'approved' } }));
+  let assessments = 0; const operations = [];
+  session.llm = { completeWithTools: async ({ system }) => {
+    if (!system.includes('scheduler checkpoint')) return { content: 'Done.' };
+    assessments++;
+    if (assessments > 1) return answer({ action: 'complete', summary: 'Requested target verified' });
+    const proposal = followUp('example.inspect', 'inspect'); delete proposal.replaceTaskId;
+    return answer(proposal);
+  } };
+  const outcome = await runRuntimeAgenticWorkflow({}, session, 'Act and verify the requested target', { runId: 'run', signal: AbortSignal.timeout(3000), dispatcherPollIntervalMs: 1,
+    callTool: async (_pool, _server, tool, args) => {
+      if (tool === 'agent_execute') { operations.push(args.operation); return { accepted: true, jobId: args.operation }; }
+      return { status: 'succeeded', terminal: true, result: { status: 'succeeded', ...(args.jobId === 'inspect' ? { verification: { status: 'verified' } } : {}) } };
+    } });
+  assert.equal(outcome.ok, true, JSON.stringify({ operations, outcome, plan: session.headlessPlan, events: session.agentEvents.filter((event) => ['assistant_message', 'run_error', 'runtime_log', 'plan.revision_changed'].includes(event.type)) })); assert.deepEqual(operations, ['act', 'inspect']);
+  assert.equal(session.headlessPlan[0].id, 'first');
+  assert.equal(session.agentEvents.some((event) => event.type === 'approval.requested' && event.payload.planRevision === 1), false);
+});
+
+test('run task budget is shared across adaptive plan revisions', async () => {
+  const { session, task } = fixture();
+  dispatchAgentEvent(session, createAgentEvent('plan_set', { runId: 'run', payload: { planRevision: 0, steps: [{ ...task, status: 'pending' }] } }));
+  dispatchAgentEvent(session, createAgentEvent('approval.granted', { runId: 'run', payload: { scope: 'run', runId: 'run', planRevision: 0, status: 'approved' } }));
+  session.llm = { completeWithTools: async ({ system }) => {
+    if (!system.includes('scheduler checkpoint')) return { content: 'Budget stopped execution.' };
+    const proposal = followUp('example.inspect', 'inspect'); delete proposal.replaceTaskId; return answer(proposal);
+  } };
+  let executions = 0;
+  const outcome = await runRuntimeAgenticWorkflow({}, session, 'Act and verify', { runId: 'run', budgets: { maxTasks: 1 }, signal: AbortSignal.timeout(3000), dispatcherPollIntervalMs: 1,
+    callTool: async (_pool, _server, tool) => {
+      if (tool === 'agent_execute') { executions++; return { accepted: true, jobId: 'first' }; }
+      return { status: 'succeeded', terminal: true, result: { status: 'succeeded' } };
+    } });
+  assert.equal(outcome.ok, false); assert.equal(executions, 1);
+  assert.equal(outcome.result.budgetExceeded, true);
+});
+
+test('diagnostics cannot read a job owned by another run or server', async () => {
+  const { session } = fixture();
+  session.mcp.service.tools.find((item) => item.name === 'agent_status').inputSchema = { type: 'object', properties: { jobId: { type: 'string' } }, required: ['jobId'] };
+  let turn = 0;
+  session.llm = { completeWithTools: async () => ++turn === 1
+    ? { tool_calls: [{ id: 'foreign', function: { name: 'service__agent_status', arguments: '{"jobId":"foreign-job"}' } }] }
+    : answer({ action: 'blocked', summary: 'No evidence for this run' }) };
+  const result = await investigateRun(session, {}, { runId: 'run', callTool: async () => assert.fail('cross-run read') });
+  assert.equal(result.degraded, true);
+});
+
+
+test('a model explanation followed by one JSON fence is parsed; ambiguous decisions are refused', () => {
+  assert.deepEqual(parseSupervisorDecision('The contract rejects the field.\n```json\n{"action":"retry","arguments":{"target":"requested"}}\n```'),
+    { action: 'retry', arguments: { target: 'requested' } });
+  assert.throws(() => parseSupervisorDecision('```json\n{"action":"retry"}\n```\n```json\n{"action":"complete"}\n```'), /ambiguous/);
+  assert.throws(() => parseSupervisorDecision('Just run another tool.'), /missing/);
+});
+
+test('multiple failed tasks retain pre-execution evidence across plan revisions', async () => {
+  const { session, task } = fixture();
+  const initial = ['first', 'second'].map((id) => ({ ...task, id, status: 'pending', arguments: { target: id } }));
+  dispatchAgentEvent(session, createAgentEvent('plan_set', { runId: 'run', payload: { planRevision: 0, steps: initial } }));
+  dispatchAgentEvent(session, createAgentEvent('approval.granted', { runId: 'run', payload: { scope: 'run', runId: 'run', planRevision: 0, status: 'approved' } }));
+  const operations = [];
+  session.llm = { completeWithTools: async ({ system, messages }) => {
+    if (!system.includes('scheduler checkpoint')) return { content: 'Follow-up.' };
+    const facts = JSON.parse(JSON.parse(messages[0].content).facts);
+    assert.equal(facts.rejectedBeforeExecution, true);
+    const proposal = followUp('example.inspect', 'inspect');
+    proposal.replaceTaskId = facts.task.id;
+    proposal.tasks[0].arguments = { target: facts.arguments.target };
+    return answer(proposal);
+  } };
+  const outcome = await runRuntimeAgenticWorkflow({}, session, 'Check both requested targets', { runId: 'run', signal: AbortSignal.timeout(3000), dispatcherPollIntervalMs: 1,
+    callTool: async (_pool, _server, tool, args) => {
+      if (tool === 'agent_execute') {
+        operations.push([args.operation, args.arguments.target]);
+        return args.operation === 'act' ? { accepted: false, error: 'provider_unavailable' } : { accepted: true, jobId: args.arguments.target };
+      }
+      return { status: 'succeeded', terminal: true, result: { status: 'succeeded', verification: { status: 'verified' } } };
+    } });
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.equal(operations.filter(([op]) => op === 'act').length, 2);
+  assert.deepEqual(operations.filter(([op]) => op === 'inspect').map(([, target]) => target).sort(), ['first', 'second']);
 });

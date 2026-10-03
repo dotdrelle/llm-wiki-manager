@@ -1,4 +1,4 @@
-import { isUnsuccessfulTerminal } from '../orchestrator/taskStatuses.js';
+import { isTerminal, isUnsuccessfulTerminal } from '../orchestrator/taskStatuses.js';
 export function ensurePlanFromActivity(session, activity) {
   if (!activity) return;
   const actKey = activity.key ?? null;
@@ -57,8 +57,13 @@ export function syncActivitiesToPlan(plan, activities) {
     const failed = isUnsuccessfulTerminal(activity.status);
     const actKey = activity.key ?? activity.id ?? activity.jobId ?? null;
     const structuredMatch = findMatchingPlanStepByStructure(plan, activity);
-    const matched = structuredMatch ?? findMatchingPlanStep(plan, activity);
+    const matched = structuredMatch ?? (contractTaskPlan
+      ? plan.find((step) => step.activityKey === actKey || step.ownerActivityKey === actKey)
+      : findMatchingPlanStep(plan, activity));
     if (!matched) continue;
+    // A terminal scheduler result is authoritative. Historical queued or late
+    // activity frames cannot revive it during an adaptive plan revision.
+    if (contractTaskPlan && isTerminal(matched.status)) continue;
 
     if (terminal && !failed) {
       const ownedSteps = actKey ? plan.filter((s) => s._activityKey === actKey) : [];
@@ -299,9 +304,9 @@ export function attachActivityToExistingPlan(plan, activity) {
   const matched = structuredMatch
     ?? plan.find((step) => step.activityKey === actKey)
     ?? plan.find((step) => step.ownerActivityKey === actKey)
-    ?? plan.find((step) => step.status === 'pending')
-    ?? plan.find((step) => step.status === 'running');
+    ?? (!contractTaskPlan ? plan.find((step) => step.status === 'pending') ?? plan.find((step) => step.status === 'running') : null);
   if (!matched) return;
+  if (contractTaskPlan && isTerminal(matched.status)) return;
   matched.activityKey = actKey;
   if (!matched.ownerActivityKey) matched.ownerActivityKey = actKey;
   const failed = isUnsuccessfulTerminal(activity.status);

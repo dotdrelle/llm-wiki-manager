@@ -202,12 +202,13 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
   // that path gets a synthesized outcome summary (announceRunOutcome).
   let usedParallelScheduler = false;
   const supervisorState = { checkpoints: 0, fingerprints: new Set(), correctedTasks: new Set() };
+  const outstandingFailures = new Map();
   // The same budget spans all plan revisions: replanning cannot replenish it.
   const workflowBudget = createBudgetManager({ budgets, runId });
   while (true) {
     sanitizeSessionPlanForExecution(session, runId);
     usedParallelScheduler = shouldUseParallelScheduler(session.headlessPlan);
-    const result = usedParallelScheduler
+    let result = usedParallelScheduler
       ? await runRuntimeParallelPlan(agent, session, input, {
         signal,
         timeoutMs,
@@ -227,6 +228,11 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
         parallelHandoff: true,
         initialMessages: runConversationSeed,
       });
+    if (usedParallelScheduler) {
+      for (const failure of result.failures ?? []) outstandingFailures.set(failure.taskId, failure);
+      const remaining = [...outstandingFailures.values()].filter((failure) => session.headlessPlan?.some((task) => task.id === failure.taskId && isFailed(task.status)));
+      if (remaining.length) result = { ...result, ok: false, failures: remaining };
+    }
     if (result.ok && result.handoff) continue;
     if (!result.ok) {
       const trigger = replanTriggerFromLoopResult(result);

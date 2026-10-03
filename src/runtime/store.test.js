@@ -1232,3 +1232,26 @@ test('a thread-scoped redo deletes only that thread, from the boundary on', () =
   assert.equal(store.deleteConversationEventsFrom(boundary, { workspace: 'alpha' }), 0);
   store.close();
 });
+
+test('orchestration memory survives restart, is bounded and cannot cross workspaces', () => {
+  const stateDir = runtimeStateDir();
+  const store = openRuntimeStore({ stateDir });
+  for (const workspace of ['one', 'two']) for (let i = 0; i < 7; i++) {
+    store.persistEvent(createAgentEvent('orchestration.checkpoint', { origin: 'objective_supervisor', workspace,
+      payload: { message: 'Bounded decision', supervisorIncident: { workspace, checkpoint: i, errorCode: 'invalid_arguments', removedArgumentNames: ['confirm'] } } }));
+  }
+  store.close();
+  const reopened = openRuntimeStore({ stateDir });
+  try {
+    const session = { workspace: 'one', activities: {} };
+    reopened.hydrateSession(session, { workspace: 'one' });
+    const hints = session._readOrchestrationIncidents();
+    assert.equal(hints.length, 5);
+    assert.deepEqual(hints.map((hint) => hint.checkpoint), [2, 3, 4, 5, 6]);
+    assert.ok(hints.every((hint) => hint.workspace === 'one'));
+    session.workspace = 'two';
+    assert.deepEqual(session._readOrchestrationIncidents(), []);
+    reopened.hydrateSession(session, { workspace: 'two' });
+    assert.ok(session._readOrchestrationIncidents().every((hint) => hint.workspace === 'two'));
+  } finally { reopened.close(); }
+});

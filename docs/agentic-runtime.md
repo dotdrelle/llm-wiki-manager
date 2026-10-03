@@ -424,7 +424,19 @@ structured run settles. It replaced the one-shot recovery below in the runner;
   replayed. Mutating follow-ups need fresh revision-bound approval; read-only
   follow-ups proceed only when the capability declares `readOnly`.
 - **Bound.** At most `MAX_SUPERVISOR_CHECKPOINTS` (3) per run, then an
-  explicit stop with what was accomplished and what remains.
+  explicit stop with what was accomplished and what remains. Task budgets
+  remain shared across revisions; a follow-up cannot replenish them. Outstanding
+  failures retain their exact pre-execution evidence for later checkpoints.
+- **Remember incidents.** `orchestration.checkpoint` is a bounded durable audit
+  event (unlike transient `runtime_log`). The next investigation reads the last
+  five incidents in that workspace, including error classes, removed argument
+  names and revised capabilities; no request values, message bodies or secrets
+  are copied into this incident memory. Hydration restores the reader after a
+  restart; switching workspaces invalidates it until rehydration. Incident
+  hints are untrusted context, never approvals or proof of a current result.
+  User facts and preferences remain in the separate evidenced workspace memory.
+- **Keep completed results.** Historical activity frames cannot revive a
+  terminal TaskGraph task or match a newly added task by label similarity.
 - **After a success** the objective check runs only when the success is not
   already established (`successCheckWarranted`): the evaluation has a doubt, or
   a mutating task succeeded without its agent's `verified` observation. A

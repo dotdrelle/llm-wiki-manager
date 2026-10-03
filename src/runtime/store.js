@@ -284,7 +284,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   `);
   const supervisorIncidentsStatement = db.prepare(`
     SELECT payload FROM events WHERE workspace = ? AND origin = 'objective_supervisor'
-      AND type = 'runtime_log' AND json_extract(payload, '$.supervisorIncident') IS NOT NULL
+      AND type = 'orchestration.checkpoint' AND json_extract(payload, '$.supervisorIncident') IS NOT NULL
     ORDER BY sequence DESC LIMIT 5
   `);
   const upsertRun = db.prepare(`

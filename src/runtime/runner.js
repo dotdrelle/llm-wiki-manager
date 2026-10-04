@@ -12,7 +12,7 @@ import { approvalCovered, approvalRequestForTask } from '../orchestrator/approva
 import { blockedByFailedDependency, tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
 import { isCancelled, isFailed, isPending, isSkipped, isSuccessful, isTerminal, isUnknownStatus } from '../orchestrator/taskStatuses.js';
 import { assertValidatedFragment } from '../orchestrator/planValidator.js';
-import { createResultAggregator } from '../orchestrator/resultAggregator.js';
+import { createResultAggregator, rebuildOwnedReasonOf } from '../orchestrator/resultAggregator.js';
 import { describePlanConcurrency, drainActive, startReadyTasks } from '../orchestrator/scheduler.js';
 import { emitRuntimeLog, pollActivitiesOnce } from './supervisor.js';
 import { shortLogId } from '../core/runtimeLog.js';
@@ -382,6 +382,7 @@ export async function announceRunOutcome(session, { runId, ok, signal = null } =
   let pending = 0;
   const knowledgeStats = {};
   let firstError = null;
+  const rebuildOwned = [];
   for (const step of plan) {
     const status = String(step?.status ?? '').toLowerCase();
     if (isFailed(status)) {
@@ -400,6 +401,8 @@ export async function announceRunOutcome(session, { runId, ok, signal = null } =
       skipped += 1;
     } else if (isSuccessful(status)) {
       completed += 1;
+      const rebuildReason = rebuildOwnedReasonOf(step?.result);
+      if (rebuildReason) rebuildOwned.push(rebuildReason);
       const stats = step?.result?.stats ?? step?.result?.result?.stats;
       if (stats && typeof stats === 'object') {
         for (const [key, value] of Object.entries(stats)) {
@@ -428,6 +431,12 @@ export async function announceRunOutcome(session, { runId, ok, signal = null } =
   // told to answer "in the same language as the facts", so every workspace —
   // whatever its language — got its run outcomes in French.
   const verificationLine = verificationFacts(verification);
+  // A curation that wrote nothing on purpose: its findings are generated
+  // pivots a TAXO rebuild regenerates. Without this fact the "success" reads
+  // as if corrections were waiting for review, and there are none.
+  const rebuildLine = rebuildOwned.length > 0
+    ? ` Curation wrote no correction and there is nothing to review: every finding is on generated wiki/concepts pivots, which a TAXO rebuild regenerates (${rebuildOwned.join('; ')}). Next step: /wiki-rebuild.`
+    : '';
   const factLine = (finished
     ? `Plan finished successfully — ${completed}/${total} task(s) succeeded.`
     : `Plan NOT finished — ${completed}/${total} task(s) succeeded` +
@@ -435,9 +444,10 @@ export async function announceRunOutcome(session, { runId, ok, signal = null } =
       `${failed ? `, ${failed} failed` : ''}` +
       `${cancelled ? `, ${cancelled} cancelled` : ''}` +
       `${skipped ? `, ${skipped} skipped because an earlier step did not succeed` : ''}.` +
-      `${firstError ? ` First error: ${firstError}.` : ''}`) + statsLine + verificationLine;
+      `${firstError ? ` First error: ${firstError}.` : ''}`) + statsLine + verificationLine + rebuildLine;
   const content = await phraseFactsForUser(session, factLine, { signal, rules: [
     'If the facts say the plan is NOT finished, say so plainly and name what is still pending or failed: never claim the work was completed, published or successful.',
+    'When the facts say a curation wrote no correction because its findings are generated pivots, say there is nothing to review and propose /wiki-rebuild; never call it a failure nor claim corrections were made.',
     'When the facts carry a post-action verification, state it: how many results were verified, and say plainly when a result was not observed or could not be verified. A success receipt alone is never an observed result.',
   ] });
   dispatchAgentEvent(session, createAgentEvent('assistant_message', {

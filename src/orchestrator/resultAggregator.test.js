@@ -448,3 +448,39 @@ test('a curation that wrote no file says so instead of vanishing from the review
     rmSync(workspacePath, { recursive: true, force: true });
   }
 });
+
+test('a curation that wrote nothing on purpose (rebuild-owned) completes and names the rebuild', async () => {
+  // Observed on juno: every finding sat on generated wiki/concepts pivots, the
+  // Redactor wrote nothing as told, and the task failed with "re-run with a
+  // narrower objective" — which Donna turned into "a human must intervene".
+  const workspacePath = mkdtempSync(join(tmpdir(), 'worktree-proposal-'));
+  const session = { agentEvents: [], activities: {}, workspace: 'docs', workspacePath, headlessPlan: [] };
+  try {
+    await accept({
+      ok: true,
+      taskId: 't-curate',
+      status: 'completed',
+      outputRefs: [],
+      rawStatus: {
+        runId: 'gateway-2',
+        status: 'completed',
+        result: {
+          status: 'completed', content: 'report',
+          worktreeProposal: { branch: 'agent/gateway-2', changedFiles: [], changes: [], diff: '' },
+          curationOutcome: { kind: 'rebuild_owned', reason: 'wiki/concepts/x/y.md lacks sources:' },
+        },
+      },
+    }, {
+      session,
+      runId: 'run-curate',
+      task: { id: 't-curate', requiredCapability: 'agent.curate', operation: 'run' },
+    });
+    assert.equal(existsSync(join(workspacePath, '.wiki', 'agent-proposals')), false, 'nothing to review is persisted');
+    assert.ok(session.agentEvents.some((event) => /found nothing to curate.*\/wiki-rebuild.*lacks sources:/.test(String(event.payload?.message ?? ''))));
+    assert.equal(session.agentEvents.some((event) => /wrote no file on its branch/.test(String(event.payload?.message ?? ''))), false);
+    assert.equal(session.agentEvents.some((event) => event.type === 'task.failed'), false);
+    assert.ok(session.agentEvents.some((event) => event.type === 'task.completed'), 'the task completes');
+  } finally {
+    rmSync(workspacePath, { recursive: true, force: true });
+  }
+});

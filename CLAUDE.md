@@ -94,7 +94,7 @@ src/orchestrator/           Generic, business-agnostic orchestration core
   dispatcher.js             agent_execute/agent_status/agent_cancel driver
   assignmentManager.js      Task → agent instance assignment
   attemptManager.js         Attempts, retries, agent fallback
-  resultAggregator.js       TaskResult intake, DAG update, plan expansion, worktree proposal persistence (a zero-file proposal becomes a failure), task warnings relayed to Logs
+  resultAggregator.js       TaskResult intake, DAG update, plan expansion, worktree proposal persistence (a zero-file proposal becomes a failure unless the gateway reports `curationOutcome: rebuild_owned`), task warnings relayed to Logs
   approvalPolicy.js         Bounded ApprovalGrants (run + revision + class)
   proactiveReviewScheduler.js Deterministic dedup/cooldown/budget for proactive agent.review audits
   knowledgeSignals.js       Deterministic live-corpus scanners (stale sources, TAXO inconsistencies: a tag in several families, a pivot without fiche citations)
@@ -1056,7 +1056,11 @@ machinery — the manager only RECORDS, it never writes wiki content. A
 `worktreeProposal` with zero changed files is not persisted as a success:
 `failEmptyWorktreeProposal` turns the task into `ok:false` with the runtime's
 degradation causes (`<role>: <cause>`) in the error, because its report only
-describes corrections that were never written.
+describes corrections that were never written. The exception is the gateway's
+`curationOutcome: {kind: 'rebuild_owned', reason}` (the Redactor wrote nothing
+ON PURPOSE: every finding is on a generated pivot): the task completes, the log
+names `/wiki-rebuild`, and `announceRunOutcome` adds a "nothing to review, next
+step /wiki-rebuild" fact for Donna to word.
 
 Any MCP can opt into manager monitoring by returning additive `_activity`
 metadata with `id`, `source`, `kind`, `label`, `status`, optional `progress`,

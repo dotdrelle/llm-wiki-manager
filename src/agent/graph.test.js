@@ -1131,6 +1131,14 @@ test('buildAgentSystemPrompt never reads a tool-less capability as unsupported',
   assert.match(prompt, /Never tell the user a capability is missing or must be added to a catalogue/);
 });
 
+test('buildAgentSystemPrompt forbids launching a delayed request now', () => {
+  // Observed on juno: "lance curate dans 10 min" launched at once and the
+  // delay vanished from the answer.
+  const prompt = buildAgentSystemPrompt({ session: sessionBase({}) });
+  assert.match(prompt, /You cannot schedule anything/);
+  assert.match(prompt, /do NOT launch it now and never claim it is scheduled/);
+});
+
 test('buildAgentSystemPrompt makes Donna re-check a connector instead of repeating an earlier failure', () => {
   // Observed on juno: after the user authorized Gmail, two turns repeated
   // "not configured" from history with no tool call.

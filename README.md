@@ -7,9 +7,11 @@ creates workspace folders, assigns ports, starts Docker services, exposes MCP
 endpoints, and provides the `donna` shell: an agent-first terminal UI that can
 inspect workspaces, run safe manager commands, call MCP tools, guide production
 jobs, and run one-shot headless tasks. Its workspace registry is also the source
-of truth for the Claude Desktop integration: each MCP extension connection is
-bound to one selected workspace, and the Claude plugin uses the same registry
-when it runs a workspace skill headlessly.
+of truth for the Claude Desktop integration (`plugins/llm-wiki`): one MCP
+extension serves every initialized workspace of the registry, with one active
+workspace selected at a time, and the Claude plugin uses the same registry when
+it runs a workspace skill headlessly. Setup, updates and limits:
+[`docs/claude-desktop.md`](docs/claude-desktop.md).
 
 The `llm-wiki`, `llm-wiki-manager` and agent images are released together under
 one coordinated version — the one npm shows above, and the one every image tag

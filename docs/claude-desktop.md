@@ -8,7 +8,8 @@ The recommended local integration uses the two packages built in
 - `dist/llm-wiki.plugin`: the Claude skill and its usage instructions.
 
 This integration does not require ShellUI, `serve`, or a manually edited MCP
-JSON file.
+JSON file. It needs Node.js 22 or later on the `PATH` Claude Desktop sees (the
+engine requires it) and a built engine (`pnpm build` in `llm-wiki/`).
 
 ## Install the packaged integration
 
@@ -24,18 +25,55 @@ In Claude Desktop:
 1. Open **Settings → Extensions → Install Extension** and select
    `dist/llm-wiki-claude.mcpb`.
 2. Set **wiki-manager state directory** to the directory containing the
-   workspace registry.
+   workspace registry (`workspaces/`). Pick a permanent directory: one under
+   `/tmp` is emptied at reboot and the extension then starts with no
+   workspace.
 3. Set **wiki-workspace installation directory** to the `llm-wiki` directory
    containing `dist/bin/wiki.js`.
 4. Open **Settings → Plugins → Import plugin** and select
    `dist/llm-wiki.plugin`.
 5. Restart Claude Desktop, or disable and re-enable the extension.
 
-The extension discovers every initialized workspace in the manager registry.
-In a conversation, use `wiki_workspace_list`, select one with
-`wiki_workspace_select`, then use the standard `wiki_*` tools. The selection is
-kept for the extension session and prevents reads or writes from being routed
-to another workspace.
+The extension discovers every initialized workspace in the manager registry
+and starts one engine process (`wiki.js mcp`) per workspace; an uninitialized
+workspace is skipped and named in the extension log. In a conversation, use
+`wiki_workspace_list`, select one with `wiki_workspace_select`, then use the
+standard `wiki_*` tools, which are routed to the active workspace only. With a
+single workspace it is selected automatically.
+
+Current limits of the multi-workspace mode:
+
+- The active workspace lives in the extension process, which Claude Desktop
+  normally shares between conversations: selecting a workspace in one
+  conversation changes it for the others (`wiki_workspace_current` tells).
+- No tool queries several workspaces at once: compare two workspaces by
+  selecting them one after the other.
+- The registry is read at start-up only: a workspace added or initialized
+  later appears after the extension is restarted.
+- Every workspace keeps its engine process for the whole session.
+- Only one ingestion is tracked at a time; `wiki_ingest_stop` stops the last
+  one started.
+- Writes (`wiki_write_page`, `wiki_add_source`, `template_write`,
+  `profile_update`) go straight to the engine, not through Donna; the engine
+  still refuses them while a production job writes the wiki.
+
+## Update the integration
+
+`dist/` is not versioned. After pulling `plugins/llm-wiki`, rebuild both files,
+reinstall the `.mcpb` (and re-import the `.plugin` if the skill changed), then
+disable and re-enable the extension. The connector, the `.mcpb` manifest and
+the plugin manifest carry one version, checked by `node
+scripts/check-versions.mjs` and by both build scripts; the running connector
+reports it as `serverInfo.version`. To check that the installed connector is
+the source one:
+
+```bash
+diff -q "$HOME/Library/Application Support/Claude/Claude Extensions/local.mcpb.dotdrelle.llm-wiki-claude/bin/llm-wiki-connect.mjs" \
+  plugins/llm-wiki/bin/llm-wiki-connect.mjs && echo "up to date"
+```
+
+A connector older than 0.6.0 crashes on `wiki_ingest` (the ingestion keeps
+running, the extension's tools disappear): reinstall it.
 
 The engine field expects the parent directory, not the `wiki.js` file and not
 `dist/bin` itself. For a development checkout it is the `llm-wiki/` repository
@@ -63,9 +101,11 @@ Exécute /wiki doctor sur ACPI.
 
 `wiki_ingest` is the native ingestion command. `doctor`, `run`, `build`, and
 `export` are native `wiki-workspace` commands exposed through
-`wiki_command_run`; they are not workspace skills. A skill declared under
-`.wiki/skills/` is listed with `wiki_skill_list` and executed with
-`wiki_skill_run`.
+`wiki_command_run`; they are not workspace skills, and `run` passes its
+arguments to the engine unchanged. A skill declared under `.wiki/skills/` is
+listed with `wiki_skill_list` and executed with `wiki_skill_run` through
+`wiki-manager --headless --skill`, without auto-approval: a mutating skill
+stops on its approval, which is given in the ShellUI or `serve`.
 
 ## Manual stdio configuration
 

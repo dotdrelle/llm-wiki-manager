@@ -359,7 +359,12 @@ stream would accelerate one phase, not the run.
   the proposal; it never writes wiki content. A `worktreeProposal` with zero
   changed files is a FAILURE, not a proposal: the task returns `ok:false` with
   the runtime's degradation causes and the message that its report describes
-  corrections that were never written; nothing is filed for review.
+  corrections that were never written; nothing is filed for review. One
+  exception: a result carrying `curationOutcome: {kind: "rebuild_owned",
+  reason}` — the Redactor ended on a `[rebuild-owned] <reason>` line because
+  every finding sits on a generated `wiki/concepts/` pivot. That task
+  completes, nothing is filed, and the run outcome tells Donna there is
+  nothing to review and that `/wiki-rebuild` is the next step.
 
   Gateway-side ceilings for the hands (all optional, defaults in
   parentheses): `GATEWAY_RECURSION_LIMIT` (40) graph steps, `GATEWAY_TOKEN_BUDGET`

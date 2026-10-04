@@ -84,6 +84,13 @@ export async function accept(result, {
       taskId,
       payload: { message: `agent-proposal: could not persist the worktree proposal for ${taskId}: ${worktreePersisted.error}` },
     })));
+  } else if (worktreePersisted.empty && rebuildOwnedReasonOf(result)) {
+    persistDispatch(store, dispatchAgentEvent(session, createAgentEvent('runtime_log', {
+      origin: 'result_aggregator',
+      runId,
+      taskId,
+      payload: { message: `agent-proposal: ${taskId} found nothing to curate — every finding is on a generated pivot, which a TAXO rebuild (/wiki-rebuild) fixes: ${rebuildOwnedReasonOf(result)}` },
+    })));
   } else if (worktreePersisted.empty) {
     persistDispatch(store, dispatchAgentEvent(session, createAgentEvent('runtime_log', {
       origin: 'result_aggregator',
@@ -335,10 +342,27 @@ function worktreeProposalOf(result) {
     ?? result?.worktreeProposal;
 }
 
+/**
+ * The gateway's `curationOutcome` when the Redactor wrote nothing ON PURPOSE:
+ * every finding sat on a generated wiki/concepts pivot, which a TAXO rebuild
+ * regenerates. Returns the reason, or null.
+ */
+export function rebuildOwnedReasonOf(result) {
+  const outcome = result?.rawStatus?.result?.curationOutcome
+    ?? result?.result?.curationOutcome
+    ?? result?.curationOutcome;
+  if (outcome?.kind !== 'rebuild_owned') return null;
+  return String(outcome.reason ?? '').trim() || 'every finding is on a generated pivot';
+}
+
 function failEmptyWorktreeProposal(result) {
   const proposal = worktreeProposalOf(result);
   if (!proposal || typeof proposal !== 'object' || !resultOk(result)) return result;
   if (Array.isArray(proposal.changes) && proposal.changes.length > 0) return result;
+  // A deliberate no-op is an outcome: failing it made Donna tell the human
+  // that re-running "would reproduce the same failure" instead of naming the
+  // rebuild that fixes the pivots (observed on juno).
+  if (rebuildOwnedReasonOf(result)) return result;
   const degradations = result?.rawStatus?.result?.degradations ?? result?.result?.degradations ?? [];
   const causes = [...new Set((Array.isArray(degradations) ? degradations : [])
     .map((item) => `${item?.role ?? 'runtime'}: ${item?.cause ?? 'degraded'}`))];

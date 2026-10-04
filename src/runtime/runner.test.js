@@ -1306,6 +1306,24 @@ test('announceRunOutcome never calls a plan with pending tasks a success', async
   assert.doesNotMatch(message.payload.content, /finished successfully/i);
 });
 
+test('announceRunOutcome says a rebuild-owned curation has nothing to review and names /wiki-rebuild', async () => {
+  const session = {
+    agentEvents: [],
+    agentProjection: null,
+    headlessPlan: [{
+      id: 'a',
+      description: 'Curate',
+      status: 'done',
+      result: { rawStatus: { result: { curationOutcome: { kind: 'rebuild_owned', reason: 'pivots lack sources:' } } } },
+    }],
+  };
+  await announceRunOutcome(session, { runId: 'run-2', ok: true });
+  const message = session.agentEvents.find((event) => event.type === 'assistant_message');
+  assert.match(message.payload.content, /nothing to review/);
+  assert.match(message.payload.content, /pivots lack sources:/);
+  assert.match(message.payload.content, /\/wiki-rebuild/);
+});
+
 test('announceRunOutcome names the steps a failed chain abandoned', async () => {
   // `skipped` fell through every bucket: a 3-step chain failing at step 1
   // announced "0/3 réussie(s), 1 en erreur" and never mentioned the two steps

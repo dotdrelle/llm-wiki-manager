@@ -469,6 +469,12 @@ so you can tune it up (or down) with confidence.
 
 ### The mental model
 
+For the user-facing explanation of `Concurrent tasks: 1 / 4`, the separate connector
+and production defaults, and examples of which setting to increase, see
+[Configuration and performance](https://github.com/dotdrelle/llm-wiki/blob/main/help-doc/10-configuration-performance.md).
+The Shell summary counts running plan tasks against their resolved limit;
+it does not count model calls inside an ingestion task.
+
 The number of tasks that run in parallel for a capability run (ingest, build,
 export, polish, pipeline) is:
 
@@ -493,6 +499,9 @@ workspace-locked TAXO operation: it extracts sections, writes the fiches, and
 regenerates tag-family pages as one cycle. The concurrency setting does not
 split that user-visible operation into separate analysis and apply tasks;
 section extraction concurrency is bounded inside the ingestion job.
+That separate limit is `limits.maxInFlightRequests` in the workspace
+`.wikirc.yaml` (default 3, maximum 16), shared across source/section extraction
+calls. Changing the production task capacity does not change it.
 - **Build** (per template): scoped to `template:<name>`, so distinct templates
   build in parallel.
 - **Export / Polish** (per deliverable): scoped to `deliverable:<path>`, so
@@ -535,7 +544,10 @@ PRODUCTION_MAX_CONCURRENCY=16
 
 Set these next to the manager `.env` (they are passed through to the
 `production-mcp` service by the generated compose), then recreate the agent
-container. Keep `WIKI_MANAGER_CAPABILITY_CONCURRENCY` unset or ≥ your target.
+container (a restart alone does not reload its Compose environment). Restart
+the manager runtime if its environment changed. Keep
+`WIKI_MANAGER_CAPABILITY_CONCURRENCY` unset or ≥ your target; a commented
+`# WIKI_MANAGER_CAPABILITY_CONCURRENCY=4` line sets no ceiling.
 
 ### Verifying and going higher without errors
 

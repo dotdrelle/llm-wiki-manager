@@ -410,15 +410,27 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
       : Math.max(1, activeParallel, ...groupConcurrency);
     const done = tasks.filter((task: any) => String(task.status) === 'done').length;
     const usage = workflow?.usage ?? {};
+    const ingestionTasks = tasks.filter((task: any) => ['ingest', 'ingest_rebuild'].includes(task.raw?.operation ?? task.raw?.arguments?.operation));
+    const ingestionLlmLimit = runtimeState()?.ingestionLlmLimit;
     const tokens = (known: unknown, value: unknown) =>
       known ? new Intl.NumberFormat().format(Number(value) || 0) : '—';
 
     return [
       `${agents.size} agent${agents.size === 1 ? '' : 's'}`,
-      `parallel ${activeParallel}/×${maxParallel}${resolved?.cappedByCeiling ? ' (ceiling)' : ''}`,
+      `Concurrent tasks: ${activeParallel} / ${maxParallel}${resolved?.cappedByCeiling ? ' (manager cap)' : ''}`,
       `${done}/${tasks.length} tasks`,
       `${tokens(usage.inputKnown, usage.inputTokens)} in · ${tokens(usage.outputKnown, usage.outputTokens)} out`,
-    ].join(' · ');
+    ].join(' · ') + [
+      ...(resolved ? [`Task limits: agent recommended ${resolved.agentRecommended ?? 'not reported'} · agent maximum ${resolved.agentMaximum ?? 'not reported'} · manager ${resolved.ceiling ?? 'unset'}`] : []),
+      ...(ingestionTasks.length ? [`LLM calls per ingestion: limit ${ingestionLlmLimit ?? 'not reported'}`] : []),
+      ...ingestionTasks.map((task: any) => {
+        const files = new Set([
+          ...(task.raw?.inputRefs ?? []).filter((ref: any) => ref.type === 'file').map((ref: any) => ref.ref),
+          ...(task.raw?.arguments?.inputs ?? []),
+        ]);
+        return files.size ? `1 ingestion task processes ${files.size} input files.` : '1 ingestion task processes the batch.';
+      }),
+    ].map((line) => `\n${line}`).join('');
   });
   const visibleLogs = createMemo(() => {
     version();

@@ -164,7 +164,7 @@ test('ShellUI shows the canonical run summary above the plan', async () => {
   const tui = await readFile(new URL('./tui.tsx', import.meta.url), 'utf8');
   assert.match(session, /const runSummary = createMemo/);
   assert.match(session, /agent\$\{agents\.size === 1/);
-  assert.match(session, /parallel \$\{activeParallel\}\/×\$\{maxParallel\}/);
+  assert.match(session, /Concurrent tasks: \$\{activeParallel\} \/ \$\{maxParallel\}/);
   assert.match(session, /usage\.inputKnown/);
   assert.match(session, /usage\.outputKnown/);
   assert.match(pane, /summary=\{props\.runSummary\}/);
@@ -1574,4 +1574,3 @@ test('shell memory actions go through the runtime and refuse an unquoted fact', 
   await actions.restore({ key: 'k1', historyId: 'h1' });
   assert.deepEqual(calls.at(-1).body, { historyId: 'h1' });
 });
-

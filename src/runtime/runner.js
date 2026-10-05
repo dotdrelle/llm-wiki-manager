@@ -495,6 +495,8 @@ export async function runRuntimeParallelPlan(agent, session, input, {
     limit,
     ceiling: concurrencyDetail.ceiling,
     agentLimit: concurrencyDetail.agentLimit,
+    agentRecommended: concurrencyDetail.agentRecommended,
+    agentMaximum: concurrencyDetail.agentMaximum,
     cappedByCeiling: concurrencyDetail.cappedByCeiling,
   };
   const active = new Map();

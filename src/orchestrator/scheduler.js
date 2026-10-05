@@ -23,6 +23,10 @@ export function describePlanConcurrency({ plan = [], agents = [], configured = n
   });
   const ceiling = positiveInteger(configured);
   const agentValues = relevantAgents.flatMap(concurrencyValues).filter(Boolean);
+  const agentFieldLimit = (key) => {
+    const values = relevantAgents.map((agent) => positiveInteger((agent.description?.limits ?? agent.limits)?.[key])).filter(Boolean);
+    return values.length ? Math.min(...values) : null;
+  };
   const taskValues = plan.flatMap(concurrencyValues).filter(Boolean);
   const values = [ceiling, ...taskValues, ...agentValues].filter(Boolean);
   const limit = values.length > 0 ? Math.max(1, Math.min(...values)) : DEFAULT_SCHEDULER_CONCURRENCY;
@@ -36,6 +40,8 @@ export function describePlanConcurrency({ plan = [], agents = [], configured = n
     limit,
     ceiling: ceiling ?? null,
     agentLimit: agentValues.length > 0 ? Math.min(...agentValues) : null,
+    agentRecommended: agentFieldLimit('recommendedConcurrency'),
+    agentMaximum: agentFieldLimit('maxConcurrency'),
     taskLimit: taskValues.length > 0 ? Math.min(...taskValues) : null,
     cappedByCeiling,
   };

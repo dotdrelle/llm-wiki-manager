@@ -156,6 +156,8 @@ test('describePlanConcurrency mirrors resolvePlanConcurrency and flags the ceili
   const capped = describePlanConcurrency({ plan, agents, configured: 3 });
   assert.equal(capped.limit, 3);
   assert.equal(capped.ceiling, 3);
+  assert.equal(capped.agentRecommended, 10);
+  assert.equal(capped.agentMaximum, 12);
   assert.equal(capped.cappedByCeiling, true);
 
   // Ceiling above the agent declaration → does not bind, not flagged.

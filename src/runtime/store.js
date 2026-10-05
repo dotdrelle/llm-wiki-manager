@@ -1347,6 +1347,14 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       // replayed/historical state — the UIs then fall back to the plan-derived
       // value. Never consumed by scheduling.
       concurrency: session?._runConcurrency ?? null,
+      // Configured extraction capacity, not a live count of provider calls.
+      // Never expose the rest of wikirc (which may contain credentials).
+      ingestionLlmLimit: session?.wikircConfig
+        ? (() => {
+          const value = session.wikircConfig.limits?.maxInFlightRequests ?? 3;
+          return Number.isInteger(value) && value >= 1 && value <= 16 ? value : null;
+        })()
+        : null,
       workflow: projectWorkflow({ ...baseState, runs, workspace }, events ?? session?.agentEvents ?? []),
     };
   }

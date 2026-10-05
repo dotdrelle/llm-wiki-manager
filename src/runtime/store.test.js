@@ -1255,3 +1255,18 @@ test('orchestration memory survives restart, is bounded and cannot cross workspa
     assert.ok(session._readOrchestrationIncidents().every((hint) => hint.workspace === 'two'));
   } finally { reopened.close(); }
 });
+
+
+test('runtime exposes only the configured ingestion call limit, without wikirc credentials', () => {
+  const store = openRuntimeStore({ stateDir: runtimeStateDir() });
+  try {
+    const state = store.getState({ wikircConfig: { limits: { maxInFlightRequests: 6 }, llm: { apiKey: 'secret-for-test' } } });
+    assert.equal(state.ingestionLlmLimit, 6);
+    assert.ok(!JSON.stringify(state).includes('secret-for-test'));
+    assert.equal(store.getState({ wikircConfig: {} }).ingestionLlmLimit, 3);
+    assert.equal(store.getState().ingestionLlmLimit, null);
+    assert.equal(store.getState({ wikircConfig: { limits: { maxInFlightRequests: 17 } } }).ingestionLlmLimit, null);
+  } finally {
+    store.close();
+  }
+});

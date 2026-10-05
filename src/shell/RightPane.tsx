@@ -222,7 +222,7 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
     const label = props.jobName ? `Plan : ${props.jobName}` : 'Plan';
     return visualRows() > PLAN_MIN_VIEWPORT_ROWS ? `${label} (${props.plan.length}) · scroll` : label;
   };
-  const summaryLines = () => props.summary ? wrapLine(props.summary, lineWidth()).slice(0, 2) : [];
+  const summaryLines = () => props.summary ? props.summary.split('\n').flatMap((line) => wrapLine(line, lineWidth())) : [];
   // flexBasis 0: the Plan and the run logs share the column by their grow
   // ratio, never by their content. With a content basis, a long log (hundreds
   // of lines) and a long plan both claimed their full height: the Plan box

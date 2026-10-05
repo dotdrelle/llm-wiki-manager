@@ -489,6 +489,11 @@ of you in the browser (create → configure → start the agents → open).
 
 ## Documentation
 
+For the meaning of `Concurrent tasks: 1 / 4`, connector versus production defaults,
+and which setting to change for tasks or ingestion model calls, read the
+[Configuration and performance help chapter](https://github.com/dotdrelle/llm-wiki/blob/main/help-doc/10-configuration-performance.md),
+also available in the product's Help panel.
+
 The deep reference lives on git, not on this page: an npm landing page should
 answer "what is this and how do I start it", and stop there.
 

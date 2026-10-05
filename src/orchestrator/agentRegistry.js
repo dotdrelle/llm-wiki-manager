@@ -198,7 +198,7 @@ function registerAgent(session, agent, { agentsByInstance, instanceByServer, las
     const wasAnswering = lastProbeFailed.get(previous.agentInstanceId) !== true;
     lastProbeFailed.set(previous.agentInstanceId, true);
     if (wasAnswering) {
-      dispatchRuntimeLog(session, `agent-registry: ${agent.serverName} did not answer agent_describe`
+      dispatchRuntimeLog(session, `⚠ agent-registry: ${agent.serverName} did not answer agent_describe`
         + `${agent.error ? ` (${agent.error})` : ''}; keeping its known capabilities`
         + ` (${(previous.description?.capabilities ?? []).map((capability) => capability.id).join(', ') || 'none'}).`);
     }

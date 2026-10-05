@@ -131,6 +131,14 @@ const SUBCOMMAND_COMPLETION_DESCRIPTIONS = {
   '/skills:list': 'List workspace skills.',
   '/skills:run': 'Prepare one skill for guided execution.',
   '/skills:show': 'Show one workspace skill.',
+  '/maintenance:status': 'Show saved maintenance history and pending decisions.',
+  '/maintenance:enable': 'Enable automatic maintenance for this workspace.',
+  '/maintenance:disable': 'Disable automatic maintenance for this workspace.',
+  '/maintenance:pause': 'Pause maintenance while keeping pending decisions.',
+  '/maintenance:resume': 'Resume paused maintenance.',
+  '/maintenance:stop': 'Stop active maintenance work.',
+  '/maintenance:approve': 'Approve an exact pending maintenance decision.',
+  '/maintenance:refuse': 'Refuse an exact pending maintenance decision.',
 };
 
 export function runtimeUnavailableReason(runtime) {
@@ -168,7 +176,7 @@ export function createSession() {
     wikircConfig: null,
     language: null,
     mcp: null,
-    commands: ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'connector', 'wiki', 'skills', 'upload', 'uploads', 'clear', 'chat', 'agent', 'openui', 'run', 'cancel', 'queue', 'approve', 'remember', 'memory', 'forget'],
+    commands: ['help', 'version', 'exit', 'workspace', 'new', 'use', 'config', 'status', 'services', 'start', 'stop', 'logs', 'mcp', 'connector', 'wiki', 'skills', 'upload', 'uploads', 'clear', 'chat', 'agent', 'openui', 'run', 'cancel', 'queue', 'approve', 'maintenance', 'remember', 'memory', 'forget'],
     chatMode: true,
     llm: null,
     activities: {},
@@ -326,6 +334,7 @@ function completionValuesFor(parts, inputBuffer, session) {
   if (command === '/config' && tokenIndex === 1) return ['edit', 'list', 'status', 'use'];
   if (command === '/config' && (previousToken === 'use' || previousToken === 'edit')) return wikircProfileNames(session);
   if (command === '/mcp' && tokenIndex === 1) return ['call', 'endpoints', 'status', 'tools'];
+  if (command === '/maintenance' && tokenIndex === 1) return ['approve', 'disable', 'enable', 'pause', 'refuse', 'resume', 'status', 'stop'];
   if (command === '/mcp' && previousToken === 'tools') return mcpNames(session);
   if (command === '/mcp' && previousToken === 'call') return mcpNames(session);
   if (command === '/mcp' && parts[1] === 'call' && tokenIndex === 3) return mcpToolNames(session, parts[2]);
@@ -1950,7 +1959,9 @@ export async function runLine(line, { agent, packageJson, session, onUpdate, onS
   }
 
   const explicitSkill = /^\/skills\s+run\s+([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/i.exec(trimmed);
-  const directSkill = matchSkillInvocation(session, trimmed);
+  // Maintenance is a built-in shell command. A workspace skill with the same
+  // slash name must never shadow `/maintenance status` (or its controls).
+  const directSkill = /^\/maintenance(?:\s|$)/i.test(trimmed) ? null : matchSkillInvocation(session, trimmed);
   const runtimeSkillInput = explicitSkill
     ? `/${explicitSkill[1]}${explicitSkill[2] ? ` ${explicitSkill[2]}` : ''}`
     : (directSkill ? trimmed : null);
@@ -2002,7 +2013,7 @@ export async function runLine(line, { agent, packageJson, session, onUpdate, onS
     // and only for slash commands — free text got a single row.
     const result = await handleSlashCommand(trimmed, { packageJson, session, onStep, runtime });
     const messages = conversationMessages(session);
-    const deterministicDisplayOnly = /^\/status(?:\s|$)/.test(trimmed);
+    const deterministicDisplayOnly = /^\/(?:status|maintenance)(?:\s|$)/i.test(trimmed);
     const commandAgentTrigger = result.output && agent && !deterministicDisplayOnly
       ? (result.agentTrigger ?? rawCommandAgentPrompt(trimmed, result.output))
       : null;

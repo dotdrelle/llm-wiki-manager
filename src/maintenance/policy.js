@@ -4,7 +4,7 @@ export const DEFAULT_POLICY = {
   enabled: false, actions: { sync:'auto', ingest:'ask', doctor:'auto', index:'auto', rebuild:'auto', curate:'auto', build:'auto', deliver:'ask', mail:'auto' },
   mail: { to: [], on: ['failure','decision','daily'] },
   limits: { cyclesPerDay:12, buildsPerDay:4, actionsPerDay:40, actionsPerCycle:10, sourceQuietMinutes:10 },
-  buildSchedule: null,
+  buildSchedule: { mode:'window', start:'02:00', end:'05:00', timezone:'Europe/Paris' },
 };
 export const fingerprint = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export function maintenancePolicy(document, workspace) {

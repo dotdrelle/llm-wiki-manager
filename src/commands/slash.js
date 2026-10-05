@@ -678,7 +678,7 @@ export async function refreshMcpRuntimeStatus(session, deps = {}) {
 function reportNewlyDegradedMcp(session, previousMcp) {
   for (const [name, entry] of Object.entries(session.mcp ?? {})) {
     if (!entry?.degraded || previousMcp?.[name]?.degraded) continue;
-    emitRuntimeLog(session, `mcp: ${name} still reports "connected" only from a prior probe`
+    emitRuntimeLog(session, `⚠ mcp: ${name} still reports "connected" only from a prior probe`
       + ` (${entry.toolError ?? 'no detail'}); Docker/the latest probe no longer confirm it.`);
   }
 }
@@ -837,6 +837,7 @@ ${helpPair('/use <workspace>', 'Use workspace', '/status', 'Session status')}
 ${helpPair('/config list', 'Config profiles', '/config use <n>', 'Use config')}
 ${helpPair('/config edit <n>', 'Edit config', '/workspace delete <n>', 'Delete workspace')}
 ${helpPair('/services', 'Services', '/start [all|agents|services]', 'all = services + agents')}
+${helpPair('/maintenance status', 'Maintenance history', '/maintenance enable', 'Enable independent wiki maintenance')}
 ${helpPair('/stop [all|everything|service|agents]', 'Stop service(s)', '/logs <service>', 'Service logs')}
 ${helpPair('/skills', 'List skills', '/skills show <n>', 'Show skill')}
 ${helpPair('/skills run <n>', 'Run skill guide', '/skills edit <n>', 'Edit skill')}

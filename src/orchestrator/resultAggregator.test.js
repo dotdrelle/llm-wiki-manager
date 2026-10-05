@@ -484,3 +484,29 @@ test('a curation that wrote nothing on purpose (rebuild-owned) completes and nam
     rmSync(workspacePath, { recursive: true, force: true });
   }
 });
+
+test('a curation with no source fiches completes without creating an empty proposal', async () => {
+  const workspacePath = mkdtempSync(join(tmpdir(), 'worktree-proposal-'));
+  const session = { agentEvents: [], activities: {}, workspace: 'docs', workspacePath, headlessPlan: [] };
+  try {
+    await accept({
+      ok: true,
+      taskId: 't-curate-empty',
+      status: 'completed',
+      outputRefs: [],
+      rawStatus: {
+        runId: 'gateway-empty',
+        status: 'completed',
+        result: { status: 'completed', content: 'no sources', curationOutcome: {
+          kind: 'nothing_to_curate', reason: 'No wiki/sources fiche exists yet; ingest first.',
+        } },
+      },
+    }, { session, runId: 'run-empty', task: { id: 't-curate-empty', requiredCapability: 'agent.curate' } });
+    assert.equal(existsSync(join(workspacePath, '.wiki', 'agent-proposals')), false);
+    assert.ok(session.agentEvents.some((event) => /skipped.*No wiki\/sources fiche exists yet; ingest first/.test(String(event.payload?.message ?? ''))));
+    assert.equal(session.agentEvents.some((event) => event.type === 'task.failed'), false);
+    assert.ok(session.agentEvents.some((event) => event.type === 'task.completed'));
+  } finally {
+    rmSync(workspacePath, { recursive: true, force: true });
+  }
+});

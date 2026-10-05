@@ -8,6 +8,7 @@ import {
   buildDirectChatSystemPrompt,
   chatAllowedTools,
   createSession,
+  completionContext,
   isProductHelpQuestion,
   readSelectedPageDocuments,
   runHeadlessChatTurn,
@@ -115,6 +116,18 @@ test('ShellUI renders newest-first order in both Runtime and Agent status', asyn
     source.indexOf('function logEntryLines'),
   );
   assert.match(renderedLogs, /return blocks\.reverse\(\)\.flat\(\)/);
+});
+
+test('ShellUI keeps Maintenance visible when disabled and offers explicit controls', async () => {
+  const pane = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
+  const block = pane.slice(pane.indexOf('<Show when={props.maintenance}>'), pane.indexOf('<TabHeader'));
+  assert.match(block, /marginBottom=\{1\}/);
+  assert.match(block, /: 'disabled'/);
+  assert.match(block, /content=" Enable "/);
+  assert.match(block, /'\/maintenance enable'/);
+  assert.match(block, /'\/maintenance status'/);
+  assert.match(block, /maintenanceBuildWindow\(props\.maintenance\?\.buildSchedule\)/);
+  assert.doesNotMatch(block, /Actions:/);
 });
 
 test('Activity uses only visible jobs and leaves remaining height to Flow/Trace', async () => {
@@ -789,6 +802,33 @@ test('built-in /status keeps priority while /skills run status explicitly reache
     restore();
     if (previousEnvFile === undefined) delete process.env.WIKI_MANAGER_ENV_FILE;
     else process.env.WIKI_MANAGER_ENV_FILE = previousEnvFile;
+  }
+});
+
+test('ShellUI offers /maintenance completion and dispatches it before a same-named workspace skill', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'shell-maintenance-command-'));
+  mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
+  writeFileSync(join(root, '.wiki', 'skills', 'maintenance.md'), '---\nname: maintenance\nparams: []\n---\nNot the built-in command.');
+  const session = createSession();
+  session.workspace = 'docs';
+  session.workspacePath = root;
+  assert.ok(completionContext('/mai', session)?.matches.includes('/maintenance'));
+  assert.deepEqual(completionContext('/maintenance ', session)?.matches, ['approve', 'disable', 'enable', 'pause', 'refuse', 'resume', 'status', 'stop']);
+  const requests = [];
+  const restore = stubFetch(async (url, options = {}) => {
+    requests.push({ path: pathOf(url), method: options.method, body: options.body ? JSON.parse(options.body) : null });
+    return jsonResponse(200, { enabled: true, paused: false, requests: [], events: [], cycles: [], history: { hasMore: false } });
+  });
+  try {
+    await runLine('/maintenance status', { agent: null, packageJson: { version: 'test' }, session, runtime: { url: 'http://runtime.test' } });
+    assert.equal(requests.length, 1);
+    assert.match(requests[0].path, /\/maintenance/);
+    assert.deepEqual(requests[0].body, { command: 'status', historyOffset: 0 });
+    assert.equal(conversationMessages(session).at(-1)?.role, 'command');
+    assert.doesNotMatch(conversationMessages(session).at(-1)?.content ?? '', /Unknown skill/);
+  } finally {
+    restore();
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

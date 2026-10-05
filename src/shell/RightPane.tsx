@@ -27,6 +27,10 @@ const ACTIVITY_SLOTS = Array.from({ length: 4 }, (_, index) => index);
 // exceeds that window.
 const PLAN_MIN_VIEWPORT_ROWS = 6;
 
+function maintenanceBuildWindow(schedule: any) {
+  return schedule ? `${schedule.start}–${schedule.end} (${schedule.timezone})` : 'not set; automatic builds wait';
+}
+
 function wrapLine(value: string, width: number) {
   const max = Math.max(8, width);
   const text = String(value);
@@ -624,13 +628,16 @@ export function RightPane(props: {
       overflow="hidden"
       focusable={false}
     >
-      <Show when={props.maintenance?.enabled || props.maintenance?.requests?.some((r: any) => r.status === 'pending')}>
-        <box flexDirection="column" border={['left']} borderColor="#FBBF24" paddingX={1}>
-          <text fg="#FBBF24" content={`Maintenance: ${props.maintenance?.paused ? 'paused' : 'active'}`} />
+      <Show when={props.maintenance}>
+        <box flexDirection="column" border={['left']} borderColor="#FBBF24" paddingX={1} marginBottom={1}>
+          <text fg="#FBBF24" content={`Maintenance: ${props.maintenance?.enabled ? (props.maintenance?.paused ? 'paused' : 'active') : 'disabled'}`} />
+          <text content={`Build window: ${maintenanceBuildWindow(props.maintenance?.buildSchedule)}`} />
           <box flexDirection="row">
             <text content=" History " onMouseUp={() => props.onMaintenance?.('/maintenance status')} />
-            <text content=" Pause " onMouseUp={() => props.onMaintenance?.('/maintenance pause')} />
-            <text fg="#F38BA8" content=" Stop " onMouseUp={() => props.onMaintenance?.('/maintenance stop')} />
+            <Show when={props.maintenance?.enabled} fallback={<text fg="#A6E3A1" content=" Enable " onMouseUp={() => props.onMaintenance?.('/maintenance enable')} />}>
+              <text content={props.maintenance?.paused ? ' Resume ' : ' Pause '} onMouseUp={() => props.onMaintenance?.(props.maintenance?.paused ? '/maintenance resume' : '/maintenance pause')} />
+              <text fg="#F38BA8" content=" Stop " onMouseUp={() => props.onMaintenance?.('/maintenance stop')} />
+            </Show>
           </box>
           <For each={(props.maintenance?.requests ?? []).filter((r: any) => r.status === 'pending').slice(0, 3)}>{(r: any) => (
             <box flexDirection="column">

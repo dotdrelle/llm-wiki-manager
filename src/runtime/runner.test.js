@@ -1324,6 +1324,23 @@ test('announceRunOutcome says a rebuild-owned curation has nothing to review and
   assert.match(message.payload.content, /\/wiki-rebuild/);
 });
 
+test('announceRunOutcome tells the user to ingest before curating an empty wiki', async () => {
+  const session = {
+    agentEvents: [],
+    agentProjection: null,
+    headlessPlan: [{
+      id: 'curate-empty', description: 'Curate', status: 'done',
+      result: { rawStatus: { result: { curationOutcome: {
+        kind: 'nothing_to_curate', reason: 'No wiki/sources fiche exists yet.',
+      } } } },
+    }],
+  };
+  await announceRunOutcome(session, { runId: 'run-empty', ok: true });
+  const message = session.agentEvents.find((event) => event.type === 'assistant_message');
+  assert.match(message.payload.content, /ingest source documents first/i);
+  assert.match(message.payload.content, /no curation roles ran/i);
+});
+
 test('announceRunOutcome names the steps a failed chain abandoned', async () => {
   // `skipped` fell through every bucket: a 3-step chain failing at step 1
   // announced "0/3 réussie(s), 1 en erreur" and never mentioned the two steps

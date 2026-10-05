@@ -307,6 +307,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     finally{active.get(workspace)?.unsubscribe?.();active.delete(workspace);}
   }
   async function control(workspace,command,options={}) {
+    if(command==='clear'){store.clearHistory(workspace);return status(workspace,options);}
     if(command==='resume'){store.pause(workspace,false);void tick(workspace);}
     if(['pause','stop'].includes(command))store.pause(workspace,true);
     if(command==='stop') {
@@ -332,7 +333,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     }
     return status(workspace,options);
   }
-  function status(workspace,options={}){const page=store.statusPage(workspace,options);const cycles=store.cycles(workspace).map(({secret,...c})=>c);let p,error;try{p=policy(workspace);}catch(e){error=e.message;}return {enabled:p?.enabled??false,paused:store.paused(workspace),policyVersion:p?.version,error,...page,reservations:page.reservations.map(({candidate,...r})=>r),cycles};}
+  function status(workspace,options={}){const page=store.statusPage(workspace,options);const cycles=store.cycles(workspace).map(({secret,...c})=>c);let p,error;try{p=policy(workspace);}catch(e){error=e.message;}return {enabled:p?.enabled??false,paused:store.paused(workspace),policyVersion:p?.version,actions:p?.actions??null,buildSchedule:p?.buildSchedule??null,error,...page,reservations:page.reservations.map(({candidate,...r})=>r),cycles};}
   // A human switch: Donna's tools never reach it (they only read, pause and stop).
   async function setEnabled(workspace,enabled){
     const doc=structuredClone(readDocument()??{});

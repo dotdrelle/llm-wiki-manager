@@ -4,8 +4,14 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { agentConcurrencySections, compactBaseUrl, compactMcpStatus, handleSlashCommand, localizedOperationResult, refreshMcpRuntimeStatus, webUiUrl } from './slash.js';
+import { agentConcurrencySections, compactBaseUrl, compactMcpStatus, handleSlashCommand, helpText, localizedOperationResult, refreshMcpRuntimeStatus, webUiUrl } from './slash.js';
 import { completionContext } from '../shell/repl.js';
+
+test('interactive help advertises independent wiki maintenance controls', () => {
+  const output = helpText({ version: 'test' });
+  assert.match(output, /\/maintenance status/);
+  assert.match(output, /\/maintenance enable/);
+});
 
 test('deterministic operation results ask Donna to localize compact facts without leaking commands', () => {
   const result = localizedOperationResult({ operation: 'start', target: 'agents' });
@@ -537,4 +543,3 @@ test('memory commands are not deterministic primitives: they point to a Donna tu
     assert.match(result.output, /handled by Donna in a conversation turn/);
   }
 });
-

@@ -105,6 +105,13 @@ export async function accept(result, {
       taskId,
       payload: { message: `agent-proposal: ${taskId} is waiting for review — ${worktreePersisted.path}` },
     })));
+  } else if (nothingToCurateReasonOf(result)) {
+    persistDispatch(store, dispatchAgentEvent(session, createAgentEvent('runtime_log', {
+      origin: 'result_aggregator',
+      runId,
+      taskId,
+      payload: { message: `agent-proposal: ${taskId} skipped — ${nothingToCurateReasonOf(result)}` },
+    })));
   }
   persistDispatch(store, dispatchAgentEvent(session, createAgentEvent('plan_step_updated', {
     origin: 'result_aggregator',
@@ -353,6 +360,14 @@ export function rebuildOwnedReasonOf(result) {
     ?? result?.curationOutcome;
   if (outcome?.kind !== 'rebuild_owned') return null;
   return String(outcome.reason ?? '').trim() || 'every finding is on a generated pivot';
+}
+
+export function nothingToCurateReasonOf(result) {
+  const outcome = result?.rawStatus?.result?.curationOutcome
+    ?? result?.result?.curationOutcome
+    ?? result?.curationOutcome;
+  if (outcome?.kind !== 'nothing_to_curate') return null;
+  return String(outcome.reason ?? '').trim() || 'no eligible wiki/sources fiches exist yet; ingest source documents first';
 }
 
 function failEmptyWorktreeProposal(result) {

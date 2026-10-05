@@ -295,7 +295,7 @@ nothing and is reported by `/maintenance status`. User view:
 | `defaults.actions.<action>` | see below | `auto`, `ask` or `off`; `build`/`deliver` also accept a list of `templates/…` / `deliverables/…` paths (those `auto`, the rest `off`) |
 | `defaults.mail.to` | `[]` | the only recipients maintenance may email |
 | `defaults.mail.on` | `failure, decision, daily` | immediate alerts (failure, decision) and a digest of the previous day |
-| `defaults.buildSchedule` | `null` | `{mode: "window", start, end, timezone}`; without it no build starts automatically |
+| `defaults.buildSchedule` | `02:00–05:00 Europe/Paris` | `{mode: "window", start, end, timezone}`; set it to `null` to disable automatic builds |
 | `defaults.limits.cyclesPerDay` | `12` | agent cycles (routine work is not counted) |
 | `defaults.limits.buildsPerDay` | `4` | build attempts, reserved at admission |
 | `defaults.limits.actionsPerDay` / `actionsPerCycle` | `40` / `10` | every action, routine included |

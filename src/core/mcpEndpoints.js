@@ -96,3 +96,24 @@ export function deleteManagedMcpEndpoint(rawName) {
 }
 
 export function readMaintenanceAccessDocument() { return readDocument().raw; }
+
+/**
+ * Turn automatic maintenance on or off for ONE workspace. Only
+ * `maintenanceAccess.workspaces.<name>.enabled` is written: the operator's
+ * other settings (actions, limits, build window, mail) are left as they are.
+ * The resulting policy is validated by the caller before this write is kept
+ * (see maintenance/service.js setEnabled).
+ */
+export function setMaintenanceEnabled(rawWorkspace, enabled) {
+  const workspace = normalizeName(rawWorkspace);
+  const { filePath, raw } = readDocument();
+  const before = JSON.stringify(raw.maintenanceAccess ?? null);
+  raw.maintenanceAccess ??= { defaults: { enabled: false }, workspaces: {} };
+  if (!raw.maintenanceAccess || typeof raw.maintenanceAccess !== 'object' || Array.isArray(raw.maintenanceAccess)) {
+    throw new Error('maintenanceAccess must be a JSON object.');
+  }
+  raw.maintenanceAccess.workspaces ??= {};
+  raw.maintenanceAccess.workspaces[workspace] = { ...(raw.maintenanceAccess.workspaces[workspace] ?? {}), enabled: Boolean(enabled) };
+  writeDocument(filePath, raw);
+  return { workspace, enabled: Boolean(enabled), previous: before };
+}

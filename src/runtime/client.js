@@ -339,5 +339,5 @@ export async function runtimeMaintenance({url,workspace,token=runtimeToken(),com
     method:command?'POST':'GET', headers:{...runtimeHeaders(token),'Content-Type':'application/json'},
     ...(command?{body:JSON.stringify({command,...args})}:{})
   });
-  const result=await response.json();if(!response.ok)throw new Error(result.error??'Maintenance unavailable');return result;
+  const result=await response.json();if(!response.ok)throw new Error(result.message??result.error??'Maintenance unavailable');return result;
 }

@@ -4,7 +4,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { deleteManagedMcpEndpoint, listManagedMcpEndpoints, upsertManagedMcpEndpoint } from './mcpEndpoints.js';
+import { deleteManagedMcpEndpoint, listManagedMcpEndpoints, setMaintenanceEnabled, upsertManagedMcpEndpoint } from './mcpEndpoints.js';
 import { buildMcpStatus, discoverMcpTools, resetMcpSessionsForTests } from './mcp.js';
 import { chatAllowedTools } from '../shell/repl.js';
 import { buildAgentSystemPrompt } from '../agent/graph.js';
@@ -122,5 +122,20 @@ test('a UI-added MCP is rediscovered for both chat wildcard and direct agent too
       globalThis.fetch = originalFetch;
       resetMcpSessionsForTests();
     }
+  });
+});
+
+test('maintenance enable writes only the workspace switch and keeps the operator settings', async () => {
+  await withEndpoints(async (root) => {
+    const file = join(root, 'mcp.endpoints.json');
+    const doc = JSON.parse(readFileSync(file, 'utf8'));
+    doc.maintenanceAccess = { defaults: { enabled: false, limits: { buildsPerDay: 2 } }, workspaces: { juno: { actions: { build: 'off' } } } };
+    writeFileSync(file, JSON.stringify(doc));
+    setMaintenanceEnabled('juno', true);
+    const after = JSON.parse(readFileSync(file, 'utf8'));
+    assert.deepEqual(after.maintenanceAccess.workspaces.juno, { actions: { build: 'off' }, enabled: true });
+    assert.deepEqual(after.maintenanceAccess.defaults, { enabled: false, limits: { buildsPerDay: 2 } });
+    assert.deepEqual(after.mcpServers, doc.mcpServers);
+    assert.throws(() => setMaintenanceEnabled('../escape', true));
   });
 });

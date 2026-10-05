@@ -281,7 +281,10 @@ connector usable locally and retries on the next reconnect.
 ### `maintenanceAccess` — automatic maintenance
 
 Top-level key of `mcp.endpoints.json`, beside `chatAccess` (not in
-`.wikirc.yaml`). The scaffold's additive merge adds it, disabled, to an existing
+`.wikirc.yaml`). `/maintenance enable|disable` and the served Maintenance panel
+write only `workspaces.<current>.enabled`, through `mcpEndpoints.js`
+(`setMaintenanceEnabled`), after validating the resulting policy; Donna's tools
+cannot. The scaffold's additive merge adds it, disabled, to an existing
 install. Validated by `src/maintenance/policy.js`; an invalid block enables
 nothing and is reported by `/maintenance status`. User view:
 `llm-wiki/help-doc/14-maintenance.md`.

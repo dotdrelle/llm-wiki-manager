@@ -8,7 +8,7 @@ import { persistWorktreeProposal } from '../orchestrator/resultAggregator.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { maintenancePolicy, actionMode, inBuildWindow, MAINTENANCE_ACTIONS, fingerprint, describeReasons, describeError, fileNames } from './policy.js';
 import { createMaintenanceStore } from './store.js';
-import { readMaintenanceAccessDocument } from '../core/mcpEndpoints.js';
+import { readMaintenanceAccessDocument, setMaintenanceEnabled } from '../core/mcpEndpoints.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
 import { discoverRuntimeProvidersOnce } from '../orchestrator/providers/runtimeProviders.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
@@ -25,7 +25,7 @@ const modeFor=(p,c)=>{const mode=actionMode(p,c.action,c.target);return c.humanE
 const terminal=(s)=>['done','completed','succeeded','failed','error','cancelled'].includes(s);
 const parse=(r)=>{if(r?.content){const text=formatMcpToolResult(r);try{return JSON.parse(text);}catch{return parseYaml(text);}}return r;};
 const wait=(signal)=>new Promise((resolve,reject)=>{const abort=()=>{clearTimeout(timer);reject(signal.reason??new Error('aborted'));};const timer=setTimeout(()=>{signal?.removeEventListener('abort',abort);resolve();},500);if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});});
-export function createMaintenanceService({db,getContext,baseUrl,readDocument=readMaintenanceAccessDocument,callTool=callMcpTool,now=()=>new Date(),onEvent=null,discover=discoverRuntimeProvidersOnce,intervalMs=Number(process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_MS??300_000)}) {
+export function createMaintenanceService({db,getContext,baseUrl,readDocument=readMaintenanceAccessDocument,callTool=callMcpTool,now=()=>new Date(),onEvent=null,discover=discoverRuntimeProvidersOnce,writeEnabled=setMaintenanceEnabled,intervalMs=Number(process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_MS??300_000)}) {
   const store=createMaintenanceStore(db);const active=new Map();const scans=new Set();const inflight=new Map();let timer;
   const policy=(workspace)=>maintenancePolicy(readDocument(),workspace);
   const log=(w,kind,message,extra={})=>{let version;try{version=policy(w).version;}catch{version='invalid-policy';}const event=store.event(w,{kind,message:`Maintenance: ${message}`,origin:'maintenance',policyVersion:version,author:`maintenance:${version}`,...extra});try{onEvent?.(w,event);}catch{/* the Logs mirror never breaks the durable history */}return event;};
@@ -288,9 +288,29 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     return status(workspace);
   }
   function status(workspace){const cycles=store.cycles(workspace).map(({secret,...c})=>c);let p,error;try{p=policy(workspace);}catch(e){error=e.message;}return {enabled:p?.enabled??false,paused:store.paused(workspace),policyVersion:p?.version,error,requests:store.requests(workspace),reservations:store.reservations(workspace).map(({candidate,...r})=>r),cycles,events:store.events(workspace)};}
+  // A human switch: Donna's tools never reach it (they only read, pause and stop).
+  async function setEnabled(workspace,enabled){
+    const doc=structuredClone(readDocument()??{});
+    doc.maintenanceAccess??={defaults:{enabled:false},workspaces:{}};
+    doc.maintenanceAccess.workspaces??={};
+    doc.maintenanceAccess.workspaces[workspace]={...(doc.maintenanceAccess.workspaces[workspace]??{}),enabled};
+    let next;
+    try{next=maintenancePolicy(doc,workspace);}catch(error){throw new Error(`maintenance_policy_invalid: ${error.message}`);}
+    writeEnabled(workspace,enabled);
+    if(enabled){
+      store.pause(workspace,false);
+      const asks=Object.entries(next.actions).filter(([,m])=>m==='ask').map(([a])=>a);
+      const offs=Object.entries(next.actions).filter(([,m])=>m==='off').map(([a])=>a);
+      log(workspace,'enabled',`turned on by you for ${workspace}.${asks.length?` It asks you first for: ${asks.join(', ')}.`:''}${offs.length?` Turned off: ${offs.join(', ')}.`:''}${next.buildSchedule?` Builds run between ${next.buildSchedule.start} and ${next.buildSchedule.end}.`:' Builds stay off until you set a build window (maintenanceAccess.buildSchedule).'}`);
+      void tick(workspace);
+    }else{
+      log(workspace,'disabled',`turned off by you for ${workspace}; a job already running finishes, nothing new starts. Pending decisions are kept.`);
+    }
+    return status(workspace);
+  }
   const isActive=(workspace)=>active.has(workspace)||inflight.has(workspace);
   const activeRuns=()=>[...new Set([...active.keys(),...inflight.keys()])].map((workspace)=>({workspace,runId:active.get(workspace)?.cycle?.id??'maintenance',kind:'maintenance'}));
-  return {store,state,tick,status,control,authorizeBridge,runCandidate,modelAdmission,isActive,activeRuns,
+  return {store,state,tick,status,control,authorizeBridge,runCandidate,modelAdmission,isActive,activeRuns,setEnabled,
     modelDone:(cycleId,call)=>{store.settle(`${cycleId}:model:${call}`);return {ok:true};},
     decide:async(w,id,v,approved)=>{if(approved){const requested=store.requests(w).find((r)=>r.id===id);if(!requested)throw new Error('maintenance_request_unknown');const view=await state(w);const current=view.candidates.find((c)=>c.action===requested.action&&c.target===requested.target&&c.operation===requested.candidate.operation);const clean=current?Object.fromEntries(Object.entries(current).filter(([k])=>!['mode','outsideWindow'].includes(k))):null;if(!clean||fingerprint(clean)!==v){if(clean)store.propose(w,clean);throw new Error('maintenance_request_replaced_or_target_changed');}}const request=store.decide(w,id,v,approved);if(approved)void tick(w);return request;},
     start(){timer=setInterval(()=>{let doc;try{doc=readDocument();}catch{return;}for(const w of listWorkspaces()){try{if(maintenancePolicy(doc,w.name).enabled)void tick(w.name);}catch(e){log(w.name,'degraded',e.message);}}},Math.max(30_000,intervalMs||300_000));timer.unref?.();},

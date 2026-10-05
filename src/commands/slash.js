@@ -1073,11 +1073,14 @@ export async function handleSlashCommand(line, context) {
     case 'maintenance': {
       if(!context.runtime?.url)return {output:'Maintenance: runtime disconnected.'};
       const command=args[1]??'status';
-      if(!['status','pause','resume','stop','approve','refuse'].includes(command))return {output:'Usage: /maintenance status|pause|resume|stop|approve <id> <version>|refuse <id> <version>'};
+      if(!['status','enable','disable','pause','resume','stop','approve','refuse'].includes(command))return {output:'Usage: /maintenance status|enable|disable|pause|resume|stop|approve <id> <version>|refuse <id> <version>'};
+      if(['enable','disable'].includes(command)&&!context.session.workspace)return {output:'Maintenance: no active workspace — /use <workspace> first.'};
       try {
         const decision=['approve','refuse'].includes(command);
         if(decision&&(!args[2]||!args[3]))return {output:'Specify the request id and exact version from /maintenance status.'};
         const result=await runtimeMaintenance({url:context.runtime.url,workspace:context.session.workspace,command:decision?'decide':command,...(decision?{id:args[2],version:args[3],approved:command==='approve'}:{})});
+        // enable/disable act on the CURRENT workspace and answer with the event that says what it implies.
+        if(['enable','disable'].includes(command))return {output:String(result.events?.filter((e)=>e.kind===(command==='enable'?'enabled':'disabled')).at(-1)?.message??`Maintenance: ${command}d for ${context.session.workspace}.`)};
         return {output:'Maintenance: '+JSON.stringify(result,null,2)};
       }catch(e){return {output:'Maintenance: '+e.message};}
     }

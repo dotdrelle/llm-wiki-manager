@@ -1,12 +1,13 @@
+import { sanitizeSessionPlanForExecution } from './sessionPlan.js';
 import { buildAgentSystemPrompt, formatLlmUnavailableMessage } from '../agent/graph.js';
 import { createAgentEvent, dispatchAgentEvent } from './agentEvents.js';
 import { activitySnapshot, newNonTerminalActivities } from './activity.js';
 import { formatCompletedActivities, formatPlanStatus } from './plan.js';
-import { formatReadyTaskPrompt, nextReadyPlanTask, readyPlanTasks, sanitizePlanForExecution } from './planPatch.js';
+import { formatReadyTaskPrompt, nextReadyPlanTask, readyPlanTasks } from './planPatch.js';
 import { isActive, isPending, normalizeTaskStatus } from '../orchestrator/taskStatuses.js';
 
-// Les deux formes d'attente d'un accord humain. Distinguées de `pending` :
-// approuver ne les rend pas prêtes de la même manière.
+// The two forms of waiting for a human approval. Distinguished from `pending`:
+// approving them does not make them ready in the same way.
 const isPendingApproval = (status) => ['pending_approval', 'waiting_approval'].includes(normalizeTaskStatus(status));
 
 export function abortError(message = 'Agent run cancelled.') {
@@ -78,8 +79,8 @@ export async function runAgenticLoop(agent, session, initialInput, {
 } = {}) {
   if (!waitForActivities) throw new Error('runAgenticLoop requires waitForActivities.');
   // Seeded with the chat that led to this run: a run that starts amnesiac
-  // receives an orphan sentence ("lance l'ingestion") and the model invents
-  // the missing context — the root of most "Donna répond sans savoir".
+  // receives an orphan sentence ("start the ingestion") and the model invents
+  // the missing context — the root of most "Donna answers without knowing".
   const conversationHistory = [...initialMessages];
   let currentInput = initialInput;
 
@@ -108,27 +109,27 @@ export async function runAgenticLoop(agent, session, initialInput, {
     }
     // NOTE: the deprecated text-plan extraction is gone. It converted any
     // numbered list in a chatty LLM answer into an executable plan — the
-    // model's own questions ("Souhaitez-vous que je vous guide ?") became
+    // model's own questions ("Would you like me to guide you?") became
     // pending tasks, each step re-invoked the LLM, which produced another
     // list… an infinite work-inventing loop. Plans now come ONLY from
     // explicit channels: wiki__plan_set, _activity.plan.steps, or an
     // integrated agent_plan fragment. Prose stays prose.
-    sanitizeSessionPlan(session, { runId });
+    sanitizeSessionPlanForExecution(session, runId);
 
     /*
-     Une décision prise arrête la conversation.
+     A decision made stops the conversation.
 
-     Dès qu'un fragment structuré est intégré pendant ce tour — Donna vient de
-     déléguer —, la boucle conversationnelle n'a plus rien à décider : le plan
-     existe, validé par l'agent qui l'exécutera. Elle rendait pourtant la main
-     au modèle, parce que le seul critère de bascule était « au moins deux
-     tâches PRÊTES » et qu'un plan intégralement en attente d'approbation n'en
-     compte aucune. Le modèle repartait donc, l'évaluateur jugeait le plan
-     incomplet, le replanificateur relançait une délégation : cinq tâches,
-     puis dix, puis quinze, à l'identique.
+     As soon as a structured fragment is integrated during this turn — Donna has
+     just delegated — the conversational loop has nothing left to decide: the plan
+     exists, validated by the agent that will execute it. Yet it handed back
+     to the model, because the only switch criterion was "at least two
+     tasks READY" and a plan entirely awaiting approval counts
+     none. The model therefore set off again, the evaluator judged the plan
+     incomplete, the replanner relaunched a delegation: five tasks,
+     then ten, then fifteen, identically.
 
-     L'attente d'approbation et l'exécution appartiennent au planificateur
-     parallèle, qui sait faire les deux. On lui rend la main tout de suite.
+     Awaiting approval and execution belong to the parallel planner,
+     which knows how to do both. It is handed control right away.
     */
     if (parallelHandoff && session._structuredPlanIntegrated) {
       session._structuredPlanIntegrated = false;
@@ -137,10 +138,10 @@ export async function runAgenticLoop(agent, session, initialInput, {
 
     const newPending = newNonTerminalActivities(snapshot, session);
     if (newPending.length === 0) {
-      // Toute attente est du travail inachevé — approbation comprise. La liste
-      // énumérait `pending` et `pending_approval` mais oubliait
-      // `waiting_approval`, que produit justement l'intégration d'un fragment
-      // délégué : un plan entier en attente se lisait « plus rien à faire ».
+      // Any wait is unfinished work — approval included. The list
+      // enumerated `pending` and `pending_approval` but forgot
+      // `waiting_approval`, which is precisely what integrating a delegated
+      // fragment produces: a whole plan awaiting approval read as "nothing left to do".
       const pending = (session.headlessPlan ?? []).filter((step) => isPending(step.status));
       const pendingSteps = readyPlanTasks(session.headlessPlan);
       if (pending.length === 0) {
@@ -189,19 +190,6 @@ export async function runAgenticLoop(agent, session, initialInput, {
   return { ok: false, maxTurns: true };
 }
 
-function sanitizeSessionPlan(session, { runId = null } = {}) {
-  if (!session.headlessPlan) return;
-  const sanitized = sanitizePlanForExecution(session.headlessPlan);
-  if (sanitized.warnings.length === 0) return;
-  session.headlessPlan = sanitized.plan;
-  dispatchAgentEvent(session, createAgentEvent('runtime_log', {
-    origin: 'runtime',
-    runId,
-    payload: {
-      message: `plan warning: ${sanitized.warnings.join('; ')}`,
-    },
-  }));
-}
 
 function pendingStepsPrompt(initialInput, plan, readyTask) {
   return [

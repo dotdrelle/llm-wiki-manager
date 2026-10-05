@@ -1,8 +1,9 @@
+import { sanitizeSessionPlanForExecution } from '../core/sessionPlan.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { isCancelledStatus, sessionActivities, terminalFailures } from '../core/activity.js';
 import { runAgenticLoop, throwIfAborted } from '../core/agentLoop.js';
 import { formatPlanStatus, formatPlanStep } from '../core/plan.js';
-import { readyPlanTasks, sanitizePlanForExecution } from '../core/planPatch.js';
+import { readyPlanTasks } from '../core/planPatch.js';
 import { createAssignmentManager } from '../orchestrator/assignmentManager.js';
 import { createAttemptManager } from '../orchestrator/attemptManager.js';
 import { workspaceLockRegistry } from '../orchestrator/lockManager.js';
@@ -718,20 +719,20 @@ export async function runRuntimeParallelPlan(agent, session, input, {
           return { ok: false, stalled: true, reason: 'awaiting_approval', completed: sessionActivities(session), failures };
         }
         /*
-         Une dépendance en échec n'est pas un blocage : c'est une réponse.
+         A failed dependency is not a blockage: it is an answer.
 
-         On arrivait ici avec des tâches en attente dont une dépendance avait
-         échoué, et on déclarait le plan bloqué — ce qui déclenchait une
-         replanification et laissait le run vivant indéfiniment. Ces tâches ne
-         deviendront jamais exécutables : les marquer `skipped` avec le nom de
-         la dépendance fautive fait avancer la boucle, laisse les branches
-         indépendantes finir, et termine le run sur un résultat partiel
-         explicite au lieu d'une panne muette.
+         We arrived here with pending tasks one of whose dependencies had
+         failed, and declared the plan blocked — which triggered a replan and
+         left the run alive indefinitely. Those tasks will never become
+         executable: marking them `skipped` with the name of the faulty
+         dependency moves the loop forward, lets independent branches finish,
+         and ends the run on an explicit partial result instead of a silent
+         breakdown.
         */
         const skippedCount = skipImpossibleTasks(session, runId);
         if (skippedCount > 0) {
-          // La boucle reprend : d'autres tâches peuvent être devenues prêtes,
-          // notamment derrière une barrière de groupe désormais terminale.
+          // The loop resumes: other tasks may have become ready, notably
+          // behind a now-terminal group barrier.
           continue;
         }
         // A task whose only blocker is a lock held by ANOTHER run or a direct
@@ -830,30 +831,29 @@ export async function runRuntimeParallelPlan(agent, session, input, {
 }
 
 /*
- Propagation d'un échec jusqu'au point fixe.
+ Failure propagation to the fixpoint.
 
- Marquer les seules tâches directement bloquées ne suffisait pas : `A failed`
- rendait `B` impossible, mais `C` — qui dépend de `B` — restait en attente
- d'une tâche désormais `skipped`, donc terminale sans succès. Il fallait un
- second passage pour l'atteindre, un troisième pour la suivante, et la boucle
- du planificateur ne les aurait découvertes qu'au prix d'un aller-retour par
- tour. On itère donc ici jusqu'à ce que plus rien ne change.
+ Marking only the directly blocked tasks was not enough: `A failed` made `B`
+ impossible, but `C` — depending on `B` — stayed pending on a now-`skipped`,
+ hence terminal-without-success, task. It took a second pass to reach it, a
+ third for the next, and the scheduler's loop would only have discovered them
+ at the cost of one round trip per turn. We therefore iterate here until
+ nothing changes.
 
- Le garde-fou n'est pas décoratif : si une passe ne produit aucune transition
- effective — une tâche déjà `skipped` que l'on retrouverait bloquée, par
- exemple —, on s'arrête. Sans lui, une incohérence de statut se paierait en
- boucle infinie, c'est-à-dire en run figé : exactement ce qu'on répare.
+ The guard is not decorative: if a pass produces no effective transition — a
+ task already `skipped` found blocked again, for example — we stop. Without
+ it, a status inconsistency would be paid for in an infinite loop, that is,
+ a frozen run: exactly what we are repairing.
 */
 /**
- * Diagnostic au moment d'un stall `no_ready_plan_task`.
+ * Diagnostic at the moment of a `no_ready_plan_task` stall.
  *
- * Le scheduler sait seulement « plus aucune tâche prête ». Pour distinguer
- * « dépendance en attente » de « approbation non couverte » de « lock tenu »
- * de « capability non résolue », on relit ici l'état RÉEL de chaque tâche
- * pendante : statut, statut de chaque dépendance, état de la barrière de
- * groupe, état des locks, couverture d'approbation, présence d'un fournisseur
- * de capability. Une ligne par tâche, lisible dans les logs SSE et reportée
- * dans le message du `run_error`.
+ * The scheduler only knows "no ready task left". To distinguish "dependency
+ * pending" from "approval not covered" from "lock held" from "capability
+ * unresolved", we re-read the REAL state of each pending task here: status,
+ * each dependency's status, group barrier state, lock state, approval
+ * coverage, presence of a capability provider. One line per task, readable in
+ * the SSE logs and reported in the `run_error` message.
  */
 function stallDiagnostics(plan, {
   approvals = [],
@@ -911,10 +911,10 @@ function stallDiagnostics(plan, {
 export function skipImpossibleTasks(session, runId, { maxPasses = 50 } = {}) {
   let total = 0;
   for (let pass = 0; pass < maxPasses; pass += 1) {
-    // Le plan est relu à chaque passe, jamais capturé : `dispatchAgentEvent`
-    // reprojette la session et REMPLACE `headlessPlan` par un nouveau tableau.
-    // Une référence prise avant la première dépêche deviendrait orpheline, et
-    // les passes suivantes muteraient un plan que plus personne ne lit.
+    // The plan is re-read on every pass, never captured: `dispatchAgentEvent`
+    // reprojects the session and REPLACES `headlessPlan` with a new array. A
+    // reference taken before the first dispatch would become orphaned, and
+    // later passes would mutate a plan nobody reads anymore.
     const plan = session.headlessPlan ?? [];
     const blocked = blockedByFailedDependency(plan);
     if (blocked.length === 0) break;
@@ -922,8 +922,8 @@ export function skipImpossibleTasks(session, runId, { maxPasses = 50 } = {}) {
     for (const { task, dependencies } of blocked) {
       const skippedId = String(task.id ?? task.taskId ?? task.step ?? '');
       const step = plan.find((candidate) => String(candidate?.id ?? candidate?.step ?? '') === skippedId);
-      // Déjà terminale : la repasser en `skipped` ne changerait rien et
-      // ferait tourner la boucle pour rien.
+      // Already terminal: marking it `skipped` again would change nothing and
+      // spin the loop for nothing.
       if (!step || isSkipped(step.status) || isTerminal(step.status)) continue;
       const because = dependencies.join(', ');
       step.status = 'skipped';
@@ -978,19 +978,6 @@ function refValue(value) {
   return value && typeof value === 'object' ? String(value.ref ?? '') : '';
 }
 
-function sanitizeSessionPlanForExecution(session, runId = null) {
-  if (!session.headlessPlan) return;
-  const sanitized = sanitizePlanForExecution(session.headlessPlan);
-  if (sanitized.warnings.length === 0) return;
-  session.headlessPlan = sanitized.plan;
-  dispatchAgentEvent(session, createAgentEvent('runtime_log', {
-    origin: 'runtime',
-    runId,
-    payload: {
-      message: `plan warning: ${sanitized.warnings.join('; ')}`,
-    },
-  }));
-}
 
 function abortCancelledActiveTasks(session, active) {
   for (const [taskId, entry] of active.entries()) {
@@ -1327,17 +1314,16 @@ export function structuredPlanEvaluation(plan) {
   // plans contain prose/tool labels and still use the compatibility evaluator.
   if (!plan.every((step) => step?.requiredCapability && step?.operation)) return null;
   /*
-   Compteurs séparés, jamais de fraction.
+   Separate counters, never a fraction.
 
-   « 9/10 » suppose un dénominateur qui veut dire quelque chose. Le plan mêle
-   des tâches métier (un fichier ingéré) et des étapes techniques (une
-   barrière, une agrégation) : la même fraction aurait dit tantôt « 9 fichiers
-   sur 10 », tantôt « 9 étapes sur 10 », sans que le lecteur puisse savoir
-   laquelle. Trois compteurs qui s'additionnent se vérifient d'un coup d'œil et
-   ne mentent sur rien.
+   "9/10" assumes a denominator that means something. The plan mixes business
+   tasks (one ingested file) and technical steps (a barrier, an aggregation):
+   the same fraction would have said sometimes "9 files out of 10", sometimes
+   "9 steps out of 10", without the reader being able to tell which. Three
+   counters that add up are checked at a glance and lie about nothing.
 
-   Et l'inverse compte autant : le message ne listait que les échecs, si bien
-   qu'un run où l'essentiel du travail avait abouti se lisait comme une panne.
+   And the converse matters as much: the message only listed failures, so a
+   run where most of the work succeeded read like a breakdown.
   */
   const done = plan.filter((step) => isSuccessful(step?.status));
   const failed = plan.filter((step) => isFailed(step?.status) || isCancelledStatus(step?.status));
@@ -1346,12 +1332,12 @@ export function structuredPlanEvaluation(plan) {
   const verification = verificationCounts(done);
   const label = (step) => step.label ?? step.description ?? step.id ?? step.step;
   /*
-   Les compteurs sont rendus tels quels, en plus de la phrase.
+   The counters are rendered as-is, in addition to the sentence.
 
-   Une phrase est faite pour être lue, pas analysée : tout consommateur qui
-   voudrait savoir « combien ont réussi » devrait la découper, donc dépendre de
-   sa formulation — et casser à la première reformulation. Les nombres sont la
-   donnée, la phrase n'en est qu'un rendu.
+   A sentence is meant to be read, not parsed: any consumer wanting to know
+   "how many succeeded" would have to split it, hence depend on its wording —
+   and break at the first rewording. The numbers are the data, the sentence is
+   only a rendering of them.
   */
   const counts = {
     total: plan.length,
@@ -1361,10 +1347,10 @@ export function structuredPlanEvaluation(plan) {
     unfinished: unfinished.length,
   };
   const summary = [
-    `${done.length} réussie(s)`,
-    failed.length > 0 ? `${failed.length} en échec` : null,
-    skipped.length > 0 ? `${skipped.length} ignorée(s) faute de dépendance` : null,
-    unfinished.length > 0 ? `${unfinished.length} non terminée(s)` : null,
+    `${done.length} succeeded`,
+    failed.length > 0 ? `${failed.length} failed` : null,
+    skipped.length > 0 ? `${skipped.length} skipped on a failed dependency` : null,
+    unfinished.length > 0 ? `${unfinished.length} unfinished` : null,
   ].filter(Boolean).join(', ');
 
   if (failed.length > 0 || skipped.length > 0) {
@@ -1373,19 +1359,19 @@ export function structuredPlanEvaluation(plan) {
       counts,
       reason: [
         `${summary}.`,
-        failed.length > 0 ? `Échecs : ${failed.map(label).join(', ')}.` : null,
-        skipped.length > 0 ? `Ignorées : ${skipped.map(label).join(', ')}.` : null,
+        failed.length > 0 ? `Failures: ${failed.map(label).join(', ')}.` : null,
+        skipped.length > 0 ? `Skipped: ${skipped.map(label).join(', ')}.` : null,
       ].filter(Boolean).join(' '),
       suggestedAction: null,
     };
   }
-  // Un statut actif ou inconnu ne peut jamais valoir un succès : le plan n'est
-  // pas fini, on le dit, on ne le suppose pas terminé.
+  // An active or unknown status can never be a success: the plan is not
+  // finished, we say so, we do not assume it is.
   if (unfinished.length > 0) {
     return {
       ok: false,
       counts,
-      reason: `${summary}. Le plan n'est pas terminé.`,
+      reason: `${summary}. The plan is not finished.`,
       suggestedAction: null,
     };
   }
@@ -1393,7 +1379,7 @@ export function structuredPlanEvaluation(plan) {
     ok: plan.length > 0 && verification.notObserved === 0,
     counts,
     verification,
-    reason: `${plan.length} tâche(s) déclarée(s) réussie(s) par les agents.${verificationFacts(verification)}`,
+    reason: `${plan.length} task(s) declared successful by the agents.${verificationFacts(verification)}`,
     suggestedAction: null,
   };
 }

@@ -1,3 +1,4 @@
+import { stripDsmlArtifacts } from '../core/textArtifacts.js';
 import { isTerminal } from '../orchestrator/taskStatuses.js';
 import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
@@ -182,12 +183,12 @@ export function conversationKey(session) {
 }
 
 /**
- * Horodate un message au moment où il entre dans la conversation.
+ * Timestamps a message as it enters the conversation.
  *
- * Posé sur le `push` du tableau plutôt qu'aux trente-deux endroits qui créent
- * un message : un seul de ces endroits oublié, et la ligne perdrait son heure
- * sans que rien ne le signale. Un message qui porte déjà `at` — rejoué depuis
- * l'historique, par exemple — garde le sien.
+ * Applied on the array's `push` rather than at the thirty-two places that
+ * create a message: one of those places forgotten, and the line would lose
+ * its time without anything signalling it. A message that already carries
+ * `at` — replayed from history, for instance — keeps its own.
  */
 function stampConversation(messages) {
   if (messages.__stamped) return messages;
@@ -297,11 +298,11 @@ function serviceChoices() {
 }
 
 /**
- * Agents proposés un par un, en plus du raccourci `agents`.
+ * Agents offered one by one, in addition to the `agents` shortcut.
  *
- * Seulement ceux derrière un drapeau de profil. Lister tous les agents avait
- * rallongé la liste de quatre entrées, dont `mailer` qui n'existe même pas tant
- * que l'opérateur ne l'a pas décommenté dans son override.
+ * Only those behind a profile flag. Listing every agent had lengthened the
+ * list by four entries, including `mailer` which does not even exist until
+ * the operator uncomments it in their override.
  */
 function togglableAgents() {
   return togglableAgentNames();
@@ -329,11 +330,11 @@ function completionValuesFor(parts, inputBuffer, session) {
   if (command === '/mcp' && parts[1] === 'call' && tokenIndex === 3) return mcpToolNames(session, parts[2]);
   if (command === '/connector' && tokenIndex === 1) return ['auth', 'list'];
   if (command === '/connector' && previousToken === 'auth') return ['google'];
-  // Pas de complétion des droits après le connecteur. `/connector auth google`
-  // demande déjà tout ce que l'agent sait faire, en une autorisation : proposer
-  // une liste laissait croire qu'il fallait choisir, et transformait une
-  // commande à taper d'un trait en menu à trois entrées. Les droits restent
-  // saisissables un par un pour restreindre, et le libellé de /connector le dit.
+  // No scope completion after the connector. `/connector auth google` already
+  // asks for everything the agent can do, in one authorization: offering a
+  // list suggested one had to choose, and turned a one-shot command into a
+  // three-entry menu. Scopes remain typeable one by one to restrict, and
+  // /connector's label says so.
   if (command === '/upload' && tokenIndex === 1) return ['convert'];
   if (command === '/upload' && parts[1] === 'convert' && tokenIndex === 2) return ['pending'];
   if (command === '/uploads' && tokenIndex === 1) return ['clean', 'list'];
@@ -353,8 +354,8 @@ function completionValuesFor(parts, inputBuffer, session) {
   if (command === '/wiki' && tokenIndex === 1) return ['run'];
   if (command === '/skills' && tokenIndex === 1) return ['edit', 'list', 'run', 'show'];
   if (command === '/skills' && ['edit', 'run', 'show'].includes(previousToken ?? '')) return skillNames(session);
-  // Vocabulaire de l'opérateur uniquement : `serviceChoices()` écarte les noms
-  // Compose bruts que les alias désignent déjà. Ils restent tapables.
+  // Operator vocabulary only: `serviceChoices()` skips the raw Compose names
+  // the aliases already designate. They remain typeable.
   if (command === '/start' && tokenIndex === 1) return ['all', 'agents', 'services', ...serviceChoices(), ...togglableAgents()];
   if (command === '/stop' && tokenIndex === 1) return ['all', 'everything', 'agents', 'services', ...serviceChoices(), ...togglableAgents()];
   if (command === '/logs' && tokenIndex === 1) return ['all', ...serviceChoices()];
@@ -901,12 +902,7 @@ function stripHtml(value) {
     .replace(/<\/?[^>]+>/g, '');
 }
 
-function stripDsmlArtifacts(value) {
-  return String(value ?? '')
-    .replace(/<\s*[|｜]{2}\s*DSML\s*[|｜]{2}[^>\r\n]*(?:>|$)/gi, '')
-    .replace(/^[^\S\r\n]*.*[|｜]{2}\s*DSML\s*[|｜]{2}.*(?:\r?\n|$)/gim, '')
-    .replace(/\n{3,}/g, '\n\n');
-}
+
 
 function truncateAnsi(value, maxWidth) {
   let visible = 0;
@@ -1863,12 +1859,12 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
 // driving a live repl bubble. The caller must have seeded session.chatAccess
 // (and session.mcp) so chatAllowedTools can resolve the allow-listed tools.
 /**
- * @param onTextDelta fragments de la réponse au fil de la génération. Fourni
- *   par le tour runtime, qui les publie en `assistant_delta` : le réducteur
- *   fait grandir la dernière entrée de conversation, et les deux interfaces
- *   affichent la réponse en train de s'écrire au lieu d'un point d'attente.
- * @param onTextReset fragments à jeter (itération qui s'est terminée par des
- *   appels d'outils plutôt que par une réponse).
+ * @param onTextDelta answer fragments as generation proceeds. Supplied by the
+ *   runtime turn, which publishes them as `assistant_delta`: the reducer grows
+ *   the last conversation entry, and both interfaces display the answer being
+ *   written instead of a waiting dot.
+ * @param onTextReset fragments to drop (an iteration that ended with tool
+ *   calls rather than an answer).
  */
 export async function runHeadlessChatTurn(session, input, { history = [], onStep, onTextDelta, onTextReset, openWikiPages, openWikiPage } = {}) {
   const donnaMessage = { role: 'donna', content: '' };

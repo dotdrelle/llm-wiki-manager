@@ -42,10 +42,9 @@ export async function runSkillChain(context, skill, {
   selectionKind = null,
   conversationId = null,
   /**
-   * Compétences déjà en cours d'exécution au-dessus de celle-ci. Chaque élément
-   * mis en file la porte, augmentée de la compétence courante : c'est ce qui
-   * permet au run imbriqué — qui démarre longtemps après son parent — de
-   * reconnaître un cycle.
+   * Skills already executing above this one. Each queued item carries it,
+   * extended by the current skill: that is what lets the nested run — which
+   * starts long after its parent — recognise a cycle.
    */
   skillStack = [],
 } = {}) {

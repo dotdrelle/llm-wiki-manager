@@ -1,29 +1,29 @@
 /**
- * Intégration d'une délégation préparée dans un run.
+ * Integrating a prepared delegation into a run.
  *
- * Ce code n'existait qu'en un point : le handler `/run`, qui recevait une
- * délégation préparée par `/delegate` et la posait comme plan d'un run NEUF.
- * D'où le blocage : un run conversationnel déjà actif appelait `/delegate`
- * pour déléguer sa propre décision, et l'endpoint refusait — à juste titre de
- * son point de vue — parce qu'un run tournait déjà. Le run refusait sa propre
- * délégation.
+ * This code existed in one place: the `/run` handler, which received a
+ * delegation prepared by `/delegate` and set it as a NEW run's plan. Hence
+ * the blockage: an already-active conversational run called `/delegate` to
+ * delegate its own decision, and the endpoint refused — rightly from its
+ * point of view — because a run was already going. The run refused its own
+ * delegation.
  *
- * Déléguer n'est pas démarrer un second run : c'est faire passer le run en
- * cours de la décision à l'exécution. La boucle sait déjà le faire — elle
- * repasse au planificateur parallèle dès qu'un plan validé apparaît
- * (`parallelHandoff`) — il ne lui manquait qu'un moyen d'intégrer le fragment
- * sans sortir par le réseau. C'est ce que fait cette fonction, appelée aussi
- * bien par `/run` (nouveau run) que depuis l'intérieur d'un run (délégation
- * interne), avec le même résultat et la même identité de run.
+ * Delegating is not starting a second run: it is moving the current run from
+ * decision to execution. The loop already knows how — it switches to the
+ * parallel scheduler as soon as a validated plan appears (`parallelHandoff`)
+ * — it merely lacked a way to integrate the fragment without going out over
+ * the network. That is what this function does, called both by `/run` (new
+ * run) and from inside a run (internal delegation), with the same result and
+ * the same run identity.
  */
 import { integrate } from '../orchestrator/planIntegrator.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { emitRuntimeLog } from './supervisor.js';
 
 /**
- * Une délégation n'est auto-approuvée que sur opt-in explicite : par défaut le
- * run attend une décision humaine, et la fenêtre `pending_approval` doit être
- * visible assez longtemps pour qu'une UI la rende.
+ * A delegation is auto-approved only on explicit opt-in: by default the run
+ * waits for a human decision, and the `pending_approval` window must be
+ * visible long enough for a UI to render it.
  */
 export function resolvePreparedDelegationApproval({
   autoApprove = false,
@@ -38,13 +38,13 @@ export function resolvePreparedDelegationApproval({
 }
 
 /**
- * Le run porte-t-il déjà un plan validé par un agent ?
+ * Does the run already carry an agent-validated plan?
  *
- * Une tâche structurée se reconnaît à son couple capacité/opération : c'est ce
- * qui la distingue d'une étape de plan conversationnelle, qui n'est qu'une
- * phrase. Le critère est celui de `shouldUseParallelScheduler`, à dessein —
- * ce qui déclenche la bascule et ce qui interdit une seconde délégation
- * doivent désigner le même objet.
+ * A structured task is recognised by its capability/operation pair: that is
+ * what distinguishes it from a conversational plan step, which is only a
+ * sentence. The criterion is `shouldUseParallelScheduler`'s, on purpose —
+ * what triggers the switch and what forbids a second delegation must
+ * designate the same object.
  */
 export function hasStructuredPlan(session) {
   return (session?.headlessPlan ?? []).some((task) => task?.requiredCapability && task?.operation);
@@ -77,16 +77,15 @@ export function integratePreparedDelegation({
     `delegation: ${prepared.fragment.tasks.length} validated task(s) integrated from ${prepared.provider?.serverName ?? 'agent'}.agent_plan (${prepared.capability}/${prepared.operation})`,
   );
   /*
-   Marqueur de bascule.
+   Switch marker.
 
-   La boucle conversationnelle ne pouvait pas deviner qu'un plan structuré
-   venait d'apparaître : elle ne regardait que les tâches PRÊTES, et un plan
-   intégralement en attente d'approbation n'en compte aucune. Elle concluait
-   donc « plus rien à faire », l'évaluateur jugeait le plan incomplet, le
-   replanificateur relançait une délégation — et cinq tâches devenaient dix,
-   puis quinze. Le drapeau dit ce que ni le nombre de tâches prêtes ni le
-   statut ne pouvaient dire : une décision vient d'être prise, la suite n'est
-   plus conversationnelle.
+   The conversational loop could not guess that a structured plan had just
+   appeared: it only looked at READY tasks, and a plan entirely waiting for
+   approval counts none of them. It therefore concluded "nothing left to do",
+   the evaluator judged the plan incomplete, the replanner relaunched a
+   delegation — and five tasks became ten, then fifteen. The flag says what
+   neither the ready-task count nor the status could say: a decision has just
+   been made, the rest is no longer conversational.
   */
   session._structuredPlanIntegrated = true;
   const approval = resolvePreparedDelegationApproval({ autoApprove, approvalManager, runId });
@@ -100,11 +99,11 @@ export function integratePreparedDelegation({
 }
 
 /**
- * Délégation depuis l'INTÉRIEUR du run courant.
+ * Delegation from INSIDE the current run.
  *
- * Rend un résumé destiné au modèle qui a appelé l'outil. Le `runId` rendu est
- * celui du run en cours, jamais un nouveau : c'est la garantie qu'on n'a pas
- * démarré un second run par la bande, et c'est ce que vérifient les tests.
+ * Returns a summary meant for the model that called the tool. The returned
+ * `runId` is the current run's, never a new one: that is the guarantee that
+ * no second run was started on the side, and that is what the tests check.
  */
 export async function delegateWithinRun(session, objective, {
   prepare,
@@ -116,13 +115,13 @@ export async function delegateWithinRun(session, objective, {
   const runId = session?._currentRunIdentity?.runId ?? null;
   if (!runId) throw new Error('No active run identity: in-run delegation requires a running run.');
   /*
-   Un run n'a qu'un plan.
+   A run has only one plan.
 
-   Garde-fou défensif : si la boucle rappelle l'outil alors qu'un plan
-   structuré est déjà en place, intégrer un second fragment dupliquerait le
-   travail au lieu de le remplacer — c'est très exactement ce qu'on a observé,
-   cinq tâches devenues trente-cinq. Le refus est explicite plutôt que
-   silencieux : le modèle doit lire qu'il redemande une chose déjà faite.
+   Defensive guard: if the loop calls the tool again while a structured plan
+   is already in place, integrating a second fragment would duplicate the work
+   instead of replacing it — that is exactly what was observed, five tasks
+   becoming thirty-five. The refusal is explicit rather than silent: the model
+   must read that it is asking again for something already done.
   */
   if (hasStructuredPlan(session)) {
     throw new Error('This run already carries a validated plan: it is executing, not deciding.');
@@ -137,8 +136,8 @@ export async function delegateWithinRun(session, objective, {
     approvalManager,
     autoApprove,
   });
-  // Le plan validé est en place : la boucle du run le verra au tour suivant et
-  // basculera d'elle-même sur le planificateur parallèle (parallelHandoff).
+  // The validated plan is in place: the run's loop will see it on the next
+  // turn and switch by itself to the parallel scheduler (parallelHandoff).
   dispatchAgentEvent(session, createAgentEvent('runtime_log', {
     origin: 'runtime',
     runId,

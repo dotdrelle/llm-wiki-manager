@@ -55,7 +55,7 @@ test('a failed operation reaches Donna as facts, never as docker output', () => 
   });
   assert.doesNotMatch(result.output, /docker compose|--env-file|unix:\/\//);
   assert.doesNotMatch(result.agentTrigger, /docker compose|--env-file|unix:\/\//);
-  assert.match(result.agentTrigger, /action concrète/);
+  assert.match(result.agentTrigger, /concrete action/);
 });
 
 test('an unclassified failure still carries a sanitized detail for Donna', () => {

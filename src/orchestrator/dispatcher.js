@@ -1,7 +1,8 @@
+import { toolNameFor, parseToolPayload } from '../core/mcpPayload.js';
 import { admitExecution } from '../maintenance/admission.js';
-import { normalizeActivity, parseJsonText } from '../core/activity.js';
+import { normalizeActivity } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
+import { callMcpTool } from '../core/mcp.js';
 import { loadWorkspaceProfile } from '../core/profile.js';
 import { formatWorkspaceMemoryFacts } from '../core/workspaceMemory.js';
 import { supportsTemperature } from '../core/llmCapabilities.js';
@@ -857,19 +858,8 @@ function transientError(value) {
   return /(?:429|timeout|temporar|throttl|rate.?limit|quota|busy|unavailable)/i.test(String(value ?? ''));
 }
 
-function toolNameFor(session, serverName, baseName) {
-  const tools = session.mcp?.[serverName]?.tools ?? [];
-  const names = tools.map((tool) => String(tool.name ?? '')).filter(Boolean);
-  return names.find((name) => name === baseName)
-    ?? names.find((name) => name === `${serverName}__${baseName}`)
-    ?? names.find((name) => name.endsWith(`__${baseName}`))
-    ?? baseName;
-}
 
-function parseToolPayload(result) {
-  if (result && typeof result === 'object' && !Array.isArray(result) && !Array.isArray(result.content)) return result;
-  return parseJsonText(formatMcpToolResult(result)) ?? {};
-}
+
 
 function resolvedTimeoutMs(assignment, timeoutMs) {
   const agentLimit = Number(assignment?.agent?.description?.limits?.maxTaskDurationMs ?? assignment?.description?.limits?.maxTaskDurationMs);
@@ -907,7 +897,6 @@ function taskLogPayload(event, task, assignment, {
     detail,
   };
 }
-
 
 function delay(ms, signal) {
   return new Promise((resolve, reject) => {

@@ -21,10 +21,10 @@ type LogLineParts = { time: string | null; message: string };
 // 4 slots (was 6): items can now span up to 5 lines each (wrapped label +
 // wrapped status/error), so fewer, readable entries beat more, truncated ones.
 const ACTIVITY_SLOTS = Array.from({ length: 4 }, (_, index) => index);
-// Hauteur MINIMALE du panneau Plan : 6 lignes visibles. Le panneau occupe
-// desormais tout l'espace libre jusqu'au panneau Runtime/Agent status (il ne
-// reste plus de trou de 6 lignes entre les deux) ; la scrollbox reste
-// defilable des que le plan depasse cette fenetre.
+// MINIMUM height of the Plan panel: 6 visible lines. The panel now takes all
+// the free space up to the Runtime/Agent status panel (no more 6-line gap
+// between the two); the scrollbox stays scrollable as soon as the plan
+// exceeds that window.
 const PLAN_MIN_VIEWPORT_ROWS = 6;
 
 function wrapLine(value: string, width: number) {
@@ -199,9 +199,9 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
   // Keep one column for the native vertical scrollbar when the plan is long.
   const lineWidth = () => Math.max(8, props.width - 3);
   const firstPending = () => props.plan.find((s) => s.status === 'pending')?.step ?? null;
-  // Plus de liseré bleu à gauche : l'icône et la couleur du texte suffisent à
-  // distinguer une étape en cours, et le cadre se voyait aussi sur une étape en
-  // attente (jaune). Toutes les étapes utilisent donc la même largeur.
+  // No more blue rule on the left: the icon and the text colour are enough to
+  // distinguish a running step, and the frame also showed on a pending
+  // (yellow) step. All steps therefore use the same width.
   const stepTextWidth = (_step: PlanStep) => lineWidth();
   const icon = (rawStatus: string) => {
     const status = String(rawStatus ?? '').toLowerCase();
@@ -301,7 +301,7 @@ export function ActivityPanel(props: { activities: any[]; width: number }) {
         <Index each={visible()}>
           {(activity) => {
             // Wrap instead of hard-truncating: a 40-column pane cut labels to
-            // "Appliquer la config recommandée (doct…" and hid the one thing
+            // "Apply the recommended config (doct…" and hid the one thing
             // that mattered. Labels get up to 2 lines, the status/error line
             // up to 2 lines; empty continuation lines are not rendered.
             const labelLines = () => {

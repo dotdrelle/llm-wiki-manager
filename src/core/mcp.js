@@ -514,7 +514,7 @@ export function truncateToolResult(text, maxChars = toolResultMaxChars()) {
   const headLength = Math.floor(maxChars * 0.7);
   const tailLength = Math.floor(maxChars * 0.2);
   const omitted = full.length - headLength - tailLength;
-  return `${full.slice(0, headLength)}\n\n[… ${omitted} caractères tronqués — résultat complet dans les logs runtime …]\n\n${full.slice(-tailLength)}`;
+  return `${full.slice(0, headLength)}\n\n[… ${omitted} characters truncated — full result in the runtime logs …]\n\n${full.slice(-tailLength)}`;
 }
 
 let _cachedEnvRetryPolicy = null;

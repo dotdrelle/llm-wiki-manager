@@ -93,18 +93,17 @@ export async function ensureRuntime({
   }
 
   const runtimeNode = await assertRuntimeNode();
-  // Le fils écrivait sur `stdio: 'ignore'`. Un runtime qui plantait au
-  // démarrage — port pris, état SQLite illisible, config invalide — ne laissait
-  // donc aucune trace, et le shell n'avait qu'un « did not become healthy » à
-  // afficher. On redirige vers le même `runtime.log` que
-  // `wiki-workspace runtime up`, pour que les deux chemins de démarrage se
-  // diagnostiquent de la même façon.
+  // The child wrote to `stdio: 'ignore'`. A runtime that crashed at startup —
+  // port taken, unreadable SQLite state, invalid config — therefore left no
+  // trace, and the shell had only a "did not become healthy" to display. We
+  // redirect to the same `runtime.log` as `wiki-workspace runtime up`, so
+  // both start paths diagnose themselves the same way.
   const logPath = runtimeLogPath(stateDir);
   let logFd = null;
   try {
     mkdirSync(resolve(stateDir), { recursive: true });
     logFd = openSync(logPath, 'a');
-  } catch { /* le log est un confort : ne jamais empêcher le démarrage */ }
+  } catch { /* the log is a comfort: never prevent startup */ }
 
   const child = spawn(runtimeNode.executable, [
     binPath,
@@ -127,11 +126,11 @@ export async function ensureRuntime({
   child.unref();
   if (logFd !== null) closeSync(logFd);
 
-  // Le pid manquait : `wiki-workspace runtime down` répondait « not running »
-  // sur un runtime démarré par le shell, et le processus restait sur le port.
+  // The pid was missing: `wiki-workspace runtime down` answered "not running"
+  // on a runtime started by the shell, and the process stayed on the port.
   writeRuntimePidFile(stateDir, child.pid);
 
-  // Un fils qui meurt aussitôt faisait quand même attendre le délai complet.
+  // A child that dies immediately still made the full delay be waited out.
   let exited = null;
   child.once('exit', (code, signal) => { exited = { code, signal }; });
 
@@ -164,16 +163,16 @@ function writeRuntimePidFile(stateDir, pid) {
 }
 
 function removeRuntimePidFile(stateDir) {
-  try { unlinkSync(runtimePidPath(stateDir)); } catch { /* déjà absent */ }
+  try { unlinkSync(runtimePidPath(stateDir)); } catch { /* already absent */ }
 }
 
 /**
- * Message d'échec du démarrage du runtime.
+ * Runtime startup failure message.
  *
- * `checkRuntimeHealth` rend `null` sur n'importe quelle réponse non-2xx : un
- * 401 — jeton lu dans un autre `state-dir` que celui du runtime déjà en place —
- * était donc rigoureusement indiscernable d'un port fermé. Ici on refait la
- * requête pour distinguer les deux, et on joint la fin du journal.
+ * `checkRuntimeHealth` returns `null` on any non-2xx response: a 401 — token
+ * read from another `state-dir` than the already-running runtime's — was
+ * therefore strictly indistinguishable from a closed port. Here we re-issue
+ * the request to tell the two apart, and attach the end of the log.
  */
 async function describeRuntimeFailure({ url, token, stateDir, exited, logPath }) {
   const lines = [`Runtime did not become healthy at ${url}`];

@@ -10,6 +10,7 @@ import {
   detectStaleKnowledge,
   normalizeSubject,
   readTaxoConceptPages,
+  readTaxoConceptPagesAsync,
   readSourceRegistry,
   readWikiPages,
   staleFingerprint,
@@ -227,4 +228,18 @@ test('readWikiPages inventories wiki/**/*.md, names only', () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+
+test('async TAXO observation matches the synchronous contract including citations beyond the header', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'signals-async-'));
+  try {
+    mkdirSync(join(root, 'wiki', 'concepts', 'family'), { recursive: true });
+    for (let i = 0; i < 35; i++) writeFileSync(join(root, 'wiki', 'concepts', 'family', i + '.md'),
+      '---\ntags: [Tag]\nfamily: family\n---\n' + 'body '.repeat(1500) + '[src: wiki/sources/a.md]');
+    const sorted = (items) => items.sort((a, b) => a.path.localeCompare(b.path));
+    assert.deepEqual(sorted(await readTaxoConceptPagesAsync(root)), sorted(readTaxoConceptPages(root)));
+    assert.ok((await readTaxoConceptPagesAsync(root)).every(p => p.ficheCount === 1));
+    assert.deepEqual(await readTaxoConceptPagesAsync(join(root, 'missing')), []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

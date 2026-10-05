@@ -155,7 +155,7 @@ test('bounds a wide tool result before it enters the LLM context', async () => {
   });
   assert.ok(toolContent.length < wide.length, 'the result must be bounded');
   assert.ok(toolContent.length <= 16200, `bounded length was ${toolContent.length}`);
-  assert.match(toolContent, /tronqu/);
+  assert.match(toolContent, /truncated/);
 });
 
 test('propagates an abort thrown by executeCall', async () => {

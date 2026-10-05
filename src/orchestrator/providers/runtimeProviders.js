@@ -7,15 +7,15 @@ import { createFakeRuntimeProvider } from './fakeRuntimeProvider.js';
 import { assertRuntimeProvider } from './runtimeProvider.js';
 
 /**
- * Découverte des runtimes agentiques externes et projection en « agents »
- * synthétiques, afin que leurs capabilities entrent dans le même
- * `CapabilityRegistry` que les agents MCP (RFC § 10, niveau B).
+ * Discovery of external agentic runtimes and projection into synthetic
+ * "agents", so their capabilities enter the same `CapabilityRegistry` as MCP
+ * agents (RFC § 10, level B).
  *
- * Un runtime down ne produit AUCUN agent : ses capabilities sont simplement
- * absentes du registry, et la résolution échoue en `capability_not_found`
- * sans jamais toucher aux capabilities MCP existantes (isolation de panne,
- * RFC § 39). Le runtime défaillant est néanmoins signalé via la liste
- * `unavailable` retournée — une dégradation doit s'annoncer.
+ * A down runtime produces NO agent: its capabilities are simply absent from
+ * the registry, and resolution fails with `capability_not_found` without ever
+ * touching existing MCP capabilities (fault isolation, RFC § 39). The failing
+ * runtime is nonetheless reported through the returned `unavailable` list —
+ * a degradation must announce itself.
  */
 
 export async function discoverRuntimeProviderAgents(runtimeProviders) {
@@ -79,11 +79,11 @@ export async function discoverRuntimeProviderAgents(runtimeProviders) {
 }
 
 /**
- * Configuration `agentRuntimes` (RFC § 37), fichier `agent-runtimes.json` dans
- * le répertoire d'état du manager. Deux formes tolérées : un tableau nu, ou un
- * objet `{ "runtimes": [...] }`. Absent ou illisible ⇒ aucune runtime déclarée.
+ * `agentRuntimes` configuration (RFC § 37), `agent-runtimes.json` file in the
+ * manager state directory. Two tolerated shapes: a bare array, or an object
+ * `{ "runtimes": [...] }`. Absent or unreadable ⇒ no runtime declared.
  *
- * Entrée : `{ id, type, endpoint?, enabled?, capabilities?, limits? }`.
+ * Entry: `{ id, type, endpoint?, enabled?, capabilities?, limits? }`.
  */
 export function loadAgentRuntimesConfig({
   stateDir = managerStateDir(),
@@ -207,9 +207,9 @@ function isManagerOwnedGatewayEndpoint(endpoint, gatewayPort) {
 }
 
 /**
- * Usines de providers par `type`. `fake` sert les tests/plomberie ; `deepagents`
- * parle HTTP à un runtime externe (Phase 5). Un type inconnu est ignoré et
- * signalé — jamais une erreur fatale au démarrage.
+ * Provider factories by `type`. `fake` serves tests/plumbing; `deepagents`
+ * speaks HTTP to an external runtime (Phase 5). An unknown type is ignored
+ * and reported — never a fatal startup error.
  */
 export const runtimeProviderFactories = {
   fake: (entry = {}) => createFakeRuntimeProvider({
@@ -256,10 +256,10 @@ export function resolveRuntimeProviders(config = [], { factories = runtimeProvid
 }
 
 /**
- * Hook de découverte : peuple `session.runtimeProviderAgents` à partir de la
- * config, et signale les runtimes sautées/indisponibles dans le journal
- * (une dégradation doit s'annoncer). Appelée au boot et à chaque re-scan,
- * en vis-à-vis de `discoverAgentsOnce`.
+ * Discovery hook: fills `session.runtimeProviderAgents` from the config, and
+ * reports skipped/unavailable runtimes in the journal (a degradation must
+ * announce itself). Called at boot and on every re-scan, alongside
+ * `discoverAgentsOnce`.
  */
 export async function discoverRuntimeProvidersOnce(session, {
   signal = null,

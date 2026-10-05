@@ -1,9 +1,9 @@
+import { toolNameFor, parseToolPayload } from '../core/mcpPayload.js';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { validateContract } from '../contracts/schemas.js';
-import { parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
+import { callMcpTool } from '../core/mcp.js';
 import { capabilityRegistryForSession } from './capabilityRegistry.js';
 import { resolve as resolveCapability } from './capabilityResolver.js';
 import { integrate } from './planIntegrator.js';
@@ -526,18 +526,4 @@ function agentFor(session, agentInstanceId) {
     ...(session?.agentRegistrySnapshot ?? []),
     ...(session?.agents ?? []),
   ].find((agent) => agent?.agentInstanceId === agentInstanceId) ?? null;
-}
-
-function toolNameFor(session, serverName, baseName) {
-  const tools = session.mcp?.[serverName]?.tools ?? [];
-  const names = tools.map((tool) => String(tool.name ?? '')).filter(Boolean);
-  return names.find((name) => name === baseName)
-    ?? names.find((name) => name === `${serverName}__${baseName}`)
-    ?? names.find((name) => name.endsWith(`__${baseName}`))
-    ?? baseName;
-}
-
-function parseToolPayload(result) {
-  if (result && typeof result === 'object' && !Array.isArray(result) && !Array.isArray(result.content)) return result;
-  return parseJsonText(formatMcpToolResult(result)) ?? {};
 }

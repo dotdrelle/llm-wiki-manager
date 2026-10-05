@@ -179,13 +179,14 @@ export async function stopAgents(options = {}) {
       env: {
         ...process.env,
         WIKI_WORKSPACES_DIR: workspacesDir(),
-        // Même épinglage que startAgents, et pour la même raison : cwd est la
-        // racine du paquet, donc sans ces variables le script résout `.env`
-        // contre $PWD. `connectors_enabled` lisait alors le .env du PAQUET,
-        // concluait que le profil était inactif, et `docker compose down`
-        // partait sans `--profile connectors` — un service à profil inactif est
-        // invisible à Compose, donc le conteneur restait debout. `/stop agents`
-        // annonçait un succès en laissant tourner ce qu'il prétendait arrêter.
+        // Same pinning as startAgents, and for the same reason: cwd is the
+        // package root, so without these variables the script resolves `.env`
+        // against $PWD. `connectors_enabled` then read the PACKAGE's .env,
+        // concluded the profile was inactive, and `docker compose down` ran
+        // without `--profile connectors` — a service behind an inactive
+        // profile is invisible to Compose, so the container stayed up.
+        // `/stop agents` announced success while leaving running what it
+        // claimed to stop.
         WIKI_MANAGER_ENV_FILE: managerEnvFile(),
         WIKI_MANAGER_ENDPOINTS_FILE: managerMcpEndpointsFile(),
         AGENTS_DATA_DIR: resolveAgentsDataDir(),
@@ -353,12 +354,12 @@ export function writeLanguageConfig(workspacePath, profileName, language) {
 }
 
 /**
- * Le wizard tourne sur l'hôte, les services dans Docker : une baseUrl saisie
- * en `localhost` répond au wizard et échoue dans le container. On la réécrit
- * vers `host.docker.internal`, que les services déclarent déjà en
- * `extra_hosts`. Jamais sur un hostname réel — seulement sur les trois formes
- * de boucle locale. L'appelant affiche la réécriture : la faire en silence
- * rend le diagnostic impossible quand elle se trompe.
+ * The wizard runs on the host, the services in Docker: a baseUrl typed as
+ * `localhost` answers the wizard and fails in the container. We rewrite it to
+ * `host.docker.internal`, which the services already declare in
+ * `extra_hosts`. Never on a real hostname — only on the three loopback forms.
+ * The caller displays the rewrite: doing it silently makes diagnosis
+ * impossible when it is wrong.
  */
 export function containerReachableUrl(baseUrl) {
   if (!baseUrl) return { url: baseUrl, rewritten: false };
@@ -379,8 +380,8 @@ export function writeLlmConfig(workspacePath, profileName, config) {
   const patches = {
     llm: {
       provider: config.provider,
-      // Absent derrière une gateway : l'endpoint est opaque, il n'y a pas un
-      // moteur mais un par modèle.
+      // Absent behind a gateway: the endpoint is opaque, there is not one
+      // engine but one per model.
       ...(config.engine ? { engine: config.engine } : {}),
       ...(config.baseUrl ? { baseUrl: containerReachableUrl(config.baseUrl).url } : {}),
       ...(config.apiKey ? { apiKey: config.apiKey } : {}),
@@ -395,10 +396,10 @@ export function writeVectorConfig(workspacePath, profileName, config) {
     retrieval: {
       vector: {
         enabled: true,
-        // baseUrl et apiKey absents = hérités du bloc llm par resolveConfig.
-        // Le wizard ne les transmet que lorsqu'ils divergent réellement, pour
-        // que le wikirc reste lisible et que la clé du LLM ne soit pas
-        // recopiée vers un autre hôte.
+        // baseUrl and apiKey absent = inherited from the llm block by
+        // resolveConfig. The wizard only passes them when they genuinely
+        // diverge, so the wikirc stays readable and the LLM key is not copied
+        // to another host.
         ...(config.baseUrl ? { baseUrl: containerReachableUrl(config.baseUrl).url } : {}),
         ...(config.apiKey ? { apiKey: config.apiKey } : {}),
         timeoutMs: config.timeoutMs ?? 600_000,

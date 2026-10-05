@@ -39,11 +39,11 @@ import { formatPublicSkillInvocation, generateSkillAcknowledgment } from '../run
 
 const MAX_TOOL_ITERATIONS = 80;
 /**
- * Profondeur maximale d'imbrication de compétences.
+ * Maximum skill nesting depth.
  *
- * La détection de cycle couvre le cas observé — une compétence qui se relance
- * elle-même. Cette borne couvre ce qu'elle ne voit pas : une chaîne longue de
- * compétences distinctes, sans cycle, qui épuiserait le budget aussi sûrement.
+ * Cycle detection covers the observed case — a skill relaunching itself. This
+ * bound covers what it does not see: a long chain of distinct skills, with no
+ * cycle, that would exhaust the budget just as surely.
  */
 const MAX_SKILL_DEPTH = 3;
 const MAX_SPINNER_ARG_LENGTH = 96;
@@ -959,16 +959,16 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
       const objective = String(args.objective ?? '').trim();
       if (!objective) return 'Delegation rejected: missing objective.';
       /*
-       La garde anti-configuration est un gouvernail INTERACTIF : elle corrige
-       Donna quand une demande de chat (« configure le connecteur ») part en
-       délégation vers une capacité d'export au lieu du tool de setup. Elle
-       n'a pas sa place à l'intérieur d'un run de compétence compilée : là,
-       l'objectif est déjà le workflow autorisé (le compilateur a produit une
-       intention MÉTIER), et le résolveur du runtime est l'autorité de routage.
-       Le corps expédié de /wiki-sync en est la preuve — « Export every
-       configured Confluence source exactly as the connector is currently
-       configured » a été refusé comme « configuration du connecteur » alors
-       que l'export était la seule action demandée.
+       The anti-configuration guard is an INTERACTIVE rudder: it corrects
+       Donna when a chat request ("configure the connector") goes into
+       delegation towards an export capability instead of the setup tool. It
+       has no place inside a compiled skill run: there, the objective is
+       already the authorised workflow (the compiler produced a BUSINESS
+       intention), and the runtime's resolver is the routing authority. The
+       dispatched body of /wiki-sync is the proof — "Export every configured
+       Confluence source exactly as the connector is currently configured" was
+       refused as "connector configuration" although the export was the only
+       requested action.
       */
       const compiledSkillRun = Boolean(session?._currentRunIdentity) && normalizedSkillStack(session).length > 0;
       const connectorConfig = compiledSkillRun ? null : connectorConfigurationTarget(session, objective);
@@ -979,20 +979,19 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
         return `Delegation rejected: ${connectorConfig.serverName} advertises no setup or authentication tool. Do not call an unrelated data tool and do not delegate to export. Explain conversationally that authentication must be completed outside MCP, using only configuration instructions already available in the current context.`;
       }
       /*
-       Un run ne passe pas par le réseau pour se déléguer à lui-même.
+       A run does not go over the network to delegate to itself.
 
-       Donna délègue DEPUIS l'intérieur du run conversationnel qui vient d'être
-       marqué actif. Passer par POST /delegate revenait à demander au runtime
-       l'autorisation de démarrer un run alors qu'un run tourne déjà — le sien —
-       et l'endpoint répondait 409, à juste titre de son point de vue. Le run
-       refusait sa propre délégation.
+       Donna delegates FROM INSIDE the conversational run that was just marked
+       active. Going through POST /delegate amounted to asking the runtime for
+       permission to start a run while a run was already going — its own — and
+       the endpoint answered 409, rightly from its point of view. The run
+       refused its own delegation.
 
-       Déléguer n'est pas démarrer un second run : c'est faire passer celui-ci
-       de la décision à l'exécution. Quand ce chemin interne existe (agent
-       exécuté dans le processus du runtime), on l'emprunte : même `runId`,
-       aucun run concurrent, aucun 409. Le chemin HTTP reste pour les appelants
-       réellement extérieurs — le Shell, un client tiers —, et c'est là que le
-       409 garde tout son sens.
+       Delegating is not starting a second run: it is moving this one from
+       decision to execution. When this internal path exists (agent executed in
+       the runtime process), we take it: same `runId`, no concurrent run, no
+       409. The HTTP path remains for genuinely external callers — the Shell,
+       a third-party client — and that is where the 409 keeps all its meaning.
       */
       if (typeof session?._delegateWithinRun === 'function') {
         const inRun = await session._delegateWithinRun(objective);
@@ -1037,19 +1036,17 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
         });
       }
       /*
-       Une compétence ne se relance pas depuis sa propre exécution.
+       A skill does not relaunch itself from its own execution.
 
-       Le corps d'une compétence est compilé en intentions MÉTIER, qui
-       ressemblent forcément à la description de la compétence dont elles
-       sortent — « ingérer les fichiers en attente » est à la fois l'objectif
-       de /wiki-ingest et sa raison d'être. Le sélecteur la reconnaissait donc
-       et la relançait, indéfiniment. En headless, personne n'interrompt : la
-       boucle ne s'arrête qu'au budget.
+       A skill body is compiled into BUSINESS intentions, which necessarily
+       resemble the description of the skill they come from — "ingest the
+       pending files" is both /wiki-ingest's objective and its reason to exist.
+       The selector therefore recognised it and relaunched it, indefinitely.
+       In headless mode nobody interrupts: the loop only stops at the budget.
 
-       Le refus porte sur les CYCLES, pas sur la composition : une compétence
-       peut en appeler une autre, mais aucune ne peut se retrouver deux fois
-       dans la même pile. La profondeur reste bornée pour couvrir les cycles
-       longs qu'un cas non prévu produirait.
+       The refusal is about CYCLES, not composition: a skill may call another,
+       but none may appear twice in the same stack. The depth stays bounded to
+       cover the long cycles an unforeseen case would produce.
       */
       const skillStack = Array.isArray(session?._skillStack) ? session._skillStack : [];
       if (skillStack.some((entry) => String(entry).toLowerCase() === skillName.toLowerCase())) {
@@ -1062,22 +1059,20 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
         });
       }
       /*
-       Depuis une intention compilée, une compétence se lance par son NOM, pas
-       par ressemblance.
+       From a compiled intention, a skill is launched by its NAME, not by
+       resemblance.
 
-       La garde de cycle ci-dessus ne voit que les répétitions. Elle laissait
-       donc passer la cascade réellement observée sur un `/wiki-ingest` : une
-       intention compilée décrivait mot pour mot le corps d'une compétence
-       sœur, dont l'intention décrivait à son tour la suivante. Trois
-       compétences distinctes, aucun cycle, et la grille de concepts comme la
-       taxonomie reconstruites plusieurs fois pour une seule demande.
-       (Ces compétences sœurs ont disparu avec la simplification 0.15.66 ; la
-       garde, elle, reste.)
+       The cycle guard above only sees repetitions. It therefore let through
+       the cascade actually observed on a `/wiki-ingest`: a compiled intention
+       described word for word the body of a sibling skill, whose intention in
+       turn described the next one. Three distinct skills, no cycle, and the
+       concept grid as well as the taxonomy rebuilt several times for a single
+       request. (Those sibling skills disappeared with the 0.15.66
+       simplification; the guard itself remains.)
 
-       Une intention compilée EST déjà le travail à faire : elle se délègue.
-       La composition explicite reste ouverte — un corps qui nomme sa cible dit
-       ce qu'il veut ; une intention qui se contente de la décrire ne le dit
-       pas.
+       A compiled intention IS already the work to do: it gets delegated.
+       Explicit composition stays open — a body that names its target says what
+       it wants; an intention that merely describes it does not.
       */
       if (skillStack.length > 0 && !objectiveNamesSkill(args._userInput, skillName)) {
         return JSON.stringify({
@@ -1104,13 +1099,13 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
       const metadata = {
         selectionKind: args.selectionKind ?? null,
         turnId: session.turnId ?? session._currentRunIdentity?.turnId ?? null,
-        // La pile part avec la demande. Sans elle, le run imbriqué — qui démarre
-        // après le nettoyage de celui-ci — repartirait d'une pile vide et ne
-        // pourrait plus reconnaître le cycle qu'il est en train de refermer.
+        // The stack leaves with the request. Without it, the nested run — which
+        // starts after this one cleaned up — would start from an empty stack
+        // and could no longer recognise the cycle it is closing.
         //
-        // On transmet la pile de CE run telle quelle : c'est `runSkillChain` qui
-        // y empile la compétence appelée, une seule fois et au seul endroit qui
-        // sait quelle compétence a réellement été résolue.
+        // We pass THIS run's stack as-is: `runSkillChain` is what pushes the
+        // called skill onto it, once and at the only place that knows which
+        // skill was actually resolved.
         skillStack,
       };
       if (typeof session?._runSkillWithinRun === 'function') {
@@ -1182,18 +1177,18 @@ export function connectorConfigurationTarget(session, objective) {
   // constraint on the export, not the thing being asked.
   const objectiveText = objectiveForResolution(objective).toLowerCase();
   /*
-   Deux familles de mots de configuration, volontairement séparées :
+   Two families of configuration words, deliberately separated:
 
-   - « configured », « configuration » (et leurs formes françaises) sont le
-     plus souvent du CONTEXTE passif — « export every configured source »,
-     « as the connector is currently configured ». Ils ne comptent comme une
-     intention de configuration que quand l'objectif ne porte aucun verbe
-     métier : sans ce filtre, le corps expédié de /wiki-sync était refusé
-     comme « configuration du connecteur » alors que son action est l'export.
-   - le reste (configure/ing/er/ez… actifs, credentials, password, token,
-     oauth, authenticate, connect, setup…) est une intention de configuration
-     et compte toujours, même à côté d'un verbe métier (« configure the
-     export » reste une demande de configuration).
+   - "configured", "configuration" (and their French forms) are most often
+     passive CONTEXT — "export every configured source", "as the connector is
+     currently configured". They count as a configuration intention only when
+     the objective carries no business verb: without that filter, the
+     dispatched body of /wiki-sync was refused as "connector configuration"
+     although its action is the export.
+   - the rest (active configure/ing/er/ez…, credentials, password, token,
+     oauth, authenticate, connect, setup…) is a configuration intention and
+     always counts, even next to a business verb ("configure the export"
+     remains a configuration request).
   */
   const weakConfigMention = /\b(?:mis|re)?configur(?:ed|é(?:e)?s?|ations?)\b/i;
   const businessMutationVerb = /\b(?:export|ingest|build|send|collect|fetch|import|retrieve|publish|polish|deliver|sync|notify|generate|convert|review|research)\b/i;
@@ -1411,9 +1406,9 @@ export function buildAgentSystemPrompt(state) {
     // Reading a message in chat uses search + full read. Only an explicit
     // workspace import or outbound action belongs to the execution runtime.
     'Read external messages directly with the offered search/read tools when the user asks to see, read or retrieve a message in the conversation (including "récupère mon dernier mail"). Search for its ID, then read its body; metadata alone is not the full message. Importing or saving external content INTO the workspace is a collect capability; acting on the outside world (send, publish, notify) is an action capability. Delegate these mutations through runtime__delegate. Never conclude that an action is impossible from the direct read tools alone — check the declared agent capabilities.',
-    // Un droit manquant n'est pas une fonctionnalité absente : l'un se
-    // réautorise en une commande, l'autre n'existe pas. Les confondre envoie
-    // l'utilisateur croire que le produit ne sait pas faire.
+    // A missing scope is not a missing feature: one is reauthorised with a
+    // single command, the other does not exist. Confusing them sends the user
+    // into believing the product cannot do it.
     'When an action fails or is refused for lack of an authorization grant or scope (rather than a missing capability), say exactly that and name the primitive that grants it. Do not describe the feature as unavailable.',
     'For an action with no matching direct tool, call runtime__delegate with the user objective only. The runtime chooses the capability, operation, agent and plan, including a validated single task for executor-only agents. Never choose those identifiers yourself. Never call <provider>__agent_plan, <provider>__agent_execute, legacy production__production_start_job, wiki__plan_set, or wiki__plan_done from interactive chat.',
     // A capability can be deliberately tool-less: the Gmail send is reachable
@@ -1436,15 +1431,15 @@ export function buildAgentSystemPrompt(state) {
     'If runtime__delegate returns a blocker or no specialized provider is available, report only that concrete blocker concisely. Never replace the missing execution path with a suggested slash command, skill, MCP tool name, manual file move, administrator escalation, or alternative workflow unless the user explicitly asks for alternatives.',
     'For workspace inventory and page listings, use the connected wiki MCP read tools. Never invent or call a /wiki shell command through shell__run_command. Use /workspace init <name> [path] for low-level non-interactive workspace creation; in the interactive TUI, /new <name> opens the setup wizard.',
     'If an action requires tools or skills not available yet, explain the limitation and name the expected primitive.',
-    // Les outils help_* étaient exposés — ils font partie de l'allow-list du
-    // mode chat — mais rien dans ce prompt ne disait qu'ils sont LA source des
-    // questions produit. Donna répondait donc de mémoire. Cas observé :
-    // « comment activer les connecteurs ? » → un `cme.yaml`, un « manifeste des
-    // services actifs » et un redémarrage de service, tous inventés, là où la
-    // réponse tient dans un drapeau du `.env` du manager.
+    // The help_* tools were exposed — they are part of chat mode's allow-list
+    // — but nothing in this prompt said they are THE source for product
+    // questions. Donna therefore answered from memory. Observed case: "how do
+    // I enable connectors?" → a `cme.yaml`, an "active services manifest" and
+    // a service restart, all invented, where the answer fits in one manager
+    // `.env` flag.
     'The bundled product documentation is your source for how llm-wiki works: what a feature is, how to enable or configure it, where a setting lives, what a message means, how to get started, how to troubleshoot. For any such question, call the documentation search/read tools FIRST and answer from what they return. Do not answer these from memory, even when you feel certain.',
-    // Une réponse fausse et assurée sur la configuration coûte plus cher qu'un
-    // « je ne sais pas » : elle envoie éditer des fichiers qui n'existent pas.
+    // A wrong and confident answer about configuration costs more than an
+    // "I do not know": it sends the user to edit files that do not exist.
     'Configuration facts are never answered from memory. File names, environment variables, config keys, directory layouts and enabling procedures must come from a tool result or from the documentation you actually read in this conversation. If the documentation does not cover it, say plainly that you could not find where it is configured — never reconstruct a plausible-looking file name, key or procedure. A confident wrong answer sends the user editing files that do not exist.',
     workspaceProfile
       ? `Workspace profile (.wiki/profile.md) — durable user preferences, apply these to every reply (tone, tutoiement/vouvoiement, formatting, etc.):\n${workspaceProfile}`

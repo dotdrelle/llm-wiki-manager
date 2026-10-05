@@ -1,14 +1,14 @@
 /**
- * Le « contexte d'artefact courant » — la boucle documentaire continue.
+ * The "current artifact context" — the continuous document loop.
  *
- * Quand Donna édite ou ouvre un artefact éditable (template, build-context,
- * page wiki), on mémorise ce chemin au niveau de la session, comme la
- * conversation, pour qu'un tour suivant puisse dire « améliore cette slide »
- * sans que le modèle doive deviner quel fichier est concerné.
+ * When Donna edits or opens an editable artifact (template, build-context,
+ * wiki page), this path is remembered at the session level, like the
+ * conversation, so that a following turn can say "improve this slide"
+ * without the model having to guess which file is concerned.
  *
- * Seuls les artefacts *éditables* sont suivis : templates/, build-context/ et
- * wiki/. Les livrables générés (deliverables/) ne le sont pas — on les régénère,
- * on ne les édite pas.
+ * Only *editable* artifacts are tracked: templates/, build-context/ and
+ * wiki/. Generated deliverables (deliverables/) are not — they are regenerated,
+ * not edited.
  */
 
 const ARTIFACT_KIND_BY_TOOL = {

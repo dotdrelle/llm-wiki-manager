@@ -18,15 +18,15 @@ export const PROFILE_FLAGS = Object.freeze({
 });
 
 /**
- * Services réellement déclarés dans la pile agents, override compris.
+ * Services actually declared in the agents stack, override included.
  *
- * Lue du fichier plutôt que codée en dur : une liste figée avait fini par
- * annoncer `mailer`, qui ne vit que dans l'exemple d'override et n'existe donc
- * pas tant que l'opérateur ne l'a pas décommenté. Proposer un service absent,
- * c'est promettre un « no such service ».
+ * Read from the file rather than hardcoded: a frozen list ended up announcing
+ * `mailer`, which only lives in the override example and therefore does not
+ * exist until the operator uncomments it. Offering an absent service is
+ * promising a "no such service".
  *
- * Sert au ROUTAGE : la pile agents est un projet Compose distinct de celui du
- * workspace, donc `/start <nom>` doit partir vers `wiki-workspace agents`.
+ * Used for ROUTING: the agents stack is a Compose project distinct from the
+ * workspace's, so `/start <name>` must go to `wiki-workspace agents`.
  */
 export function agentServiceNames({ env = resolvedManagerEnv() } = {}) {
   const { composeFiles } = resolveAgentsComposeContext({ env });
@@ -35,18 +35,18 @@ export function agentServiceNames({ env = resolvedManagerEnv() } = {}) {
     try {
       const parsed = YAML.parse(readFileSync(file, 'utf8')) ?? {};
       for (const name of Object.keys(parsed.services ?? {})) names.add(name);
-    } catch { /* fichier illisible : il ne déclare rien d'adressable */ }
+    } catch { /* unreadable file: it declares nothing addressable */ }
   }
   return [...names].sort();
 }
 
 /**
- * Agents qu'un opérateur pilote un par un, proposés dans les complétions.
+ * Agents an operator drives one by one, offered in completions.
  *
- * Uniquement ceux placés derrière un drapeau de profil : ce sont les seuls
- * qu'on active et désactive délibérément. `cme` et `documents` font partie du
- * socle — on les démarre avec `agents`, les distinguer n'apporte rien et
- * allonge une liste que l'opérateur doit lire à chaque fois.
+ * Only those behind a profile flag: they are the only ones deliberately
+ * enabled and disabled. `cme` and `documents` are part of the base — started
+ * with `agents`, distinguishing them adds nothing and lengthens a list the
+ * operator must read every time.
  */
 export function togglableAgentNames() {
   return Object.keys(PROFILE_FLAGS).sort();
@@ -57,15 +57,14 @@ export function isEnabled(value) {
 }
 
 /**
- * Pourquoi un service à profil est indisponible, et comment l'activer.
+ * Why a profiled service is unavailable, and how to enable it.
  *
- * Le message d'origine — « le service des connecteurs est indisponible ou
- * désactivé » — ne disait ni lequel des deux, ni où regarder. Donna, à qui on
- * demandait ensuite « comment l'activer », n'avait aucun fait à citer et
- * inventait des fichiers (`cme.yaml`, un « manifeste des services actifs »)
- * qui n'existent nulle part. Une réponse fausse et confiante coûte plus cher
- * qu'un « je ne sais pas » : c'est le message qu'il faut rendre suffisant,
- * pas le modèle qu'il faut espérer plus prudent.
+ * The original message — "the connectors service is unavailable or disabled"
+ * — said neither which of the two, nor where to look. Donna, asked next "how
+ * do I enable it", had no fact to cite and invented files (`cme.yaml`, an
+ * "active services manifest") that exist nowhere. A confident wrong answer
+ * costs more than an "I do not know": the message is what must be made
+ * sufficient, not the model hoped more cautious.
  *
  * @returns {{ enabled: boolean, flag: string, envFile: string, message: string }}
  */

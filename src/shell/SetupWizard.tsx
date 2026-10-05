@@ -44,20 +44,20 @@ type Step =
       prefill?: string;
       secret?: boolean;
       /**
-       * Catalogue découvert. Purement indicatif : le champ texte fait foi, ce
-       * qui garde l'étape utilisable quand l'endpoint est injoignable ou quand
-       * le modèle voulu n'y figure pas.
+       * Discovered catalog. Purely indicative: the text field is authoritative,
+       * which keeps the step usable when the endpoint is unreachable or when the
+       * intended model is not in it.
        */
       suggestions?: string[];
-      /** Valeur configurée écartée parce qu'absente du catalogue découvert. */
+      /** Configured value dropped because it is absent from the discovered catalog. */
       stale?: string | null;
     }
   | { kind: 'done' };
 type LogEntry = { icon: string; label: string; detail?: string };
 
-// Deux axes, deux questions. `provider` dit où l'on tape, `engine` dit
-// comment se comporte le serveur en face. Les fusionner était précisément ce
-// qui empêchait de décrire une gateway.
+// Two axes, two questions. `provider` says where requests are sent, `engine`
+// says how the server on the other end behaves. Merging them was precisely
+// what prevented a gateway from being described.
 const PROVIDERS = [
   'Direct server (OpenAI-compatible)',
   'AI gateway (LiteLLM, Bifrost, Portkey…)',
@@ -84,8 +84,8 @@ function configuredValue(value: unknown) {
 }
 const MAIN_MENU = ['Agents', 'Workspaces', 'LLM configuration', 'Vector search', '---', 'Close'];
 
-// Les défauts et la question « faut-il demander une baseUrl ? » vivent dans
-// core/modelFetch.js, source unique partagée avec la découverte.
+// The defaults and the question "should a baseUrl be requested?" live in
+// core/modelFetch.js, the single source shared with discovery.
 function exampleBaseUrl(provider: string, engine: string) {
   return defaultBaseUrl(provider, engine);
 }
@@ -153,29 +153,29 @@ function stepTitle(step: Step) {
 }
 
 /**
- * Partie « champ » d'une étape modèle : préremplissage, indication, catalogue.
+ * "Field" part of a model step: prefill, hint, catalog.
  *
- * Le préremplissage ne reprend que ce qui est *déjà configuré*. Choisir pour
- * l'opérateur le premier modèle découvert le filtrait aussitôt sur lui-même —
- * la liste n'affichait plus qu'une entrée sur dix — et proposait une réponse
- * qui n'avait aucune raison d'être la bonne. Quand rien n'est configuré, le
- * champ reste vide et c'est l'indication grisée qui montre la forme attendue.
+ * The prefill only takes back what is *already configured*. Choosing the first
+ * discovered model for the operator filtered the list on itself right away —
+ * the list only showed one entry out of ten — and proposed an answer that had
+ * no reason to be the right one. When nothing is configured, the field stays
+ * empty and the grey hint shows the expected shape.
  */
 function suggestionField(discovered: string[], configured?: string | null, example = '') {
-  // Un modèle absent du catalogue ne doit pas être préremplí : il filtrerait
-  // la liste sur zéro résultat, et l'écran afficherait « No match » devant dix
-  // modèles disponibles. C'est exactement le cas du `BAAI/bge-m3` du scaffold
-  // face à un serveur qui nomme le même modèle autrement.
+  // A model absent from the catalog must not be prefilled: it would filter
+  // the list down to zero results, and the screen would show "No match" in
+  // front of ten available models. This is exactly the case of the scaffold's
+  // `BAAI/bge-m3` facing a server that names the same model differently.
   const usable = configured && (discovered.length === 0 || discovered.includes(configured))
     ? configured
     : null;
   return {
-    // Sans catalogue il n'y a pas de liste à masquer : l'exemple redevient un
-    // préremplissage utile plutôt qu'un choix imposé.
+    // Without a catalog there is no list to hide: the example becomes a
+    // useful prefill again rather than an imposed choice.
     prefill: usable ?? (discovered.length === 0 ? example : ''),
     placeholder: discovered.length > 0 ? '↑↓ to browse the list, or type a name' : example,
     suggestions: discovered,
-    /** Rappel affiché quand la valeur configurée a été écartée. */
+    /** Reminder shown when the configured value was dropped. */
     stale: configured && !usable ? configured : null,
   };
 }
@@ -200,12 +200,12 @@ export function SetupWizard(props: {
   const [selected, setSelected] = createSignal(0);
   const [input, setInput] = createSignal('');
   /**
-   * Entrée survolée dans la liste des modèles, `-1` quand on tape librement.
+   * Entry hovered in the model list, `-1` when typing freely.
    *
-   * La liste n'était qu'un rappel : impossible d'y naviguer, donc le wizard
-   * préremplissait le premier modèle découvert pour qu'il y ait au moins une
-   * réponse. Ce préremplissage filtrait la liste sur lui-même — on ne voyait
-   * plus qu'un modèle sur dix, et rarement le bon.
+   * The list was only a reminder: navigating it was impossible, so the wizard
+   * prefilled the first discovered model so that there would be at least one
+   * answer. That prefill filtered the list on itself — only one model out of
+   * ten remained visible, and rarely the right one.
    */
   const [highlight, setHighlight] = createSignal(-1);
   const [busy, setBusy] = createSignal(false);
@@ -224,13 +224,12 @@ export function SetupWizard(props: {
   });
 
   const currentGap = () => startupGaps()[stepIndex()];
-  // Le dialogue occupe désormais l'essentiel du terminal. Les libellés, notes
-  // et causes d'erreur sont des phrases, pas des étiquettes : à 72 colonnes et
-  // 30 lignes elles débordaient, alors que la moitié basse du cadre restait
-  // vide.
+  // The dialog now occupies most of the terminal. Labels, notes and error
+  // causes are sentences, not tags: at 72 columns and 30 lines they overflowed,
+  // while the lower half of the frame stayed empty.
   const dialogWidth = () => Math.max(50, Math.min(110, Math.floor(props.width * 0.86)));
   const dialogHeight = () => Math.max(24, Math.min(40, Math.floor(props.height * 0.86)));
-  /** Largeur utile : bordure (1) + padding (1) de chaque côté. */
+  /** Usable width: border (1) + padding (1) on each side. */
   const textWidth = () => Math.max(20, dialogWidth() - 4);
   const left = () => Math.max(1, Math.floor((props.width - dialogWidth()) / 2));
   const top = () => Math.max(1, Math.floor((props.height - dialogHeight()) / 2));
@@ -366,14 +365,14 @@ export function SetupWizard(props: {
       return {
         kind: 'text',
         title: 'LLM configuration',
-        // L'exemple vit dans l'indication du champ et dans la liste découverte ;
-        // le répéter dans le libellé en faisait la ligne la plus longue de
-        // l'écran, pour une information déjà visible deux fois.
+        // The example lives in the field hint and in the discovered list;
+        // repeating it in the label made it the longest line on the
+        // screen, for information already visible twice.
         label: 'Chat model',
         note: 'Required: an agentic model with tool/function calling support.',
-        // Préremplir avec le premier modèle découvert filtrait la liste sur
-        // lui-même : neuf modèles sur dix devenaient invisibles, et la réponse
-        // proposée était arbitraire. Seul un modèle déjà configuré est repris.
+        // Prefilling with the first discovered model filtered the list on
+        // itself: nine models out of ten became invisible, and the proposed
+        // answer was arbitrary. Only an already configured model is taken back.
         ...suggestionField(discovered, llm().model, fallbackModels(llm().engine)[0] ?? 'provider-agentic-model'),
       };
     }
@@ -385,9 +384,9 @@ export function SetupWizard(props: {
       return { kind: 'text', title: 'Vector search', label: 'Embeddings/rerank base URL', prefill: baseUrl, placeholder: baseUrl };
     }
     if (currentRoute === 'vector-apikey') {
-      // L'héritage n'est proposé que tant que l'URL n'a pas divergé : sinon la
-      // clé du LLM — celle de la gateway, qui ouvre tous les providers —
-      // partirait vers un autre hôte.
+      // Inheritance is only offered as long as the URL has not diverged:
+      // otherwise the LLM key — the gateway's, which unlocks every provider —
+      // would go to another host.
       const diverged = vectorBaseUrlDiverged();
       const hint = !diverged && llm().apiKey ? '(leave empty to reuse LLM key)' : undefined;
       return {
@@ -453,9 +452,9 @@ export function SetupWizard(props: {
     setHighlight(-1);
     const items = (s as any).items ?? (s as any).options?.map((label: string) => ({ label })) ?? [{ label: 'x' }];
     let preferred = -1;
-    // La question de routage est reposée à chaque passage — c'est plus simple
-    // et plus honnête que de la mémoriser dans un champ dédié. On se contente
-    // de présélectionner ce que le wikirc déclare déjà.
+    // The routing question is asked again on every pass — that is simpler
+    // and more honest than remembering it in a dedicated field. We merely
+    // preselect what the wikirc already declares.
     if (route() === 'llm-provider' && llm().provider) {
       preferred = PROVIDERS.findIndex(
         (p) => normalizeProvider(p) === normalizeProvider(llm().provider),
@@ -470,33 +469,33 @@ export function SetupWizard(props: {
   });
 
   /**
-   * Catalogue découvert auprès du serveur ou de la gateway. Il ne sert qu'à
-   * préremplir : le champ texte reste la vérité, ce qui garde le wizard
-   * utilisable quand l'endpoint est injoignable ou quand le modèle voulu n'y
-   * figure pas.
+   * Catalog discovered from the server or the gateway. It only serves to
+   * prefill: the text field remains the truth, which keeps the wizard
+   * usable when the endpoint is unreachable or when the intended model is
+   * not in it.
    */
   const [catalog, setCatalog] = createSignal<any>(null);
   const [catalogError, setCatalogError] = createSignal<string | null>(null);
-  /** URL interrogée pendant que la découverte est en vol, sinon `null`. */
+  /** URL being queried while discovery is in flight, otherwise `null`. */
   const [discovering, setDiscovering] = createSignal<string | null>(null);
   /**
-   * Numéro de la découverte en cours.
+   * Number of the current discovery.
    *
-   * La découverte ne bloque plus l'étape suivante : une réponse tardive peut
-   * donc revenir alors que l'opérateur a déjà corrigé l'URL ou la clé et
-   * relancé une découverte. Sans ce compteur, la vieille réponse écraserait la
-   * neuve.
+   * Discovery no longer blocks the next step: a late response can therefore
+   * come back after the operator has already corrected the URL or the key and
+   * restarted a discovery. Without this counter, the old response would
+   * overwrite the new one.
    */
   let discoveryRun = 0;
 
   /**
-   * Lance la découverte **sans l'attendre**.
+   * Starts discovery **without waiting for it**.
    *
-   * C'était la vraie cause du gel : la saisie de la clé partait dans un
-   * `await` muet, et l'écran suivant n'apparaissait qu'une fois le réseau
-   * retombé. Un catalogue n'est pourtant que du préremplissage — le champ
-   * texte fait foi. L'étape s'affiche donc tout de suite, et la liste se
-   * remplit quand elle arrive.
+   * This was the real cause of the freeze: the key entry went into a silent
+   * `await`, and the next screen only appeared once the network settled. A
+   * catalog is only prefill after all — the text field is authoritative. The
+   * step is therefore displayed right away, and the list fills in when it
+   * arrives.
    */
   function startDiscovery(target?: {
     provider?: string;
@@ -514,14 +513,14 @@ export function SetupWizard(props: {
     setDiscovering(baseUrl);
 
     const isGateway = normalizeProvider(provider) === 'ai-gateway';
-    // Un serveur direct expose un seul catalogue, non typé : interroger chat
-    // puis embeddings tapait deux fois la même URL avec les mêmes en-têtes,
-    // pour la même réponse — et payait deux fois le délai.
+    // A direct server exposes a single, untyped catalog: querying chat then
+    // embeddings hit the same URL twice with the same headers, for the same
+    // response — and paid the delay twice.
     const promise = isGateway
       ? fetchGatewayCatalog(baseUrl, apiKey, {
-          // La liste plate arrive la première et suffit à choisir : elle est
-          // affichée tout de suite, puis remplacée par le catalogue typé
-          // pendant que l'opérateur lit ses options.
+          // The flat list arrives first and is enough to choose: it is
+          // displayed right away, then replaced by the typed catalog
+          // while the operator reads their options.
           onPartial: (partial: any) => {
             if (run === discoveryRun) setCatalog(partial);
           },
@@ -548,17 +547,17 @@ export function SetupWizard(props: {
   }
 
   /**
-   * Bloc d'état de la découverte, rendu sous le champ de saisie.
+   * Discovery status block, rendered under the input field.
    *
-   * Il occupe la place laissée libre au milieu du dialogue, là où il n'y avait
-   * rien : ce qui est tenté, contre quelle URL, avec quel transport, et ce que
-   * ça a donné.
+   * It occupies the free space in the middle of the dialog, where there was
+   * nothing: what is being attempted, against which URL, with which transport,
+   * and what came of it.
    */
   const discoveryLines = createMemo<Array<{ text: string; fg: string }>>(() => {
     const width = textWidth();
     const rows: Array<{ text: string; fg: string }> = [];
-    // L'indentation est appliquée à chaque ligne : `wrapText` normalise les
-    // espaces, un préfixe passé dans le texte serait perdu sur la première.
+    // Indentation is applied to every line: `wrapText` normalizes spaces, and
+    // a prefix passed in the text would be lost on the first line.
     const indent = '  ';
     const push = (text: string, fg: string, maxLines = 3) => {
       for (const line of wrapText(text, width - indent.length, maxLines)) {
@@ -568,7 +567,7 @@ export function SetupWizard(props: {
     const pending = discovering();
     const partial = catalog();
     if (pending && partial) {
-      // La liste plate est déjà utilisable ; seul le typage manque encore.
+      // The flat list is already usable; only typing is still missing.
       rows.push({ text: `✓ ${modelCount(partial)} model(s) available`, fg: '#8BD5CA' });
       rows.push({ text: '⟳ Refining chat/embedding/rerank types…', fg: '#FBBF24' });
       return rows;
@@ -605,17 +604,17 @@ export function SetupWizard(props: {
     return rows;
   });
 
-  /** Étapes de découverte : le bloc d'état n'a de sens que là. */
+  /** Discovery steps: the status block only makes sense there. */
   const DISCOVERY_ROUTES = new Set(['llm-apikey', 'llm-model', 'vector-model', 'vector-rerank-model']);
   const showDiscoveryPanel = () => discovering() !== null || DISCOVERY_ROUTES.has(route());
 
   /**
-   * Position dans la phase courante, affichée en haut à droite.
+   * Position within the current phase, displayed at the top right.
    *
-   * La séquence est reconstruite depuis les choix déjà faits, parce qu'elle
-   * est réellement variable : une gateway saute la question du moteur, un
-   * moteur hébergé saute l'URL, Ollama saute la clé. Annoncer un total fixe
-   * serait faux.
+   * The sequence is rebuilt from the choices already made, because it is
+   * genuinely variable: a gateway skips the engine question, a hosted engine
+   * skips the URL, Ollama skips the key. Announcing a fixed total would be
+   * wrong.
    */
   function llmFlow() {
     const provider = llm().provider;
@@ -645,7 +644,7 @@ export function SetupWizard(props: {
     return '';
   }
 
-  /** Vrai quand l'URL vecteur ne pointe plus le même hôte que le LLM. */
+  /** True when the vector URL no longer points at the same host as the LLM. */
   function vectorBaseUrlDiverged() {
     const vectorUrl = vector().baseUrl;
     const llmUrl = llm().baseUrl;
@@ -662,11 +661,11 @@ export function SetupWizard(props: {
       if (config?.llm?.provider) {
         setLlm({
           provider: normalizeProvider(config.llm.provider),
-          // Un wikirc pré-0.16 porte le moteur dans `provider`
-          // (`ollama`, `openai`; l'ancien `anthropic` retombe sur `generic`).
-          // Sans cette déduction, l'étape
-          // moteur ne présélectionne rien et propose OpenAI en tête — au
-          // risque d'écraser une configuration qui marchait.
+          // A pre-0.16 wikirc carries the engine in `provider`
+          // (`ollama`, `openai`; the former `anthropic` falls back to `generic`).
+          // Without this deduction, the engine
+          // step preselects nothing and proposes OpenAI first — at the
+          // risk of overwriting a configuration that worked.
           engine: config.llm.engine
             ? normalizeEngine(config.llm.engine)
             : normalizeProvider(config.llm.provider) === 'ai-gateway'
@@ -684,10 +683,10 @@ export function SetupWizard(props: {
           // URL the operator just entered, instead of the scaffold's fake one.
           baseUrl: configuredValue(config.retrieval.vector.baseUrl),
           apiKey: configuredValue(config.retrieval.vector.apiKey),
-          // Les noms de modèles étaient les deux seuls champs à échapper au
-          // filtre : le `BAAI/bge-m3` du scaffold arrivait donc dans le wizard
-          // comme une réponse choisie, et servait de filtre sur un catalogue
-          // qui nomme le même modèle autrement.
+          // Model names were the only two fields escaping the
+          // filter: the scaffold's `BAAI/bge-m3` therefore arrived in the wizard
+          // as a chosen answer, and served as a filter on a catalog
+          // that names the same model differently.
           embeddingModel: configuredValue(config.retrieval.vector.embeddingModel),
           rerankEnabled: config.retrieval.vector.rerankEnabled,
           rerankerModel: configuredValue(config.retrieval.vector.rerankerModel),
@@ -849,12 +848,12 @@ export function SetupWizard(props: {
       setLlm((old: any) => ({
         ...old,
         provider,
-        // Derrière une gateway il n'y a pas de moteur : l'endpoint est opaque
-        // et chaque modèle peut en avoir un différent.
+        // Behind a gateway there is no engine: the endpoint is opaque
+        // and each model may have a different one.
         engine: provider === 'ai-gateway' ? null : old.engine,
         baseUrl: old.provider === provider ? old.baseUrl : '',
       }));
-      // La gateway exige toujours une baseUrl, et n'a pas de moteur à choisir.
+      // The gateway always requires a baseUrl, and has no engine to choose.
       if (provider === 'ai-gateway') return navigate('llm-baseurl');
       return navigate('llm-engine');
     }
@@ -953,9 +952,9 @@ export function SetupWizard(props: {
       if (lang.length < 2) return setError('Please enter a 2-character language code (e.g. fr, en).');
       const context = currentWorkspaceContext(props.session, currentGap()?.context ?? targetWorkspace());
       if (context?.workspacePath) writeLanguageConfig(context.workspacePath, context.profileName ?? 'default', lang);
-      // Sans cette ligne, le récapitulatif continuait d'afficher la langue lue
-      // dans le scaffold au moment de la création du workspace (`en`) au lieu
-      // de celle qui vient d'être saisie et écrite.
+      // Without this line, the summary kept displaying the language read
+      // from the scaffold at workspace creation time (`en`) instead of the
+      // one just entered and written.
       setLanguage(lang);
       navigate('llm-provider');
       return;
@@ -986,7 +985,7 @@ export function SetupWizard(props: {
     if (currentRoute === 'llm-baseurl') {
       if (!value) return setError('Base URL is required.');
       setLlm((old: any) => ({ ...old, baseUrl: value }));
-      // Ollama n'exige pas de clé : on peut découvrir tout de suite.
+      // Ollama does not require a key: discovery can start right away.
       if (llm().engine === 'ollama') {
         startDiscovery({ ...llm(), baseUrl: value });
         return navigate('llm-model');
@@ -996,8 +995,8 @@ export function SetupWizard(props: {
     if (currentRoute === 'llm-apikey') {
       if (!value) return setError('API key is required.');
       setLlm((old: any) => ({ ...old, apiKey: value }));
-      // Pas de `await` : l'étape modèle s'affiche immédiatement et la liste
-      // s'y remplit toute seule.
+      // No `await`: the model step is displayed immediately and the list
+      // fills in on its own.
       startDiscovery({ ...llm(), apiKey: value });
       return navigate('llm-model');
     }
@@ -1021,10 +1020,10 @@ export function SetupWizard(props: {
       const apiKey = value || llm().apiKey || undefined;
       if (!apiKey) return setError('API key is required (or set LLM key first).');
       setVector((old: any) => ({ ...old, apiKey }));
-      // Le catalogue affiché aux étapes embeddings et rerank doit venir de
-      // l'endpoint vecteur, pas du LLM : ce sont deux serveurs distincts dès
-      // que l'URL diverge, et proposer les modèles de chat de l'un pour les
-      // embeddings de l'autre n'a aucun sens.
+      // The catalog shown at the embeddings and rerank steps must come from
+      // the vector endpoint, not the LLM: they are two distinct servers as
+      // soon as the URL diverges, and offering one's chat models for the
+      // other's embeddings makes no sense.
       if (vectorBaseUrlDiverged()) {
         startDiscovery({ ...vector(), apiKey });
       }
@@ -1069,8 +1068,8 @@ export function SetupWizard(props: {
   });
 
   useKeyboard((key: any) => {
-    // La découverte ne bloque volontairement rien : on peut taper le nom du
-    // modèle et valider avant même que le catalogue n'arrive.
+    // Discovery deliberately blocks nothing: the model name can be typed
+    // and validated before the catalog even arrives.
     if (busy()) return;
     const s = step();
     const keyName = String(key.name ?? '').toLowerCase();
@@ -1126,8 +1125,8 @@ export function SetupWizard(props: {
         return;
       }
 
-      // Navigation dans le catalogue. Le champ reste la vérité : les flèches
-      // ne font que survoler, et il faut valider pour écrire dans le champ.
+      // Catalog navigation. The field remains the truth: the arrows
+      // only hover, and validation is required to write into the field.
       const matches = filteredSuggestions().matches;
       if (matches.length > 0 && (keyName === 'down' || keyName === 'up')) {
         setHighlight((value) => {
@@ -1137,9 +1136,9 @@ export function SetupWizard(props: {
         return;
       }
       const hovered = highlight() >= 0 ? matches[highlight()] : null;
-      // Deux temps voulus : le premier Enter dépose le modèle survolé dans le
-      // champ, le second valide l'étape. On peut donc relire, corriger ou
-      // compléter ce qu'on vient de choisir.
+      // Two deliberate beats: the first Enter drops the hovered model into the
+      // field, the second validates the step. One can therefore re-read, correct
+      // or complete what was just chosen.
       if (hovered && (isEnter || keyName === 'tab')) {
         setInput(hovered);
         setHighlight(-1);
@@ -1172,21 +1171,21 @@ export function SetupWizard(props: {
   const displayValue = () => {
     const s = step();
     if (s.kind !== 'text') return '';
-    // Le champ vide affiche son indication en grisé, quel que soit le type
-    // d'étape : c'est ce qui permet de ne plus préremplir un modèle arbitraire
-    // tout en montrant à quoi ressemble une réponse valable.
+    // The empty field shows its hint in grey, whatever the step
+    // kind: this is what allows an arbitrary model to no longer be prefilled
+    // while still showing what a valid answer looks like.
     return input() || (s.placeholder ?? '');
   };
   const inputHasValue = () => step().kind === 'text' && input().length > 0;
 
   /**
-   * Suggestions filtrées par ce qui est tapé.
+   * Suggestions filtered by what is typed.
    *
-   * Une gateway correctement remplie expose plusieurs centaines de modèles :
-   * une liste brute est inutilisable, et un select classique interdirait de
-   * saisir un modèle absent du catalogue. On garde donc le champ texte comme
-   * seule vérité et on n'affiche qu'un rappel filtré — ce qui règle d'un coup
-   * les trois cas : liste énorme, modèle absent, endpoint injoignable.
+   * A properly filled gateway exposes several hundred models: a raw list is
+   * unusable, and a classic select would forbid typing a model absent from the
+   * catalog. The text field is therefore kept as the only truth and only a
+   * filtered reminder is displayed — which settles all three cases at once:
+   * huge list, absent model, unreachable endpoint.
    */
   const SUGGESTION_ROWS = 6;
   const filteredSuggestions = createMemo(() => {
@@ -1200,9 +1199,9 @@ export function SetupWizard(props: {
       ? all.filter((item) => item.toLowerCase().includes(needle))
       : all;
 
-    // Fenêtre glissante autour de l'élément survolé : sans elle, seules les
-    // premières entrées étaient atteignables et un catalogue de 200 modèles
-    // restait invisible au delà de la sixième ligne.
+    // Sliding window around the hovered element: without it, only the
+    // first entries were reachable and a catalog of 200 models
+    // stayed invisible past the sixth line.
     const cursor = highlight();
     const offset =
       cursor < SUGGESTION_ROWS
@@ -1225,11 +1224,11 @@ export function SetupWizard(props: {
   const contextPath = () => targetWorkspace()?.workspacePath ?? (currentGap()?.context?.workspacePath ?? null);
 
   /**
-   * Récapitulatif de bas de cadre, en lignes `étiquette  valeur`.
+   * Bottom-of-frame summary, in `label  value` lines.
    *
-   * Il était concaténé en une seule ligne, coupée net dès le deuxième champ :
-   * le chemin du workspace mangeait la place, et l'URL — l'information qu'on
-   * vient justement de saisir — n'apparaissait jamais en entier.
+   * It used to be concatenated into a single line, cut off from the second field
+   * on: the workspace path ate the room, and the URL — the information just
+   * entered — never appeared in full.
    */
   const CONTEXT_LABEL_WIDTH = 11;
   const contextLines = createMemo(() => {
@@ -1238,8 +1237,8 @@ export function SetupWizard(props: {
     if (workspacePath) {
       rows.push(['Workspace', language() ? `${workspacePath}  ·  lang ${language()}` : workspacePath]);
     }
-    // Trois lignes au plus, et seulement celles de la phase en cours : ce
-    // récapitulatif ne doit jamais pousser le pied de cadre hors de la boîte.
+    // Three lines at most, and only those of the current phase: this
+    // summary must never push the frame footer out of the box.
     if (route().startsWith('vector-')) {
       const vectorUrl = vector().baseUrl || llm().baseUrl;
       if (vectorUrl) rows.push(['Vector', vectorUrl]);
@@ -1285,7 +1284,7 @@ export function SetupWizard(props: {
         <text height={1}>{''}</text>
       </Show>
 
-      {/* En-tête : phase à gauche, progression dans la phase à droite. */}
+      {/* Header: phase on the left, progress within the phase on the right. */}
       <box height={1} flexDirection="row">
         <text fg="#8BD5CA">{stepTitle(step())}</text>
         <box flexGrow={1} />
@@ -1389,7 +1388,7 @@ export function SetupWizard(props: {
         </For>
       </Show>
 
-      {/* État de la découverte : occupe l'espace laissé libre au milieu. */}
+      {/* Discovery status: occupies the free space left in the middle. */}
       <Show when={showDiscoveryPanel() && discoveryLines().length > 0}>
         <text height={1}>{''}</text>
         <For each={discoveryLines()}>

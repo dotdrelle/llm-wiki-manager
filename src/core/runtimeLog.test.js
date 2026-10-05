@@ -1,3 +1,4 @@
+import { logRetentionDays } from './logRetention.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -203,4 +204,11 @@ test('shortLogId caps an over-long task slug while shortening embedded UUIDs', (
   assert.match(shortLogId(long), /…$/);
   assert.ok(shortLogId(long).length <= 40);
   assert.equal(shortLogId('7fadad27-0be6-4d08-96e5-664fe7ee841e'), '7fadad27…');
+});
+
+
+test('log retention defaults to fifteen days and rejects invalid configured ages',()=>{
+  assert.equal(logRetentionDays({}),15);assert.equal(logRetentionDays({WIKI_MANAGER_LOG_RETENTION_DAYS:''}),15);
+  assert.equal(logRetentionDays({WIKI_MANAGER_LOG_RETENTION_DAYS:'3'}),3);
+  for(const value of ['0','-1','1.5','bad','Infinity','9999999999999999'])assert.throws(()=>logRetentionDays({WIKI_MANAGER_LOG_RETENTION_DAYS:value}),/WIKI_MANAGER_LOG_RETENTION_DAYS/);
 });

@@ -569,3 +569,22 @@ back the final unique output paths byte-for-byte and reports their observed
 count; this verifies raw collected files, not the subsequent ingestion/rebuild.
 Verification status survives persisted idempotent replay. Other agents without
 this observation contract remain explicitly unverified.
+
+### Maintenance state and history costs
+
+Maintenance reads TAXO concept files asynchronously in batches of 16. The
+snapshot computes each recipient's successful-mail cursor once, and uses sets
+for consumed action identities instead of repeatedly scanning reservation
+history for every candidate. It still revalidates facts after admission.
+
+SQLite indexes cover workspace request/status, reservation budget/cycle/status,
+cycle and event queries. Request lookup and latest-request selection use scoped
+SQL queries. No historical reservation or refusal is removed by this change.
+`GET /maintenance?workspace=<name>&historyOffset=100` returns the next saved
+history page; `POST /maintenance` with `command: "status"` accepts the same
+`historyOffset`. The default page has at most 100 settled requests and 100
+settled reservations, plus all pending/approved requests and reserved effects.
+The `history` projection announces offset, limit, totals and `hasMore`. The
+workspace `/state` projection uses the first page. This bounds payload decoding
+for settled status history without removing records used by idempotence or
+budget reconciliation.

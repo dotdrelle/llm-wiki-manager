@@ -1,6 +1,6 @@
-import { parseJsonText } from '../core/activity.js';
+import { toolNameFor, parseToolPayload } from '../core/mcpPayload.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { formatMcpToolResult, callMcpTool as defaultCallMcpTool } from '../core/mcp.js';
+import { callMcpTool as defaultCallMcpTool } from '../core/mcp.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
 import { accept as acceptResult } from '../orchestrator/resultAggregator.js';
 import { isSuccessful, isTerminal } from '../orchestrator/taskStatuses.js';
@@ -236,7 +236,6 @@ function latestAssignment(assignments, attemptId) {
   return [...assignments].sort((a, b) => String(b.assignedAt ?? b.attemptId).localeCompare(String(a.assignedAt ?? a.attemptId)))[0] ?? null;
 }
 
-
 function capabilityResolvable(session, capability) {
   const registry = capabilityRegistryForSession(session);
   if (!registry || typeof registry.providersFor !== 'function') return true;
@@ -248,10 +247,6 @@ function capabilityResolvable(session, capability) {
   return registry.providersFor(capability).length > 0;
 }
 
-function parseToolPayload(result) {
-  if (result && typeof result === 'object' && !Array.isArray(result) && !Array.isArray(result.content)) return result;
-  return parseJsonText(formatMcpToolResult(result)) ?? {};
-}
 
 function taskResultFromStatus(task, assignment, jobId, statusPayload, attempt) {
   const result = statusPayload?.result ?? {};
@@ -279,14 +274,6 @@ function agentFor(session, agentInstanceId) {
   ].find((agent) => agent?.agentInstanceId === agentInstanceId) ?? null;
 }
 
-function toolNameFor(session, serverName, baseName) {
-  const tools = session.mcp?.[serverName]?.tools ?? [];
-  const names = tools.map((tool) => String(tool.name ?? '')).filter(Boolean);
-  return names.find((name) => name === baseName)
-    ?? names.find((name) => name === `${serverName}__${baseName}`)
-    ?? names.find((name) => name.endsWith(`__${baseName}`))
-    ?? baseName;
-}
 
 function dispatch(session, store, type, event) {
   const dispatched = dispatchAgentEvent(session, createAgentEvent(type, event));

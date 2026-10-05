@@ -1,13 +1,10 @@
+import { stripDsmlArtifacts } from '../core/textArtifacts.js';
+export { stripDsmlArtifacts } from '../core/textArtifacts.js';
 export function stripAnsi(value: string) {
   return String(value).replace(/\u001b\[[0-9;]*m/g, '');
 }
 
-export function stripDsmlArtifacts(value: string) {
-  return String(value ?? '')
-    .replace(/<\s*[|｜]{2}\s*DSML\s*[|｜]{2}[^>\r\n]*(?:>|$)/gi, '')
-    .replace(/^[^\S\r\n]*.*[|｜]{2}\s*DSML\s*[|｜]{2}.*(?:\r?\n|$)/gim, '')
-    .replace(/\n{3,}/g, '\n\n');
-}
+
 
 export function renderPlainMarkdown(value: string) {
   return stripAnsi(stripDsmlArtifacts(value))

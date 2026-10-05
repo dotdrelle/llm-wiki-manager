@@ -1,20 +1,20 @@
 /**
- * Adapter RuntimeEvent -> événements natifs du manager (RFC § 16).
+ * RuntimeEvent -> native manager events adapter (RFC § 16).
  *
- * Le flux d'événements d'un runtime externe est traduit ici dans le
- * vocabulaire du reducer (`core/agentEvents.js`) SANS aucune refonte de l'UI :
+ * An external runtime's event stream is translated here into the reducer's
+ * vocabulary (`core/agentEvents.js`) WITHOUT any UI rework:
  *
- * - `message` devient un `assistant_message` : c'est ce que Donna affiche ;
- * - les événements d'action (`tool_*`, `subagent_*`, `approval_required`)
- *   deviennent des lignes de journal structurées (`runtime_log`) ;
- * - le raisonnement privé (`agent_thinking`) n'est jamais ré-émis (RFC § 15) ;
- * - les événements terminaux (`run_completed`/`run_failed`/`run_cancelled`)
- *   ne sont pas ré-émis : ils sont déjà portés par le poll `status()` du
- *   dispatcher, qui construit le résultat de tâche à partir de là.
+ * - `message` becomes an `assistant_message`: that is what Donna displays;
+ * - action events (`tool_*`, `subagent_*`, `approval_required`) become
+ *   structured log lines (`runtime_log`);
+ * - private reasoning (`agent_thinking`) is never re-emitted (RFC § 15);
+ * - terminal events (`run_completed`/`run_failed`/`run_cancelled`) are not
+ *   re-emitted: they are already carried by the dispatcher's `status()` poll,
+ *   which builds the task result from there.
  *
- * La fonction est pure et déterministe : un événement produit zéro ou
- * plusieurs descripteurs `{ type, payload }`. Le dispatcher porte l'identité
- * run/task au moment de la dépêche.
+ * The function is pure and deterministic: one event produces zero or several
+ * `{ type, payload }` descriptors. The dispatcher carries the run/task identity
+ * at dispatch time.
  */
 export function mapRuntimeEvent(event) {
   const type = String(event?.type ?? '');
@@ -55,10 +55,10 @@ export function mapRuntimeEvent(event) {
     case 'subagent_finished':
       return [{ type: 'subagent_finished', payload: { subagent: subagentLabel(event) } }];
     case 'approval_required': {
-      // Human-in-the-loop du runtime (RFC § 14) : l'analyse pré-exécution
-      // devient une demande d'approbation native. Les mutations annoncées
-      // deviennent les classes d'approbation ; le dispatcher attend qu'un
-      // grant humain les couvre avant de débloquer le runtime.
+      // Runtime human-in-the-loop (RFC § 14): the pre-execution analysis
+      // becomes a native approval request. The announced mutations become the
+      // approval classes; the dispatcher waits until a human grant covers them
+      // before unblocking the runtime.
       const proposal = event?.proposal && typeof event.proposal === 'object' ? event.proposal : {};
       const mutations = Array.isArray(proposal?.mutations) ? proposal.mutations : [];
       const classes = [...new Set(mutations.map((mutation) => String(mutation?.kind ?? '').trim()).filter(Boolean))];

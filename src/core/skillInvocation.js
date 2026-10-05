@@ -22,37 +22,36 @@ export function explicitSkillReference(input, skillName, language = null) {
 }
 
 /*
- Une intention compilée NOMME-t-elle la compétence qu'on veut lancer depuis
- elle ?
+ Does a compiled intention NAME the skill one wants to launch from it?
 
- Le corps d'une compétence est compilé en intentions métier, et une intention
- décrit forcément ce que fait une compétence voisine : c'est ainsi qu'un seul
- `/wiki-ingest` relançait autrefois la compétence sœur qui reconstruisait la
- grille de concepts, qui relançait la suivante — concepts et taxonomie produits
- plusieurs fois pour une seule demande. (Ces compétences sœurs ont disparu avec
- la simplification 0.15.66 ; la garde contre la sélection par description
- reste, c'est elle que ces règles verrouillent.)
+ A skill body is compiled into business intentions, and an intention
+ necessarily describes what a neighbouring skill does: that is how a single
+ `/wiki-ingest` used to relaunch the sibling skill that rebuilt the concept
+ grid, which relaunched the next one — concepts and taxonomy produced several
+ times for one request. (Those sibling skills disappeared with the 0.15.66
+ simplification; the guard against selection by description remains, and it
+ is what these rules lock down.)
 
- La composition volontaire reste possible : un corps qui écrit `/deliver` ou
- « the deliver skill » nomme sa cible, et se distingue ainsi d'une intention
- qui se contente de la décrire. C'est le seul signal qui ne dépende pas de ce
- que le modèle déclare de sa propre sélection.
+ Deliberate composition remains possible: a body that writes `/deliver` or
+ "the deliver skill" names its target, and thus differs from an intention
+ that merely describes it. It is the only signal that does not depend on what
+ the model declares about its own selection.
 */
 export function objectiveNamesSkill(input, skillName) {
   const raw = String(skillName ?? '').trim();
   const name = escapeRegExp(raw);
   if (!name) return false;
   const text = String(input ?? '').trim();
-  // Une invocation directe : la demande EST le nom, rien d'autre.
+  // A direct invocation: the request IS the name, nothing else.
   if (text.toLowerCase() === raw.toLowerCase()) return true;
   /*
-   Le nom seul ne suffit pas : plusieurs compétences du scaffold portent un nom
-   qui est aussi un mot courant. « Run the production pipeline steps ingest,
-   build, export and polish » nomme ainsi la compétence `pipeline`, qui
-   relance ingest + build + export + polish — bien pire que la cascade qu'on
-   corrige. Le nom doit donc être cité EN TANT QUE compétence : forme slash, ou
-   tournure explicite. La borne droite est écrite à la main, `\b` ne bornant pas
-   après un `-` final (`wiki-build` ne doit pas matcher dans `wiki-builder`).
+   The name alone is not enough: several scaffold skills carry a name that is
+   also a common word. "Run the production pipeline steps ingest, build,
+   export and polish" thus names the `pipeline` skill, which relaunches
+   ingest + build + export + polish — far worse than the cascade being fixed.
+   The name must therefore be cited AS a skill: slash form, or an explicit
+   turn of phrase. The right boundary is written by hand, `\b` does not bound
+   after a trailing `-` (`wiki-build` must not match inside `wiki-builder`).
   */
   const end = '(?![A-Za-z0-9_-])';
   // The slash form is a command, not a path: `/wiki-build` followed by `/` is

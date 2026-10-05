@@ -436,16 +436,16 @@ export function createInteractiveSession(context, { runtimeUrl, turnId, signal =
 }
 
 /*
- Un tour interactif se termine TOUJOURS par un assistant_message.
+ An interactive turn ALWAYS ends with an assistant_message.
 
- C'est la condition de fin que les deux interfaces attendent : côté `serve`, la
- bulle « Request received · Donna is preparing… » n'est retirée que lorsqu'un
- message assistant non vide arrive. La garde `!content` renvoyait donc `false`
- en silence quand le tour ne produisait rien — modèle qui répond vide, boucle
- d'outils qui s'arrête sans conclure — et le point d'attente tournait
- indéfiniment, sans erreur nulle part.
+ That is the completion condition both interfaces wait for: on `serve`, the
+ "Request received · Donna is preparing…" bubble is only removed when a
+ non-empty assistant message arrives. The `!content` guard therefore returned
+ `false` silently when the turn produced nothing — a model answering empty, a
+ tool loop ending without concluding — and the waiting dot spun indefinitely,
+ with no error anywhere.
 
- Une réponse vide est un résultat, pas une raison de ne rien dire.
+ An empty answer is a result, not a reason to say nothing.
 */
 export function ensureInteractiveAssistantMessage(session, response, { turnId, workspace } = {}) {
   if (session.agentEvents.some((event) => event.type === 'assistant_message')) return false;
@@ -1490,8 +1490,8 @@ async function runRuntime(argv, agent) {
     const maxTurns = Number.isFinite(Number(body.maxTurns)) ? Math.max(1, Number(body.maxTurns)) : 20;
     const maxReplans = Number.isFinite(Number(body.replans)) ? Math.max(0, Math.floor(Number(body.replans))) : undefined;
     const runId = String(body.runId);
-    // Déclarée hors du try : le finally doit pouvoir restaurer la pile même
-    // quand le run échoue avant de l'avoir installée.
+    // Declared outside the try: the finally must be able to restore the stack
+    // even when the run fails before installing it.
     const parentStack = Array.isArray(session._skillStack) ? session._skillStack : [];
     const previousWorkspaceMemoryFacts = session.workspaceMemoryFacts;
     const hadWorkspaceMemoryFacts = Object.hasOwn(session, 'workspaceMemoryFacts');
@@ -1526,26 +1526,26 @@ async function runRuntime(argv, agent) {
         emitRuntimeLog(session, 'memory.unavailable: agent run has no resolved workspace; shared memory was not consulted');
       }
       /*
-       Pile des compétences en cours d'exécution.
+       Stack of the skills currently executing.
 
-       Une intention compilée depuis une compétence ressemble, par
-       construction, à la description de cette compétence : le sélecteur de
-       l'agent la reconnaît et la relance. Garder la pile permet de refuser un
-       cycle sans interdire une composition légitime.
+       An intention compiled from a skill resembles, by construction, that
+       skill's description: the agent's selector recognises it and relaunches
+       it. Keeping the stack allows refusing a cycle without forbidding a
+       legitimate composition.
       */
       const skillChain = body.skillChain ?? null;
       /*
-       La pile vient de l'ÉLÉMENT quand il en porte une.
+       The stack comes from the ITEM when it carries one.
 
-       Elle était reconstruite à partir de `session._skillStack`, c'est-à-dire
-       de l'état laissé par le run précédent sur cette session. Mais un run de
-       compétence imbriquée démarre après le `finally` de son parent, qui a déjà
-       tout restauré : la pile héritée était donc celle du grand-parent, pas
-       celle du parent. A→B→A traversait sans être vu.
+       It was rebuilt from `session._skillStack`, that is, from the state the
+       previous run left on this session. But a nested skill run starts after
+       its parent's `finally`, which has already restored everything: the
+       inherited stack was therefore the grandparent's, not the parent's.
+       A→B→A went through unseen.
 
-       Le repli sur `parentStack` couvre les éléments d'avant ce changement,
-       encore en file dans un runtime qui redémarre, et l'invocation directe
-       depuis une session interactive.
+       The fallback to `parentStack` covers items from before this change,
+       still queued in a runtime that restarts, and direct invocation from an
+       interactive session.
       */
       session._skillStack = Array.isArray(skillChain?.skillStack) && skillChain.skillStack.length
         ? skillChain.skillStack.map((entry) => String(entry))
@@ -1738,7 +1738,7 @@ async function runRuntime(argv, agent) {
           dispatchAgentEvent(session, createAgentEvent('assistant_message', {
             origin: 'runtime',
             runId,
-            payload: { content: `Aucune tâche à planifier pour ${body.capabilityPlan.capability} (${fragment?.summary?.initialSynthesis?.[0] ?? 'fragment vide'}).` },
+            payload: { content: `No task to plan for ${body.capabilityPlan.capability} (${fragment?.summary?.initialSynthesis?.[0] ?? 'empty fragment'}).` },
           }));
           dispatchAgentEvent(session, createAgentEvent('run_done', { origin: 'runtime', runId, payload: { runId } }));
           return;
@@ -1854,9 +1854,9 @@ async function runRuntime(argv, agent) {
       delete session._approvalTimeoutMs;
       if (hadWorkspaceMemoryFacts) session.workspaceMemoryFacts = previousWorkspaceMemoryFacts;
       else delete session.workspaceMemoryFacts;
-      // La session survit au run : une pile laissée en place bloquerait une
-      // invocation parfaitement légitime au run suivant, et le diagnostic
-      // serait incompréhensible.
+      // The session survives the run: a stack left in place would block a
+      // perfectly legitimate invocation on the next run, and the diagnosis
+      // would be incomprehensible.
       if (parentStack.length) session._skillStack = parentStack;
       else delete session._skillStack;
     }
@@ -2017,11 +2017,11 @@ async function runRuntime(argv, agent) {
         response = await runHeadlessChatTurn(ephemeral, input, {
           history,
           onStep: ephemeral._onStep,
-          // Fragments de réponse publiés au fil de l'eau, coalescés (voir
-          // deltaCoalescer ci-dessus). Le réducteur les agrège dans la dernière
-          // entrée de conversation (`assistant_delta`), que `assistant_message`
-          // vient ensuite figer : les deux interfaces voient la réponse s'écrire
-          // sans qu'un insert SQLite par token ne bloque le flux.
+          // Answer fragments published as they go, coalesced (see
+          // deltaCoalescer above). The reducer aggregates them into the last
+          // conversation entry (`assistant_delta`), which `assistant_message`
+          // then freezes: both interfaces see the answer being written without
+          // one SQLite insert per token blocking the stream.
           onTextDelta: (delta) => deltaCoalescer.push(delta),
           onTextReset: () => {
             deltaCoalescer.reset();

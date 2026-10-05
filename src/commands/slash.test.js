@@ -11,7 +11,7 @@ test('deterministic operation results ask Donna to localize compact facts withou
   const result = localizedOperationResult({ operation: 'start', target: 'agents' });
   assert.equal(result.rawOutput, true);
   assert.deepEqual(JSON.parse(result.output), { operation: 'start', target: 'agents', status: 'succeeded' });
-  assert.match(result.agentTrigger, /une seule phrase humaine et naturelle/);
+  assert.match(result.agentTrigger, /one natural human sentence/);
   assert.doesNotMatch(result.agentTrigger, /\/start|Docker|compose/);
 });
 
@@ -148,8 +148,8 @@ test('start report style asks Donna to describe what was done, not a bare senten
   assert.deepEqual(JSON.parse(result.output).detail, {
     services: { started: ['wiki'], states: [{ service: 'wiki', running: true }] },
   });
-  assert.match(result.agentTrigger, /Décris ce qui a été fait/);
-  assert.match(result.agentTrigger, /en marche, en échec ou inconnu/);
+  assert.match(result.agentTrigger, /Describe what was done/);
+  assert.match(result.agentTrigger, /running, failed or unknown/);
   assert.doesNotMatch(result.agentTrigger, /une seule phrase/);
   assert.doesNotMatch(result.agentTrigger, /\/start|Docker|compose/);
 });
@@ -287,8 +287,8 @@ test('/connector hands deterministic facts to Donna for localized natural-langua
 
   assert.equal(result.rawOutput, true);
   assert.match(result.output ?? '', /No workspace is currently loaded/);
-  assert.match(result.agentTrigger ?? '', /profil workspace/);
-  assert.match(result.agentTrigger ?? '', /Ne relance pas la commande/);
+  assert.match(result.agentTrigger ?? '', /workspace profile/);
+  assert.match(result.agentTrigger ?? '', /Do not relaunch the command/);
 });
 
 test('/skills run sends the private skill body to Donna without rendering it as command output', async () => {

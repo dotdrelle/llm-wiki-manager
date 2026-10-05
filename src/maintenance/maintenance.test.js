@@ -128,3 +128,89 @@ test('capability withdrawal during admission refuses the stale provider before d
     await assert.rejects(action,/capability_unavailable/);assert.equal(h.executions.length,0);
   }finally{release();await h.service.close();h.db.close();}
 });
+
+test('mail cursors are computed once per snapshot and only successful sends advance them',async()=>{
+  const h=harness({facts:{pending:[],proposals:['p']}});
+  try {
+    h.policy({maintenanceAccess:{defaults:{enabled:true,mail:{to:['a@example.invalid','b@example.invalid'],on:['failure']}}}});
+    const first=h.service.store.event('x',{kind:'failure',message:'first'});
+    const second=h.service.store.event('x',{kind:'failure',message:'second'});
+    for(const [id,to,outcome,uptoSeq] of [['sent','a@example.invalid','done',first.seq],['failed','b@example.invalid','failed',second.seq],['cancelled','a@example.invalid','cancelled',second.seq]]){
+      h.service.store.reserve({id,workspace:'x',policy:'v',kind:'actions',cycle:'c',limit:100,payload:{candidate:{action:'mail',target:to,args:{uptoSeq}},outcome}});
+      h.service.store.settle(id);
+    }
+    let reads=0;const original=h.service.store.reservations;
+    h.service.store.reservations=(w)=>{reads++;return original(w);};
+    const view=await h.service.state('x');
+    assert.equal(reads,1);
+    const alerts=view.candidates.filter(c=>c.action==='mail');
+    assert.equal(alerts.length,2);
+    assert.equal(alerts.find(c=>c.target==='a@example.invalid').args.body,'second');
+    assert.equal(alerts.find(c=>c.target==='b@example.invalid').args.body,'first\nsecond');
+    assert.ok(alerts.every(c=>c.args.uptoSeq===second.seq));
+  }finally{await h.service.close();h.db.close();}
+});
+
+test('status pages retain every active request and reservation without losing older settled history',()=>{
+  const {db,store}=setup();
+  try {
+    for(let i=0;i<6;i++){
+      const r=store.propose('x',{action:'doctor',target:'t'+i,version:'v',summary:'s'+i});store.decide('x',r.id,r.version,false);
+      store.reserve({id:'r'+i,workspace:'x',kind:'actions',policy:'v',cycle:'c',limit:100});store.settle('r'+i);
+    }
+    const pending=store.propose('x',{action:'build',target:'pending',version:'v'});
+    const approved=store.propose('x',{action:'build',target:'approved',version:'v'});store.decide('x',approved.id,approved.version,true);
+    store.reserve({id:'live',workspace:'x',kind:'actions',policy:'v',cycle:'c',limit:100});
+    store.propose('other',{action:'doctor',target:'foreign',version:'v'});
+    const collected=new Set();
+    for(const offset of [0,2,4]){
+      const page=store.statusPage('x',{historyOffset:offset,historyLimit:2});
+      assert.equal(page.requests.length,4);assert.equal(page.reservations.length,3);
+      assert.ok(page.requests.some(r=>r.id===pending.id));assert.ok(page.requests.some(r=>r.id===approved.id));
+      assert.ok(page.reservations.some(r=>r.id==='live'));
+      for(const r of page.requests.filter(r=>r.status==='refused'))collected.add(r.id);
+      assert.equal(page.history.hasMore,offset+2<page.history.eventsTotal);assert.equal(page.history.requestsTotal,6);
+    }
+    assert.equal(collected.size,6);
+    assert.match(db.prepare('EXPLAIN QUERY PLAN SELECT * FROM maintenance_reservations WHERE workspace=?').all('x').map(r=>r.detail).join(' '),/USING INDEX/);
+    assert.equal(store.request('other',pending.id),undefined);
+  }finally{db.close();}
+});
+
+
+test('maintenance log retention is a sliding window across workspaces and preserves decisions and budgets',()=>{
+  const db=new DatabaseSync(':memory:');let time=new Date('2026-10-05T12:00:00Z');
+  const store=createMaintenanceStore(db,{now:()=>time,retentionDays:15});
+  try {
+    const insert=db.prepare('INSERT INTO maintenance_events(workspace,payload) VALUES(?,?)');
+    insert.run('x',JSON.stringify({at:'2026-09-20T11:59:59Z',message:'expired'}));
+    insert.run('other',JSON.stringify({at:'2026-09-20T11:59:59Z',message:'expired dormant workspace'}));
+    insert.run('x',JSON.stringify({at:'2026-09-20T12:00:00Z',message:'exact cutoff'}));
+    const request=store.propose('x',{action:'ingest',target:'raw',version:'v'});
+    store.reserve({id:'active',workspace:'x',kind:'actions',policy:'v',cycle:'c',limit:10});
+    store.reserve({id:'done',workspace:'x',kind:'actions',policy:'v',cycle:'c',limit:10});store.settle('done');
+    assert.ok(store.events('x').some(e=>e.message==='exact cutoff'));
+    assert.ok(!store.events('x').some(e=>e.message==='expired'));
+    assert.equal(store.events('other').length,0);
+    time=new Date('2026-10-05T12:00:01Z');
+    assert.ok(!store.events('x').some(e=>e.message==='exact cutoff'));
+    assert.equal(store.request('x',request.id).status,'pending');
+    assert.equal(store.reservations('x').length,2);
+  }finally{db.close();}
+});
+
+test('recent maintenance logs survive volume and older retained pages remain readable',()=>{
+  const db=new DatabaseSync(':memory:');const time=new Date('2026-10-05T12:00:00Z');
+  const store=createMaintenanceStore(db,{now:()=>time,retentionDays:2});
+  try {
+    db.exec('BEGIN');const insert=db.prepare('INSERT INTO maintenance_events(workspace,payload) VALUES(?,?)');
+    for(let i=0;i<1205;i++)insert.run('x',JSON.stringify({at:time.toISOString(),message:'entry-'+i}));db.exec('COMMIT');
+    store.event('x',{message:'latest'});
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM maintenance_events').get().n,1206);
+    assert.equal(store.events('x').length,1000);assert.equal(store.events('x').at(-1).message,'latest');
+    const latest=store.statusPage('x');assert.equal(latest.events.length,100);assert.equal(latest.history.eventsTotal,1206);assert.equal(latest.history.hasMore,true);
+    const oldest=store.statusPage('x',{historyOffset:1200});assert.equal(oldest.events.length,6);assert.equal(oldest.events[0].message,'entry-0');assert.equal(oldest.history.hasMore,false);
+    assert.ok(latest.events[0].seq>oldest.events.at(-1).seq);
+    assert.equal(latest.history.retentionDays,2);
+  }finally{db.close();}
+});

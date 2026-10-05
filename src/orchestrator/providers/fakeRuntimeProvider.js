@@ -5,15 +5,15 @@ import {
 } from './runtimeProvider.js';
 
 /**
- * FakeRuntimeProvider — vérifie toute la plomberie du contrat sans introduire
- * de LLM (RFC § 26). Expose la capability `agent.echo` et simule
- * discover / execute / status / events / cancel / approve, avec des runs
- * indépendants.
+ * FakeRuntimeProvider — exercises the whole contract plumbing without
+ * introducing an LLM (RFC § 26). Exposes the `agent.echo` capability and
+ * simulates discover / execute / status / events / cancel / approve, with
+ * independent runs.
  *
- * `requireApproval: true` simule le human-in-the-loop : après l'analyse, le
- * run émet `approval_required` et reste `waiting_approval` jusqu'à
- * `approve()`. C'est ce qui permet de tester le gate d'approbation du
- * dispatcher sans runtime réel.
+ * `requireApproval: true` simulates the human-in-the-loop: after the analysis,
+ * the run emits `approval_required` and stays `waiting_approval` until
+ * `approve()`. That is what allows testing the dispatcher's approval gate
+ * without a real runtime.
  */
 export function createFakeRuntimeProvider({
   runtime = 'fake',
@@ -154,9 +154,9 @@ export function createFakeRuntimeProvider({
     subscribe(runId, listener) {
       const run = runFor(runId);
       run.listeners.add(listener);
-      // Rejoue les événements déjà émis avant la souscription : le listener
-      // doit voir l'historique complet du run, pas seulement ce qui arrive
-      // après son attachement (comportement fidèle aux flux d'événements).
+      // Replays events already emitted before the subscription: the listener
+      // must see the run's full history, not only what arrives after it
+      // attaches (faithful to event streams).
       for (const event of [...run.events]) listener(event);
       return () => run.listeners.delete(listener);
     },

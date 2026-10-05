@@ -635,3 +635,24 @@ key is access to the model a workspace uses.**
 - `.wikirc.yaml` must be a valid YAML object; invalid YAML or a non-object root
   is rejected on load.
 - `.env` quoted values support basic escapes (`\"`, `\\`, `\n`, `\r`, `\t`).
+
+## Maintenance log retention
+
+`WIKI_MANAGER_LOG_RETENTION_DAYS` sets the sliding age limit for saved
+maintenance log events. It defaults to **15 days** and accepts a positive
+integer number of days. Blank values use the default; invalid values produce
+an explicit startup/configuration error. Put it in the manager `.env` and
+restart the runtime after changing it.
+
+Expiration uses the event timestamp against the current UTC instant, not a
+calendar-month boundary. Events older than the configured age are removed at
+store startup, log insertion, history reads, and the periodic maintenance
+clock (normally every five minutes), including dormant workspaces.
+Recent events are not deleted merely because more than 1,000 exist. Serve and
+Shell history pages include at most 100 events, plus actionable decisions;
+`history.eventsTotal` and `hasMore` allow browsing older retained pages.
+
+This setting applies to the saved Maintenance activity journal. It does not
+change the existing retention of terminal runs, conversations, memory,
+proposals, approvals/refusals or budget/idempotency receipts, and does not
+rotate `runtime.log` or external agent/Docker log files.

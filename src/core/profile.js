@@ -104,7 +104,7 @@ export async function updateWorkspaceProfilePreference(session, preference) {
   if (!workspacePath) {
     return {
       ok: false,
-      message: 'Profil non modifié : aucun workspace chargé. Utilise /use <workspace>.',
+      message: 'Profile not updated: no workspace loaded. Use /use <workspace>.',
     };
   }
   const profilePath = profilePathForWorkspace(workspacePath);
@@ -124,7 +124,7 @@ export async function updateWorkspaceProfilePreference(session, preference) {
     changed: inserted.changed,
     preference: inserted.line.replace(/^- /, ''),
     message: inserted.changed
-      ? `Profil mis à jour : ${inserted.line.replace(/^- /, '')}`
-      : `Profil déjà à jour : ${inserted.line.replace(/^- /, '')}`,
+      ? `Profile updated: ${inserted.line.replace(/^- /, '')}`
+      : `Profile already up to date: ${inserted.line.replace(/^- /, '')}`,
   };
 }

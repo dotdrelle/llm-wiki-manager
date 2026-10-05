@@ -6,27 +6,27 @@ import { assertContract } from '../contracts/schemas.js';
 const AVAILABLE = 'available';
 const UNAVAILABLE = 'unavailable';
 /**
- * Santé d'un agent restauré depuis le journal, tant qu'aucun `agent_describe`
- * n'a réussi dans le processus courant.
+ * Health of an agent restored from the journal, as long as no successful
+ * `agent_describe` has happened in the current process.
  *
- * Ni `available` ni `unavailable` : on ne SAIT pas. Le distinguer de
- * `unavailable` a une conséquence pratique — un agent inconnu redevient
- * disponible en silence dès le premier scan réussi, là où un agent déclaré
- * indisponible mériterait d'être signalé comme tel à l'utilisateur.
+ * Neither `available` nor `unavailable`: we do NOT know. Distinguishing it
+ * from `unavailable` has a practical consequence — an unknown agent becomes
+ * available again silently on the first successful scan, whereas an agent
+ * declared unavailable would deserve to be reported as such to the user.
  */
 const UNKNOWN = 'unknown';
 
 /**
- * Un agent persisté n'est pas un agent joignable.
+ * A persisted agent is not a reachable agent.
  *
- * Au redémarrage, `hydrateSession` rejoue le journal d'événements et
- * reconstruit les agents avec la santé qu'ils avaient AU MOMENT où l'événement
- * a été écrit. `cme-main` réapparaissait donc `available` alors que son
- * endpoint n'existe plus, était retenu comme fournisseur, et la tâche partait
- * vers un agent absent — la panne observée le 2026-08-04.
+ * On restart, `hydrateSession` replays the event journal and rebuilds agents
+ * with the health they had WHEN the event was written. `cme-main` therefore
+ * reappeared `available` while its endpoint no longer existed, was retained
+ * as a provider, and the task left for an absent agent — the breakdown
+ * observed on 2026-08-04.
  *
- * La persistance dit ce qui a existé, pas ce qui répond maintenant. Seul un
- * `agent_describe` réussi dans ce processus autorise à parler de disponibilité.
+ * Persistence says what existed, not what answers now. Only a successful
+ * `agent_describe` in this process authorises talking about availability.
  */
 export function markPersistedAgentsStale(session) {
   if (!session || typeof session !== 'object') return [];
@@ -34,22 +34,22 @@ export function markPersistedAgentsStale(session) {
     ...agent,
     health: UNKNOWN,
     stale: true,
-    // La santé d'origine est conservée : elle raconte ce qu'on savait avant
-    // l'arrêt, ce qui aide à lire un journal, sans jamais servir au routage.
+    // The original health is kept: it tells what we knew before shutdown,
+    // which helps read a journal, without ever serving routing.
     healthBeforeRestart: agent?.health ?? null,
   });
   /*
-   TOUTES les représentations restaurées, `agentRegistrySnapshot` compris.
+   ALL restored representations, `agentRegistrySnapshot` included.
 
-   J'avais d'abord épargné le snapshot, au motif qu'il pouvait porter un scan
-   vivant. C'était une inversion : à l'hydratation, aucun scan n'a encore eu
-   lieu — l'ordre est hydrate → invalidate → discover, et rien ne s'exécute
-   entre les deux premiers. Le snapshot vient donc de la même projection
-   persistée que `session.agents`. L'épargner laissait `cme-main` routable avec
-   son endpoint éteint, ce que la validation à chaud a montré.
+   I first spared the snapshot, on the grounds that it could carry a live
+   scan. That was backwards: at hydration, no scan has happened yet — the
+   order is hydrate → invalidate → discover, and nothing runs between the
+   first two. The snapshot therefore comes from the same persisted projection
+   as `session.agents`. Sparing it left `cme-main` routable with its endpoint
+   off, which hot validation showed.
 
-   Le seul scan qui compte est celui qui suivra : `discover()` réécrit le
-   snapshot en entier à partir des `agent_describe` réussis.
+   The only scan that matters is the next one: `discover()` rewrites the
+   snapshot entirely from the successful `agent_describe` calls.
   */
   session.agents = (session.agents ?? []).map(stale);
   session.agentRegistrySnapshot = (session.agentRegistrySnapshot ?? []).map(stale);

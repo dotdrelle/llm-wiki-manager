@@ -86,7 +86,7 @@ export async function postRuntimeSkill(skillName, args = {}, {
   idempotencyKey = undefined,
   turnId = undefined,
   selectionKind = undefined,
-  /** Compétences déjà en cours au-dessus de l'appelant, pour la détection de cycle. */
+  /** Skills already running above the caller, for cycle detection. */
   skillStack = undefined,
 } = {}) {
   const response = await fetch(runtimeEndpoint(url, '/run', workspace), {

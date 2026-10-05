@@ -1,19 +1,19 @@
 /**
- * Découpe un texte en lignes tenant dans la largeur d'une boîte TUI.
+ * Splits text into lines that fit a TUI box width.
  *
- * Le wizard rendait chaque libellé, note ou erreur dans un `<text height={1}>` :
- * au delà de la largeur du dialogue le texte était coupé net, sans ellipse ni
- * indice. Les phrases les plus utiles — la note d'une étape, la cause d'une
- * erreur de connexion — sont les plus longues, donc les plus tronquées.
+ * The wizard rendered every label, note or error in a `<text height={1}>`:
+ * beyond the dialog width the text was cut clean, without ellipsis or hint.
+ * The most useful sentences — a step's note, the cause of a connection error
+ * — are the longest, hence the most truncated.
  *
- * Le module est volontairement en JavaScript pur, hors du composant : c'est ce
- * qui le rend testable sans transpiler du JSX.
+ * The module is deliberately plain JavaScript, outside the component: that is
+ * what makes it testable without transpiling JSX.
  *
- * @param {string} text texte à découper ; les `\n` explicites sont respectés.
- * @param {number} width largeur utile en colonnes.
- * @param {number} maxLines nombre de lignes maximum ; la dernière est
- *   marquée d'une ellipse quand il reste du texte, pour que la troncature
- *   restante soit au moins visible.
+ * @param {string} text text to split; explicit `\n` are respected.
+ * @param {number} width usable width in columns.
+ * @param {number} maxLines maximum number of lines; the last is marked with
+ *   an ellipsis when text remains, so the remaining truncation is at least
+ *   visible.
  * @returns {string[]}
  */
 export function wrapText(text, width, maxLines = 6) {
@@ -26,9 +26,9 @@ export function wrapText(text, width, maxLines = 6) {
     }
     let current = '';
     for (const word of paragraph.split(/\s+/).filter(Boolean)) {
-      // Un mot plus long que la boîte — une URL, un chemin, un nom de modèle
-      // qualifié — est coupé plutôt que de déborder : mieux vaut le lire en
-      // deux morceaux que pas du tout.
+      // A word longer than the box — a URL, a path, a qualified model name —
+      // is cut rather than overflowing: better to read it in two pieces than
+      // not at all.
       if (word.length > safeWidth) {
         if (current) {
           lines.push(current);

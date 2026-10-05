@@ -889,7 +889,7 @@ test('truncateToolResult keeps short results intact and bounds long ones head+ta
   assert.ok(bounded.length < 1200, `bounded length ${bounded.length} should stay near the cap`);
   assert.match(bounded, /^START-/);
   assert.match(bounded, /-END$/);
-  assert.match(bounded, /caractères tronqués/);
+  assert.match(bounded, /characters truncated/);
 });
 
 test('formatMcpToolsForAgent names unreachable agents instead of hiding them', () => {

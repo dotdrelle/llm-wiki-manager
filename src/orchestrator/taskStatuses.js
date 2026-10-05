@@ -1,37 +1,37 @@
 /**
- * Vocabulaire unique des statuts de tâche.
+ * Single vocabulary for task statuses.
  *
- * Quatorze modules portaient chacun sa propre liste : `['done', 'failed',
- * 'cancelled']` ici, un `Set` avec `success` et `succeeded` là, un troisième
- * qui ajoutait `error` mais oubliait `canceled`. Aucune n'était fausse
- * isolément ; ensemble elles ne décrivaient pas le même monde. Un statut
- * `skipped` introduit dans l'ordonnanceur était terminal pour lui, inconnu
- * pour la projection — qui le lisait comme un succès — et non terminal pour
- * les panneaux, où la tâche tournait indéfiniment.
+ * Fourteen modules each carried their own list: `['done', 'failed',
+ * 'cancelled']` here, a `Set` with `success` and `succeeded` there, a third
+ * that added `error` but forgot `canceled`. None was wrong in isolation;
+ * together they did not describe the same world. A `skipped` status
+ * introduced in the scheduler was terminal for it, unknown to the projection
+ * — which read it as a success — and non-terminal for the panels, where the
+ * task spun indefinitely.
  *
- * Ce module est donc la seule définition. Les alias existent parce que les
- * agents externes en produisent : `error` pour `failed`, `succeeded` pour
- * `done`, `canceled` pour `cancelled`. Les normaliser à l'entrée évite d'avoir
- * à les reconnaître à chaque comparaison.
+ * This module is therefore the only definition. Aliases exist because
+ * external agents produce them: `error` for `failed`, `succeeded` for `done`,
+ * `canceled` for `cancelled`. Normalising them at the input avoids having to
+ * recognise them at every comparison.
  */
 
-/** Succès : la tâche a produit ce qu'on attendait d'elle. */
+/** Success: the task produced what was expected of it. */
 export const SUCCESS_STATUSES = Object.freeze(['done', 'complete', 'completed', 'success', 'succeeded']);
-/** Échec : la tâche a été tentée et n'a pas abouti. */
+/** Failure: the task was attempted and did not succeed. */
 export const FAILURE_STATUSES = Object.freeze(['failed', 'error', 'stalled']);
-/** Annulation : arrêtée par une décision, pas par un défaut. */
+/** Cancellation: stopped by a decision, not by a defect. */
 export const CANCELLED_STATUSES = Object.freeze(['cancelled', 'canceled']);
-/** Abandon : jamais tentée, parce qu'elle ne pouvait plus l'être. */
+/** Abandonment: never attempted, because it could no longer be. */
 export const SKIPPED_STATUSES = Object.freeze(['skipped']);
-/** En attente : pas encore exécutable, mais susceptible de le devenir. */
+/** Pending: not yet executable, but able to become so. */
 export const PENDING_STATUSES_LIST = Object.freeze(['pending', 'pending_approval', 'waiting_approval']);
 /** En cours : un agent y travaille en ce moment. */
 export const ACTIVE_STATUSES = Object.freeze(['running', 'in_progress', 'started', 'starting']);
 
 /**
- * Terminal, réduit à ses quatre formes canoniques (les alias sont normalisés
- * avant comparaison). Les modules qui recopiaient `['done','failed',
- * 'cancelled','skipped']` dans un `Set` importent celui-ci à la place.
+ * Terminal, reduced to its four canonical forms (aliases are normalised
+ * before comparison). Modules that copied `['done','failed',
+ * 'cancelled','skipped']` into a `Set` import this one instead.
  */
 export const TERMINAL_STATUSES = Object.freeze(['done', 'failed', 'cancelled', 'skipped']);
 export const TERMINAL_STATUS_SET = new Set(TERMINAL_STATUSES);
@@ -42,18 +42,18 @@ const ALIASES = new Map([
   ...CANCELLED_STATUSES.map((status) => [status, 'cancelled']),
   ...SKIPPED_STATUSES.map((status) => [status, 'skipped']),
   ...ACTIVE_STATUSES.map((status) => [status, 'running']),
-  // Les statuts d'attente restent distincts : `pending_approval` et
-  // `waiting_approval` ne demandent pas la même chose que `pending`, et les
-  // confondre ferait disparaître les demandes d'approbation.
+  // The waiting statuses stay distinct: `pending_approval` and
+  // `waiting_approval` do not ask for the same thing as `pending`, and
+  // confusing them would make approval requests disappear.
   ...PENDING_STATUSES_LIST.map((status) => [status, status]),
 ]);
 
 /**
- * Statut canonique, ou `null` si le vocabulaire ne le connaît pas.
+ * Canonical status, or `null` when the vocabulary does not know it.
  *
- * Le `null` est un résultat, pas un accident : c'est lui qui permet aux
- * appelants de traiter l'inconnu comme inconnu plutôt que de le ranger
- * silencieusement du côté qui les arrange.
+ * The `null` is a result, not an accident: it is what lets callers treat the
+ * unknown as unknown rather than silently filing it on the side that suits
+ * them.
  */
 export function normalizeTaskStatus(status) {
   const value = String(status ?? '').trim().toLowerCase();
@@ -86,22 +86,22 @@ export function isActive(status) {
   return normalizeTaskStatus(status) === 'running';
 }
 
-/** Terminal : plus rien n'arrivera à cette tâche dans ce run. */
+/** Terminal: nothing more will happen to this task in this run. */
 export function isTerminal(status) {
   const normalized = normalizeTaskStatus(status);
   return normalized === 'done' || normalized === 'failed' || normalized === 'cancelled' || normalized === 'skipped';
 }
 
 /**
- * Terminal sans avoir réussi. Regroupe échec, annulation et abandon — la
- * distinction compte pour le rapport à l'utilisateur, pas pour décider si la
- * suite du plan peut s'appuyer dessus.
+ * Terminal without having succeeded. Groups failure, cancellation and
+ * abandonment — the distinction matters for the user report, not for deciding
+ * whether the rest of the plan can rely on it.
  */
 export function isUnsuccessfulTerminal(status) {
   return isTerminal(status) && !isSuccessful(status);
 }
 
-/** Vrai pour un statut qu'aucun ensemble ne reconnaît. */
+/** True for a status no set recognises. */
 export function isUnknownStatus(status) {
   return String(status ?? '').trim() !== '' && normalizeTaskStatus(status) == null;
 }

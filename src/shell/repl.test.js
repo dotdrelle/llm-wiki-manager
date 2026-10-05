@@ -732,7 +732,7 @@ test('every slash-command result is presented by Donna when an agent is availabl
   });
 
   assert.equal(result.exit, false);
-  assert.ok(synthesisInput.includes('commande shell /version'));
+  assert.ok(synthesisInput.includes('The user ran the shell command /version'));
   assert.deepEqual(conversationMessages(session).map((message) => message.role), ['user', 'donna']);
   assert.equal(conversationMessages(session)[0].content, '/version');
   assert.equal(conversationMessages(session)[1].content, 'Vous utilisez wiki-manager test.');

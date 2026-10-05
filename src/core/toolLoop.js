@@ -15,11 +15,11 @@ import { truncateToolResult } from './mcp.js';
 // `executeCall` may throw to abort the whole loop (e.g. an AbortError on
 // cancel); anything it returns is treated as the tool result for that call.
 /**
- * @param onTextDelta appelé au fil de la génération. Une itération qui finit
- *   par des appels d'outils ne produit pas de réponse lisible : ses fragments
- *   sont donc rejetés a posteriori via `onTextReset`, pour ne pas afficher un
- *   raisonnement intermédiaire que le tour suivant remplacera.
- * @param onTextReset appelé quand les fragments déjà émis sont à jeter.
+ * @param onTextDelta called as generation proceeds. An iteration that ends
+ *   with tool calls produces no readable answer: its fragments are therefore
+ *   discarded afterwards via `onTextReset`, so an intermediate reasoning the
+ *   next turn will replace is never displayed.
+ * @param onTextReset called when the already emitted fragments must be dropped.
  */
 export async function runBoundedToolLoop({
   llm,
@@ -39,10 +39,10 @@ export async function runBoundedToolLoop({
   const cap = Math.max(1, Math.floor(maxIterations) || 1);
   const budget = Number(inputBudgetChars) > 0 ? Number(inputBudgetChars) : null;
   const convo = [...(messages ?? [])];
-  // `streamWithTools` accumule les appels d'outils exactement comme
-  // `completeWithTools` et renvoie la même forme : le seul écart est qu'il
-  // livre le texte au fil de l'eau. Sans lui, la réponse finale n'apparaissait
-  // qu'une fois complète — le tour paraissait figé pendant toute sa durée.
+  // `streamWithTools` accumulates tool calls exactly like `completeWithTools`
+  // and returns the same shape: the only difference is that it delivers text
+  // as it goes. Without it, the final answer only appeared once complete — the
+  // turn looked frozen for its whole duration.
   const canStream = typeof onTextDelta === 'function' && typeof llm?.streamWithTools === 'function';
   // The exact same tool + arguments called again is a loop, not progress: a
   // model that keeps re-issuing `search("x")` will never finish, and burning

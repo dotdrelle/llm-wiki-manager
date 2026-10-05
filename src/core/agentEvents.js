@@ -514,9 +514,9 @@ function applyEvent(state, event) {
       return;
     case 'plan_step_updated':
       {
-        // L'anomalie remonte par la valeur de retour plutôt que par une
-        // référence au state : `updatePlanStep` reste une fonction sur un
-        // plan, et le journal reste la responsabilité de l'appelant.
+        // The anomaly travels back through the return value rather than
+        // through a reference to the state: `updatePlanStep` stays a function
+        // on a plan, and logging remains the caller's responsibility.
         const anomaly = updatePlanStep(state.plan, event.payload ?? {});
         if (anomaly) appendLog(state, `${logTime(event.ts)} ${anomaly}`.trim());
       }
@@ -758,13 +758,12 @@ function applyEvent(state, event) {
         ...(event.payload?.skillName ? { skillName: event.payload.skillName } : {}),
         ...(event.payload?.skillExecution ? { skillExecution: event.payload.skillExecution } : {}),
         /*
-         La pile des compétences ouvertes au-dessus de cet élément.
+         The stack of skills open above this item.
 
-         Elle DOIT survivre à la projection : c'est le seul état qui relie un
-         run imbriqué à ses ancêtres. Le run n'est pas exécuté en ligne — il est
-         mis en file et démarre après que son parent s'est nettoyé — donc rien
-         d'autre que l'élément lui-même ne peut la lui transmettre. La perdre
-         ici, c'est rouvrir A→B→A en silence.
+         It MUST survive the projection: it is the only state linking a nested
+         run to its ancestors. The run is not executed inline — it is queued
+         and starts after its parent has cleaned up — so nothing but the item
+         itself can pass it on. Losing it here silently reopens A→B→A.
         */
         ...(Array.isArray(event.payload?.skillStack) && event.payload.skillStack.length
           ? { skillStack: [...event.payload.skillStack] }
@@ -933,19 +932,17 @@ function appendAssistantDelta(state, delta, conversationId = null) {
 }
 
 /*
- Jeter une réponse en cours d'écriture, sans retirer son entrée.
+ Drop an answer being written, without removing its entry.
 
- Une itération de la boucle d'outils peut produire du texte puis décider
- d'appeler un outil : ce texte est un raisonnement intermédiaire que le tour
- suivant remplace, il ne doit pas rester à l'écran.
+ A tool-loop iteration may produce text then decide to call a tool: that text
+ is intermediate reasoning the next turn replaces, it must not stay on screen.
 
- L'entrée est vidée, jamais dépilée. La réconciliation de `serve`
- (`chatHtml.ts`) suppose une conversation en ajout seul — « le serveur ne mute
- que la dernière entrée, tout ce qui précède est acquis » — et n'indexe la
- boucle que sur la longueur croissante. Un `pop` la ferait passer sous le
- nombre de références déjà rendues : l'élément DOM en trop resterait affiché
- avec le texte qu'on voulait justement effacer, et tous les messages suivants
- se décaleraient d'un cran.
+ The entry is emptied, never popped. `serve`'s reconciliation (`chatHtml.ts`)
+ assumes an append-only conversation — "the server only mutates the last
+ entry, everything before is settled" — and indexes the loop only on the
+ growing length. A `pop` would take it below the number of already rendered
+ references: the extra DOM element would stay displayed with the very text we
+ wanted to erase, and every following message would shift by one.
 */
 function discardStreamingAssistantMessage(state) {
   const last = state.conversation.at(-1);
@@ -1166,23 +1163,23 @@ function updatePlanStep(plan, payload) {
     : plan.find((item) => item.step === Number(payload.step));
   if (!step) return anomaly;
   /*
-   Un statut inconnu ne vaut pas « réussi ».
+   An unknown status is not a success.
 
-   La cascade se terminait par `else step.status = 'done'` : tout statut non
-   énuméré — `skipped`, par exemple — était projeté en succès. Le runner
-   marquait bien une tâche ignorée, la projection la déclarait faite, et le
-   résumé de run comptait une réussite qui n'a jamais eu lieu. Le défaut le
-   plus dangereux est celui qui transforme une inconnue en bonne nouvelle.
+   The cascade ended on `else step.status = 'done'`: any non-enumerated status
+   — `skipped`, for example — was projected as a success. The runner correctly
+   marked a skipped task, the projection declared it done, and the run summary
+   counted a success that never happened. The most dangerous defect is the one
+   that turns an unknown into good news.
 
-   Trois cas, et un seul mène à `done` :
+   Three cases, and only one leads to `done`:
 
-   - un statut reconnu par le vocabulaire commun est repris tel quel, alias
-     compris (`succeeded` → `done`, `error` → `failed`) ;
-   - l'ABSENCE de statut garde le contrat historique — un événement de fin
-     sans précision signifie « terminé » ;
-   - un statut présent mais incompréhensible laisse l'étape dans l'état où
-     elle était, et signale une anomalie de projection. On ne sait pas ce qui
-     s'est passé : le dire est plus utile que d'inventer une réponse.
+   - a status recognised by the shared vocabulary is kept as-is, aliases
+     included (`succeeded` → `done`, `error` → `failed`);
+   - the ABSENCE of status keeps the historical contract — an end event
+     without precision means "finished";
+   - a present but unintelligible status leaves the step where it was, and
+     reports a projection anomaly. We do not know what happened: saying so is
+     more useful than inventing an answer.
   */
   const canonical = normalizeTaskStatus(payload.status);
   if (canonical) {
@@ -1192,8 +1189,8 @@ function updatePlanStep(plan, payload) {
   } else {
     step.status = 'done';
   }
-  // Le motif d'un abandon est la seule chose qui le rende actionnable :
-  // « ignorée » sans « parce que » n'apprend rien à qui relance.
+  // A skip's reason is the only thing that makes it actionable: "skipped"
+  // without "because" teaches nothing to whoever relaunches.
   if (step.status === 'skipped' && payload.reason && !step.error) {
     step.error = { code: 'dependency_failed', message: String(payload.reason) };
   }

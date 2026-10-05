@@ -1,15 +1,15 @@
 /**
- * Droits Gmail demandés à Google, et ce qu'ils ouvrent réellement.
+ * Gmail grants requested from Google, and what they actually open up.
  *
- * Les identifiants (`read`, `send`, `modify`) sont ceux de Google — `modify`
- * vient du scope `gmail.modify` — et ceux de `GOOGLE_GRANTS` dans
- * agent-connectors. Leur inventer un synonyme côté manager créerait une
- * troisième orthographe à tenir à jour, exactement le travers qui avait donné
- * une seconde paire de variables OAuth préfixées. On décrit, on ne renomme pas.
+ * The identifiers (`read`, `send`, `modify`) are Google's — `modify`
+ * comes from the `gmail.modify` scope — and those of `GOOGLE_GRANTS` in
+ * agent-connectors. Inventing a synonym for them on the manager side would create
+ * a third spelling to keep up to date, exactly the pitfall that had given
+ * a second pair of prefixed OAuth variables. We describe, we do not rename.
  *
- * Cette table est la source unique : la valeur par défaut de
- * `/connector auth`, l'aide de la complétion et le rendu de `/connector list`
- * en découlent tous, donc ils ne peuvent pas diverger.
+ * This table is the single source: the default value of
+ * `/connector auth`, the completion help and the rendering of `/connector list`
+ * all derive from it, so they cannot diverge.
  */
 export const GOOGLE_GRANT_LABELS = Object.freeze({
   read: 'read messages and collect them into the workspace',
@@ -20,14 +20,14 @@ export const GOOGLE_GRANT_LABELS = Object.freeze({
 export const GOOGLE_GRANTS = Object.freeze(Object.keys(GOOGLE_GRANT_LABELS));
 
 /**
- * Droits demandés quand l'opérateur n'en nomme aucun.
+ * Grants requested when the operator names none.
  *
- * Tout ce que l'agent sait faire. Un défaut plus étroit promet des actions que
- * l'autorisation ne couvre pas : `/connector auth google` ne demandait que
- * `read`, alors que l'agent expose l'envoi et la gestion de boîte — Donna
- * proposait « marquer comme lu », et l'action échouait après coup. Comme
- * l'autorisation Google est incrémentale, un droit ajouté plus tard coûte un
- * aller-retour de consentement supplémentaire, pas moins d'accès.
+ * Everything the agent knows how to do. A narrower default promises actions that
+ * the authorization does not cover: `/connector auth google` asked only for
+ * `read`, while the agent exposes sending and mailbox management — Donna
+ * offered "mark as read", and the action failed afterwards. Since
+ * the Google authorization is incremental, a grant added later costs an
+ * extra consent round-trip, not less access.
  */
 export function defaultGoogleGrants() {
   return [...GOOGLE_GRANTS];

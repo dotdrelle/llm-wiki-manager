@@ -1,13 +1,13 @@
 /**
- * Découverte des modèles disponibles, pour alimenter le wizard.
+ * Discovery of the available models, to feed the wizard.
  *
- * Deux chemins, correspondant aux deux valeurs de `llm.provider` :
+ * Two paths, matching the two values of `llm.provider`:
  *
- * - `openai-compatible` : un serveur unique. L'endpoint et les en-têtes
- *   dépendent du moteur (`engine`), d'où les tables ci-dessous.
- * - `ai-gateway` : un seul chemin, `GET /v1/models`, plus `GET /model/info`
- *   quand il est disponible — c'est lui qui porte le type de chaque modèle
- *   (chat, embedding, rerank) et permet de filtrer les listes du wizard.
+ * - `openai-compatible`: a single server. The endpoint and headers
+ *   depend on the engine (`engine`), hence the tables below.
+ * - `ai-gateway`: a single path, `GET /v1/models`, plus `GET /model/info`
+ *   when it is available — it is the one that carries each model's type
+ *   (chat, embedding, rerank) and allows the wizard's lists to be filtered.
  */
 
 const FALLBACK_MODELS = {
@@ -39,7 +39,7 @@ export const ENGINES = [
   'generic',
 ];
 
-/** Moteurs qui exigent une baseUrl explicite — il n'existe pas de défaut sensé. */
+/** Engines that require an explicit baseUrl — there is no sensible default. */
 const ENGINES_REQUIRING_BASE_URL = new Set(['ollama', 'vllm', 'mlx', 'generic']);
 
 const ENGINE_DEFAULT_BASE_URL = {
@@ -60,7 +60,7 @@ export function defaultBaseUrl(provider, engine) {
   return ENGINE_DEFAULT_BASE_URL[normalizeEngine(engine)] ?? '';
 }
 
-/** Routage. Tolérant aux libellés du wizard. */
+/** Routing. Tolerant of the wizard's labels. */
 export function normalizeProvider(provider) {
   const value = String(provider ?? '').toLowerCase();
   if (value.includes('gateway')) return 'ai-gateway';
@@ -68,13 +68,13 @@ export function normalizeProvider(provider) {
 }
 
 /**
- * Libellés du wizard vers moteur. Correspondance **exacte**, pas par sous-chaîne.
+ * Wizard labels to engine. **Exact** match, not by substring.
  *
- * Une recherche par sous-chaîne était fausse : « Other (generic
- * OpenAI-compatible) » contient « openai », qui était testé avant « generic »
- * — l'option « serveur générique » persistait donc `engine: openai`, avec les
- * contournements inversés. Et aucun libellé ne pouvait plus résoudre vers
- * `generic`, ce qui cassait la présélection à la réouverture du wizard.
+ * A substring search was wrong: "Other (generic
+ * OpenAI-compatible)" contains "openai", which was tested before "generic"
+ * — the "generic server" option therefore persisted `engine: openai`, with the
+ * workarounds inverted. And no label could resolve to
+ * `generic` any more, which broke preselection when the wizard was reopened.
  */
 const ENGINE_LABELS = new Map([
   ['openai', 'openai'],
@@ -86,17 +86,17 @@ const ENGINE_LABELS = new Map([
 ]);
 
 /**
- * Moteur. Accepte les libellés du wizard, les valeurs canoniques, et les
- * anciennes valeurs de `provider` (`openai`, `ollama`) devenues des moteurs.
- * L'ancien moteur `anthropic`, retiré de la config, retombe sur `generic`.
+ * Engine. Accepts the wizard's labels, the canonical values, and the
+ * old `provider` values (`openai`, `ollama`) that became engines.
+ * The former `anthropic` engine, removed from the config, falls back to `generic`.
  */
 export function normalizeEngine(engine) {
   const value = String(engine ?? '').trim().toLowerCase();
   const fromLabel = ENGINE_LABELS.get(value);
   if (fromLabel) return fromLabel;
   if (ENGINES.includes(value)) return value;
-  // Repli tolérant, utile pour les valeurs libres ; l'ordre importe donc les
-  // moteurs les plus spécifiques passent avant les plus génériques.
+  // Tolerant fallback, useful for free-form values; order therefore matters:
+  // the most specific engines come before the most generic ones.
   for (const candidate of ENGINES) {
     if (candidate !== 'generic' && value.includes(candidate)) return candidate;
   }
@@ -114,9 +114,9 @@ function trimUrl(url) {
 }
 
 /**
- * `baseUrl` est écrite avec son suffixe `/v1` dans le wikirc. Les endpoints de
- * listing vivent tantôt sous `/v1` (OpenAI), tantôt à la racine (Ollama,
- * `/model/info` de LiteLLM) — d'où cette racine sans suffixe.
+ * `baseUrl` is written with its `/v1` suffix in the wikirc. The listing
+ * endpoints live sometimes under `/v1` (OpenAI), sometimes at the root (Ollama,
+ * LiteLLM's `/model/info`) — hence this root without a suffix.
  */
 function rootOf(baseUrl) {
   return trimUrl(baseUrl).replace(/\/v1$/, '');
@@ -141,17 +141,17 @@ function headersFor(provider, engine, apiKey) {
 }
 
 /**
- * Type d'un modèle, quand la réponse le porte.
+ * A model's type, when the response carries it.
  *
- * `/v1/models` d'OpenAI ne type rien (`object: "model"` partout) — d'où le
- * repli non typé. Mais plusieurs serveurs OpenAI-compatibles ajoutent un
- * champ : Albert annonce `text-generation`, `text-embeddings-inference` ou
- * `text-classification` (son reranker), LiteLLM porte `model_info.mode`. Les
- * ignorer forçait le wizard à proposer les modèles de chat pour l'étape
- * embeddings — sur Albert, aucune suggestion ne pouvait correspondre.
+ * OpenAI's `/v1/models` types nothing (`object: "model"` everywhere) — hence the
+ * untyped fallback. But several OpenAI-compatible servers add a
+ * field: Albert announces `text-generation`, `text-embeddings-inference` or
+ * `text-classification` (its reranker), LiteLLM carries `model_info.mode`.
+ * Ignoring them forced the wizard to offer the chat models for the
+ * embeddings step — on Albert, no suggestion could match.
  *
- * Un indice non reconnu (`automatic-speech-recognition`) rend `null` : le
- * modèle est simplement absent des trois listes.
+ * An unrecognized hint (`automatic-speech-recognition`) returns `null`: the
+ * model is simply absent from the three lists.
  */
 export function classifyModelEntry(item) {
   const hints = [
@@ -167,7 +167,7 @@ export function classifyModelEntry(item) {
 
   for (const hint of hints) {
     if (hint.includes('embed')) return 'embedding';
-    // Albert expose son reranker en `text-classification`.
+    // Albert exposes its reranker as `text-classification`.
     if (hint.includes('rerank') || hint.includes('classification')) return 'rerank';
     if (hint.includes('chat') || hint.includes('generation') || hint.includes('completion')) {
       return 'chat';
@@ -195,17 +195,17 @@ function parseModelNames(provider, engine, payload) {
 }
 
 /**
- * Délai de découverte du wizard.
+ * Wizard discovery timeout.
  *
- * Un `/v1/models` qui répond le fait en quelques dizaines de millisecondes :
- * ce délai n'est jamais payé par un endpoint sain, il ne borne que les pannes
- * silencieuses (proxy qui avale la connexion, port filtré). Il peut donc
- * rester confortable — la découverte est lancée en tâche de fond, aucune
- * étape du wizard ne l'attend.
+ * A `/v1/models` that answers does so in a few tens of milliseconds:
+ * this timeout is never paid by a healthy endpoint, it only bounds silent
+ * failures (a proxy swallowing the connection, a filtered port). It can therefore
+ * stay comfortable — discovery is launched as a background task, no
+ * wizard step waits for it.
  */
 export const DISCOVERY_TIMEOUT_MS = 8000;
 
-/** Codes TLS qui désignent une CA privée ou un proxy qui intercepte. */
+/** TLS codes that designate a private CA or an intercepting proxy. */
 const TLS_ERROR_CODES = new Set([
   'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
   'SELF_SIGNED_CERT_IN_CHAIN',
@@ -238,18 +238,18 @@ function httpStatusHint(status, url) {
 }
 
 /**
- * Message actionnable pour un échec réseau.
+ * Actionable message for a network failure.
  *
- * Le message brut de `fetch` ("fetch failed") ne dit rien : la cause utile est
- * dans `err.cause.code`. On la traduit en une phrase qui nomme la manœuvre —
- * proxy, CA privée, port fermé, DNS — parce que c'est exactement ce que
- * l'opérateur doit corriger, et qu'il ne le devinera pas depuis le wizard.
+ * The raw `fetch` message ("fetch failed") says nothing: the useful cause is
+ * in `err.cause.code`. It is translated into a sentence that names the maneuver —
+ * proxy, private CA, closed port, DNS — because that is exactly what
+ * the operator must fix, and they will not guess it from the wizard.
  */
 export function describeFetchError(err, { url, timeoutMs } = {}) {
   if (!err) return 'unknown error';
   if (err.name === 'AbortError' || err.name === 'TimeoutError') {
-    // Le délai en millisecondes est un détail d'implémentation : ce qui aide
-    // l'opérateur, c'est l'hôte qui n'a pas répondu et les causes probables.
+    // The delay in milliseconds is an implementation detail: what helps
+    // the operator is the host that did not answer and the likely causes.
     return `${hostOf(url)} did not answer in time — server unreachable, or blocked by a proxy or firewall`;
   }
   const code = err?.cause?.code ?? err?.code ?? null;
@@ -273,10 +273,10 @@ export function describeFetchError(err, { url, timeoutMs } = {}) {
 }
 
 /**
- * État du transport local, affiché à côté d'une erreur de découverte.
+ * Local transport state, displayed next to a discovery error.
  *
- * Un proxy déclaré mais non activé (`NODE_USE_ENV_PROXY` absent) est la panne
- * la plus fréquente en entreprise, et elle est invisible sans ce rappel.
+ * A declared but inactive proxy (`NODE_USE_ENV_PROXY` absent) is the most
+ * frequent failure in the enterprise, and it is invisible without this reminder.
  */
 export function transportSummary(env = process.env) {
   const proxy = env.HTTPS_PROXY ?? env.HTTP_PROXY ?? null;
@@ -311,10 +311,10 @@ async function getJson(url, headers, timeoutMs) {
 }
 
 /**
- * Liste plate des modèles.
+ * Flat list of the models.
  *
- * `options.engine` porte le moteur ; à défaut, le premier argument est
- * réinterprété comme tel, ce qui garde les appels historiques valides.
+ * `options.engine` carries the engine; failing that, the first argument is
+ * reinterpreted as one, which keeps historical calls valid.
  */
 export async function fetchModels(provider, baseUrl, apiKey, options = {}) {
   const routing = normalizeProvider(provider);
@@ -333,9 +333,9 @@ export async function fetchModels(provider, baseUrl, apiKey, options = {}) {
     );
     const models = parseModelNames(provider, normalizedEngine, payload);
     if (models.length === 0) throw new Error('No models returned');
-    // `raw` rend les entrées brutes, seules porteuses des indices de type que
-    // `fetchServerCatalog` exploite. Absentes par défaut : la forme historique
-    // de ce retour est {ok, models, source}.
+    // `raw` returns the raw entries, the only ones carrying the type hints that
+    // `fetchServerCatalog` exploits. Absent by default: the historical shape
+    // of this return is {ok, models, source}.
     return options.raw
       ? { ok: true, models, source: 'remote', items: itemsOf(provider, normalizedEngine, payload) ?? [] }
       : { ok: true, models, source: 'remote' };
@@ -350,25 +350,25 @@ export async function fetchModels(provider, baseUrl, apiKey, options = {}) {
 }
 
 /**
- * Catalogue typé d'une gateway.
+ * Typed catalogue of a gateway.
  *
- * Dégradation gracieuse en trois temps — jamais un catch silencieux vers un
- * défaut :
+ * Graceful three-step degradation — never a silent catch toward a
+ * default:
  *
- *   1. `GET /model/info` porte `model_info.mode` : on sait quel modèle est un
- *      chat, un embedding ou un reranker, et le wizard filtre ses listes.
- *   2. `GET /v1/models` ne renvoie qu'une liste plate : les trois listes
- *      reçoivent la même chose, et `typed: false` permet à l'appelant de le
- *      dire à l'utilisateur.
- *   3. Injoignable : listes vides, `error` renseignée. Le wizard garde sa
- *      saisie libre, qui fait foi de toute façon.
+ *   1. `GET /model/info` carries `model_info.mode`: we know which model is a
+ *      chat, an embedding or a reranker, and the wizard filters its lists.
+ *   2. `GET /v1/models` returns only a flat list: the three lists
+ *      receive the same thing, and `typed: false` lets the caller
+ *      tell the user.
+ *   3. Unreachable: empty lists, `error` filled in. The wizard keeps its
+ *      free-form input, which prevails anyway.
  *
- * Les deux appels partent **en parallèle**, et le résultat est livré en deux
- * temps : `options.onPartial` reçoit la liste plate de `/v1/models` dès
- * qu'elle arrive — c'est la requête rapide, et elle suffit à choisir un
- * modèle — pendant que `/model/info`, plus lourd côté gateway, continue.
- * La promesse résout ensuite avec le catalogue typé s'il aboutit. L'opérateur
- * a donc une liste utilisable immédiatement, qui se raffine sous ses yeux.
+ * The two calls start **in parallel**, and the result is delivered in two
+ * stages: `options.onPartial` receives the flat list from `/v1/models` as soon
+ * as it arrives — it is the fast request, and it is enough to choose a
+ * model — while `/model/info`, heavier on the gateway side, continues.
+ * The promise then resolves with the typed catalogue if it succeeds. The operator
+ * therefore has a usable list immediately, which refines itself before their eyes.
  */
 export async function fetchGatewayCatalog(baseUrl, apiKey, options = {}) {
   const timeoutMs = options.timeoutMs ?? DISCOVERY_TIMEOUT_MS;
@@ -376,8 +376,8 @@ export async function fetchGatewayCatalog(baseUrl, apiKey, options = {}) {
   const onPartial = typeof options.onPartial === 'function' ? options.onPartial : null;
 
   const flatPromise = fetchModels('ai-gateway', baseUrl, apiKey, { timeoutMs });
-  // Sans ce no-op, un rejet arrivant avant son `await` remonterait en
-  // unhandledRejection quand le chemin typé réussit.
+  // Without this no-op, a rejection arriving before its `await` would surface as
+  // an unhandledRejection when the typed path succeeds.
   flatPromise.catch(() => {});
 
   const flatResult = (flat, error) => ({
@@ -387,8 +387,8 @@ export async function fetchGatewayCatalog(baseUrl, apiKey, options = {}) {
     chat: flat.models,
     embedding: flat.models,
     rerank: flat.models,
-    // Conservée pour l'affichage : elle explique pourquoi les listes ne sont
-    // pas filtrées.
+    // Kept for display: it explains why the lists are not
+    // filtered.
     ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
   });
 
@@ -438,12 +438,12 @@ export async function fetchGatewayCatalog(baseUrl, apiKey, options = {}) {
 }
 
 /**
- * Catalogue d'un serveur unique, typé quand le serveur le permet.
+ * Catalogue of a single server, typed when the server allows it.
  *
- * Même forme de retour que `fetchGatewayCatalog`, pour que le wizard n'ait
- * qu'un seul objet à afficher. Un seul appel : chat et embeddings partagent
- * l'endpoint, les interroger séparément revenait à poser deux fois la même
- * question.
+ * Same return shape as `fetchGatewayCatalog`, so the wizard has
+ * only one object to display. A single call: chat and embeddings share
+ * the endpoint, querying them separately amounted to asking the same
+ * question twice.
  */
 export async function fetchServerCatalog(provider, baseUrl, apiKey, options = {}) {
   const engine = options.engine ?? provider;
@@ -459,9 +459,9 @@ export async function fetchServerCatalog(provider, baseUrl, apiKey, options = {}
     const kind = classifyModelEntry(item);
     if (name && kind) typed[kind].push(String(name));
   }
-  // Typage partiel accepté : un serveur peut n'annoncer que ses embeddings.
-  // Les listes vides retombent sur la liste complète plutôt que de rester
-  // vides — mieux vaut trop proposer que rien.
+  // Partial typing accepted: a server may announce only its embeddings.
+  // Empty lists fall back to the full list rather than staying
+  // empty — better to offer too much than nothing.
   const classified = typed.chat.length + typed.embedding.length + typed.rerank.length;
   if (classified === 0) {
     return { ok: true, typed: false, source: 'models', chat: flat.models, embedding: flat.models, rerank: flat.models };

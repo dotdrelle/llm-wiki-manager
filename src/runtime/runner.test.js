@@ -97,7 +97,7 @@ test('evaluateRuntimeRun trusts a completed provider TaskGraph without asking an
   const evaluation = await evaluateRuntimeRun(session, 'ingère A.md');
 
   assert.equal(evaluation.ok, true);
-  assert.match(evaluation.reason, /1 tâche/);
+  assert.match(evaluation.reason, /1 task/);
 });
 
 test('runRuntimeAgenticWorkflow completes conversational turns without evaluation or replan', async () => {
@@ -1224,9 +1224,9 @@ test('structuredPlanEvaluation compte séparément, sans fraction trompeuse', ()
   assert.equal(partial.ok, false);
   // Trois compteurs qui s'additionnent, pas un « 1/3 » dont le dénominateur
   // mêlerait tâches métier et étapes techniques.
-  assert.match(partial.reason, /1 réussie\(s\)/);
-  assert.match(partial.reason, /1 en échec/);
-  assert.match(partial.reason, /1 ignorée\(s\)/);
+  assert.match(partial.reason, /1 succeeded/);
+  assert.match(partial.reason, /1 failed/);
+  assert.match(partial.reason, /1 skipped/);
   assert.doesNotMatch(partial.reason, /\d+\/\d+/);
 
   // Uniquement des ignorées : jamais un succès.
@@ -1241,7 +1241,7 @@ test('structuredPlanEvaluation compte séparément, sans fraction trompeuse', ()
   for (const status of ['running', 'brouette']) {
     const pending = structuredPlanEvaluation([task('a', 'done'), task('b', status)]);
     assert.equal(pending.ok, false, status);
-    assert.match(pending.reason, /non terminée/);
+    assert.match(pending.reason, /unfinished/);
   }
 });
 

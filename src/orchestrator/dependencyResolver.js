@@ -1,10 +1,10 @@
 import { locksForTask } from './lockManager.js';
 import { approvalCovered } from './approvalPolicy.js';
 import { isPending, isSuccessful, isTerminal, isUnsuccessfulTerminal } from './taskStatuses.js';
-// Une tâche dans un de ces statuts n'a pas encore tourné mais peut le devenir.
-// Réexporté depuis le vocabulaire commun : l'ordonnanceur et le contrôle de
-// blocage du runner doivent tester la même chose, et un ensemble local ici
-// était précisément le moyen de les faire diverger.
+// A task in one of these statuses has not run yet but may become able to.
+// Re-exported from the shared vocabulary: the scheduler and the runner's stall
+// check must test the same thing, and a local set here was precisely the way
+// to make them diverge.
 export { isPending } from './taskStatuses.js';
 
 export function readyTasks(dag, {
@@ -65,20 +65,19 @@ function dependenciesDone(task, done) {
 }
 
 /*
- Une barrière de groupe attend que le groupe soit FINI, pas qu'il soit parfait.
+ A group barrier waits for the group to be FINISHED, not perfect.
 
- Elle exigeait que chaque membre soit `done`. Un seul échec la fermait donc
- définitivement : sur une ingestion de dix fichiers dont neuf réussissent, la
- suite du plan n'était jamais débloquée et le run restait `running` pour
- toujours. Un incident sur un document devenait une panne totale — le coût
- était sans rapport avec le dégât.
+ It required every member to be `done`. A single failure therefore closed it
+ forever: on an ingestion of ten files where nine succeed, the rest of the
+ plan was never unblocked and the run stayed `running` forever. One document
+ incident became a total breakdown — the cost was unrelated to the damage.
 
- La barrière s'ouvre donc quand tout le groupe est TERMINAL. Ce que valait
- réellement la garantie « tout est done » est préservé ailleurs, et plus
- finement : une tâche qui dépend explicitement d'une tâche en échec reste
- bloquée par `dependenciesDone`, et le planificateur la marque `skipped`
- (cf. blockedByFailedDependency). On distingue ainsi « la suite ne peut pas se
- faire » de « la suite peut se faire sur ce qui a réussi ».
+ The barrier therefore opens when the whole group is TERMINAL. What the "all
+ done" guarantee really meant is preserved elsewhere, and more finely: a task
+ that explicitly depends on a failed task stays blocked by `dependenciesDone`,
+ and the scheduler marks it `skipped` (see blockedByFailedDependency). We thus
+ distinguish "the rest cannot happen" from "the rest can happen on what
+ succeeded".
 */
 function groupBarrierSatisfied(task, tasks) {
   const groupId = task?.dependsOnGroup;
@@ -89,14 +88,14 @@ function groupBarrierSatisfied(task, tasks) {
 }
 
 /**
- * Tâches en attente qui ne deviendront JAMAIS exécutables, parce qu'une de
- * leurs dépendances directes est terminale sans avoir réussi.
+ * Pending tasks that will NEVER become executable, because one of their
+ * direct dependencies is terminal without having succeeded.
  *
- * Sans cette liste, le planificateur ne pouvait que constater « plus aucune
- * tâche prête » et déclarer le plan bloqué — ce qui déclenchait une
- * replanification, donc un run qui ne se termine pas. Les nommer permet de les
- * marquer `skipped` avec leur motif, de finaliser le run sur un résultat
- * partiel, et de dire à l'utilisateur ce qui n'a pas été fait et pourquoi.
+ * Without this list, the scheduler could only note "no ready task left" and
+ * declare the plan blocked — which triggered a replan, hence a run that does
+ * not finish. Naming them allows marking them `skipped` with their reason,
+ * finalising the run on a partial result, and telling the user what was not
+ * done and why.
  */
 export function blockedByFailedDependency(dag) {
   const tasks = normalizeTasks(dag);

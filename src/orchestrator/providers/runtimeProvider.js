@@ -1,16 +1,16 @@
 import { assertContract } from '../../contracts/schemas.js';
 
 /**
- * External Agent Runtime Provider — contrat.
+ * External Agent Runtime Provider — contract.
  *
- * Le point d'abstraction qui laisse Wiki Manager router une tâche agentique
- * vers un moteur externe (Deep Agents, autre) SANS le transformer en couche
- * d'orchestration. Le contrat est volontairement plus petit que le moteur
- * interne : il ne reproduit ni Control Queue, ni scheduler, ni DAG, ni
- * politique d'approbation complète, ni objective resolver — ces responsabilités
- * restent dans Wiki Manager (voir RFC § 8).
+ * The abstraction point that lets Wiki Manager route an agentic task to an
+ * external engine (Deep Agents, another) WITHOUT turning it into an
+ * orchestration layer. The contract is deliberately smaller than the internal
+ * engine: it reproduces neither Control Queue, nor scheduler, nor DAG, nor
+ * full approval policy, nor objective resolver — those responsibilities stay
+ * in Wiki Manager (see RFC § 8).
  *
- * Un provider implémente :
+ * A provider implements:
  *
  *   describe(): Promise<RuntimeDescription>
  *       { runtime, version, protocolVersion, health, capabilities? }
@@ -19,26 +19,26 @@ import { assertContract } from '../../contracts/schemas.js';
  *       [{ name: 'agent.review', operations: ['run'] }, ...]
  *
  *   execute(request: RuntimeExecuteRequest): Promise<RuntimeRun>
- *       { runId, status: 'running' } — ne bloque pas.
+ *       { runId, status: 'running' } — does not block.
  *
  *   status(runId: string): Promise<RuntimeStatus>
- *       { runId, status } — status parmi les états terminaux du moteur.
+ *       { runId, status } — status among the engine's terminal states.
  *
  *   cancel(runId: string): Promise<void>
  *
  *   subscribe(runId: string, listener: RuntimeEventListener): Unsubscribe
- *       le listener reçoit des RuntimeEvent ; `Unsubscribe` est une fonction.
+ *       the listener receives RuntimeEvents; `Unsubscribe` is a function.
  *
  *   approve(runId: string, { approved, scope?, reason? }): Promise<void>
- *       Réponse au human-in-the-loop du runtime. CE N'EST PAS un mécanisme
- *       d'approbation : son seul appelant est le dispatcher, et uniquement
- *       après qu'un grant humain couvre la demande (`approvalCovered`).
- *       Jamais exposé en tool ni en endpoint — le projet a déjà retiré un
- *       self-approval tool, ce serait le réintroduire.
+ *       Answer to the runtime's human-in-the-loop. This is NOT an approval
+ *       mechanism: its only caller is the dispatcher, and only after a human
+ *       grant covers the request (`approvalCovered`). Never exposed as a tool
+ *       or an endpoint — the project already removed a self-approval tool;
+ *       this would reintroduce it.
  *
- * Le mot « provider » est ici distinct des `providers` du `CapabilityRegistry`
- * (qui sont des instances d'agents MCP). Un RuntimeProvider n'est PAS un agent
- * MCP : c'est un backend d'exécution externe découvert séparément.
+ * The word "provider" here is distinct from the `CapabilityRegistry`'s
+ * `providers` (which are MCP agent instances). A RuntimeProvider is NOT an
+ * MCP agent: it is an external execution backend discovered separately.
  */
 
 export const RUNTIME_PROTOCOL_VERSION = '1';

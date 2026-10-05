@@ -143,14 +143,14 @@ function WelcomeHelpPanels(props: { width: number }) {
 const COPY_BTN = '  copy';
 
 /**
- * Barre de gouttière, préfixée à chaque ligne d'un message.
+ * Gutter bar, prefixed to every line of a message.
  *
- * Remplace le filet horizontal pleine largeur qui ouvrait chaque message.
- * Celui-ci était l'élément le plus encré de l'écran, répété à chaque tour, et
- * il séparait là où il fallait grouper : rien n'indiquait où un bloc finissait,
- * seulement où le suivant commençait. Une barre colorée porte la même
- * information — à qui est le tour, où le bloc commence ET où il s'arrête — pour
- * un caractère par ligne au lieu de toute la largeur.
+ * Replaces the full-width horizontal rule that opened each message. It was
+ * the most inked element on screen, repeated every turn, and it separated
+ * where grouping was needed: nothing indicated where a block ended, only
+ * where the next began. A coloured bar carries the same information — whose
+ * turn it is, where the block starts AND where it stops — for one character
+ * per line instead of the full width.
  */
 const GUTTER = '▌ ';
 
@@ -161,12 +161,12 @@ function clockLabel(at?: number): string {
 }
 
 /**
- * En-tête d'un message : gouttière, locuteur, heure, et `copy` à droite.
+ * A message header: gutter, speaker, time, and `copy` on the right.
  *
- * Le bouton de copie était collé au libellé, précédé d'un filet de soixante-dix
- * tirets. Poussé au bord droit et dégrisé, il reste atteignable sans peser sur
- * la ligne. L'heure était reléguée dans une colonne latérale, détachée de ce
- * qu'elle datait ; elle coûte cinq caractères ici et devient lisible.
+ * The copy button was glued to the label, preceded by a seventy-dash rule.
+ * Pushed to the right edge and un-greyed, it stays reachable without weighing
+ * on the line. The time was relegated to a side column, detached from what it
+ * dated; it costs five characters here and becomes readable.
  */
 function messageHeaderSegments(role: string, columns: number, at?: number): Segment[] {
   const time = clockLabel(at);
@@ -181,7 +181,7 @@ function messageHeaderSegments(role: string, columns: number, at?: number): Segm
   ];
 }
 
-/** Préfixe la gouttière à une ligne de corps de message. */
+/** Prefixes the gutter to a message body line. */
 function withGutter(line: RenderedLine, role: string): RenderedLine {
   return { ...line, segments: [{ text: GUTTER, color: roleColor(role) }, ...line.segments] };
 }
@@ -451,18 +451,18 @@ function conversationLines(messages: Array<{ role: string; content: string; at?:
     const raw = String(message.content || '');
     const previous = index > 0 ? messages[index - 1] : null;
     const showHeader = !previous || headerGroupKey(previous.role) !== headerGroupKey(message.role);
-    // Plus de ligne vide sous l'en-tête : le filet et son rembourrage
-    // coûtaient deux lignes par message, en plus de la ligne de séparation.
-    // La gouttière rattache visuellement l'en-tête à son corps, la respiration
-    // entre tours suffit.
+    // No more empty line under the header: the rule and its padding cost two
+    // lines per message, on top of the separator line. The gutter visually
+    // attaches the header to its body, the breathing room between turns is
+    // enough.
     const headerLines: RenderedLine[] = showHeader
       ? [{ segments: messageHeaderSegments(message.role, columns, message.at), copyContent: raw }]
       : [];
-    // Les messages utilisateur étaient repliés à 60 % de la largeur pour tenir
-    // dans une bulle alignée à droite. Cela coupait les phrases en plein milieu
-    // et faisait repartir l'œil de deux colonnes différentes selon le locuteur.
-    // La couleur de gouttière distingue les tours ; la colonne de lecture reste
-    // unique. On retire aussi la largeur de la gouttière du texte disponible.
+    // User messages were folded to 60% width to fit in a right-aligned
+    // bubble. That cut sentences in the middle and made the eye restart from
+    // two different columns depending on the speaker. The gutter colour
+    // distinguishes turns; the reading column stays single. The gutter width
+    // is also removed from the available text.
     const contentColumns = Math.max(12, columns - GUTTER.length);
     if (isStatusOutput(message)) {
       const statusLines: RenderedLine[] = [

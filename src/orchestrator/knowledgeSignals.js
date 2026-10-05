@@ -1,3 +1,4 @@
+import { readdir, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
@@ -274,20 +275,47 @@ export function readTaxoConceptPages(rootDir) {
     const absolute = join(parent, entry.name);
     let raw;
     try { raw = readFileSync(absolute, 'utf8'); } catch { continue; }
-    const head = raw.slice(0, 4_096);
-    let data = {};
-    if (head.startsWith('---')) {
-      const end = head.indexOf('\n---', 3);
-      if (end !== -1) {
-        try { data = parseYaml(head.slice(3, end)) ?? {}; } catch { data = {}; }
-      }
+    leaves.push(taxoConceptPage(raw, rel, fallbackFamily, entry.name));
+  }
+  return leaves;
+}
+
+function taxoConceptPage(raw, rel, fallbackFamily, name) {
+  const head = raw.slice(0, 4_096);
+  let data = {};
+  if (head.startsWith('---')) {
+    const end = head.indexOf('\n---', 3);
+    if (end !== -1) {
+      try { data = parseYaml(head.slice(3, end)) ?? {}; } catch { data = {}; }
     }
-    const subject = Array.isArray(data.tags) && data.tags.length
-      ? String(data.tags[0])
-      : frontmatterSubject(head) ?? entry.name.replace(/\.md$/, '');
-    const concept = String(data.family ?? fallbackFamily);
-    const ficheCount = (raw.match(/\[src:\s*wiki\/sources\//g) ?? []).length;
-    leaves.push({ path: rel, concept, subject, ficheCount });
+  }
+  const subject = Array.isArray(data.tags) && data.tags.length
+    ? String(data.tags[0])
+    : frontmatterSubject(head) ?? name.replace(/\.md$/, '');
+  const concept = String(data.family ?? fallbackFamily);
+  const ficheCount = (raw.match(/\[src:\s*wiki\/sources\//g) ?? []).length;
+  return { path: rel, concept, subject, ficheCount };
+}
+
+/** Same corpus observation without blocking the manager on filesystem I/O. */
+export async function readTaxoConceptPagesAsync(rootDir) {
+  const base = join(String(rootDir), 'wiki', 'concepts');
+  let entries;
+  try { entries = await readdir(base, { withFileTypes: true, recursive: true }); } catch { return []; }
+  const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith('.md'));
+  const leaves = [];
+  // Bound open files and retained bodies; a snapshot is not a long-lived cache.
+  for (let i = 0; i < files.length; i += 16) {
+    const batch = await Promise.all(files.slice(i, i + 16).map(async (entry) => {
+      const parent = entry.parentPath ?? entry.path;
+      if (!parent) return null;
+      const rel = relative(base, join(parent, entry.name)).split(sep).join('/');
+      if (!rel || rel.startsWith('..')) return null;
+      const family = rel.split('/')[0];
+      if (!family) return null;
+      try { return taxoConceptPage(await readFile(join(parent, entry.name), 'utf8'), rel, family, entry.name); } catch { return null; }
+    }));
+    leaves.push(...batch.filter(Boolean));
   }
   return leaves;
 }

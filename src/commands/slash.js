@@ -878,12 +878,12 @@ export function printHelp(packageJson) {
 
 export function rawCommandAgentPrompt(command, output) {
   return [
-    `L'utilisateur a lancé la commande shell ${command}.`,
-    'Voici la sortie brute collectée par la commande déterministe. Ne relance pas la commande, ne modifie pas les données et n’appelle aucun outil.',
-    'Réponds à l’utilisateur à partir de ces faits, en appliquant le profil workspace et les préférences de présentation déjà chargés dans ton prompt système.',
-    'Ne reproduis pas les détails techniques, identifiants internes, chemins, noms de conteneurs ou sorties brutes. Donne seulement le résultat utile en langage naturel.',
+    `The user ran the shell command ${command}.`,
+    'Here is the raw output collected by the deterministic command. Do not relaunch the command, do not modify the data and do not call any tool.',
+    'Answer the user from these facts, applying the workspace profile and the presentation preferences already loaded in your system prompt.',
+    'Do not reproduce technical details, internal identifiers, paths, container names or raw output. Give only the useful result in natural language.',
     '',
-    'Sortie brute:',
+    'Raw output:',
     '```text',
     output || '(empty)',
     '```',
@@ -926,19 +926,19 @@ export function localizedOperationResult({ operation, target, status = 'succeede
   });
   const instructions = style === 'report'
     ? [
-        'Formule le résultat structuré suivant dans la langue et le ton demandés par le profil du workspace.',
-        "Décris ce qui a été fait : ce qui a été démarré, et l'état actuel de chaque service (en marche, en échec ou inconnu).",
-        'Réponds en deux ou trois phrases. Ne cite aucune commande, syntaxe shell, chemin de fichier, sortie docker ou identifiant.',
+        'Phrase the following structured result in the language and tone requested by the workspace profile.',
+        'Describe what was done: what was started, and the current state of each service (running, failed or unknown).',
+        'Answer in two or three sentences. Do not cite any command, shell syntax, file path, docker output or identifier.',
       ]
     : [
-        'Formule le résultat structuré suivant dans la langue et le ton demandés par le profil du workspace.',
-        'Réponds par une seule phrase humaine et naturelle.',
-        'Ne mentionne aucune commande, syntaxe shell, étape suivante ou détail technique.',
+        'Phrase the following structured result in the language and tone requested by the workspace profile.',
+        'Answer in one natural human sentence.',
+        'Do not mention any command, shell syntax, next step or technical detail.',
       ];
   return {
     output: facts,
     rawOutput: true,
-    agentTrigger: [...instructions, `Résultat: ${facts}`].join('\n'),
+    agentTrigger: [...instructions, `Result: ${facts}`].join('\n'),
   };
 }
 
@@ -964,10 +964,10 @@ export function localizedOperationFailure({ operation, target, error }) {
     // to know whether to continue. Surface it as a plain flag.
     failed: true,
     agentTrigger: [
-      "Formule l'échec structuré suivant dans la langue et le ton demandés par le profil du workspace.",
-      "Réponds en une ou deux phrases humaines: ce qui a échoué, et l'action concrète que la personne peut faire.",
-      'Ne cite aucune commande, aucun chemin de fichier, aucun drapeau shell ni sortie docker.',
-      `Résultat: ${facts}`,
+      "Phrase the following structured failure in the language and tone requested by the workspace profile.",
+      "Answer in one or two human sentences: what failed, and the concrete action the person can take.",
+      'Do not cite any command, file path, shell flag or docker output.',
+      `Result: ${facts}`,
     ].join('\n'),
   };
 }
@@ -1077,11 +1077,13 @@ export async function handleSlashCommand(line, context) {
       if(['enable','disable'].includes(command)&&!context.session.workspace)return {output:'Maintenance: no active workspace — /use <workspace> first.'};
       try {
         const decision=['approve','refuse'].includes(command);
+        const page=command==='status'?Number(args[2]??1):1;
+        if(!Number.isSafeInteger(page)||page<1)return {output:'Usage: /maintenance status [page >= 1]'};
         if(decision&&(!args[2]||!args[3]))return {output:'Specify the request id and exact version from /maintenance status.'};
-        const result=await runtimeMaintenance({url:context.runtime.url,workspace:context.session.workspace,command:decision?'decide':command,...(decision?{id:args[2],version:args[3],approved:command==='approve'}:{})});
+        const result=await runtimeMaintenance({url:context.runtime.url,workspace:context.session.workspace,command:decision?'decide':command,...(command==='status'?{historyOffset:(page-1)*100}:{}),...(decision?{id:args[2],version:args[3],approved:command==='approve'}:{})});
         // enable/disable act on the CURRENT workspace and answer with the event that says what it implies.
         if(['enable','disable'].includes(command))return {output:String(result.events?.filter((e)=>e.kind===(command==='enable'?'enabled':'disabled')).at(-1)?.message??`Maintenance: ${command}d for ${context.session.workspace}.`)};
-        return {output:'Maintenance: '+JSON.stringify(result,null,2)};
+        return {output:'Maintenance: '+JSON.stringify(result,null,2)+(result.history?.hasMore?`\nMore saved history: /maintenance status ${page+1}`:'')};
       }catch(e){return {output:'Maintenance: '+e.message};}
     }
     case 'status': {
@@ -1236,9 +1238,9 @@ export async function handleSlashCommand(line, context) {
       // falls back to the hardcoded COMPOSE_SERVICES constant instead.
       const service = args[1];
       if (service === 'agents' || service === 'agent') return runAgentCommand(startAgents, 'start');
-      // Un agent nommé appartient à la pile agents (projet Compose distinct),
-      // pas à celle du workspace : le router ici évite un « no such service »
-      // sur un nom que la complétion propose pourtant.
+      // A named agent belongs to the agents stack (a distinct Compose
+      // project), not to the workspace's: routing here avoids a "no such
+      // service" on a name completion offers nonetheless.
       if (agentServiceNames().includes(service)) {
         return runAgentCommand((options) => startAgents({ ...options, services: [service] }), 'start');
       }
@@ -1312,17 +1314,17 @@ export async function handleSlashCommand(line, context) {
       if (agentServiceNames().includes(service)) {
         return runAgentCommand((options) => stopAgents({ ...options, services: [service] }), 'stop');
       }
-      // Symétrique de `/start all` : « all » désigne toute la pile, agents
-      // compris. Il ne stoppait que les services du workspace et laissait les
-      // agents debout — donc `/start all` puis `/stop all` ne revenait pas à
-      // l'état de départ.
+      // Symmetric of `/start all`: "all" means the whole stack, agents
+      // included. It only stopped the workspace's services and left the agents
+      // up — so `/start all` then `/stop all` did not return to the initial
+      // state.
       //
-      // Cette symétrie ne tient que tant qu'un seul workspace tourne. Les
-      // agents externes sont UNE pile partagée : les arrêter depuis un
-      // workspace coupait les autres, qui n'avaient rien demandé et ne
-      // voyaient qu'une panne. « all » reste donc « toute ma pile », et les
-      // agents ne tombent que s'ils ne servent plus personne. `/stop
-      // everything` garde la coupure franche, explicitement demandée.
+      // That symmetry only holds while a single workspace is running. External
+      // agents are ONE shared stack: stopping them from one workspace cut off
+      // the others, which had asked for nothing and saw only a breakdown. So
+      // "all" stays "all of mine", and agents only go down when they serve
+      // nobody anymore. `/stop everything` keeps the blunt, explicitly
+      // requested shutdown.
       const stopsEverything = service === 'everything';
       const stopsAgents = service === 'all' || stopsEverything;
       const stopTarget = service === 'services' || stopsEverything ? undefined : service;
@@ -1398,8 +1400,8 @@ export async function handleSlashCommand(line, context) {
       await refreshMcpRuntimeStatus(context.session);
       const connectorMcp = context.session.mcp?.connectors;
       if (!connectorMcp || connectorMcp.status !== 'connected') {
-        // Le manager sait exactement pourquoi : ne pas renvoyer un constat
-        // vague que Donna comblerait en inventant.
+        // The manager knows exactly why: do not return a vague statement Donna
+        // would fill by inventing.
         return connectorResult(profileServiceStatus('connectors').message);
       }
       if (subcommand === 'list') {
@@ -1421,9 +1423,9 @@ export async function handleSlashCommand(line, context) {
           if (payload?.status !== 'configured') {
             return connectorResult('google (Gmail): not authorized. Run `/connector auth google` to authorize reading and sending.');
           }
-          // Le libellé annonçait « read-only » quels que soient les droits
-          // réellement accordés — donc il mentait dès qu'on autorisait l'envoi,
-          // et n'aidait pas à comprendre pourquoi l'envoi échouait sinon.
+          // The label announced "read-only" whatever the scopes actually
+          // granted — so it lied as soon as sending was authorised, and did
+          // not help understand why sending failed otherwise.
           const grants = Array.isArray(payload?.grants) ? payload.grants : [];
           const missing = GOOGLE_GRANTS.filter((grant) => !grants.includes(grant));
           const held = grants.map((grant) => `${grant} — ${GOOGLE_GRANT_LABELS[grant] ?? 'unknown grant'}`);
@@ -1445,21 +1447,21 @@ export async function handleSlashCommand(line, context) {
         if (!['google', 'gmail'].includes(connector)) {
           return connectorResult('The requested connector is unsupported. The available connector is google (Gmail).');
         }
-        // Les droits demandés à Google. L'appel ne les passait pas, et le
-        // serveur retombait sur son défaut `["read"]` : l'agent sait envoyer un
-        // courriel, l'autorisation obtenue ne le permettait pas, et le refus
-        // ressemblait à une fonctionnalité absente. On demande donc lecture ET
-        // envoi par défaut, et les droits restants s'ajoutent à la demande.
+        // The scopes requested from Google. The call did not pass them, and
+        // the server fell back to its `["read"]` default: the agent can send
+        // an email, the obtained authorization did not allow it, and the
+        // refusal looked like a missing feature. We therefore request read AND
+        // send by default, and the remaining scopes are added to the request.
         const requested = args.slice(3).map((value) => String(value).toLowerCase());
         const unknown = requested.filter((grant) => !GOOGLE_GRANTS.includes(grant));
         if (unknown.length > 0) {
           const available = GOOGLE_GRANTS.map((grant) => `${grant} (${GOOGLE_GRANT_LABELS[grant]})`).join('; ');
           return connectorResult(`Unsupported grant(s): ${unknown.join(', ')}. Available grants: ${available}.`);
         }
-        // Par défaut, tout ce que l'agent sait faire — y compris `modify`, sans
-        // quoi les actions que Donna propose d'elle-même (« marquer comme lu »,
-        // « archiver ») échouent après coup. C'est la même incohérence que
-        // l'envoi : promettre une action que l'autorisation ne couvre pas.
+        // By default, everything the agent can do — including `modify`,
+        // without which the actions Donna proposes on her own ("mark as
+        // read", "archive") fail after the fact. It is the same inconsistency
+        // as sending: promising an action the authorization does not cover.
         const grants = requested.length > 0 ? [...new Set(requested)] : defaultGoogleGrants();
         try {
           const result = await callMcpTool(
@@ -1478,8 +1480,8 @@ export async function handleSlashCommand(line, context) {
           if (payload?.ok !== true || typeof authorizationUrl !== 'string') {
             return connectorResult(`Google authorization could not start (${payload?.error ?? 'missing authorization URL'}).`);
           }
-          // L'autorisation est incrémentale côté Google : redemander avec un
-          // droit de plus ne révoque pas les précédents.
+          // Google authorization is incremental: asking again with one more
+          // scope does not revoke the previous ones.
           const scopeNote = `Requested grants: ${grants.join(', ')}.`;
           if (openExternalUrl(authorizationUrl)) {
             return connectorResult(`Google authorization opened successfully in the user browser. ${scopeNote}`);

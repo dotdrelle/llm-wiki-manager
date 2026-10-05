@@ -20,8 +20,8 @@ function sleep(ms, signal) {
 }
 
 /**
- * DeepAgentsProvider — client HTTP vers un runtime Deep Agents externe
- * (RFC § 11, option A). Implémente le contrat RuntimeProvider :
+ * DeepAgentsProvider — HTTP client to an external Deep Agents runtime
+ * (RFC § 11, option A). Implements the RuntimeProvider contract:
  *
  *   GET  {endpoint}/health             -> { ok, version? }       (describe)
  *   GET  {endpoint}/capabilities       -> [{ name, operations }] (discover)
@@ -30,10 +30,10 @@ function sleep(ms, signal) {
  *   POST {endpoint}/runs/:id/cancel    -> { ok }                 (cancel)
  *   GET  {endpoint}/runs/:id/events    -> SSE `data: {json}`     (subscribe)
  *
- * `fetchImpl` est injectable pour les tests ; par défaut `globalThis.fetch`
- * (Node 22 / Bun). Un runtime injoignable se manifeste par une `describe()`
- * qui retourne `health: 'unavailable'` (jamais une exception) : l'isolation de
- * panne du discovery s'appuie dessus.
+ * `fetchImpl` is injectable for tests; defaults to `globalThis.fetch`
+ * (Node 22 / Bun). An unreachable runtime manifests as a `describe()` that
+ * returns `health: 'unavailable'` (never an exception): the discovery's fault
+ * isolation relies on it.
  */
 export function createDeepAgentsProvider({
   id = 'deepagents',

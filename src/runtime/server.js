@@ -276,7 +276,7 @@ export function startRuntimeServer({
       if (url.pathname === '/maintenance' && maintenance) {
         const workspace = workspaceFromUrl(url);
         if (!workspace) return sendJson(response, 400, { error: 'Workspace required' });
-        if (request.method === 'GET') return sendJson(response, 200, maintenance.status(workspace));
+        if (request.method === 'GET') return sendJson(response, 200, maintenance.status(workspace,{historyOffset:Number(url.searchParams.get('historyOffset')??0)}));
         const body = await readJson(request);
         if (body.command === 'decide' && typeof body.approved !== 'boolean') return sendJson(response, 400, {error:'Explicit approval decision required'});
         if (body.command === 'decide') {
@@ -296,7 +296,7 @@ export function startRuntimeServer({
             throw error;
           }
         }
-        if (['status','pause','resume','stop'].includes(body.command)) return sendJson(response, 200, await maintenance.control(workspace, body.command));
+        if (['status','pause','resume','stop'].includes(body.command)) return sendJson(response, 200, await maintenance.control(workspace, body.command, {historyOffset:body.historyOffset}));
         return sendJson(response, 400, { error: 'Unknown maintenance command' });
       }
 
@@ -570,8 +570,8 @@ export function startRuntimeServer({
               idempotencyKey: body.idempotencyKey ?? null,
               turnId: body.turnId ?? null,
               selectionKind: body.selectionKind ?? null,
-              // Pile de l'appelant : c'est le seul canal par lequel elle peut
-              // franchir la frontière HTTP.
+              // The caller's stack: it is the only channel through which it
+              // can cross the HTTP boundary.
               skillStack: Array.isArray(body.skillStack) ? body.skillStack : [],
             });
             sendJson(response, result.accepted ? 202 : skillResultErrorStatus(result), result);
@@ -1230,8 +1230,8 @@ export function startRuntimeServer({
             enqueueControlRequest,
             drainControlQueue,
             selectionKind: metadata.selectionKind,
-            // La pile du run appelant : elle sera empilée sur chaque élément mis
-            // en file, et c'est elle seule qui survit au hand-off.
+            // The calling run's stack: it will be pushed onto every queued
+            // item, and it alone survives the hand-off.
             skillStack: Array.isArray(metadata.skillStack) ? metadata.skillStack : [],
           });
           if (idempotencyKey) context.pendingSkillRuns.set(idempotencyKey, creation.then((item) => item.chainId));
@@ -1393,14 +1393,14 @@ export function startRuntimeServer({
   function drainControlQueue(context) {
     return reconcileControlQueue(context, {
       /*
-       La provenance de chaîne suit le run.
+       Chain provenance follows the run.
 
-       `chainId` et `skillName` vivaient sur l'item de contrôle et s'arrêtaient
-       là : le run ne savait pas qu'il exécutait une intention compilée depuis
-       une compétence. L'agent voyait donc un objectif métier — « ingérer les
-       fichiers en attente » — qui ressemble par construction à la description
-       de la compétence dont il sort, et la resélectionnait. En headless, où
-       personne n'interrompt, cela boucle jusqu'à épuisement du budget LLM.
+       `chainId` and `skillName` lived on the control item and stopped there:
+       the run did not know it was executing an intention compiled from a
+       skill. The agent therefore saw a business objective — "ingest the
+       pending files" — that by construction resembles the description of the
+       skill it came from, and reselected it. In headless mode, where nobody
+       interrupts, this loops until the LLM budget is exhausted.
       */
       startItem: (item) => startRuntimeRun(context, {
         input: takePrivateControlInput(context.session, item),
@@ -1418,8 +1418,8 @@ export function startRuntimeServer({
               chainId: item.chainId,
               skillName: item.skillName ?? null,
               execution: item.skillExecution === 'direct' ? 'direct' : 'orchestrated',
-              // La pile des ancêtres, sans quoi le run ne peut pas savoir qu'il
-              // referme un cycle commencé deux hand-offs plus tôt.
+              // The ancestor stack: without it the run cannot know it is
+              // closing a cycle started two hand-offs earlier.
               skillStack: Array.isArray(item.skillStack) ? item.skillStack : [],
             },
           }
@@ -2065,19 +2065,19 @@ function announceControlLaunch(session, input, workspace, conversationId = null)
 }
 
 /*
- `skillStack` accompagne l'élément, il ne vit pas sur la session.
+ `skillStack` travels with the item, it does not live on the session.
 
- La pile des compétences en cours était posée sur la session pour la durée d'UN
- run, et restaurée par son `finally`. Or une compétence imbriquée n'est pas
- exécutée en ligne : elle est MISE EN FILE, et son run démarre après que le
- parent a fini de se nettoyer. La pile qu'elle lisait était donc déjà vide.
+ The running-skill stack was placed on the session for the duration of ONE
+ run, and restored by its `finally`. But a nested skill is not executed
+ inline: it is QUEUED, and its run starts after the parent has finished
+ cleaning up. The stack it read was therefore already empty.
 
- Conséquence : la garde n'attrapait que le cas pour lequel elle avait été
- écrite — une compétence qui se relance dans son propre run — et laissait
- passer A→B→A, qui boucle jusqu'à épuisement du budget en headless.
+ Consequence: the guard only caught the case it was written for — a skill
+ relaunching itself within its own run — and let A→B→A through, which loops
+ until the budget is exhausted in headless mode.
 
- Une file est un passage de témoin : ce qui doit survivre au parent voyage avec
- le message, pas dans l'état de celui qui l'a posté.
+ A queue is a hand-off: what must survive the parent travels with the
+ message, not in the state of whoever posted it.
 */
 function enqueueControlRequest(context, input, { publicInput = null, capabilityPlan, chainId, chainSequence, skillName, skillExecution, skillStack, selectionKind, conversationId = null, optional = false, continueOnFailure = false, proactiveReview = null } = {}) {
   const now = new Date().toISOString();

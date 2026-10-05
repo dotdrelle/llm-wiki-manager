@@ -530,7 +530,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
         if (((session as any).workspace ?? null) !== workspace) return;
         const displayState = sanitizeRuntimeStateForDisplay(state);
         setRuntimeState(displayState);
-        // The per-job "Job terminé" lines and the canned plan summary are gone:
+        // The per-job "Job done" lines and the canned plan summary are gone:
         // the runtime now emits ONE natural-language Donna message at completion
         // (see announceRunOutcome in runner.js), which arrives through the
         // conversation merge below. Detect that the chat grew to keep the

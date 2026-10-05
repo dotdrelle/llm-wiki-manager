@@ -1362,9 +1362,9 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   function hydrateSession(session, { workspace = null } = {}) {
     const projection = replayEvents(session, { workspace });
     applyAgentProjectionToSession(session, projection);
-    // Le journal restitue les agents avec la santé qu'ils avaient à l'écriture
-    // de l'événement. Les reprendre tels quels les faisait réapparaître
-    // « disponibles » après un redémarrage, endpoint éteint compris.
+    // The journal restores agents with the health they had when the event was
+    // written. Taking them as-is made them reappear "available" after a
+    // restart, a dead endpoint included.
     markPersistedAgentsStale(session);
     session.jobQueue = listQueue({ workspace });
     Object.defineProperty(session, '_readOrchestrationIncidents', { configurable: true,

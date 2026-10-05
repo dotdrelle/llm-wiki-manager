@@ -19,14 +19,14 @@ const execFileAsync = promisify(execFile);
 export const COMPOSE_SERVICES = ['serve', 'mcp-http', 'production-mcp'];
 const SERVICE_DESCRIPTION_LABEL = 'wiki-manager.description';
 
-// Deux alias seulement, pour les deux services qu'un opérateur pilote vraiment
-// à part. `mcp-http` n'en a plus : il fait partie du socle démarré par `all` et
-// `services`, et son alias `mcp` ajoutait une ligne à lire pour un service que
-// personne ne démarre seul. Il reste adressable sous son nom Compose.
+// Only two aliases, for the two services an operator really drives
+// separately. `mcp-http` no longer has one: it is part of the base started by `all` and
+// `services`, and its `mcp` alias added a line to read for a service
+// nobody starts alone. It stays addressable under its Compose name.
 //
-// Pas d'alias `wiki` non plus : c'est déjà le nom du service Compose one-shot
-// derrière `/wiki run`. En faire un alias de `mcp-http` le masquait, et
-// `/start wiki` démarrait silencieusement un autre service que celui nommé.
+// No `wiki` alias either: that is already the name of the one-shot Compose service
+// behind `/wiki run`. Making it an alias of `mcp-http` masked that, and
+// `/start wiki` silently started a different service than the one named.
 const DEFAULT_SERVICE_ALIASES = {
   all: COMPOSE_SERVICES,
   ui: ['serve'],
@@ -99,18 +99,18 @@ export function serviceNames() {
 }
 
 /**
- * Noms proposés à la complétion de `/start`, `/stop` et `/logs`.
+ * Names offered to the completion of `/start`, `/stop` and `/logs`.
  *
- * La liste complète mélangeait les alias et les services Compose qu'ils
- * désignent — `mcp` et `mcp-http`, `ui` et `serve`, `production` et
- * `production-mcp` — et affichait `all` deux fois, une fois comme mot-clé du
- * shell et une fois comme alias Compose. Dix entrées pour cinq actions
- * réelles. On ne propose donc que le vocabulaire destiné à l'opérateur ; les
- * noms Compose bruts restent acceptés si on les tape.
+ * The full list mixed the aliases and the Compose services they
+ * designate — `mcp` and `mcp-http`, `ui` and `serve`, `production` and
+ * `production-mcp` — and displayed `all` twice, once as the shell's
+ * keyword and once as a Compose alias. Ten entries for five real
+ * actions. So only the vocabulary intended for the operator is offered; the
+ * raw Compose names stay accepted if they are typed.
  */
 export function serviceChoices() {
   const aliases = Object.keys(serviceAliases());
-  // `all` est ajouté par l'appelant, en tête : c'est le choix par défaut.
+  // `all` is added by the caller, first: it is the default choice.
   return aliases.filter((name) => name !== 'all').sort();
 }
 

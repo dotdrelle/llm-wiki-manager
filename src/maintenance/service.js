@@ -57,13 +57,13 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       if(!item.fresh){const edited=item.reasons.includes('output_modified');add('build',item.template,item.version,{templates:[item.template],stabilize:true},`Rebuild ${fileNames([item.output])} because ${describeReasons(item.reasons)}${edited?(item.handSectionsTracked?'. Sections you added are kept as you wrote them; sections the template produces are updated with the new content (the current file is backed up first). Approve to proceed':'. This first rebuild cannot yet tell sections you added from the template\'s: they may be removed (the current file is backed up first in .wiki/output-backups/; later rebuilds keep them). Approve to proceed'):''}`);if(edited)candidates.at(-1).humanEdit=true;}
       const exportReceipt=receipts.find((r)=>r.source===item.output&&r.operation==='export');
       const hasExport=Boolean(item.artifacts?.export||exportReceipt);
-      if(item.fresh&&hasExport&&!exportReceipt?.fresh)add('deliver',item.output,item.version,{deliverables:[item.output]},`Update the existing export of ${fileNames([item.output])}`,'export');
+      if(item.fresh&&hasExport&&!exportReceipt?.fresh)add('deliver',item.output,item.version,{deliverables:[item.output]},`Update the existing export of ${fileNames([item.output])}${exportReceipt?.reason==='settings_changed'?' because the export settings changed (prompt version or language)':''}`,'export');
     }
     for(const receipt of receipts) {
       if(receipt.operation!=='export'||!receipt.fresh)continue;
       const polish=receipts.find((r)=>r.operation==='polish'&&r.source===receipt.output);
       const item=(facts.deliverables??[]).find((d)=>d.output===receipt.source);
-      if((polish||item?.artifacts?.polish)&&!polish?.fresh)add('deliver',receipt.output,receipt.outputHash,{deliverables:[receipt.output]},`Update the existing polished version of ${fileNames([receipt.source])}`,'polish');
+      if((polish||item?.artifacts?.polish)&&!polish?.fresh)add('deliver',receipt.output,receipt.outputHash,{deliverables:[receipt.output]},`Update the existing polished version of ${fileNames([receipt.source])}${polish?.reason==='settings_changed'?' because the export settings changed (prompt version or language)':''}`,'polish');
     }
     const conflicts=detectTaxoConflicts(readTaxoConceptPages(ctx.session.workspacePath));
     if(conflicts.total>0||store.events(workspace).some((e)=>e.kind==='rebuild_owned'&&e.version===facts.wikiHash))add('rebuild','wiki',fingerprint(conflicts),{},`Rebuild the TAXO fiches and tag pages: ${conflicts.total} inconsistency(ies) found (a tag filed in several families, or a tag page citing no fiche)`);

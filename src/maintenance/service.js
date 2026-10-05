@@ -57,13 +57,13 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       if(!item.fresh){const edited=item.reasons.includes('output_modified');add('build',item.template,item.version,{templates:[item.template],stabilize:true},`Rebuild ${fileNames([item.output])} because ${describeReasons(item.reasons)}${edited?(item.handSectionsTracked?'. Sections you added are kept as you wrote them; sections the template produces are updated with the new content (the current file is backed up first). Approve to proceed':'. This first rebuild cannot yet tell sections you added from the template\'s: they may be removed (the current file is backed up first in .wiki/output-backups/; later rebuilds keep them). Approve to proceed'):''}`);if(edited)candidates.at(-1).humanEdit=true;}
       const exportReceipt=receipts.find((r)=>r.source===item.output&&r.operation==='export');
       const hasExport=Boolean(item.artifacts?.export||exportReceipt);
-      if(item.fresh&&hasExport&&!exportReceipt?.fresh)add('deliver',item.output,item.version,{deliverables:[item.output]},`Update the existing export of ${fileNames([item.output])}${exportReceipt?.reason==='settings_changed'?' because the export settings changed (prompt version or language)':''}`,'export');
+      if(item.fresh&&hasExport&&!exportReceipt?.fresh)add('deliver',item.output,fingerprint([item.version,facts.publicationTransforms?.export??exportReceipt?.expectedTransform??null]),{deliverables:[item.output]},`Update the existing export of ${fileNames([item.output])}${exportReceipt?.reason==='settings_changed'?' because the export settings changed (prompt version or language)':''}`,'export');
     }
     for(const receipt of receipts) {
       if(receipt.operation!=='export'||!receipt.fresh)continue;
       const polish=receipts.find((r)=>r.operation==='polish'&&r.source===receipt.output);
       const item=(facts.deliverables??[]).find((d)=>d.output===receipt.source);
-      if((polish||item?.artifacts?.polish)&&!polish?.fresh)add('deliver',receipt.output,receipt.outputHash,{deliverables:[receipt.output]},`Update the existing polished version of ${fileNames([receipt.source])}${polish?.reason==='settings_changed'?' because the export settings changed (prompt version or language)':''}`,'polish');
+      if((polish||item?.artifacts?.polish)&&!polish?.fresh)add('deliver',receipt.output,fingerprint([receipt.outputHash,facts.publicationTransforms?.polish??polish?.expectedTransform??null]),{deliverables:[receipt.output]},`Update the existing polished version of ${fileNames([receipt.source])}${polish?.reason==='settings_changed'?' because the export settings changed (prompt version or language)':''}`,'polish');
     }
     const conflicts=detectTaxoConflicts(readTaxoConceptPages(ctx.session.workspacePath));
     if(conflicts.total>0||store.events(workspace).some((e)=>e.kind==='rebuild_owned'&&e.version===facts.wikiHash))add('rebuild','wiki',fingerprint(conflicts),{},`Rebuild the TAXO fiches and tag pages: ${conflicts.total} inconsistency(ies) found (a tag filed in several families, or a tag page citing no fiche)`);
@@ -125,7 +125,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     let approved=previous?.version===identity&&previous.status==='approved';
     if(mode==='ask'&&!approved){const request=store.propose(workspace,candidate);return {status:request.status,request:{id:request.id,version:request.version,summary:candidate.summary}};}
     const ctx=await context(workspace);const spec=MAINTENANCE_ACTIONS[candidate.action];
-    const operation=candidate.operation??spec.operation;const provider=providerFor(ctx.session,candidate.action,operation);
+    const operation=candidate.operation??spec.operation;let provider=providerFor(ctx.session,candidate.action,operation);
     // Only actions that touch the workspace take an admission, scoped to what they
     // touch; a read, a worktree curation or a mail never holds a user's task.
     const scopes=spec.scopes?.(candidate.target)??null;
@@ -145,12 +145,18 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       if(current.version!==p.version||!current.enabled||store.paused(workspace))throw new Error('maintenance_policy_changed');
       const revalidated=(await state(workspace)).candidates.find((c)=>c.action===candidate.action&&c.target===candidate.target&&c.operation===candidate.operation);
       if(!revalidated||revalidated.version!==candidate.version)throw new Error('maintenance_target_changed');
+      // Admission can wait while discovery changes. Resolve the live contract
+      // again before validating arguments and dispatching any external effect.
+      provider=providerFor(ctx.session,candidate.action,operation);
       store.reserve({id,workspace,policy:p.version,kind:'actions',cycle:cycleId,limit:p.limits.actionsPerDay,cycleLimit:p.limits.actionsPerCycle,payload:{identity,candidate}});reserved=true;
       if(candidate.action==='build')store.reserve({id:id+':build',workspace,policy:p.version,kind:'builds',cycle:cycleId,limit:p.limits.buildsPerDay,payload:{identity}});
       const existing=store.reservations(workspace).find((r)=>r.id===id);
       if(existing?.status==='consumed')return existing.result??{status:existing.outcome};
       log(workspace,'action_started',candidate.summary,{cycleId,action:candidate.action,target:candidate.target});
-      const args={...candidate.args};
+      const agentArgs={...candidate.args};
+      delete agentArgs.uptoSeq;
+      // uptoSeq is the manager's alert cursor, never an executor argument.
+      const args={...agentArgs};
       if(acceptsArgument(provider.capability.inputSchema,'callerLabel'))args.callerLabel=`maintenance:${p.version}`;
       if(acceptsArgument(provider.capability.inputSchema,'confirm'))args.confirm=true;
       if(ctx.session.wikirc?.fileName&&acceptsArgument(provider.capability.inputSchema,'configPath'))args.configPath=ctx.session.wikirc.fileName;
@@ -173,12 +179,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       } else started=true;
       let result;
       do{signal?.throwIfAborted();result=provider.runtimeProvider?await provider.runtimeProvider.status(job):parse(await callTool(ctx.session.mcp,provider.serverName,'agent_status',{jobId:job},signal));if(!terminal(result.status??result.result?.status))await wait(signal);}while(!terminal(result.status??result.result?.status));
-      const outcome=['done','completed','succeeded'].includes(result.status??result.result?.status)?'done':'failed';
-      if(result.result?.worktreeProposal){const persisted=persistWorktreeProposal(ctx.session,result,{runId:cycleId,taskId:id});if(persisted.error)throw new Error(persisted.error);}
-      if(result.result?.curationOutcome?.kind==='rebuild_owned')log(workspace,'rebuild_owned','curation findings belong to a TAXO rebuild',{version: view.facts.wikiHash});
-      store.updateReservation(id,{outcome,result});store.settle(id);if(candidate.action==='build')store.settle(id+':build');
-      if(approved)db.prepare("UPDATE maintenance_requests SET status=? WHERE id=?").run(outcome,previous.id);
-      log(workspace,outcome==='done'?'action_done':'failure',outcome==='done'?`Done: ${candidate.summary}`:`Failed: ${candidate.summary}${result.error?.message||result.result?.error?` — ${describeError(result.error?.message??result.result?.error)}`:''}`,{cycleId,action:candidate.action,jobId:job});
+      const outcome=completeJob(workspace,ctx,id,result,cycleId,view.facts.wikiHash);
       return {status:outcome,result};
     }catch(error){
       if(reserved&&!started){store.settle(id,{started:false});store.settle(id+':build',{started:false});}
@@ -196,8 +197,46 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       throw error;
     }finally{release();const left=(inflight.get(workspace)??1)-1;if(left>0)inflight.set(workspace,left);else inflight.delete(workspace);}
   }
+  function completeJob(workspace,ctx,id,result,cycleId,wikiHash) {
+    const reservation=store.reservations(workspace).find((r)=>r.id===id);
+    if(!reservation)throw new Error('unknown_reservation');
+    if(reservation.status!=='reserved')return reservation.outcome;
+    const status=result.status??result.result?.status;
+    const outcome=['done','completed','succeeded'].includes(status)?'done':status==='cancelled'?'cancelled':'failed';
+    const candidate=reservation.candidate;
+    if(result.result?.worktreeProposal){const persisted=persistWorktreeProposal(ctx.session,result,{runId:cycleId,taskId:id});if(persisted.error)throw new Error(persisted.error);}
+    if(result.result?.curationOutcome?.kind==='rebuild_owned')log(workspace,'rebuild_owned','curation findings belong to a TAXO rebuild',{version:wikiHash??candidate.version});
+    store.updateReservation(id,{outcome,result});store.settle(id);
+    if(candidate.action==='build')store.settle(id+':build');
+    for(const request of store.requests(workspace).filter((r)=>outcome!=='cancelled'&&r.version===reservation.identity&&r.status==='approved'))db.prepare('UPDATE maintenance_requests SET status=? WHERE id=?').run(outcome,request.id);
+    log(workspace,outcome==='done'?'action_done':outcome==='cancelled'?'interrupted':'failure',`${outcome==='done'?'Done':outcome==='cancelled'?'Cancelled':'Failed'}: ${candidate.summary}${outcome==='failed'&&(result.error?.message||result.result?.error)?` — ${describeError(result.error?.message??result.result?.error)}`:''}`,{cycleId,action:candidate.action,jobId:reservation.jobId});
+    return outcome;
+  }
+  // A completed job can remove its own candidate (e.g. it archived Pending).
+  // Reconcile persistent receipts before detecting new work, not through that
+  // candidate list. An unknown effect retains its credit and blocks new starts.
+  async function reconcile(workspace,ctx) {
+    let settled=true;
+    for(const r of store.reservations(workspace).filter((r)=>r.kind==='actions'&&r.status==='reserved')) {
+      if(!r.jobId){
+        if(!r.dispatched){store.settle(r.id,{started:false});store.settle(r.id+':build',{started:false});continue;}
+        degradedOnce(workspace,'maintenance_dispatch_uncertain: external receipt requires reconciliation');settled=false;continue;
+      }
+      try {
+        let result;
+        if(r.runtimeId){
+          const provider=capabilityRegistryForSession(ctx.session).providersFor(MAINTENANCE_ACTIONS[r.candidate.action].capability).find((p)=>p.runtimeId===r.runtimeId)?.runtimeProvider;
+          if(!provider)throw new Error('maintenance_gateway_unavailable');
+          result=await provider.status(r.jobId);
+        }else result=parse(await callTool(ctx.session.mcp,r.provider,'agent_status',{jobId:r.jobId},shutdown.signal));
+        if(terminal(result.status??result.result?.status))completeJob(workspace,ctx,r.id,result,r.cycle);
+        else settled=false;
+      }catch(error){degradedOnce(workspace,`job reconciliation interrupted: ${error.message}`);settled=false;}
+    }
+    return settled;
+  }
   function modelAdmission(workspace,cycleId,call) {
-    if(!Number.isInteger(call)||call<1||call>1000)throw new Error('maintenance_model_call_invalid');
+    if(typeof call!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(call))throw new Error('maintenance_model_call_invalid');
     const p=policy(workspace);if(!p.enabled||store.paused(workspace))throw new Error('maintenance_disabled_or_paused');
     const id=`${cycleId}:model:${call}`;
     store.reserve({id,workspace,policy:p.version,kind:'modelCalls',cycle:cycleId,limit:p.limits.actionsPerDay,cycleLimit:p.limits.actionsPerCycle*3});
@@ -215,6 +254,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       // discovery yet: wait for it rather than report a missing gateway.
       if(ctx.session&&ctx.session.runtimeProviderAgents===undefined){try{await discover(ctx.session);}catch{/* announced below as unavailable */}}
       const host=capabilityRegistryForSession(ctx.session).providersFor('agent.maintain').find((p)=>p.runtimeProvider);
+      const jobsSettled=await reconcile(workspace,ctx);
       const previous=store.cycles(workspace).find((c)=>['running','recovering'].includes(c.status));
       // An interrupted cycle is re-attached before anything new starts; without
       // the gateway it simply waits (announced below), routine work included.
@@ -223,6 +263,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
         if(previous.runId){active.set(workspace,{cycle:previous,provider:host.runtimeProvider});void monitor(workspace,previous,host.runtimeProvider);return;}
         const accepted=await host.runtimeProvider.execute({capability:'agent.maintain',operation:'run',workspace:{name:workspace},model:activeProfileModel(ctx.session),language:ctx.session.language,mcp:activeProfileMcp(ctx.session),maintenance:{cycleId:previous.id,endpoint:baseUrl,token:previous.secret,policy:p}});previous.runId=accepted.runId;store.cycle(previous);active.set(workspace,{cycle:previous,provider:host.runtimeProvider});void monitor(workspace,previous,host.runtimeProvider);return;
       }
+      if(!jobsSettled)return;
       const clean=(c)=>Object.fromEntries(Object.entries(c).filter(([k])=>!['mode','outsideWindow'].includes(k)));
       const decided=(view,c)=>view.requests.some((r)=>['pending','refused'].includes(r.status)&&r.version===fingerprint(clean(c)));
       // Routine work needs no judgement: a scheduled sync and the daily doctor

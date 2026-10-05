@@ -355,6 +355,21 @@ mail take none. A user task registered before a maintenance start wins; a
 started job is never pre-empted; every wait is logged (`scheduler: waiting for
 maintenance — …`). Production locks stay authoritative underneath.
 
+**Recovery and durable accounting.** Each scan first queries every reserved
+job receipt, even if its candidate disappeared because the job archived the
+sources or refreshed the output. Terminal outcomes, proposals and budgets are
+settled once; jobs still running or effects without a known receipt retain
+capacity and prevent new starts. The current capability contract is resolved
+again after admission waits, before any dispatch. Email alert watermarks remain
+manager metadata and never enter the connector's closed argument schema.
+
+Each model invocation carries a UUID rather than a cycle-local counter, so
+recreating a gateway runner cannot reuse a consumed credit. Replaying the same
+admission or settlement remains idempotent. Terminal maintenance status and
+cycle replay are resolved from the gateway SQLite journal after the bounded
+in-memory event buffer expires; the finished timestamp and failure status are
+persisted at every exit.
+
 **Active-run visibility.** An executing maintenance action or cycle counts in
 `activeRuns` (`/health`) and in the 409 guards of `POST /config/use` and
 `POST /mcp/endpoints`, so a config or connector change never lands under it and

@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { maintenancePolicy,actionMode,inBuildWindow,MAINTENANCE_ACTIONS,describeError,fingerprint } from './policy.js';
@@ -18,12 +19,12 @@ test('aborted waiter does not steal or leak admission',async()=>{enableMaintenan
 test('disabled maintenance does not call tools or a model; scoped authority cannot approve',async()=>{const {db}=setup();let calls=0;const service=createMaintenanceService({db,getContext:async()=>{calls++;},readDocument:()=>({}),baseUrl:'http://localhost'});await service.tick('x');assert.equal(calls,0);assert.equal(service.authorizeBridge('unknown','token'),null);assert.equal(service.status('x').enabled,false);await service.close();db.close();});
 
 function harness({facts:override={},runtime=null,gate=null,statuses=[]}={}){
-  const {db}=setup();let version='a';let executions=[];let access={maintenanceAccess:{defaults:{enabled:true,limits:{sourceQuietMinutes:0}}}};
+  const {db}=setup();let version='a';let executions=[];const statusChecks=[];let access={maintenanceAccess:{defaults:{enabled:true,limits:{sourceQuietMinutes:0}}}};
   const facts=()=>({wikiHash:'wiki',pending:[{path:'raw/untracked/a.md',hash:version,stable:true,protected:false}],index:{enabled:false,fresh:true},deliverables:[],publications:[],proposals:[],...override});
   const provider={serverName:'production',health:'available',capability:{supportedOperations:['ingest','doctor','index','ingest_rebuild','build','export','polish','send'],inputSchema:{type:'object',additionalProperties:true}}};
   const session={workspace:'x',workspacePath:'/private/tmp/nonexistent-maintenance-test',mcp:{wiki:{tools:[{name:'wiki_maintenance_state'}]}},capabilityRegistry:{providersFor:(capability)=>capability==='agent.maintain'?(runtime?[{runtimeProvider:runtime,runtimeId:'gw',health:'available',capability:{supportedOperations:['run']}}]:[]):[provider]}};
-  const service=createMaintenanceService({db,baseUrl:'http://localhost',discover:async(session)=>{session.runtimeProviderAgents=[];},getContext:async()=>({session}),readDocument:()=>access,callTool:async(_mcp,_server,tool,args)=>{if(tool==='wiki_maintenance_state')return facts();if(tool==='agent_execute'){executions.push(args);return {accepted:true,jobId:'job-'+executions.length};}if(tool==='agent_status'){if(gate)await gate;return {status:statuses.shift()??'done',result:{}};}throw new Error(tool);}});
-  return {db,service,executions,change:(v)=>{version=v;},policy:(p)=>{access=p;}};
+  const service=createMaintenanceService({db,baseUrl:'http://localhost',discover:async(session)=>{session.runtimeProviderAgents=[];},getContext:async()=>({session}),readDocument:()=>access,callTool:async(_mcp,_server,tool,args)=>{if(tool==='wiki_maintenance_state')return facts();if(tool==='agent_execute'){executions.push(args);return {accepted:true,jobId:'job-'+executions.length};}if(tool==='agent_status'){statusChecks.push(args.jobId);if(gate)await gate;return {status:statuses.shift()??'done',result:{}};}throw new Error(tool);}});
+  return {db,service,executions,statusChecks,provider,session,change:(v)=>{version=v;},policy:(p)=>{access=p;}};
 }
 test('pending ingestion does not prevent an independent diagnostic; approval is exact and dispatch reserves',async()=>{const h=harness();try{const pending=await h.service.runCandidate('x','cycle',{action:'ingest',target:'raw/untracked'});assert.equal(pending.status,'pending');assert.equal(h.executions.length,0);const doctor=await h.service.runCandidate('x','cycle',{action:'doctor',target:'workspace'});assert.equal(doctor.status,'done');await h.service.decide('x',pending.request.id,pending.request.version,true);const result=await h.service.runCandidate('x','cycle2',{action:'ingest',target:'raw/untracked'});assert.equal(result.status,'done');assert.equal(h.executions.length,2);assert.deepEqual(h.executions[1].arguments.maintenanceSelection,[{path:'raw/untracked/a.md',hash:'a'}]);assert.ok(h.service.store.reservations('x').every(r=>r.status==='consumed'));}finally{await h.service.close();h.db.close();}});
 test('stale approval is rejected at decision time and replaced by current content',async()=>{const h=harness();try{const pending=await h.service.runCandidate('x','cycle',{action:'ingest',target:'raw/untracked'});h.change('b');await assert.rejects(h.service.decide('x',pending.request.id,pending.request.version,true),/replaced/);assert.equal(h.service.status('x').requests.filter(r=>r.status==='pending').length,1);assert.equal(h.executions.length,0);}finally{await h.service.close();h.db.close();}});
@@ -46,3 +47,84 @@ test('a failed action is not offered again the same day',async()=>{const h=harne
 test('enable is a human switch: validated, announced with what it implies, never a Donna tool',async()=>{const {db}=setup();let doc={maintenanceAccess:{defaults:{enabled:false},workspaces:{}}};const writes=[];const session={workspace:'x',mcp:{},capabilityRegistry:{providersFor:()=>[]}};const service=createMaintenanceService({db,baseUrl:'http://localhost',discover:async(s)=>{s.runtimeProviderAgents=[];},getContext:async()=>({session}),readDocument:()=>doc,writeEnabled:(w,e)=>{writes.push([w,e]);doc={maintenanceAccess:{...doc.maintenanceAccess,workspaces:{...doc.maintenanceAccess.workspaces,[w]:{enabled:e}}}};},callTool:async()=>({wikiHash:'w',pending:[],deliverables:[],publications:[],proposals:['p']})});try{service.store.pause('x',true);const st=await service.setEnabled('x',true);assert.deepEqual(writes,[['x',true]]);assert.equal(st.enabled,true);assert.equal(st.paused,false);const msg=st.events.find(e=>e.kind==='enabled').message;assert.match(msg,/asks you first for: ingest, deliver/);assert.match(msg,/Builds stay off until you set a build window/);doc={maintenanceAccess:{defaults:{enabled:false,limits:{buildsPerDay:-1}}}};await assert.rejects(service.setEnabled('x',true),/maintenance_policy_invalid/);assert.equal(writes.length,1,'an invalid policy is never written');}finally{await service.close();db.close();}
 const graph=await import('../agent/graph.js');const names=JSON.stringify(Object.values(graph).filter(v=>Array.isArray(v)));assert.doesNotMatch(names,/maintenance_enable|maintenance_disable/);});
 test('an action refused by its daily budget waits for tomorrow instead of looping',async()=>{const h=harness({facts:{pending:[],index:{enabled:true,fresh:false},proposals:['p.json']}});try{h.policy({maintenanceAccess:{defaults:{enabled:true,limits:{actionsPerDay:0,sourceQuietMinutes:0}}}});await assert.rejects(h.service.runCandidate('x','c',{action:'index',target:'wiki'}),/budget/);assert.ok(!(await h.service.state('x')).candidates.some(c=>c.action==='index'));assert.match(h.service.status('x').events.at(-1).message,/waiting until tomorrow/);}finally{await h.service.close();h.db.close();}});
+
+test('alert watermark stays internal with the closed communication.send-email schema',async()=>{
+  const h=harness({facts:{pending:[],proposals:['p']}});
+  try {
+    h.provider.capability.inputSchema={type:'object',required:['to','subject','body'],properties:{to:{type:'string'},subject:{type:'string'},body:{type:'string'}},additionalProperties:false};
+    h.policy({maintenanceAccess:{defaults:{enabled:true,mail:{to:['ops@example.org'],on:['failure']}}}});
+    h.service.store.event('x',{kind:'failure',message:'Maintenance: export failed'});
+    const result=await h.service.runCandidate('x','mail-cycle',{action:'mail',target:'ops@example.org'});
+    assert.equal(result.status,'done');assert.equal(h.executions.length,1);
+    assert.deepEqual(Object.keys(h.executions[0].arguments).sort(),['body','subject','to']);
+    assert.ok(h.service.store.reservations('x')[0].candidate.args.uptoSeq>0);
+    assert.ok(!(await h.service.state('x')).candidates.some(c=>c.action==='mail'));
+  }finally{await h.service.close();h.db.close();}
+});
+test('successive export settings changes create distinct work and replace outdated approvals',async()=>{
+  const facts={pending:[],proposals:['p'],deliverables:[{template:'templates/a.md',output:'deliverables/a.md',version:'unchanged-source',fresh:true,reasons:[],artifacts:{export:true}}],publications:[{source:'deliverables/a.md',operation:'export',fresh:false,reason:'settings_changed'}],publicationTransforms:{export:'fr-v1'}};
+  const h=harness({facts});
+  try {
+    const first=await h.service.runCandidate('x','c1',{action:'deliver',target:'deliverables/a.md',operation:'export'});
+    facts.publicationTransforms.export='en-v1';
+    await assert.rejects(h.service.decide('x',first.request.id,first.request.version,true),/replaced/);
+    const pending=h.service.store.requests('x').find(r=>r.status==='pending');
+    await h.service.decide('x',pending.id,pending.version,true);
+    assert.equal((await h.service.runCandidate('x','c2',{action:'deliver',target:'deliverables/a.md',operation:'export'})).status,'done');
+    assert.ok(!(await h.service.state('x')).candidates.some(c=>c.action==='deliver'));
+    facts.publicationTransforms.export='de-v1';
+    assert.ok((await h.service.state('x')).candidates.some(c=>c.action==='deliver'));
+    const next=await h.service.runCandidate('x','c3',{action:'deliver',target:'deliverables/a.md',operation:'export'});
+    assert.equal(next.status,'pending');assert.notEqual(next.request.version,pending.version);
+  }finally{await h.service.close();h.db.close();}
+});
+test('finished receipts settle once even when their source candidate vanished',async()=>{
+  const h=harness({facts:{pending:[],proposals:['p']}});
+  try {
+    h.policy({maintenanceAccess:{defaults:{enabled:true,actions:{doctor:'off'}}}});
+    h.service.store.reserve({id:'lost-ingest',workspace:'x',policy:'v',kind:'actions',cycle:'old-cycle',limit:40,payload:{identity:'old-input',candidate:{action:'ingest',version:'v',summary:'Ingest archived sources'},provider:'production',dispatched:true,jobId:'completed-during-shutdown'}});
+    await h.service.tick('x');await h.service.tick('x');
+    assert.deepEqual(h.statusChecks,['completed-during-shutdown']);assert.equal(h.executions.length,0);
+    assert.equal(h.service.store.reservations('x')[0].status,'consumed');
+    assert.equal(h.service.store.events('x').filter(e=>e.kind==='action_done').length,1);
+  }finally{await h.service.close();h.db.close();}
+});
+test('running jobs retain budget and prevent new work even after their candidate vanishes',async()=>{
+  const h=harness({facts:{pending:[],proposals:['p']},statuses:['running']});
+  try {
+    h.service.store.reserve({id:'running',workspace:'x',policy:'v',kind:'actions',cycle:'old-cycle',limit:40,payload:{candidate:{action:'ingest',summary:'Ingest'},provider:'production',dispatched:true,jobId:'still-running'}});
+    await h.service.tick('x');assert.equal(h.executions.length,0);
+    assert.equal(h.service.store.reservations('x')[0].status,'reserved');
+  }finally{await h.service.close();h.db.close();}
+});
+test('unknown effects retain credits and block starts; never-dispatched reservations release',async()=>{
+  const h=harness({facts:{pending:[],proposals:['p']}});
+  try {
+    for(const [id,dispatched] of [['unknown',true],['never-dispatched',false]])h.service.store.reserve({id,workspace:'x',policy:'v',kind:'actions',cycle:'old-cycle',limit:40,payload:{candidate:{action:'doctor'},dispatched}});
+    await h.service.tick('x');assert.equal(h.executions.length,0);
+    assert.equal(h.service.store.reservations('x').find(r=>r.id==='unknown').status,'reserved');
+    assert.equal(h.service.store.reservations('x').find(r=>r.id==='never-dispatched').status,'released');
+  }finally{await h.service.close();h.db.close();}
+});
+test('new model invocations consume distinct credits; retries and duplicated settlements are idempotent',async()=>{
+  const h=harness();try {
+    h.policy({maintenanceAccess:{defaults:{enabled:true,limits:{actionsPerDay:2}}}});
+    const a=randomUUID(),b=randomUUID();
+    h.service.modelAdmission('x','cycle',a);h.service.modelDone('cycle',a);
+    h.service.modelAdmission('x','cycle',a);h.service.modelDone('cycle',a);
+    h.service.modelAdmission('x','cycle',b);h.service.modelDone('cycle',b);
+    assert.equal(h.service.store.reservations('x').filter(r=>r.kind==='modelCalls'&&r.status==='consumed').length,2);
+    assert.throws(()=>h.service.modelAdmission('x','cycle',randomUUID()),/budget/);
+  }finally{await h.service.close();h.db.close();}
+});
+test('capability withdrawal during admission refuses the stale provider before dispatch',async()=>{
+  const h=harness({facts:{pending:[],index:{enabled:true,fresh:false},proposals:['p']}});enableMaintenanceAdmission('x');
+  const release=await admitExecution('x',{locks:['workspace-write']});
+  try {
+    const action=h.service.runCandidate('x','cycle',{action:'index',target:'wiki'});
+    for(let i=0;i<100&&!h.service.store.events('x').some(e=>e.kind==='waiting');i++)await new Promise(r=>setTimeout(r,5));
+    assert.ok(h.service.store.events('x').some(e=>e.kind==='waiting'));
+    h.session.capabilityRegistry={providersFor:()=>[]};release();
+    await assert.rejects(action,/capability_unavailable/);assert.equal(h.executions.length,0);
+  }finally{release();await h.service.close();h.db.close();}
+});

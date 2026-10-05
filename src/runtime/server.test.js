@@ -3,6 +3,7 @@ import test from 'node:test';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { createInteractiveSession, ensureInteractiveAssistantMessage } from '../cli/wiki-manager.js';
 import { postRuntimeRun } from './client.js';
@@ -76,6 +77,55 @@ test('runtime run client keeps the HTTP fallback without a JSON error body', asy
     );
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test('maintenance changes are pushed as deltas on the existing workspace event stream', async (t) => {
+  const db = new DatabaseSync(':memory:');
+  let handle;
+  try {
+    handle = await startRuntimeServer({ host: '127.0.0.1', port: 0, session: { workspace: 'demo' },
+      store: { db, getState: () => ({ status: 'idle' }), listEvents: () => [], getProjection: () => ({}) } });
+  } catch (error) {
+    db.close();
+    if (error.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw error;
+  }
+  const controller = new AbortController();
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/events/stream?workspace=demo`, { signal: controller.signal });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let first = '';
+    while (!first.includes('"kind":"snapshot"')) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      first += decoder.decode(value);
+    }
+    assert.match(first, /event: maintenance_update/);
+    assert.match(first, /"kind":"snapshot"/);
+    const nextUpdate = (async () => {
+      let text = '';
+      while (!text.includes('"kind":"delta"')) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        text += decoder.decode(value);
+      }
+      return text;
+    })();
+    const changed = await fetch(`http://127.0.0.1:${handle.port}/maintenance?workspace=demo`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ command: 'pause' }),
+    });
+    assert.equal(changed.status, 200);
+    const delta = await Promise.race([nextUpdate, new Promise((_, reject) => setTimeout(() => reject(new Error('maintenance SSE delta timed out')), 1500))]);
+    assert.match(delta, /"kind":"delta"/);
+    assert.match(delta, /"paused":true/);
+    controller.abort();
+    await reader.cancel().catch(() => {});
+  } finally {
+    controller.abort();
+    await handle.close();
+    db.close();
   }
 });
 

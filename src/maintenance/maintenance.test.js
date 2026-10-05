@@ -6,6 +6,7 @@ import { maintenancePolicy,actionMode,inBuildWindow,MAINTENANCE_ACTIONS,describe
 import { createMaintenanceStore } from './store.js';
 import { admitExecution,enableMaintenanceAdmission } from './admission.js';
 import { createMaintenanceService } from './service.js';
+import { maintenanceDelta, applyMaintenanceUpdate } from '../core/maintenanceUpdates.js';
 const setup=()=>{const db=new DatabaseSync(':memory:');return {db,store:createMaintenanceStore(db)};};
 test('policy defaults protect first ingest and every publication; build requires window',()=>{const p=maintenancePolicy({},'x');assert.equal(p.enabled,false);assert.equal(actionMode(p,'ingest','x'),'ask');assert.equal(actionMode(p,'deliver','x'),'ask');assert.equal(inBuildWindow(p),false);});
 test('workspace overrides inherit and explicit target lists never authorize others',()=>{const p=maintenancePolicy({maintenanceAccess:{defaults:{enabled:true},workspaces:{x:{actions:{build:['templates/a.md']}}}}},'x');assert.equal(actionMode(p,'build','templates/a.md'),'auto');assert.equal(actionMode(p,'build','templates/b.md'),'off');assert.equal(p.actions.ingest,'ask');});
@@ -142,7 +143,7 @@ test('mail cursors are computed once per snapshot and only successful sends adva
     let reads=0;const original=h.service.store.reservations;
     h.service.store.reservations=(w)=>{reads++;return original(w);};
     const view=await h.service.state('x');
-    assert.equal(reads,1);
+    assert.equal(reads,0);
     const alerts=view.candidates.filter(c=>c.action==='mail');
     assert.equal(alerts.length,2);
     assert.equal(alerts.find(c=>c.target==='a@example.invalid').args.body,'second');
@@ -213,4 +214,16 @@ test('recent maintenance logs survive volume and older retained pages remain rea
     assert.ok(latest.events[0].seq>oldest.events.at(-1).seq);
     assert.equal(latest.history.retentionDays,2);
   }finally{db.close();}
+});
+
+test('maintenance stream deltas roundtrip changes and reject a missed revision',()=>{
+  const before={enabled:true,requests:[{id:'a',status:'pending'}],reservations:[],cycles:[],events:[{seq:1,message:'one'}],history:{eventsTotal:1}};
+  const after={enabled:true,paused:true,requests:[{id:'a',status:'approved'},{id:'b',status:'pending'}],reservations:[],cycles:[{id:'c',status:'running'}],events:[{seq:1,message:'one'},{seq:2,message:'two'}],history:{eventsTotal:2}};
+  const delta=maintenanceDelta(before,after);const update={kind:'delta',epoch:'e',baseRevision:4,revision:5,delta};
+  const applied=applyMaintenanceUpdate({...before,stream:{epoch:'e',revision:4}},update);
+  const {stream,...value}=applied;assert.deepEqual(value,after);assert.deepEqual(stream,{epoch:'e',revision:5});
+  assert.equal(applyMaintenanceUpdate(applied,update),applied,'duplicate older revisions are ignored');
+  assert.throws(()=>applyMaintenanceUpdate(applied,{...update,baseRevision:3,revision:6}),/gap/);
+  const restarted=applyMaintenanceUpdate(applied,{kind:'snapshot',epoch:'next',revision:1,snapshot:before});
+  assert.equal(restarted.stream.epoch,'next');assert.equal(restarted.stream.revision,1);
 });

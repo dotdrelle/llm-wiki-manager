@@ -31,6 +31,7 @@ import { formatLlmConfigFact, listWikircProfiles } from '../core/wikirc.js';
 import { buildWorkspaceContext, CONVERSATION_READ_TOOL, CONVERSATION_SEARCH_TOOL, formatCrossConversationContext, formatWorkspaceMemoryFacts, MEMORY_COMMAND_RE, memoryListResult, MEMORY_TOOL_NAMES, MEMORY_TOOLS } from '../core/workspaceMemory.js';
 import { listWorkspaces } from '../core/workspaces.js';
 import { fetchRuntimeState, postRuntimeApprove, postRuntimeCancel, postRuntimeControl, postRuntimeRun, postRuntimeShutdown, postRuntimeTurn, requestRuntimeMemory, streamRuntimeEvents } from '../runtime/client.js';
+import { applyMaintenanceUpdate } from '../core/maintenanceUpdates.js';
 import { versionWithBuild } from '../core/buildInfo.js';
 
 // Code blocks: marked-terminal's default paints a dense background block
@@ -1221,7 +1222,12 @@ function rememberProductionActivity(session, payload) {
 
 export function applyRuntimeStateToShellSession(session, state) {
   if (!state || typeof state !== 'object') return false;
-  session.maintenance = state.maintenance ?? null;
+  const currentMaintenance = session.maintenance;
+  const incomingMaintenance = state.maintenance ?? null;
+  session.maintenance = currentMaintenance?.stream && incomingMaintenance?.stream
+    && currentMaintenance.stream.epoch === incomingMaintenance.stream.epoch
+    && currentMaintenance.stream.revision > incomingMaintenance.stream.revision
+    ? currentMaintenance : incomingMaintenance;
   const displayState = sanitizeRuntimeStateForDisplay(state);
   const terminalStateDismissed = session._dismissedTerminalRunId
     && state.runId === session._dismissedTerminalRunId
@@ -2172,8 +2178,13 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
         if (event.type === 'state') {
           applyRuntimeStateToShellSession(session, event.data);
           rerender();
+        } else if (event.type === 'maintenance_update') {
+          try {
+            session.maintenance = applyMaintenanceUpdate(session.maintenance, event.data);
+            rerender();
+          } catch { scheduleRuntimeStateSync(); }
         } else {
-          scheduleRuntimeStateSync();
+          if (event.type !== 'maintenance_heartbeat') scheduleRuntimeStateSync();
         }
       }
     } catch {

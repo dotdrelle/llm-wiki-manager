@@ -1,3 +1,4 @@
+import { maintenanceDelta } from '../core/maintenanceUpdates.js';
 import { createMaintenanceService } from '../maintenance/service.js';
 import { describeError as describeMaintenanceError } from '../maintenance/policy.js';
 import { readFileSync } from 'node:fs';
@@ -127,6 +128,47 @@ export function startRuntimeServer({
     sessionTtlHours: Math.round(SESSION_TTL_MS / 36e5 * 10) / 10,
   };
   const clients = new Set();
+  const maintenanceEpoch = randomUUID();
+  const maintenanceViews = new Map();
+  const maintenanceDirty = new Set();
+  let maintenanceFlushTimer;
+  function sendMaintenance(workspace, update) {
+    for (const client of clients) if (client.workspace === workspace) client.response.write(`event: maintenance_update\ndata: ${JSON.stringify({ workspace, epoch: maintenanceEpoch, ...update })}\n\n`);
+  }
+  function refreshMaintenance(workspace) {
+    const snapshot = maintenance.status(workspace);
+    const previous = maintenanceViews.get(workspace);
+    const delta = previous ? maintenanceDelta(previous.snapshot, snapshot) : null;
+    if (!previous || delta) {
+      const revision = (previous?.revision ?? 0) + 1;
+      maintenanceViews.set(workspace, { snapshot, revision });
+      if (previous) sendMaintenance(workspace, { kind: 'delta', baseRevision: previous.revision, revision, delta });
+    }
+    return maintenanceViews.get(workspace);
+  }
+  function maintenanceView(workspace, options = {}) {
+    const view = refreshMaintenance(workspace);
+    const snapshot = options.historyOffset > 0 ? maintenance.status(workspace, options) : view.snapshot;
+    return { ...snapshot, workspace, stream: { epoch: maintenanceEpoch, revision: view.revision } };
+  }
+  function maintenanceChanged(workspace) {
+    if (!workspace || ![...clients].some(client => client.workspace === workspace)) return;
+    maintenanceDirty.add(workspace);
+    if (maintenanceFlushTimer) return;
+    maintenanceFlushTimer = setTimeout(() => {
+      maintenanceFlushTimer = null;
+      for (const name of maintenanceDirty) {
+        try { refreshMaintenance(name); } catch (error) { console.error('Maintenance: stream update failed — ' + error.message); }
+      }
+      maintenanceDirty.clear();
+    }, 100);
+    maintenanceFlushTimer.unref?.();
+  }
+  function stopMaintenanceTransport() {
+    clearTimeout(maintenanceFlushTimer);
+    clearInterval(maintenanceHeartbeatTimer);
+    maintenanceDirty.clear(); maintenanceViews.clear();
+  }
   // Deterministic dedup/cooldown/budget for proactive reviews; the run itself
   // stays the normal control-lane path.
   const proactiveScheduler = createProactiveReviewScheduler({
@@ -147,6 +189,7 @@ export function startRuntimeServer({
   const resolvedGetContext = getContext ?? (() => defaultContext);
   const maintenance = store?.db ? createMaintenanceService({ db: store.db, getContext: (workspace) => resolveContext({ workspace }),
     // Mirror each maintenance event into the workspace Logs (Serve tab, Shell Activity).
+    onChange: maintenanceChanged,
     onEvent: (workspace, event) => { resolveContext({ workspace }).then((ctx) => { if (ctx?.session && event?.message) emitRuntimeLog(ctx.session, event.message); }).catch(() => {}); }, baseUrl: process.env.WIKI_MANAGER_MAINTENANCE_URL ?? `http://${host === '0.0.0.0' ? 'host.docker.internal' : host}:${port}` }) : null;
   maintenance?.start();
   // Maintenance runs outside Donna's queue but is still work in progress: the
@@ -276,7 +319,7 @@ export function startRuntimeServer({
       if (url.pathname === '/maintenance' && maintenance) {
         const workspace = workspaceFromUrl(url);
         if (!workspace) return sendJson(response, 400, { error: 'Workspace required' });
-        if (request.method === 'GET') return sendJson(response, 200, maintenance.status(workspace,{historyOffset:Number(url.searchParams.get('historyOffset')??0)}));
+        if (request.method === 'GET') return sendJson(response, 200, maintenanceView(workspace,{historyOffset:Number(url.searchParams.get('historyOffset')??0)}));
         const body = await readJson(request);
         if (body.command === 'decide' && typeof body.approved !== 'boolean') return sendJson(response, 400, {error:'Explicit approval decision required'});
         if (body.command === 'decide') {
@@ -321,7 +364,7 @@ export function startRuntimeServer({
       if (request.method === 'GET' && url.pathname === '/state') {
         const workspace = workspaceFromUrl(url);
         const context = workspace ? await resolveContext({ workspace }) : null;
-        sendJson(response, 200, { ...runtimeState(context, store, { workspace, session }), ...(maintenance && workspace ? { maintenance: maintenance.status(workspace) } : {}) });
+        sendJson(response, 200, { ...runtimeState(context, store, { workspace, session }), ...(maintenance && workspace ? { maintenance: maintenanceView(workspace) } : {}) });
         return;
       }
       if (request.method === 'GET' && url.pathname === '/events') {
@@ -533,9 +576,13 @@ export function startRuntimeServer({
           'X-Accel-Buffering': 'no',
         });
         response.write(`event: state\ndata: ${JSON.stringify(runtimeState(context, store, { workspace, session }))}\n\n`);
+        if (maintenance && workspace) {
+          const view = refreshMaintenance(workspace);
+          response.write(`event: maintenance_update\ndata: ${JSON.stringify({ kind: 'snapshot', workspace, epoch: maintenanceEpoch, revision: view.revision, snapshot: view.snapshot })}\n\n`);
+        }
         const client = { response, workspace };
         clients.add(client);
-        request.on('close', () => clients.delete(client));
+        request.on('close', () => { clients.delete(client); if (![...clients].some(other => other.workspace === workspace)) maintenanceViews.delete(workspace); });
         return;
       }
       if (request.method === 'POST' && url.pathname === '/run') {
@@ -891,6 +938,7 @@ export function startRuntimeServer({
         // lingers on an open connection must not keep scanning (two runtimes on
         // one database monitored the same cycle twice).
         await maintenance?.close();
+        stopMaintenanceTransport();
         sendJson(response, 202, { shutdown: true });
         setImmediate(() => {
           for (const client of clients) client.response.end();
@@ -1141,6 +1189,11 @@ export function startRuntimeServer({
   // Housekeeping for the in-memory login-attempt rate limiter: nothing else
   // ever calls pruneLoginAttempts, so without this the `attempts` Map grows
   // by one entry per distinct source address for the life of the process.
+  const maintenanceHeartbeatTimer = setInterval(() => {
+    for (const client of clients) if (maintenance && client.workspace) client.response.write(`event: maintenance_heartbeat\ndata: ${JSON.stringify({ workspace: client.workspace, epoch: maintenanceEpoch })}\n\n`);
+  }, 15_000);
+  maintenanceHeartbeatTimer.unref?.();
+
   const loginAttemptPruneTimer = setInterval(() => pruneLoginAttempts(), 10 * 60 * 1000);
   loginAttemptPruneTimer.unref?.();
 
@@ -1174,7 +1227,7 @@ export function startRuntimeServer({
         port: typeof address === 'object' && address ? address.port : port,
         publish,
         drainControl: (context) => drainControlQueue(context),
-        close: async () => { await maintenance?.close(); return new Promise((closeResolve, closeReject) => {
+        close: async () => { stopMaintenanceTransport(); await maintenance?.close(); return new Promise((closeResolve, closeReject) => {
           clearInterval(loginAttemptPruneTimer);
           if (corpusScanTimer) clearInterval(corpusScanTimer);
           for (const client of clients) client.response.end();

@@ -10,6 +10,7 @@ import { projectQueue, queueCounts, startNextQueuedJob, syncQueueWithActivity } 
 import { queueStoreFor } from '../core/queueStore.js';
 import { filterRuntimeLogs } from '../core/runtimeLog.js';
 import { fetchRuntimeState, postRuntimeConversationTruncate, streamRuntimeEvents } from '../runtime/client.js';
+import { applyMaintenanceUpdate } from '../core/maintenanceUpdates.js';
 import type { ActiveFileEditor } from './FileEditorDialog';
 import {
   completionContext,
@@ -529,6 +530,10 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
       .then((state) => {
         if (((session as any).workspace ?? null) !== workspace) return;
         const displayState = sanitizeRuntimeStateForDisplay(state);
+        const currentMaintenance = runtimeState()?.maintenance;
+        if (currentMaintenance?.stream && displayState?.maintenance?.stream
+          && currentMaintenance.stream.epoch === displayState.maintenance.stream.epoch
+          && currentMaintenance.stream.revision > displayState.maintenance.stream.revision) displayState.maintenance = currentMaintenance;
         setRuntimeState(displayState);
         // The per-job "Job done" lines and the canned plan summary are gone:
         // the runtime now emits ONE natural-language Donna message at completion
@@ -572,6 +577,16 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
         workspace: (session as any).workspace ?? null,
       })) {
         setRuntimeStatus('connected');
+        if (event.type === 'maintenance_update') {
+          const current = runtimeState();
+          try {
+            const maintenance = applyMaintenanceUpdate(current?.maintenance ?? null, event.data);
+            setRuntimeState({ ...(current ?? {}), maintenance });
+            refresh();
+          } catch { syncRuntimeState(); }
+          continue;
+        }
+        if (event.type === 'maintenance_heartbeat') continue;
         logRuntimeAgentEvent(event);
         debouncedSyncRuntimeState();
       }

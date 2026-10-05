@@ -124,6 +124,19 @@ optionalMatchVersion(
   'connectors MCP serverInfo',
 );
 
+// The Claude Desktop plugin: one connector constant and two manifests, all
+// three synced by build-and-push.sh. Optional for the same reason as above.
+optionalMatchVersion(
+  'plugins/llm-wiki/bin/llm-wiki-connect.mjs',
+  /CONNECTOR_VERSION\s*=\s*'([^']+)'/,
+  'claude plugin connector',
+);
+optionalJsonVersion('plugins/llm-wiki/mcpb/manifest.json', 'claude mcpb manifest');
+optionalJsonVersion(
+  'plugins/llm-wiki/claude-plugin/.claude-plugin/plugin.json',
+  'claude plugin manifest',
+);
+
 if (process.env.CHECK_GIT_TAG === '1') {
   try {
     const tag = execFileSync('git', ['describe', '--tags', '--exact-match'], {

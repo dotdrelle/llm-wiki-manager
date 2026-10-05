@@ -61,7 +61,11 @@ Current limits of the multi-workspace mode:
 
 `dist/` is not versioned. After pulling `plugins/llm-wiki`, rebuild both files,
 reinstall the `.mcpb` (and re-import the `.plugin` if the skill changed), then
-disable and re-enable the extension. The connector, the `.mcpb` manifest and
+disable and re-enable the extension. The workspace release script
+(`build-and-push.sh`) syncs the connector constant and both manifests to the
+coordinated version and rebuilds `dist/`; the manager's `check-versions` also
+verifies those three numbers when the repository is checked out. The connector,
+the `.mcpb` manifest and
 the plugin manifest carry one version, checked by `node
 scripts/check-versions.mjs` and by both build scripts; the running connector
 reports it as `serverInfo.version`. To check that the installed connector is

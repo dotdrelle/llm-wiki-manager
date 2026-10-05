@@ -278,6 +278,44 @@ they belong to the workspace stack, not to the connectors file. Writes are
 rejected with **409 while a plan is running** — the served UI keeps the
 connector usable locally and retries on the next reconnect.
 
+### `maintenanceAccess` — automatic maintenance
+
+Top-level key of `mcp.endpoints.json`, beside `chatAccess` (not in
+`.wikirc.yaml`). The scaffold's additive merge adds it, disabled, to an existing
+install. Validated by `src/maintenance/policy.js`; an invalid block enables
+nothing and is reported by `/maintenance status`. User view:
+`llm-wiki/help-doc/14-maintenance.md`.
+
+| key | default | meaning |
+| --- | --- | --- |
+| `defaults.enabled` | `false` | master switch; `workspaces.<name>` overrides any key it names |
+| `defaults.actions.<action>` | see below | `auto`, `ask` or `off`; `build`/`deliver` also accept a list of `templates/…` / `deliverables/…` paths (those `auto`, the rest `off`) |
+| `defaults.mail.to` | `[]` | the only recipients maintenance may email |
+| `defaults.mail.on` | `failure, decision, daily` | immediate alerts (failure, decision) and a digest of the previous day |
+| `defaults.buildSchedule` | `null` | `{mode: "window", start, end, timezone}`; without it no build starts automatically |
+| `defaults.limits.cyclesPerDay` | `12` | agent cycles (routine work is not counted) |
+| `defaults.limits.buildsPerDay` | `4` | build attempts, reserved at admission |
+| `defaults.limits.actionsPerDay` / `actionsPerCycle` | `40` / `10` | every action, routine included |
+| `defaults.limits.sourceQuietMinutes` | `10` | a pending file younger than this is not offered for ingest |
+
+Default actions: `sync`, `doctor`, `index`, `rebuild`, `curate`, `build`, `mail`
+are `auto`; `ingest` and `deliver` are `ask`. Fixed rules, whatever the block:
+a first export is never proposed (only existing exports and polishes are kept
+current), a deliverable edited by hand is rebuilt only after approval, a pending
+file flagged in `.wiki/cme-sync.json` is never ingested, and a curation is only
+prepared. There is no token ceiling: the limits count cycles and actions.
+
+Environment, manager side:
+
+| variable | default | meaning |
+| --- | --- | --- |
+| `WIKI_MANAGER_MAINTENANCE_INTERVAL_MS` | `300000` | how often enabled workspaces are scanned (min 30 s); each scan reads the engine's `wiki_maintenance_state` |
+| `WIKI_MANAGER_MAINTENANCE_URL` | runtime URL as seen from containers | the bridge URL the gateway calls back (`/maintenance/bridge`) |
+
+The maintenance capability itself must be declared in `agent-runtimes.json`
+(`agent.maintain`); the scaffold adds it once to the packaged gateway entry of
+an existing file.
+
 Start the shared agents once for all workspaces:
 
 ```bash

@@ -58,7 +58,7 @@ import {
   listDocumentUploads,
   storeAndMaybeConvertDocument,
 } from '../core/documentIntake.js';
-import { fetchRuntimeState, postRuntimeCancel, postRuntimeControl, postRuntimeKill, postRuntimeRun } from '../runtime/client.js';
+import { runtimeMaintenance, fetchRuntimeState, postRuntimeCancel, postRuntimeControl, postRuntimeKill, postRuntimeRun } from '../runtime/client.js';
 import { versionWithBuild } from '../core/buildInfo.js';
 
 export function printVersion(packageJson) {
@@ -1070,9 +1070,23 @@ export async function handleSlashCommand(line, context) {
     case 'agent':
       context.session.chatMode = false;
       return { setMode: 'agent', output: 'Mode: agent' };
+    case 'maintenance': {
+      if(!context.runtime?.url)return {output:'Maintenance: runtime disconnected.'};
+      const command=args[1]??'status';
+      if(!['status','pause','resume','stop','approve','refuse'].includes(command))return {output:'Usage: /maintenance status|pause|resume|stop|approve <id> <version>|refuse <id> <version>'};
+      try {
+        const decision=['approve','refuse'].includes(command);
+        if(decision&&(!args[2]||!args[3]))return {output:'Specify the request id and exact version from /maintenance status.'};
+        const result=await runtimeMaintenance({url:context.runtime.url,workspace:context.session.workspace,command:decision?'decide':command,...(decision?{id:args[2],version:args[3],approved:command==='approve'}:{})});
+        return {output:'Maintenance: '+JSON.stringify(result,null,2)};
+      }catch(e){return {output:'Maintenance: '+e.message};}
+    }
     case 'status': {
       step('Shell: refreshing workspace, services and MCP status…');
-      return { output: await statusText(context.session) };
+      let output=await statusText(context.session);
+      const m=context.session.maintenance;
+      output+=`\nMaintenance: ${m?(m.enabled?(m.paused?'paused':'active'):'disabled'):'status unavailable'}; ${m?.requests?.filter((r)=>r.status==='pending').length??0} pending decision(s). /maintenance status for history.`;
+      return {output};
     }
     case 'use': {
       const workspaceName = args[1];

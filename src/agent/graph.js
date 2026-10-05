@@ -1,3 +1,4 @@
+import { runtimeMaintenance } from '../runtime/client.js';
 /**
  * @statuses-vocabulary
  *
@@ -53,7 +54,7 @@ const MAX_SPINNER_ARG_LENGTH = 96;
 const INTERNAL_TOOL_SERVERS = {
   wiki: ['plan_set', 'plan_done'],
   shell: ['run_command', 'read_command', 'profile_update'],
-  runtime: ['kill', 'cancel', 'status', 'enqueue', 'delegate', 'run_skill'],
+  runtime: ['maintenance_status','maintenance_pause','maintenance_stop','kill', 'cancel', 'status', 'enqueue', 'delegate', 'run_skill'],
   memory: MEMORY_TOOL_NAMES,
   conversation: ['search', 'read'],
 };
@@ -172,6 +173,8 @@ const RUNTIME_STATUS_TOOL = {
     parameters: { type: 'object', additionalProperties: false, properties: {} },
   },
 };
+
+const MAINTENANCE_CONTROL_TOOLS=['status','pause','stop'].map((command)=>({type:'function',function:{name:'runtime__maintenance_'+command,description:'Maintenance '+command+'. This controls the independent maintenance cycle; never grants approval or resumes refused actions.',parameters:{type:'object',additionalProperties:false,properties:{}}}}));
 
 const RUNTIME_ENQUEUE_TOOL = {
   type: 'function',
@@ -943,6 +946,7 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
   if (!url) return 'Runtime not connected: no runtime URL available in this session.';
   const workspace = session.workspace ?? null;
   try {
+    if(['maintenance_status','maintenance_pause','maintenance_stop'].includes(tool))return JSON.stringify(await runtimeMaintenance({url,workspace,command:tool.slice('maintenance_'.length)}));
     if (tool === 'kill') {
       const result = await postRuntimeKill({ url, workspace, runId: args.runId ?? null, purge: args.purge === true });
       return `Runtime killed: ${result.runs ?? 0} run(s) interrupted, ${result.tasks ?? 0} task(s) cancelled, ${result.queued ?? 0} queued control request(s) purged${result.purged ? `; runtime state reset (${result.purged.events ?? 0} event(s))` : ''}.`;
@@ -1471,6 +1475,7 @@ function toolsForClassification(classification, writeTools, session = null) {
     ...(session?.conversationActions ? [CONVERSATION_SEARCH_TOOL, CONVERSATION_READ_TOOL] : []),
   ];
   if (session?.runtime?.url) controlTools.push(
+    ...MAINTENANCE_CONTROL_TOOLS,
     RUNTIME_STATUS_TOOL, RUNTIME_CANCEL_TOOL, RUNTIME_KILL_TOOL, RUNTIME_ENQUEUE_TOOL,
   );
   // Provider discovery and validation belong to the runtime. Hiding

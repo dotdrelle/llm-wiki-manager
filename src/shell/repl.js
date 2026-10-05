@@ -84,6 +84,7 @@ const COMMAND_COMPLETION_DESCRIPTIONS = {
   '/use': 'Load a workspace and its default config.',
   '/config': 'Inspect or switch .wikirc.yaml profiles.',
   '/status': 'Show the current workspace and session state.',
+  '/maintenance': 'Inspect independent maintenance history, decisions; pause/resume/stop.',
   '/services': 'List workspace Docker Compose services.',
   '/start': 'Start everything (all), the agents only, or one service.',
   '/stop': 'Stop one service or the workspace service set.',
@@ -1224,6 +1225,7 @@ function rememberProductionActivity(session, payload) {
 
 export function applyRuntimeStateToShellSession(session, state) {
   if (!state || typeof state !== 'object') return false;
+  session.maintenance = state.maintenance ?? null;
   const displayState = sanitizeRuntimeStateForDisplay(state);
   const terminalStateDismissed = session._dismissedTerminalRunId
     && state.runId === session._dismissedTerminalRunId

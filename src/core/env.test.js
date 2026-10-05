@@ -267,3 +267,19 @@ test('the packaged agent.notify aliases never claim a generic send or email', ()
   const notify = example.runtimes.flatMap((runtime) => runtime.capabilities).find((capability) => capability.name === 'agent.notify');
   assert.deepEqual(notify.aliases, ['notify', 'notification', 'send the report', 'email the report']);
 });
+
+test('an existing packaged gateway entry gains agent.maintain once, a foreign entry never does', () => {
+  withTempManagerDir((dir) => {
+    const file = join(dir, 'agent-runtimes.json');
+    writeFileSync(file, JSON.stringify({ runtimes: [
+      { id: 'deepagents', capabilities: [{ name: 'agent.curate' }] },
+      { id: 'other', capabilities: [{ name: 'agent.curate' }] },
+    ] }));
+    const created = ensureManagerScaffold();
+    assert.ok(created.some((line) => line.includes('gains agent.maintain')));
+    const runtimes = JSON.parse(readFileSync(file, 'utf8')).runtimes;
+    assert.ok(runtimes[0].capabilities.some((c) => c.name === 'agent.maintain'));
+    assert.ok(!runtimes[1].capabilities.some((c) => c.name === 'agent.maintain'));
+    assert.ok(!ensureManagerScaffold().some((line) => line.includes('gains agent.maintain')), 'idempotent');
+  });
+});

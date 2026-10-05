@@ -133,6 +133,7 @@ export function createDeepAgentsProvider({
           operation: request.operation ?? null,
           capability: request.capability ?? null,
           arguments: request.arguments ?? {},
+          ...(request.maintenance ? { maintenance: request.maintenance } : {}),
           workspace: request.workspace ?? null,
           // The body is rebuilt field by field here, so a value the dispatcher
           // adds only at the runtime layer would be dropped in transit. The

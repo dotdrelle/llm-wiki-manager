@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { createMemo, createSignal, Index, Show } from 'solid-js';
+import { createMemo, createSignal, For, Index, Show } from 'solid-js';
 import { compactRuntimeLogForDisplay, filterRuntimeLogs, isAgentTraceLine, isDispatchPlumbingLine } from '../core/runtimeLog.js';
 import { fit } from './textFit';
 
@@ -603,6 +603,8 @@ export function RightPane(props: {
   activeTab: 'plan' | 'queue';
   logFilter?: string;
   pendingApprovals: any[];
+  maintenance?: any;
+  onMaintenance?: (command: string) => void;
   onApprove: () => void;
   onReject: () => void;
   onTabClick: (tab: 'plan' | 'queue') => void;
@@ -622,6 +624,26 @@ export function RightPane(props: {
       overflow="hidden"
       focusable={false}
     >
+      <Show when={props.maintenance?.enabled || props.maintenance?.requests?.some((r: any) => r.status === 'pending')}>
+        <box flexDirection="column" border={['left']} borderColor="#FBBF24" paddingX={1}>
+          <text fg="#FBBF24" content={`Maintenance: ${props.maintenance?.paused ? 'paused' : 'active'}`} />
+          <box flexDirection="row">
+            <text content=" History " onMouseUp={() => props.onMaintenance?.('/maintenance status')} />
+            <text content=" Pause " onMouseUp={() => props.onMaintenance?.('/maintenance pause')} />
+            <text fg="#F38BA8" content=" Stop " onMouseUp={() => props.onMaintenance?.('/maintenance stop')} />
+          </box>
+          <For each={(props.maintenance?.requests ?? []).filter((r: any) => r.status === 'pending').slice(0, 3)}>{(r: any) => (
+            <box flexDirection="column">
+              <text content={r.candidate?.summary ?? r.action} />
+              <box flexDirection="row">
+                <text fg="#FBBF24" content=" Approve " onMouseUp={() => props.onMaintenance?.(`/maintenance approve ${r.id} ${r.version}`)} />
+                <text fg="#F38BA8" content=" Refuse " onMouseUp={() => props.onMaintenance?.(`/maintenance refuse ${r.id} ${r.version}`)} />
+              </box>
+            </box>
+          )}</For>
+          <text content={props.maintenance?.events?.at(-1)?.message ?? ''} />
+        </box>
+      </Show>
       <TabHeader active={props.activeTab} queueCount={props.queueInfo.active} onTabClick={props.onTabClick} />
       <Show when={props.pendingApprovals.length > 0}>
         <box height={2} flexDirection="column" border={['left']} borderStyle="heavy" borderColor="#FBBF24" paddingX={1}>

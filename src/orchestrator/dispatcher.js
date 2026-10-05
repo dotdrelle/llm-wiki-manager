@@ -1,3 +1,4 @@
+import { admitExecution } from '../maintenance/admission.js';
 import { normalizeActivity, parseJsonText } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
@@ -39,7 +40,17 @@ export function createDispatcher({
   };
 }
 
-export async function execute(task, assignment, {
+export async function execute(task, assignment, options = {}) {
+  // A wait behind maintenance is announced, never silent: the run would look stalled.
+  const release = await admitExecution(options.session?.workspace, task, {
+    signal: options.signal,
+    label: `task ${task?.id ?? task?.step ?? "?"}`,
+    onWait: (holders) => emitRuntimeLog(options.session, `scheduler: waiting for maintenance — ${holders} must finish before task ${task?.id ?? task?.step ?? "?"} starts`),
+  });
+  try { return await executeAdmitted(task, assignment, options); } finally { release(); }
+}
+
+async function executeAdmitted(task, assignment, {
   session,
   callTool = callMcpTool,
   signal = null,
@@ -552,7 +563,7 @@ function workspaceRequest(session) {
 // follow the active profile — default or `/config use` — without a config
 // sync. Numeric LLM parameters declared by the profile (temperature, …) ride
 // along too: nothing is hardcoded here, the workspace config is the source.
-function activeProfileModel(session) {
+export function activeProfileModel(session) {
   const llm = session?.wikircConfig?.llm ?? {};
   const model = {
     ...(llm.baseUrl ? { baseUrl: containerReachableUrl(String(llm.baseUrl)).url } : {}),

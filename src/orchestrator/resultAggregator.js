@@ -382,7 +382,7 @@ function failEmptyWorktreeProposal(result) {
  * review surface reads it; the MERGE happens there, through the engine's own
  * write machinery — this function only records, it never touches wiki content.
  */
-function persistWorktreeProposal(session, result, { runId, taskId }) {
+export function persistWorktreeProposal(session, result, { runId, taskId }) {
   // The dispatcher wraps the agent's status payload under `rawStatus`
   // (`taskResultFromStatus`), so the gateway's proposal lives at
   // `rawStatus.result.worktreeProposal`. Reading only `result.result`/

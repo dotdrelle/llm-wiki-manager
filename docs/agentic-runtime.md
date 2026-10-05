@@ -316,6 +316,62 @@ The review's concurrency slot is released when its run reaches any terminal
 state, and the marker rides on the persisted control item — so a runtime
 restart re-attaches a queued review instead of losing it or running it twice.
 
+## Automatic maintenance (`agent.maintain`)
+
+The one runtime capability with hands, and they are narrow. Code:
+`src/maintenance/` (manager), `src/maintenance.js` (gateway); user view:
+`llm-wiki/help-doc/14-maintenance.md`; keys: `docs/configuration.md` §
+`maintenanceAccess`.
+
+**Who owns what.** The manager owns the policy, the human decisions
+(`maintenance_requests`), the budgets (`maintenance_reservations`, reserved
+atomically at admission and settled once), the cycles and the durable event
+history — all in the runtime SQLite. The gateway owns the cycle's reasoning and
+its own journal (`maintenance_gateway_runs` in `memory.sqlite`). The engine
+owns the facts (`wiki_maintenance_state`: pending sources and their
+protection, deliverable/publication freshness, index freshness) and never
+stores a decision or a budget.
+
+**How a scan runs** (`tick`, every `WIKI_MANAGER_MAINTENANCE_INTERVAL_MS` and
+after an ingest/rebuild completes):
+
+1. An interrupted cycle is re-attached first.
+2. Routine work — `sync`, `doctor`, `mail` — is run by the manager itself
+   through `runCandidate`, with no model call and no gateway.
+3. Only if other work remains is a gateway cycle started
+   (`agent.maintain`, operation `run`), with a per-cycle bearer secret and the
+   bridge URL. The gateway reads `state` (routine work filtered out) and calls
+   one tool per action; each tool calls back `POST /maintenance/bridge`
+   (`command: action`), where the manager re-validates the candidate, the
+   current policy version, the exact approval, the budget and the admission,
+   then dispatches through the agents' `agent_execute`/`agent_status` with an
+   `idempotencyKey`. The gateway never holds an agent credential.
+
+**Admission** (`src/maintenance/admission.js`) is shared with Donna's
+dispatcher (`dispatcher.execute`). Maintenance actions take scopes derived from
+what they touch (`workspace-write` for ingest/rebuild/index, `template:` /
+`deliverable:` for build/deliver, `raw/untracked` for sync); doctor, curate and
+mail take none. A user task registered before a maintenance start wins; a
+started job is never pre-empted; every wait is logged (`scheduler: waiting for
+maintenance — …`). Production locks stay authoritative underneath.
+
+**Active-run visibility.** An executing maintenance action or cycle counts in
+`activeRuns` (`/health`) and in the 409 guards of `POST /config/use` and
+`POST /mcp/endpoints`, so a config or connector change never lands under it and
+the shell keeps the runtime alive at exit.
+
+**Memory.** The cycle runs with `memoryScope` and `dossierScope`
+`<workspace>:maintenance`: it neither interleaves with the curation thread nor
+reads or folds the collective's dossier.
+
+**Shutdown is not Stop.** `close()` aborts the manager's waits, not the jobs:
+a started job keeps its held reservation and is followed again at the next
+boot. `/maintenance stop` (or `runtime__maintenance_stop`) cancels the cycle
+and its jobs and pauses. Donna's tools can read, pause and stop; none approves.
+
+**Proactive reviews are separate.** They keep their own opt-in, dedup key and
+`.wiki/agent-reviews/` output; a corpus trigger feeds both schedulers.
+
 ## Progressive final stream (lot 7 — not enabled)
 
 The adapter accepts `assistant_delta` / `assistant_delta_reset` from a runtime,

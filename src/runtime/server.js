@@ -1,3 +1,4 @@
+import { createMaintenanceService } from '../maintenance/service.js';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
@@ -143,6 +144,13 @@ export function startRuntimeServer({
   const runtimeStartedAtMs = Date.now();
   const defaultContext = { workspace: null, session, running: false, currentAbortController: null, currentRunId: null };
   const resolvedGetContext = getContext ?? (() => defaultContext);
+  const maintenance = store?.db ? createMaintenanceService({ db: store.db, getContext: (workspace) => resolveContext({ workspace }),
+    // Mirror each maintenance event into the workspace Logs (Serve tab, Shell Activity).
+    onEvent: (workspace, event) => { resolveContext({ workspace }).then((ctx) => { if (ctx?.session && event?.message) emitRuntimeLog(ctx.session, event.message); }).catch(() => {}); }, baseUrl: process.env.WIKI_MANAGER_MAINTENANCE_URL ?? `http://${host === '0.0.0.0' ? 'host.docker.internal' : host}:${port}` }) : null;
+  maintenance?.start();
+  // Maintenance runs outside Donna's queue but is still work in progress: the
+  // config/connector guards and the shell's exit check must see it.
+  const allActiveRuns = () => [...(typeof listActiveRuns === 'function' ? listActiveRuns() : []), ...(maintenance?.activeRuns() ?? [])];
 
   function publish(event) {
     const payload = `event: agent_event\ndata: ${JSON.stringify(event)}\n\n`;
@@ -242,9 +250,37 @@ export function startRuntimeServer({
         return;
       }
 
+      if (request.method === 'POST' && url.pathname === '/maintenance/bridge') {
+        if (!maintenance) return sendJson(response, 503, { error: 'Maintenance store unavailable' });
+        const body = await readJson(request);
+        const cycle = maintenance.authorizeBridge(body.cycleId, String(request.headers.authorization ?? '').replace(/^Bearer /, ''));
+        if (!cycle) return sendJson(response, 403, { error: 'Invalid maintenance cycle authority' });
+        if (body.command === 'model_done') return sendJson(response, 200, maintenance.modelDone(cycle.id, body.call));
+        if (body.command === 'model') return sendJson(response, 200, maintenance.modelAdmission(cycle.workspace, cycle.id, body.call));
+        if (body.command === 'state') return sendJson(response, 200, await maintenance.state(cycle.workspace, { forAgent: true }));
+        if (body.command === 'action') {
+          const controller = new AbortController();
+          request.on('aborted', () => controller.abort());
+          response.on('close', () => { if (!response.writableEnded) controller.abort(); });
+          return sendJson(response, 200, await maintenance.runCandidate(cycle.workspace, cycle.id, body, controller.signal));
+        }
+        return sendJson(response, 400, { error: 'Unknown maintenance bridge command' });
+      }
+
       if (!isAuthorized(request, token)) {
         sendJson(response, 401, { error: 'Unauthorized' });
         return;
+      }
+
+      if (url.pathname === '/maintenance' && maintenance) {
+        const workspace = workspaceFromUrl(url);
+        if (!workspace) return sendJson(response, 400, { error: 'Workspace required' });
+        if (request.method === 'GET') return sendJson(response, 200, maintenance.status(workspace));
+        const body = await readJson(request);
+        if (body.command === 'decide' && typeof body.approved !== 'boolean') return sendJson(response, 400, {error:'Explicit approval decision required'});
+        if (body.command === 'decide') return sendJson(response, 200, await maintenance.decide(workspace, body.id, body.version, body.approved === true));
+        if (['status','pause','resume','stop'].includes(body.command)) return sendJson(response, 200, await maintenance.control(workspace, body.command));
+        return sendJson(response, 400, { error: 'Unknown maintenance command' });
       }
 
       if (request.method === 'GET' && url.pathname === '/health') {
@@ -252,7 +288,7 @@ export function startRuntimeServer({
         const context = workspace ? await resolveContext({ workspace }) : null;
         // activeRuns spans ALL workspace contexts: the shell uses it at exit
         // to decide whether shutting down its own runtime would kill work.
-        const activeRuns = typeof listActiveRuns === 'function' ? listActiveRuns() : [];
+        const activeRuns = allActiveRuns();
         sendJson(response, 200, {
           ok: true,
           status: context?.running ? 'running' : 'idle',
@@ -268,7 +304,7 @@ export function startRuntimeServer({
       if (request.method === 'GET' && url.pathname === '/state') {
         const workspace = workspaceFromUrl(url);
         const context = workspace ? await resolveContext({ workspace }) : null;
-        sendJson(response, 200, runtimeState(context, store, { workspace, session }));
+        sendJson(response, 200, { ...runtimeState(context, store, { workspace, session }), ...(maintenance && workspace ? { maintenance: maintenance.status(workspace) } : {}) });
         return;
       }
       if (request.method === 'GET' && url.pathname === '/events') {
@@ -432,8 +468,8 @@ export function startRuntimeServer({
           return;
         }
         const { body, context } = await resolveBodyContext(request, url);
-        if (context.running) {
-          sendJson(response, 409, { error: 'Cannot switch config while a runtime run is active.' });
+        if (context.running || maintenance?.isActive(context.workspace)) {
+          sendJson(response, 409, { error: context.running ? 'Cannot switch config while a runtime run is active.' : 'Cannot switch config while a maintenance cycle is running.' });
           return;
         }
         const profile = String(body.profile ?? '').trim();
@@ -453,9 +489,9 @@ export function startRuntimeServer({
         return;
       }
       if (request.method === 'POST' && url.pathname === '/mcp/endpoints') {
-        const activeRuns = typeof listActiveRuns === 'function' ? listActiveRuns() : [];
+        const activeRuns = allActiveRuns();
         if (activeRuns.length > 0) {
-          sendJson(response, 409, { error: 'MCP connectors cannot be changed while a plan is running.' });
+          sendJson(response, 409, { error: 'MCP connectors cannot be changed while a plan or a maintenance cycle is running.' });
           return;
         }
         const { body, context } = await resolveBodyContext(request, url);
@@ -1009,6 +1045,7 @@ export function startRuntimeServer({
         const workspace = workspaceFromUrl(url);
         if (!workspace) { sendJson(response, 400, { error: 'workspace_required' }); return; }
         if (!memoryStore) { sendJson(response, 503, { error: 'Memory store unavailable.' }); return; }
+        if (maintenance) { await maintenance.control(workspace, 'stop'); maintenance.store.clear(workspace); }
         const cleared = memoryStore.clearWorkspace(workspace);
         const context = await resolveContext({ workspace });
         if (context?.session) emitRuntimeLog(context.session, `memory: workspace purge removed ${cleared.items} fact(s) and ${cleared.versions} history record(s)`);
@@ -1113,13 +1150,13 @@ export function startRuntimeServer({
         port: typeof address === 'object' && address ? address.port : port,
         publish,
         drainControl: (context) => drainControlQueue(context),
-        close: () => new Promise((closeResolve, closeReject) => {
+        close: async () => { await maintenance?.close(); return new Promise((closeResolve, closeReject) => {
           clearInterval(loginAttemptPruneTimer);
           if (corpusScanTimer) clearInterval(corpusScanTimer);
           for (const client of clients) client.response.end();
           clients.clear();
           server.close((err) => (err ? closeReject(err) : closeResolve()));
-        }),
+        }); },
       });
     });
   });
@@ -1216,6 +1253,7 @@ export function startRuntimeServer({
   async function killRuntimeRuns(context, { workspace = null, runId = null, purge = false } = {}) {
     const targetWorkspace = context?.workspace ?? workspace ?? null;
     const targetRunId = runId ? String(runId) : null;
+    if (!targetRunId && targetWorkspace && maintenance) { await maintenance.control(targetWorkspace, 'stop'); if (purge) maintenance.store.clear(targetWorkspace); }
     if (!targetRunId || targetRunId === context?.currentRunId) {
       context?.currentAbortController?.abort();
       await cancel?.(context);
@@ -1388,6 +1426,9 @@ export function startRuntimeServer({
     if (trigger === 'knowledge.ingested' || trigger === 'knowledge.rebuilt') {
       emitCorpusSignals(context, workspace);
     }
+    // Maintenance reacts to the same corpus change, but it does not replace the
+    // proactive reviews: those keep their own opt-in, dedup and output.
+    if (maintenance?.status(workspace).enabled) void maintenance.tick(workspace);
     const config = session?.wikircConfig?.proactiveReviews ?? null;
     let decision;
     try {

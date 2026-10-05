@@ -94,3 +94,5 @@ export function deleteManagedMcpEndpoint(rawName) {
   writeDocument(filePath, raw);
   return { name, deleted: existed };
 }
+
+export function readMaintenanceAccessDocument() { return readDocument().raw; }

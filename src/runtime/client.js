@@ -333,3 +333,11 @@ export async function* streamRuntimeEvents({
     reader.releaseLock();
   }
 }
+
+export async function runtimeMaintenance({url,workspace,token=runtimeToken(),command,...args}) {
+  const response=await fetch(runtimeEndpoint(url,'/maintenance',workspace), {
+    method:command?'POST':'GET', headers:{...runtimeHeaders(token),'Content-Type':'application/json'},
+    ...(command?{body:JSON.stringify({command,...args})}:{})
+  });
+  const result=await response.json();if(!response.ok)throw new Error(result.error??'Maintenance unavailable');return result;
+}

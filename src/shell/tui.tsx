@@ -433,6 +433,8 @@ function App(props: {
             activeTab={state.rightTab()}
             logFilter={state.runtimeLogFilter()}
             pendingApprovals={state.pendingApprovals()}
+            maintenance={state.maintenance()}
+            onMaintenance={(command) => { void state.submitInput(command); }}
             onApprove={() => { void state.submitInput('/approve'); }}
             onReject={() => { void state.submitInput('/cancel'); }}
             onTabClick={state.selectRightTab}

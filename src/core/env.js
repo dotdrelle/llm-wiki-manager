@@ -222,10 +222,25 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
           }
         }
       }
-      if (migrated) {
-        writeFileSync(runtimesFile, `${JSON.stringify(runtimes, null, 2)}\n`);
-        created.push('agent-runtimes.json agent.notify aliases narrowed (send/email now reach communication.send-email)');
+      if (migrated) created.push('agent-runtimes.json agent.notify aliases narrowed (send/email now reach communication.send-email)');
+      // A new packaged capability reaches an existing file only by name: the
+      // packaged runtime (same id, already carrying agent.curate) gains
+      // agent.maintain, copied from the example. Maintenance stays disabled
+      // until maintenanceAccess enables it, so the capability alone changes nothing.
+      if (existsSync(runtimesExample)) {
+        const packaged = JSON.parse(readFileSync(runtimesExample, 'utf8'));
+        for (const example of Array.isArray(packaged?.runtimes) ? packaged.runtimes : []) {
+          const maintain = (example.capabilities ?? []).find((capability) => capability?.name === 'agent.maintain');
+          const runtime = maintain && (runtimes.runtimes ?? []).find((entry) => entry?.id === example.id);
+          const capabilities = Array.isArray(runtime?.capabilities) ? runtime.capabilities : null;
+          if (capabilities && capabilities.some((c) => c?.name === 'agent.curate') && !capabilities.some((c) => c?.name === 'agent.maintain')) {
+            capabilities.push(structuredClone(maintain));
+            migrated = true;
+            created.push(`agent-runtimes.json ${example.id} gains agent.maintain (disabled until maintenanceAccess enables it)`);
+          }
+        }
       }
+      if (migrated) writeFileSync(runtimesFile, `${JSON.stringify(runtimes, null, 2)}\n`);
     } catch {
       // Unreadable operator file: discovery reports it; the scaffold never rewrites it.
     }

@@ -65,7 +65,6 @@ export async function runAgenticLoop(agent, session, initialInput, {
   onTurnStart = null,
   onTurnResponse = null,
   onAssistantMessage = null,
-  onPlanExtracted = null,
   onPlanAlreadySet = null,
   onComplete = null,
   onPendingSteps = null,

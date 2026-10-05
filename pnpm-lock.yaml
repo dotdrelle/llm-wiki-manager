@@ -26,9 +26,6 @@ importers:
       marked-terminal:
         specifier: ^7.3.0
         version: 7.3.0(marked@15.0.12)
-      openai:
-        specifier: ^6.42.0
-        version: 6.44.0(zod@4.4.3)
       solid-js:
         specifier: 1.9.12
         version: 1.9.12
@@ -1560,6 +1557,7 @@ snapshots:
   openai@6.44.0(zod@4.4.3):
     optionalDependencies:
       zod: 4.4.3
+    optional: true
 
   p-finally@1.0.0: {}
 

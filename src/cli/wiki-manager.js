@@ -586,9 +586,6 @@ async function runHeadlessAgenticLoop(agent, session, initialInput, log, { timeo
       log.push(response);
       console.log(response);
     },
-    onPlanExtracted: ({ steps }) => {
-      log.push(`agentic-loop: plan extracted from text (${steps.length} steps, deprecated fallback)`);
-    },
     onPlanAlreadySet: ({ steps }) => {
       log.push(`agentic-loop: plan set via tool (${steps.length} steps)`);
     },

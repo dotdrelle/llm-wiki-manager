@@ -109,9 +109,6 @@ export function projectWorkflow(state = {}, events = []) {
   if (planNodes.length > 0 && !planNodes.some((node) => node.structured)) {
     warnings.push('legacy_sequential_plan');
   }
-  if (events.some((event) => event.type === 'plan_set' && event.origin === 'llm')) {
-    warnings.push('deprecated_text_plan_extraction');
-  }
 
   const current = findCurrentNode(nodes);
   const next = findNextTask(planNodes);

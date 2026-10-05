@@ -2081,6 +2081,10 @@ async function runRuntime(argv, agent) {
   serverHandle = await startRuntimeServer({
     host,
     port,
+    // This process IS the runtime, however it was started (shell child or
+    // `wiki-workspace runtime up`): /shutdown must end it, not leave a
+    // listener-less process whose timers keep running.
+    exitOnShutdown: true,
     store,
     memoryStore,
     getContext: getWorkspaceContext,

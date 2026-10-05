@@ -10,6 +10,7 @@ import { maintenancePolicy, actionMode, inBuildWindow, MAINTENANCE_ACTIONS, fing
 import { createMaintenanceStore } from './store.js';
 import { readMaintenanceAccessDocument } from '../core/mcpEndpoints.js';
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
+import { discoverRuntimeProvidersOnce } from '../orchestrator/providers/runtimeProviders.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { activeProfileMcp, activeProfileModel, acceptsArgument } from '../orchestrator/dispatcher.js';
 import { validateJsonSchema } from '../orchestrator/planValidator.js';
@@ -24,7 +25,7 @@ const modeFor=(p,c)=>{const mode=actionMode(p,c.action,c.target);return c.humanE
 const terminal=(s)=>['done','completed','succeeded','failed','error','cancelled'].includes(s);
 const parse=(r)=>{if(r?.content){const text=formatMcpToolResult(r);try{return JSON.parse(text);}catch{return parseYaml(text);}}return r;};
 const wait=(signal)=>new Promise((resolve,reject)=>{const abort=()=>{clearTimeout(timer);reject(signal.reason??new Error('aborted'));};const timer=setTimeout(()=>{signal?.removeEventListener('abort',abort);resolve();},500);if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});});
-export function createMaintenanceService({db,getContext,baseUrl,readDocument=readMaintenanceAccessDocument,callTool=callMcpTool,now=()=>new Date(),onEvent=null,intervalMs=Number(process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_MS??300_000)}) {
+export function createMaintenanceService({db,getContext,baseUrl,readDocument=readMaintenanceAccessDocument,callTool=callMcpTool,now=()=>new Date(),onEvent=null,discover=discoverRuntimeProvidersOnce,intervalMs=Number(process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_MS??300_000)}) {
   const store=createMaintenanceStore(db);const active=new Map();const scans=new Set();const inflight=new Map();let timer;
   const policy=(workspace)=>maintenancePolicy(readDocument(),workspace);
   const log=(w,kind,message,extra={})=>{let version;try{version=policy(w).version;}catch{version='invalid-policy';}const event=store.event(w,{kind,message:`Maintenance: ${message}`,origin:'maintenance',policyVersion:version,author:`maintenance:${version}`,...extra});try{onEvent?.(w,event);}catch{/* the Logs mirror never breaks the durable history */}return event;};
@@ -53,7 +54,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     // is a human decision it never proposes (the user's own rule).
     const receipts=facts.publications??[];
     for(const item of facts.deliverables??[]) {
-      if(!item.fresh){const edited=item.reasons.includes('output_modified');add('build',item.template,item.version,{templates:[item.template],stabilize:true},`Rebuild ${fileNames([item.output])} because ${describeReasons(item.reasons)}${edited?'. Your edits will be merged with the new content; approve to proceed':''}`);if(edited)candidates.at(-1).humanEdit=true;}
+      if(!item.fresh){const edited=item.reasons.includes('output_modified');add('build',item.template,item.version,{templates:[item.template],stabilize:true},`Rebuild ${fileNames([item.output])} because ${describeReasons(item.reasons)}${edited?'. Rebuilding rewrites the edited sections with the new content and removes sections the template does not produce; the current file is backed up first in .wiki/output-backups/. Approve to proceed':''}`);if(edited)candidates.at(-1).humanEdit=true;}
       const exportReceipt=receipts.find((r)=>r.source===item.output&&r.operation==='export');
       const hasExport=Boolean(item.artifacts?.export||exportReceipt);
       if(item.fresh&&hasExport&&!exportReceipt?.fresh)add('deliver',item.output,item.version,{deliverables:[item.output]},`Update the existing export of ${fileNames([item.output])}`,'export');
@@ -91,7 +92,9 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
         if(digest.length)add('mail',to,`daily:${yesterday}`,{to,subject:`Wiki maintenance — ${workspace}: summary of ${yesterday}`,body:digest.slice(-50).map((e)=>e.message).join('\n')},`Email ${to} the summary of ${yesterday}`);
       }
     }
-    const available=candidates.filter((candidate)=>!reservations.some((r)=>r.kind==='actions'&&(r.identity===fingerprint(candidate)||(candidate.action==='mail'&&r.candidate?.action==='mail'&&r.candidate?.target===candidate.target&&r.candidate?.version===candidate.version))&&r.status==='consumed'&&r.outcome==='done'));
+    const available=candidates.filter((candidate)=>!reservations.some((r)=>r.kind==='actions'&&(r.identity===fingerprint(candidate)||(candidate.action==='mail'&&r.candidate?.action==='mail'&&r.candidate?.target===candidate.target&&r.candidate?.version===candidate.version))&&r.status==='consumed'&&(r.outcome==='done'||(r.outcome==='failed'&&r.period===day))));
+    // A failed action is not offered again the same day unless it changes (a new
+    // identity): otherwise every scan would start a cycle that fails the same way.
     // The agent never sees routine work: the manager already runs it without a model.
     return {policy:p,paused:store.paused(workspace),facts,candidates:available.filter((c)=>!forAgent||!ROUTINE.has(c.action)).map((c)=>({...c,mode:modeFor(p,c),outsideWindow:c.action==='build'&&!inBuildWindow(p,now())})),requests,reservations,cycles:store.cycles(workspace).map(({secret,...c})=>c),events:store.events(workspace)};
   }
@@ -111,7 +114,12 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     if(outsideWindow){log(workspace,'waiting',`${candidate.summary} — scheduled for the next build window`);return {status:'waiting'};}
     const identity=fingerprint(candidate);
     const held=store.reservations(workspace).find((r)=>r.kind==='actions'&&r.identity===identity&&r.status==='reserved');
-    const id=held?.id??fingerprint([workspace,candidate,now().toISOString().slice(0,10)]);const previous=store.requests(workspace).filter((r)=>r.action===candidate.action&&r.target===candidate.target).at(-1);
+    // One identity per candidate and day; a Stop that cancelled it opens a new
+    // attempt, otherwise the cancelled outcome would be replayed forever.
+    const base=fingerprint([workspace,candidate,now().toISOString().slice(0,10)]);
+    const attempts=store.reservations(workspace).filter((r)=>r.kind==='actions'&&(r.id===base||r.id.startsWith(`${base}:retry-`)));
+    const last=attempts.at(-1);
+    const id=held?.id??(last?.status==='consumed'&&last.outcome==='cancelled'?`${base}:retry-${attempts.length}`:base);const previous=store.requests(workspace).filter((r)=>r.action===candidate.action&&r.target===candidate.target).at(-1);
     let approved=previous?.version===identity&&previous.status==='approved';
     if(mode==='ask'&&!approved){const request=store.propose(workspace,candidate);return {status:request.status,request:{id:request.id,version:request.version,summary:candidate.summary}};}
     const ctx=await context(workspace);const spec=MAINTENANCE_ACTIONS[candidate.action];
@@ -174,7 +182,13 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       if(reserved&&!started){store.settle(id,{started:false});store.settle(id+':build',{started:false});}
       // A runtime shutdown is not a failure: the job keeps running in its agent and
       // its held reservation lets the next start resume following it.
-      if(signal?.aborted&&started)log(workspace,'interrupted',`${candidate.summary} — still running in its agent; followed again when the runtime restarts`,{cycleId,action:candidate.action});
+      if(signal?.aborted&&started){
+        // Three different endings, three different truths for the reader.
+        const why=shutdown.signal.aborted?'still running in its agent; followed again when the runtime restarts'
+          :store.paused(workspace)?'stopped by you; the job is being cancelled'
+          :'the agent cycle ended first; the job keeps running and the next scan follows it';
+        log(workspace,'interrupted',`${candidate.summary} — ${why}`,{cycleId,action:candidate.action});
+      }
       else log(workspace,'failure',`${candidate.summary} — not done: ${describeError(error.message)}`,{cycleId,action:candidate.action,detail:error.message});
       throw error;
     }finally{release();const left=(inflight.get(workspace)??1)-1;if(left>0)inflight.set(workspace,left);else inflight.delete(workspace);}
@@ -194,6 +208,9 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     try {
       const p=policy(workspace);if(!p.enabled||store.paused(workspace))return;
       const ctx=await context(workspace);enableMaintenanceAdmission(workspace);
+      // A context created by this very scan has not finished its first runtime
+      // discovery yet: wait for it rather than report a missing gateway.
+      if(ctx.session&&ctx.session.runtimeProviderAgents===undefined){try{await discover(ctx.session);}catch{/* announced below as unavailable */}}
       const host=capabilityRegistryForSession(ctx.session).providersFor('agent.maintain').find((p)=>p.runtimeProvider);
       const previous=store.cycles(workspace).find((c)=>['running','recovering'].includes(c.status));
       // An interrupted cycle is re-attached before anything new starts; without

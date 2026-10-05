@@ -1,4 +1,5 @@
 import { createMaintenanceService } from '../maintenance/service.js';
+import { describeError as describeMaintenanceError } from '../maintenance/policy.js';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
@@ -278,7 +279,15 @@ export function startRuntimeServer({
         if (request.method === 'GET') return sendJson(response, 200, maintenance.status(workspace));
         const body = await readJson(request);
         if (body.command === 'decide' && typeof body.approved !== 'boolean') return sendJson(response, 400, {error:'Explicit approval decision required'});
-        if (body.command === 'decide') return sendJson(response, 200, await maintenance.decide(workspace, body.id, body.version, body.approved === true));
+        if (body.command === 'decide') {
+          try {
+            return sendJson(response, 200, await maintenance.decide(workspace, body.id, body.version, body.approved === true));
+          } catch (error) {
+            // A replaced or unknown request is a refusal the reader must see, not a server error.
+            if (/^maintenance_/.test(String(error?.message))) return sendJson(response, 409, { error: error.message, message: describeMaintenanceError(error.message) });
+            throw error;
+          }
+        }
         if (['status','pause','resume','stop'].includes(body.command)) return sendJson(response, 200, await maintenance.control(workspace, body.command));
         return sendJson(response, 400, { error: 'Unknown maintenance command' });
       }
@@ -870,6 +879,10 @@ export function startRuntimeServer({
           context.currentAbortController.abort(RUNTIME_SHUTDOWN_ABORT_REASON);
           await cancel?.(context);
         }
+        // Maintenance timers and cycle monitors stop first: a process that
+        // lingers on an open connection must not keep scanning (two runtimes on
+        // one database monitored the same cycle twice).
+        await maintenance?.close();
         sendJson(response, 202, { shutdown: true });
         setImmediate(() => {
           for (const client of clients) client.response.end();
@@ -877,6 +890,9 @@ export function startRuntimeServer({
           server.close(() => {
             if (exitOnShutdown) process.exit(0);
           });
+          server.closeIdleConnections?.();
+          // A keep-alive client must not keep a stopped runtime alive.
+          if (exitOnShutdown) setTimeout(() => process.exit(0), 10_000).unref();
         });
         return;
       }

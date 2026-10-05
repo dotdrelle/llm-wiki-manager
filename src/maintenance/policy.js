@@ -61,10 +61,11 @@ const REASONS = {
   template_changed:'its template changed',
   knowledge_changed:'the wiki content changed',
   context_changed:'its build context changed',
-  output_modified:'the file was edited by hand since the last build (the previous version is backed up first)',
+  output_modified:'the file was edited by hand since the last build',
 };
 export const describeReasons=(reasons=[])=>reasons.map((r)=>REASONS[r]??r.replace(/_/g,' ')).join('; ');
 const ERRORS = [
+  [/^maintenance_request_replaced|^maintenance_request_unknown/,'this request was replaced by a newer one or no longer exists; review the current request'],
   [/^maintenance_target_not_current|^maintenance_target_changed/,'the situation changed before the action started; it will be re-evaluated on the next cycle'],
   [/^maintenance_budget_exhausted/,'the daily maintenance budget is used up; it resumes tomorrow'],
   [/^maintenance_policy_changed/,'the maintenance settings changed during the cycle'],

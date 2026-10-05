@@ -35,7 +35,7 @@ export function createMaintenanceStore(db) {
       const request=requests(workspace).find((r)=>r.id===id);
       if(!request || request.version!==version || request.status!=='pending')throw new Error('maintenance_request_replaced_or_not_pending');
       db.prepare('UPDATE maintenance_requests SET status=? WHERE id=?').run(approved?'approved':'refused',id);
-      event(workspace,{kind:'decision_recorded',message:`Maintenance: request ${approved?'approved':'refused'}`,requestId:id});return request;
+      event(workspace,{kind:'decision_recorded',message:`Maintenance: ${approved?'approved':'refused'} by you — ${request.candidate?.summary??request.action}`,requestId:id});return request;
     });
   }
   function reserve({id,workspace,policy,kind,cycle,limit,cycleLimit=Infinity,units=1,period=new Date().toISOString().slice(0,10),payload={}}) {

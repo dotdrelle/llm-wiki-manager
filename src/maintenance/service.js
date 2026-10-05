@@ -54,7 +54,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     // is a human decision it never proposes (the user's own rule).
     const receipts=facts.publications??[];
     for(const item of facts.deliverables??[]) {
-      if(!item.fresh){const edited=item.reasons.includes('output_modified');add('build',item.template,item.version,{templates:[item.template],stabilize:true},`Rebuild ${fileNames([item.output])} because ${describeReasons(item.reasons)}${edited?'. Rebuilding rewrites the edited sections with the new content and removes sections the template does not produce; the current file is backed up first in .wiki/output-backups/. Approve to proceed':''}`);if(edited)candidates.at(-1).humanEdit=true;}
+      if(!item.fresh){const edited=item.reasons.includes('output_modified');add('build',item.template,item.version,{templates:[item.template],stabilize:true},`Rebuild ${fileNames([item.output])} because ${describeReasons(item.reasons)}${edited?(item.handSectionsTracked?'. Sections you added are kept as you wrote them; sections the template produces are updated with the new content (the current file is backed up first). Approve to proceed':'. This first rebuild cannot yet tell sections you added from the template\'s: they may be removed (the current file is backed up first in .wiki/output-backups/; later rebuilds keep them). Approve to proceed'):''}`);if(edited)candidates.at(-1).humanEdit=true;}
       const exportReceipt=receipts.find((r)=>r.source===item.output&&r.operation==='export');
       const hasExport=Boolean(item.artifacts?.export||exportReceipt);
       if(item.fresh&&hasExport&&!exportReceipt?.fresh)add('deliver',item.output,item.version,{deliverables:[item.output]},`Update the existing export of ${fileNames([item.output])}`,'export');
@@ -92,7 +92,9 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
         if(digest.length)add('mail',to,`daily:${yesterday}`,{to,subject:`Wiki maintenance — ${workspace}: summary of ${yesterday}`,body:digest.slice(-50).map((e)=>e.message).join('\n')},`Email ${to} the summary of ${yesterday}`);
       }
     }
-    const available=candidates.filter((candidate)=>!reservations.some((r)=>r.kind==='actions'&&(r.identity===fingerprint(candidate)||(candidate.action==='mail'&&r.candidate?.action==='mail'&&r.candidate?.target===candidate.target&&r.candidate?.version===candidate.version))&&r.status==='consumed'&&(r.outcome==='done'||(r.outcome==='failed'&&r.period===day))));
+    // An action refused by its daily budget waits for tomorrow instead of looping.
+    const budgetBlocked=new Set(store.events(workspace).filter((e)=>e.kind==='budget_exhausted'&&e.at?.startsWith(day)).map((e)=>e.identity));
+    const available=candidates.filter((candidate)=>!budgetBlocked.has(fingerprint(candidate))&&!reservations.some((r)=>r.kind==='actions'&&(r.identity===fingerprint(candidate)||(candidate.action==='mail'&&r.candidate?.action==='mail'&&r.candidate?.target===candidate.target&&r.candidate?.version===candidate.version))&&r.status==='consumed'&&(r.outcome==='done'||(r.outcome==='failed'&&r.period===day))));
     // A failed action is not offered again the same day unless it changes (a new
     // identity): otherwise every scan would start a cycle that fails the same way.
     // The agent never sees routine work: the manager already runs it without a model.
@@ -189,6 +191,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
           :'the agent cycle ended first; the job keeps running and the next scan follows it';
         log(workspace,'interrupted',`${candidate.summary} — ${why}`,{cycleId,action:candidate.action});
       }
+      else if(/^maintenance_budget_exhausted/.test(String(error.message)))log(workspace,'budget_exhausted',`${candidate.summary} — waiting until tomorrow: ${describeError(error.message)}`,{cycleId,action:candidate.action,identity,detail:error.message});
       else log(workspace,'failure',`${candidate.summary} — not done: ${describeError(error.message)}`,{cycleId,action:candidate.action,detail:error.message});
       throw error;
     }finally{release();const left=(inflight.get(workspace)??1)-1;if(left>0)inflight.set(workspace,left);else inflight.delete(workspace);}

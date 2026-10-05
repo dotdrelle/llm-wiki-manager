@@ -43,7 +43,6 @@
     ".env.example",
     "tsconfig.json",
     "bunfig.toml",
-    "workspaces/.env.example",
     "!**/.gitkeep",
     "README.md",
     "LICENSE"

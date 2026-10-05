@@ -32,6 +32,7 @@
   "files": [
     "bin",
     "src",
+    "!src/**/*.test.js",
     "wiki-workspace",
     "docker-compose.yml",
     "agents.docker-compose.yml",

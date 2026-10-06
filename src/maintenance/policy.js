@@ -92,9 +92,24 @@ const ERRORS = [
   [/^maintenance_dispatch_uncertain/,'an earlier start may have reached the agent; it is reconciled before any retry'],
   [/^maintenance_workspace_unavailable/,'the workspace is not loaded in the runtime'],
 ];
+function errorText(value) {
+  if (value == null) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value instanceof Error) return value.message || value.name;
+  if (typeof value === 'object') {
+    for (const key of ['message','error','reason','code','details']) {
+      if (value[key] == null || value[key] === value) continue;
+      const nested = errorText(value[key]);
+      if (nested) return nested;
+    }
+    try { return JSON.stringify(value); } catch { return '[unreadable error details]'; }
+  }
+  return String(value);
+}
 export function describeError(message='') {
-  for(const [pattern,text] of ERRORS){const m=String(message).match(pattern);if(m)return typeof text==='function'?text(m):text;}
-  return String(message);
+  const readable=errorText(message);
+  for(const [pattern,text] of ERRORS){const m=readable.match(pattern);if(m)return typeof text==='function'?text(m):text;}
+  return readable;
 }
 const fileNames=(paths,max=3)=>{const names=paths.map((p)=>String(p).split('/').pop());return names.length>max?`${names.slice(0,max).join(', ')} and ${names.length-max} more`:names.join(', ');};
 export { fileNames };

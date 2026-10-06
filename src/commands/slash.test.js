@@ -4,8 +4,36 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { agentConcurrencySections, compactBaseUrl, compactMcpStatus, handleSlashCommand, helpText, localizedOperationResult, refreshMcpRuntimeStatus, webUiUrl } from './slash.js';
+import { agentConcurrencySections, compactBaseUrl, compactMcpStatus, handleSlashCommand, helpText, localizedOperationResult, maintenanceStatusText, refreshMcpRuntimeStatus, webUiUrl } from './slash.js';
 import { completionContext } from '../shell/repl.js';
+
+test('/maintenance status reads as sentences, never as the raw policy object', () => {
+  const output = maintenanceStatusText({
+    enabled: true,
+    paused: false,
+    mode: 'human',
+    actions: { sync: 'auto', ingest: 'ask', build: ['templates/a.md'] },
+    buildSchedule: { start: '02:00', end: '05:00', timezone: 'Europe/Paris' },
+    requests: [{ id: 'req-1', version: 'v1', status: 'pending', action: 'ingest', candidate: { summary: 'Ingest 2 new sources' } }],
+    cycles: [{ at: '2026-10-06T02:00:00.000Z', status: 'completed' }],
+    events: [{ message: 'Maintenance: Done: Sync Acme' }],
+    history: { hasMore: true, offset: 0, limit: 100 },
+  });
+  assert.match(output, /Maintenance: active/);
+  assert.match(output, /Approval mode: human/);
+  assert.match(output, /Actions: sync: waits for approval · ingest: waits for approval · build: waits for approval \(templates\/a\.md\)/);
+  assert.match(output, /Build window: 02:00–05:00 \(Europe\/Paris\)/);
+  assert.match(output, /Ingest 2 new sources \[id req-1, version v1\]/);
+  assert.match(output, /Recent cycles: completed/);
+  assert.match(output, /Latest activity: Done: Sync Acme/);
+  assert.match(output, /Older history: \/maintenance status 2/);
+  assert.doesNotMatch(output, /\{\s*"/);
+  // The allowed list in auto mode reads as automatic, never as "enabled".
+  const automatic = maintenanceStatusText({
+    enabled: true, mode: 'auto', actions: { sync: 'enabled', ingest: 'enabled', doctor: 'off' }, buildSchedule: null, requests: [], events: [], cycles: [],
+  });
+  assert.match(automatic, /Actions: sync: automatic · ingest: automatic · doctor: off/);
+});
 
 test('interactive help advertises independent wiki maintenance controls', () => {
   const output = helpText({ version: 'test' });

@@ -65,6 +65,25 @@ function logLineParts(line: string): LogLineParts {
   return { time: match[1], message: match[2] };
 }
 
+function plainMarkdownForTerminal(value: string): string {
+  const line = String(value ?? '');
+  if (/^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line)) return '';
+  if (/^\s*\|.*\|\s*$/.test(line)) {
+    return line.trim().replace(/^\|\s*|\s*\|$/g, '').split('|').map((cell) => cell.trim()).join('  ·  ');
+  }
+  return line
+    .replace(/^(\s*(?:Maintenance:\s*)?)#{1,6}\s+/i, '$1')
+    .replace(/^\s{0,3}>\s?/, '')
+    .replace(/^\s*[-*+]\s+/, '• ')
+    .replace(/^\s*\d+[.)]\s+/, '• ')
+    .replace(/^\s*```[^\s]*\s*$/, '')
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)')
+    .replace(/\*\*(.+?)\*\*|__(.+?)__/g, (_match, bold: string, underlined: string) => bold ?? underlined)
+    .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)/g, (_match, italic: string, underscored: string) => italic ?? underscored)
+    .replace(/`{1,3}/g, '');
+}
+
 function activityColor(status: string) {
   const value = String(status ?? '').toLowerCase();
   if (['done', 'complete', 'completed', 'success'].includes(value)) return '#8BD5CA';
@@ -411,24 +430,28 @@ function logRenderLines(logs: string[], width: number): LogSegment[][] {
 
 function logEntryLines(raw: string, width: number): LogSegment[][] {
   const out: LogSegment[][] = [];
-  for (const item of [compactRuntimeLogForDisplay(raw)]) {
+  const markdownLines = compactRuntimeLogForDisplay(raw).split(/\r?\n/);
+  const firstLine = markdownLines.shift() ?? '';
+  for (const [lineIndex, item] of [firstLine, ...markdownLines].entries()) {
     const rawLine = item;
-    const sourceMatch = String(rawLine).match(/^(runtime)\s+(.*)$/);
+    const sourceMatch = lineIndex === 0 ? String(rawLine).match(/^(runtime)\s+(.*)$/) : null;
     const rest = sourceMatch ? sourceMatch[2] : String(rawLine);
-    const parts = logLineParts(rest);
+    const parts = lineIndex === 0 ? logLineParts(rest) : { time: null, message: rest };
     const prefix: LogSegment[] = [];
     // This pane already contains runtime logs exclusively. Repeating the word
     // "runtime" on every row consumed ~8 columns and squeezed the useful
     // message into the middle of narrow terminals.
     if (parts.time) prefix.push({ text: `${parts.time} `, fg: '#89B4FA' });
     const prefixLength = prefix.reduce((total, segment) => total + segment.text.length, 0);
-    const messageColor = logMessageColor(parts.message);
-    const wrapped = wrapLine(parts.message, Math.max(8, width - prefixLength));
+    const readable = plainMarkdownForTerminal(parts.message);
+    if (!readable) continue;
+    const messageColor = logMessageColor(readable);
+    const continuationIndent = lineIndex > 0 ? '  ' : '';
+    const wrapped = wrapLine(readable, Math.max(8, width - prefixLength - continuationIndent.length));
     wrapped.forEach((text, index) => {
-      if (index === 0) {
-        out.push([...prefix, { text, fg: messageColor }]);
-      } else {
-        const indent = ' '.repeat(Math.min(prefixLength, 4));
+      if (lineIndex === 0 && index === 0) out.push([...prefix, { text, fg: messageColor }]);
+      else {
+        const indent = ' '.repeat(Math.min(prefixLength, 4)) + continuationIndent;
         out.push([{ text: `${indent}${text}`, fg: messageColor === '#F38BA8' ? messageColor : '#7F8C8D' }]);
       }
     });

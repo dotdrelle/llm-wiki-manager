@@ -207,6 +207,19 @@ test('Flow/Trace does not repeat the runtime source prefix on every line', async
   assert.match(entryRenderer, /prefix\.push\(\{ text: `\$\{parts\.time\} /);
 });
 
+test('ShellUI logs render Markdown as readable terminal text and keep block boundaries', async () => {
+  const source = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
+  const markdown = source.slice(
+    source.indexOf('function plainMarkdownForTerminal'),
+    source.indexOf('export function LogPanel'),
+  );
+  assert.match(markdown, /function plainMarkdownForTerminal/);
+  assert.match(markdown, /\.split\(\/\\r\?\\n\/\)/);
+  assert.match(markdown, /\.replace\(\/\^\(\\s\*\(\?:Maintenance:/);
+  assert.match(markdown, /join\('  ·  '\)/);
+  assert.match(markdown, /plainMarkdownForTerminal\(parts\.message\)/);
+});
+
 test('a doctor summary with a nonzero error count is colored as an error, not a warning', async () => {
   const source = await readFile(new URL('./RightPane.tsx', import.meta.url), 'utf8');
   const colorFn = source.slice(
@@ -826,6 +839,9 @@ test('ShellUI offers /maintenance completion and dispatches it before a same-nam
     assert.deepEqual(requests[0].body, { command: 'status', historyOffset: 0 });
     assert.equal(conversationMessages(session).at(-1)?.role, 'command');
     assert.doesNotMatch(conversationMessages(session).at(-1)?.content ?? '', /Unknown skill/);
+    // Without a model, the fallback is still prose — never the raw policy JSON.
+    assert.match(conversationMessages(session).at(-1)?.content ?? '', /Maintenance: active/);
+    assert.doesNotMatch(conversationMessages(session).at(-1)?.content ?? '', /\{\s*"/);
   } finally {
     restore();
     rmSync(root, { recursive: true, force: true });

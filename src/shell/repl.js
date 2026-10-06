@@ -2013,7 +2013,13 @@ export async function runLine(line, { agent, packageJson, session, onUpdate, onS
     // and only for slash commands — free text got a single row.
     const result = await handleSlashCommand(trimmed, { packageJson, session, onStep, runtime });
     const messages = conversationMessages(session);
-    const deterministicDisplayOnly = /^\/(?:status|maintenance)(?:\s|$)/i.test(trimmed);
+    // `/maintenance status` (or a bare `/maintenance`) is an observation: the
+    // runtime collects the facts and Donna phrases them, like every status
+    // path. The control verbs (pause, stop, enable, approve…) stay
+    // deterministic — no model call, no phrasing.
+    const maintenanceCommand = /^\/maintenance(?:\s+([a-z-]+))?/i.exec(trimmed);
+    const maintenanceObservation = Boolean(maintenanceCommand) && (!maintenanceCommand[1] || maintenanceCommand[1].toLowerCase() === 'status');
+    const deterministicDisplayOnly = /^\/status(?:\s|$)/i.test(trimmed) || (Boolean(maintenanceCommand) && !maintenanceObservation);
     const commandAgentTrigger = result.output && agent && !deterministicDisplayOnly
       ? (result.agentTrigger ?? rawCommandAgentPrompt(trimmed, result.output))
       : null;

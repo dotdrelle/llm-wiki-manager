@@ -1002,6 +1002,64 @@ function runtimeWorkflowMatches(workflow, id) {
     || (Array.isArray(workflow.relations) && workflow.relations.some((relation) => String(relation.from) === target || String(relation.to) === target));
 }
 
+// `/maintenance status` is an OBSERVATION: the runtime collects the facts, the
+// Shell hands them to Donna, and she phrases them in the session language. The
+// raw policy object never reaches the conversation; this readable text is the
+// no-model fallback and the compact facts below are what Donna receives.
+// The action map is an allow-list plus a global mode, so each action is shown
+// by its EFFECTIVE gate: automatic, waits for approval, or off.
+function maintenanceActionSummary(status = {}) {
+  const gate = status.mode === 'human' ? 'waits for approval' : 'automatic';
+  return Object.fromEntries(Object.entries(status.actions ?? {}).map(([name, value]) => {
+    if (value === 'off') return [name, 'off'];
+    if (Array.isArray(value)) return [name, value.length ? `${gate} (${value.join(', ')})` : 'off'];
+    if (value === 'ask') return [name, 'waits for approval'];
+    if (value === 'auto' || value === 'enabled') return [name, gate];
+    return [name, String(value)];
+  }));
+}
+
+export function maintenanceStatusText(status = {}) {
+  const state = status.error
+    ? `invalid settings (${status.error})`
+    : status.enabled ? (status.paused ? 'paused' : 'active') : 'disabled';
+  const mode = status.mode === 'auto' ? 'auto (enabled actions run without asking)'
+    : status.mode === 'human' ? 'human (enabled actions wait for your approval)'
+      : 'not set (each action keeps its own auto/ask/off value)';
+  const actions = Object.entries(maintenanceActionSummary(status)).map(([name, value]) => `${name}: ${value}`);
+  const schedule = status.buildSchedule;
+  const pending = (status.requests ?? []).filter((request) => request.status === 'pending');
+  const cycles = (status.cycles ?? []).slice(0, 3);
+  const events = (status.events ?? []).slice(-5).map((event) => String(event.message ?? '').replace(/^Maintenance:\s*/, '').slice(0, 160));
+  return [
+    `Maintenance: ${state}`,
+    `Approval mode: ${mode}`,
+    actions.length ? `Actions: ${actions.join(' · ')}` : 'Actions: unavailable',
+    `Build window: ${schedule ? `${schedule.start}–${schedule.end} (${schedule.timezone})` : 'none — automatic builds wait'}`,
+    `Pending decisions: ${pending.length ? pending.map((request) => `${request.candidate?.summary ?? request.action} [id ${request.id}, version ${request.version}]`).join('; ') : 'none'}`,
+    cycles.length ? `Recent cycles: ${cycles.map((cycle) => `${cycle.status}${cycle.at ? ` (${cycle.at.slice(0, 16).replace('T', ' ')})` : ''}`).join(', ')}` : 'Recent cycles: none',
+    events.length ? `Latest activity: ${events.join(' | ')}` : 'Latest activity: none',
+    status.history?.hasMore
+      ? `Older history: /maintenance status ${Math.floor((status.history.offset ?? 0) / (status.history.limit || 100)) + 2}`
+      : null,
+  ].filter(Boolean).join('\n');
+}
+
+function maintenanceStatusFacts(status = {}) {
+  const schedule = status.buildSchedule;
+  return {
+    state: status.error ? 'invalid_settings' : status.enabled ? (status.paused ? 'paused' : 'active') : 'disabled',
+    mode: status.mode ?? null,
+    actions: maintenanceActionSummary(status),
+    buildWindow: schedule ? `${schedule.start}–${schedule.end} (${schedule.timezone})` : null,
+    pending: (status.requests ?? []).filter((request) => request.status === 'pending').map((request) => ({
+      id: request.id, version: request.version, summary: request.candidate?.summary ?? request.action,
+    })),
+    cycles: (status.cycles ?? []).slice(0, 3).map((cycle) => ({ at: cycle.at ?? null, status: cycle.status })),
+    activity: (status.events ?? []).slice(-5).map((event) => String(event.message ?? '').slice(0, 200)),
+  };
+}
+
 export async function handleSlashCommand(line, context) {
   const args = line.slice(1).trim().split(/\s+/).filter(Boolean);
   const [command] = args;
@@ -1085,7 +1143,22 @@ export async function handleSlashCommand(line, context) {
         // enable/disable act on the CURRENT workspace and answer with the event that says what it implies.
         if(['enable','disable'].includes(command))return {output:String(result.events?.filter((e)=>e.kind===(command==='enable'?'enabled':'disabled')).at(-1)?.message??`Maintenance: ${command}d for ${context.session.workspace}.`)};
         if(command==='mode')return {output:`Maintenance approval mode: ${result.mode}.`};
-        return {output:'Maintenance: '+JSON.stringify(result,null,2)+(result.history?.hasMore?`\nMore saved history: /maintenance status ${page+1}`:'')};
+        if(command==='status')return {
+          output: maintenanceStatusText(result),
+          rawOutput: true,
+          // Donna phrases the observation; the human alone approves a decision.
+          agentTrigger: [
+            "Answer about this workspace's automatic maintenance, in the language requested by the workspace profile.",
+            'State whether it is active, paused or disabled, the approval mode, which actions run automatically or wait for approval, and the build window.',
+            'Name any pending decision and give its id and version, so it can be answered with /maintenance approve <id> <version> or /maintenance refuse <id> <version>.',
+            'A disabled maintenance is turned on with /maintenance enable. Never approve or refuse a decision yourself: a human does.',
+            'Do not paste raw JSON, policy hashes or internal identifiers beyond the pending request id and version.',
+            `Facts: ${JSON.stringify(maintenanceStatusFacts(result))}`,
+          ].join('\n'),
+        };
+        if(decision)return {output:`Maintenance: ${command==='approve'?'approved':'refused'} — ${result.candidate?.summary??result.action??result.id}.`,rawOutput:true};
+        if(['pause','resume','stop'].includes(command))return {output:`Maintenance ${command==='pause'?'paused':command==='resume'?'resumed':'stopped'}.`,rawOutput:true};
+        return {output:`Maintenance: ${command} done.`,rawOutput:true};
       }catch(e){return {output:'Maintenance: '+e.message};}
     }
     case 'status': {

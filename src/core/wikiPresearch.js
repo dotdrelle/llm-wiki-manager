@@ -8,7 +8,7 @@ export function isProductHelpQuestion(input) {
   if (!text.trim()) return false;
   if (/\b(donna|wikillm|llm-wiki|wiki-manager)\b/.test(text)) return true;
   if (/\/(status|help|chat|agent|start|services|mcp|run|approve|queue)\b/.test(text)) return true;
-  if (/\b(manager ceiling|parallelism|throughput|collection concurrency|scheduler workers?)\b/.test(text)) return true;
+  if (/\b(manager ceiling|manager cap|parallelism|throughput|collection concurrency)\b/.test(text)) return true;
   const productConcept = /\b(workspaces?|agents?|connecteurs?|connectors?|mcp|runtime|approbations?|approvals?|ingestion|deliverables?|parallelisme|concurrence)\b/.test(text);
   const explanatoryQuestion = /\b(comment|pourquoi|a quoi|qu est ce|que signifie|explique|fonctionne|difference|combien)\b/.test(text);
   return productConcept && explanatoryQuestion;

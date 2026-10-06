@@ -1270,3 +1270,19 @@ test('runtime exposes only the configured ingestion call limit, without wikirc c
     store.close();
   }
 });
+
+test('without a workspace limit, the ingestion call limit follows the production agent capacity', () => {
+  const store = openRuntimeStore({ stateDir: runtimeStateDir() });
+  const production = { description: { agentType: 'production', limits: { recommendedConcurrency: 6, maxConcurrency: 8 } } };
+  try {
+    const session = { wikircConfig: {}, agentRegistry: { snapshot: () => [production] } };
+    assert.equal(store.getState(session).ingestionLlmLimit, 6);
+    session.wikircConfig = { limits: { maxInFlightRequests: 2 } };
+    assert.equal(store.getState(session).ingestionLlmLimit, 2, 'an explicit workspace value wins');
+    session.wikircConfig = {};
+    session.agentRegistry = { snapshot: () => [{ description: { agentType: 'production', limits: { recommendedConcurrency: 20, maxConcurrency: 32 } } }] };
+    assert.equal(store.getState(session).ingestionLlmLimit, null, 'beyond the engine ceiling is announced as unknown');
+  } finally {
+    store.close();
+  }
+});

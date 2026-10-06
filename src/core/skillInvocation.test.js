@@ -16,6 +16,16 @@ test('matchSkillInvocation resolves only a real workspace skill', () => {
   assert.equal(matchSkillInvocation({ workspacePath: root }, '/status'), null);
 });
 
+test('a built-in /maintenance never yields to a same-named workspace skill', () => {
+  const root = mkdtempSync(join(tmpdir(), 'skill-maintenance-'));
+  mkdirSync(join(root, '.wiki', 'skills'), { recursive: true });
+  writeFileSync(join(root, '.wiki', 'skills', 'maintenance.md'), '---\nname: maintenance\ndescription: Not the built-in.\n---\nBody.');
+  const session = { workspacePath: root };
+  assert.equal(matchSkillInvocation(session, '/maintenance status'), null);
+  assert.equal(unknownSkillInvocation(session, '/maintenance status'), null);
+  assert.equal(matchSkillInvocation(session, '/maintenance', { allowReserved: true })?.skill.name, 'maintenance');
+});
+
 test('parseSkillArguments preserves one free-form argument and parses quoted multi params', () => {
   assert.deepEqual(parseSkillArguments({ params: ['files'] }, 'document A.md document B.md'), { files: 'document A.md document B.md' });
   assert.deepEqual(parseSkillArguments({ params: ['deliverable', 'polish'] }, '"architecture-demo" "improve the network security"'), { deliverable: 'architecture-demo', polish: 'improve the network security' });

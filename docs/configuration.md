@@ -292,7 +292,8 @@ nothing and is reported by `/maintenance status`. User view:
 | key | default | meaning |
 | --- | --- | --- |
 | `defaults.enabled` | `false` | master switch; `workspaces.<name>` overrides any key it names |
-| `defaults.actions.<action>` | see below | `auto`, `ask` or `off`; `build`/`deliver` also accept a list of `templates/…` / `deliverables/…` paths (those `auto`, the rest `off`) |
+| `defaults.mode` | `human` in the packaged example; unset in older configs | `auto` runs every listed action without an approval request; `human` requires approval for every listed action. Unset preserves legacy per-action behavior. Set per workspace with `/maintenance mode auto|human`. |
+| `defaults.actions` | see below | Array of enabled action names (`sync`, `ingest`, `doctor`, `index`, `rebuild`, `curate`, `build`, `deliver`, `mail`). Removing an action disables it. Legacy object maps with `auto`/`ask`/`off` remain supported. `build`/`deliver` may be objects mapping action names to allowed `templates/…` / `deliverables/…` paths. |
 | `defaults.mail.to` | `[]` | the only recipients maintenance may email |
 | `defaults.mail.on` | `failure, decision, daily` | immediate alerts (failure, decision) and a digest of the previous day |
 | `defaults.buildSchedule` | `02:00–05:00 Europe/Paris` | `{mode: "window", start, end, timezone}`; set it to `null` to disable automatic builds |
@@ -301,12 +302,14 @@ nothing and is reported by `/maintenance status`. User view:
 | `defaults.limits.actionsPerDay` / `actionsPerCycle` | `40` / `10` | every action, routine included |
 | `defaults.limits.sourceQuietMinutes` | `10` | a pending file younger than this is not offered for ingest |
 
-Default actions: `sync`, `doctor`, `index`, `rebuild`, `curate`, `build`, `mail`
-are `auto`; `ingest` and `deliver` are `ask`. Fixed rules, whatever the block:
-a first export is never proposed (only existing exports and polishes are kept
-current), a deliverable edited by hand is rebuilt only after approval, a pending
-file flagged in `.wiki/cme-sync.json` is never ingested, and a curation is only
-prepared. There is no token ceiling: the limits count cycles and actions.
+The packaged example enables all listed actions and uses `human` mode. In older
+configurations with no `mode`, legacy per-action behavior is retained. Workspace
+settings override the defaults. A first export is never proposed (only existing
+exports and polishes are kept current), a pending file flagged in
+`.wiki/cme-sync.json` is never ingested, and a curation is only prepared; its
+merge still requires a human. A rebuild preserves hand-added sections and backs
+up the previous deliverable. There is no token ceiling: the limits count cycles
+and actions.
 
 Environment, manager side:
 
@@ -540,9 +543,13 @@ workspace-locked TAXO operation: it extracts sections, writes the fiches, and
 regenerates tag-family pages as one cycle. The concurrency setting does not
 split that user-visible operation into separate analysis and apply tasks;
 section extraction concurrency is bounded inside the ingestion job.
-That separate limit is `limits.maxInFlightRequests` in the workspace
-`.wikirc.yaml` (default 3, maximum 16), shared across source/section extraction
-calls. Changing the production task capacity does not change it.
+That in-job budget defaults to the same production recommendation:
+`PRODUCTION_RECOMMENDED_CONCURRENCY` (capped by `PRODUCTION_MAX_CONCURRENCY`
+and the engine's own ceiling of 16) is exported to the engine as
+`WIKI_MAX_IN_FLIGHT_REQUESTS`, so one knob raises both the task limit and the
+extraction capacity. A workspace that must stay lower pins its own
+`limits.maxInFlightRequests` in `.wikirc.yaml` (default 3 standalone); an
+explicit value wins over the production recommendation.
 - **Build** (per template): scoped to `template:<name>`, so distinct templates
   build in parallel.
 - **Export / Polish** (per deliverable): scoped to `deliverable:<path>`, so
@@ -558,12 +565,16 @@ concurrency to what your LLM endpoint can serve concurrently (e.g. vLLM/llama.cp
 
 | Lever | Where | Effect |
 | --- | --- | --- |
-| `PRODUCTION_RECOMMENDED_CONCURRENCY` | production agent container | **Primary** — sets effective parallel tasks |
-| `PRODUCTION_MAX_CONCURRENCY` | production agent container | Hard ceiling the agent will never exceed (keep ≥ recommended) |
-| `WIKI_MANAGER_CAPABILITY_CONCURRENCY` | manager runtime env | Optional ceiling; only lowers. Leave unset to let the agent decide |
+| `PRODUCTION_RECOMMENDED_CONCURRENCY` | production agent container | **Primary** — sets effective parallel tasks **and** the default in-job extraction capacity (ingest/rebuild, build batches) |
+| `PRODUCTION_MAX_CONCURRENCY` | production agent container | Hard ceiling the agent will never exceed (keep ≥ recommended); also caps the in-job budget |
+| `WIKI_MANAGER_CAPABILITY_CONCURRENCY` | manager runtime env | Optional ceiling on parallel tasks; only lowers. Leave unset to let the agent decide |
+| `limits.maxInFlightRequests` | workspace `.wikirc.yaml` | Per-workspace override of the in-job budget; an explicit value wins over the production recommendation |
 
 Raising only `PRODUCTION_MAX_CONCURRENCY` is not enough — bump
-`PRODUCTION_RECOMMENDED_CONCURRENCY` too.
+`PRODUCTION_RECOMMENDED_CONCURRENCY` too. Leave `limits.maxInFlightRequests`
+unset unless one workspace needs a different budget from the rest: the
+production recommendation is then the single number that parallelises both the
+plan's tasks and the model calls inside a job.
 
 ### Profiles
 
@@ -599,9 +610,10 @@ the manager runtime if its environment changed. Keep
   is retried, but repeated timeouts mean the LLM endpoint, not the task count, is
   the bottleneck.
 - Expect *build/export/polish* to fan out. TAXO ingestion is one
-  workspace-locked `knowledge.update` task whose section-extraction
-  concurrency is bounded inside the engine — there is no separate plan/apply
-  phase to gate a pure-ingest run.
+  workspace-locked `knowledge.update` task whose in-job extraction budget
+  follows this same recommendation (unless the workspace pins
+  `limits.maxInFlightRequests`) — there is no separate plan/apply phase to gate
+  a pure-ingest run.
 
 ---
 

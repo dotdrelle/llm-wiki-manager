@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 export const ACTIONS = ['sync','ingest','doctor','index','rebuild','curate','build','deliver','mail'];
 export const DEFAULT_POLICY = {
-  enabled: false, actions: { sync:'auto', ingest:'ask', doctor:'auto', index:'auto', rebuild:'auto', curate:'auto', build:'auto', deliver:'ask', mail:'auto' },
+  enabled: false, mode:null, actions: { sync:'auto', ingest:'ask', doctor:'auto', index:'auto', rebuild:'auto', curate:'auto', build:'auto', deliver:'ask', mail:'auto' },
   mail: { to: [], on: ['failure','decision','daily'] },
   limits: { cyclesPerDay:12, buildsPerDay:4, actionsPerDay:40, actionsPerCycle:10, sourceQuietMinutes:10 },
   buildSchedule: { mode:'window', start:'02:00', end:'05:00', timezone:'Europe/Paris' },
@@ -12,13 +12,20 @@ export function maintenancePolicy(document, workspace) {
   if (!block) return { ...structuredClone(DEFAULT_POLICY), version: fingerprint(DEFAULT_POLICY) };
   if (typeof block !== 'object' || Array.isArray(block)) throw new Error('Invalid maintenanceAccess');
   const base = block.defaults ?? {}; const local = block.workspaces?.[workspace] ?? {};
+  const defaultActions=structuredClone(DEFAULT_POLICY.actions);
+  const normalizeActions=(value,fallback)=>Array.isArray(value)
+    ? Object.fromEntries(ACTIONS.map((action)=>[action,value.includes(action)?'enabled':'off']))
+    : {...fallback,...(value??{})};
+  const baseActions=normalizeActions(base.actions,defaultActions);
+  const actions=Array.isArray(local.actions)?normalizeActions(local.actions,baseActions):{...baseActions,...(local.actions??{})};
   const result = { ...structuredClone(DEFAULT_POLICY), ...base, ...local,
-    actions:{...DEFAULT_POLICY.actions,...base.actions,...local.actions},
+    actions,
     limits:{...DEFAULT_POLICY.limits,...base.limits,...local.limits},
     mail:{...DEFAULT_POLICY.mail,...base.mail,...local.mail} };
   if (typeof result.enabled !== 'boolean') throw new Error('Maintenance enabled must be boolean');
+  if (result.mode !== null && !['auto','human'].includes(result.mode)) throw new Error('Maintenance mode must be auto or human');
   for (const [key,value] of Object.entries(result.actions)) {
-    if (!ACTIONS.includes(key) || !( ['auto','ask','off'].includes(value) || ['build','deliver'].includes(key) && Array.isArray(value) && value.every((p) => typeof p === 'string' && /^(templates|deliverables)\//.test(p) && !p.split('/').includes('..')))) throw new Error(`Invalid maintenance action: ${key}`);
+    if (!ACTIONS.includes(key) || !( ['auto','ask','off','enabled'].includes(value) || ['build','deliver'].includes(key) && Array.isArray(value) && value.every((p) => typeof p === 'string' && /^(templates|deliverables)\//.test(p) && !p.split('/').includes('..')))) throw new Error(`Invalid maintenance action: ${key}`);
   }
   for (const [key,value] of Object.entries(result.limits)) if (!Object.hasOwn(DEFAULT_POLICY.limits,key) || !Number.isFinite(value) || value < 0 || value > 10000) throw new Error(`Invalid maintenance limit: ${key}`);
   if (!Array.isArray(result.mail.to) || !result.mail.to.every((v) => typeof v === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v))) throw new Error('Invalid maintenance recipients');
@@ -32,7 +39,13 @@ export function maintenancePolicy(document, workspace) {
 }
 export function actionMode(policy, action, target) {
   const mode=policy.actions[action] ?? 'off';
-  return Array.isArray(mode) ? mode.includes(target) ? 'auto':'off' : mode;
+  if (mode === 'off') return 'off';
+  if (Array.isArray(mode) && !mode.includes(target)) return 'off';
+  // The MCP config's action map is the allow-list. The global mode decides
+  // whether a listed action runs directly or waits for an explicit approval.
+  if (policy.mode === 'auto') return 'auto';
+  if (policy.mode === 'human') return 'ask';
+  return Array.isArray(mode) || mode === 'enabled' ? 'auto' : mode;
 }
 export function inBuildWindow(policy, now=new Date()) {
   const s=policy.buildSchedule;if (!s) return false;

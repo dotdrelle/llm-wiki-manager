@@ -43,7 +43,6 @@ import {
 } from '../core/wikirc.js';
 import { applySessionWikircProfile } from '../core/sessionConfig.js';
 import { loadManagerEnv } from '../core/env.js';
-import { resolveSchedulerConcurrency } from '../orchestrator/scheduler.js';
 import {
   deleteWorkspaceAndFiles,
   finalizeCreatedWorkspace,
@@ -320,7 +319,6 @@ export function agentConcurrencySections(session, env = process.env) {
       `effective: ${productionEffective}`,
       `recommended: ${productionRecommended}`,
       `maximum: ${productionMaximum}`,
-      `scheduler workers: ${resolveSchedulerConcurrency(env.WIKI_MANAGER_SCHEDULER_CONCURRENCY)}`,
     ]),
     collection: sectionBlock('Collection concurrency', [
       `effective: ${collectionEffective}`,
@@ -837,7 +835,7 @@ ${helpPair('/use <workspace>', 'Use workspace', '/status', 'Session status')}
 ${helpPair('/config list', 'Config profiles', '/config use <n>', 'Use config')}
 ${helpPair('/config edit <n>', 'Edit config', '/workspace delete <n>', 'Delete workspace')}
 ${helpPair('/services', 'Services', '/start [all|agents|services]', 'all = services + agents')}
-${helpPair('/maintenance status', 'Maintenance history', '/maintenance enable', 'Enable independent wiki maintenance')}
+${helpPair('/maintenance status', 'Maintenance history', '/maintenance mode auto|human', 'Set maintenance approval mode')}
 ${helpPair('/stop [all|everything|service|agents]', 'Stop service(s)', '/logs <service>', 'Service logs')}
 ${helpPair('/skills', 'List skills', '/skills show <n>', 'Show skill')}
 ${helpPair('/skills run <n>', 'Run skill guide', '/skills edit <n>', 'Edit skill')}
@@ -1074,16 +1072,19 @@ export async function handleSlashCommand(line, context) {
     case 'maintenance': {
       if(!context.runtime?.url)return {output:'Maintenance: runtime disconnected.'};
       const command=args[1]??'status';
-      if(!['status','enable','disable','pause','resume','stop','approve','refuse'].includes(command))return {output:'Usage: /maintenance status|enable|disable|pause|resume|stop|approve <id> <version>|refuse <id> <version>'};
+      if(!['status','enable','disable','pause','resume','stop','mode','approve','refuse'].includes(command))return {output:'Usage: /maintenance status|mode auto|human|enable|disable|pause|resume|stop|approve <id> <version>|refuse <id> <version>'};
       if(['enable','disable'].includes(command)&&!context.session.workspace)return {output:'Maintenance: no active workspace — /use <workspace> first.'};
+      if(command==='mode'&&!context.session.workspace)return {output:'Maintenance: no active workspace — /use <workspace> first.'};
       try {
         const decision=['approve','refuse'].includes(command);
         const page=command==='status'?Number(args[2]??1):1;
         if(!Number.isSafeInteger(page)||page<1)return {output:'Usage: /maintenance status [page >= 1]'};
         if(decision&&(!args[2]||!args[3]))return {output:'Specify the request id and exact version from /maintenance status.'};
-        const result=await runtimeMaintenance({url:context.runtime.url,workspace:context.session.workspace,command:decision?'decide':command,...(command==='status'?{historyOffset:(page-1)*100}:{}),...(decision?{id:args[2],version:args[3],approved:command==='approve'}:{})});
+        if(command==='mode'&&!['auto','human'].includes(args[2]))return {output:'Usage: /maintenance mode auto|human'};
+        const result=await runtimeMaintenance({url:context.runtime.url,workspace:context.session.workspace,command:decision?'decide':command,...(command==='status'?{historyOffset:(page-1)*100}:{}),...(command==='mode'?{mode:args[2]}:{}),...(decision?{id:args[2],version:args[3],approved:command==='approve'}:{})});
         // enable/disable act on the CURRENT workspace and answer with the event that says what it implies.
         if(['enable','disable'].includes(command))return {output:String(result.events?.filter((e)=>e.kind===(command==='enable'?'enabled':'disabled')).at(-1)?.message??`Maintenance: ${command}d for ${context.session.workspace}.`)};
+        if(command==='mode')return {output:`Maintenance approval mode: ${result.mode}.`};
         return {output:'Maintenance: '+JSON.stringify(result,null,2)+(result.history?.hasMore?`\nMore saved history: /maintenance status ${page+1}`:'')};
       }catch(e){return {output:'Maintenance: '+e.message};}
     }

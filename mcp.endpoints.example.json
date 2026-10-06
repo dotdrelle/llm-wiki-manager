@@ -68,6 +68,8 @@
   "maintenanceAccess": {
     "defaults": {
       "enabled": false,
+      "mode": "human",
+      "actions": ["sync", "ingest", "doctor", "index", "rebuild", "curate", "build", "deliver", "mail"],
       "buildSchedule": { "mode": "window", "start": "02:00", "end": "05:00", "timezone": "Europe/Paris" }
     },
     "workspaces": {}

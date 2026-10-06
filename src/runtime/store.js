@@ -1348,10 +1348,23 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       // value. Never consumed by scheduling.
       concurrency: session?._runConcurrency ?? null,
       // Configured extraction capacity, not a live count of provider calls.
-      // Never expose the rest of wikirc (which may contain credentials).
+      // Never expose the rest of wikirc (which may contain credentials). When
+      // the workspace file does not fix limits.maxInFlightRequests, the
+      // managed job fills it from the production agent's advertised capacity —
+      // the same rule the engine applies from WIKI_MAX_IN_FLIGHT_REQUESTS.
       ingestionLlmLimit: session?.wikircConfig
         ? (() => {
-          const value = session.wikircConfig.limits?.maxInFlightRequests ?? 3;
+          const configured = session.wikircConfig.limits?.maxInFlightRequests;
+          if (configured != null) {
+            return Number.isInteger(configured) && configured >= 1 && configured <= 16 ? configured : null;
+          }
+          const agents = session?.agentRegistry?.snapshot?.() ?? session?.agentRegistrySnapshot ?? [];
+          const production = agents.find((entry) => String(entry?.description?.agentType ?? '').toLowerCase() === 'production');
+          const recommended = Number(production?.description?.limits?.recommendedConcurrency);
+          const maximum = Number(production?.description?.limits?.maxConcurrency);
+          const value = Number.isFinite(recommended) && recommended > 0
+            ? Math.min(recommended, Number.isFinite(maximum) && maximum > 0 ? maximum : recommended)
+            : 3;
           return Number.isInteger(value) && value >= 1 && value <= 16 ? value : null;
         })()
         : null,

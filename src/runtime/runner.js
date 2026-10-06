@@ -483,7 +483,7 @@ export async function runRuntimeParallelPlan(agent, session, input, {
   const agents = session.agentRegistry?.snapshot?.() ?? session.agentRegistrySnapshot ?? [];
   const configuredConcurrency = Number(concurrency) > 0
     ? Number(concurrency)
-    : Number(process.env.WIKI_MANAGER_CAPABILITY_CONCURRENCY || process.env.WIKI_MANAGER_SCHEDULER_CONCURRENCY);
+    : Number(process.env.WIKI_MANAGER_CAPABILITY_CONCURRENCY);
   const concurrencyDetail = describePlanConcurrency({
     plan: session.headlessPlan ?? [],
     agents,

@@ -117,3 +117,18 @@ export function setMaintenanceEnabled(rawWorkspace, enabled) {
   writeDocument(filePath, raw);
   return { workspace, enabled: Boolean(enabled), previous: before };
 }
+
+/** Persist the workspace's automatic or approval-gated maintenance mode. */
+export function setMaintenanceMode(rawWorkspace, mode) {
+  const workspace = normalizeName(rawWorkspace);
+  if (!['auto', 'human'].includes(mode)) throw new Error('Maintenance mode must be auto or human.');
+  const { filePath, raw } = readDocument();
+  raw.maintenanceAccess ??= { defaults: { enabled: false }, workspaces: {} };
+  if (!raw.maintenanceAccess || typeof raw.maintenanceAccess !== 'object' || Array.isArray(raw.maintenanceAccess)) {
+    throw new Error('maintenanceAccess must be a JSON object.');
+  }
+  raw.maintenanceAccess.workspaces ??= {};
+  raw.maintenanceAccess.workspaces[workspace] = { ...(raw.maintenanceAccess.workspaces[workspace] ?? {}), mode };
+  writeDocument(filePath, raw);
+  return { workspace, mode };
+}

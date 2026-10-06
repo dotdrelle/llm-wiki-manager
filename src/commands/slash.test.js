@@ -10,7 +10,7 @@ import { completionContext } from '../shell/repl.js';
 test('interactive help advertises independent wiki maintenance controls', () => {
   const output = helpText({ version: 'test' });
   assert.match(output, /\/maintenance status/);
-  assert.match(output, /\/maintenance enable/);
+  assert.match(output, /\/maintenance mode auto\|human/);
 });
 
 test('deterministic operation results ask Donna to localize compact facts without leaking commands', () => {
@@ -88,7 +88,6 @@ test('/status replaces Internal and Hints with effective agent concurrency', () 
     ],
   }, {
     WIKI_MANAGER_CAPABILITY_CONCURRENCY: '4',
-    WIKI_MANAGER_SCHEDULER_CONCURRENCY: '7',
   });
 
   assert.match(sections.production, /Parallelism & throughput/);
@@ -96,7 +95,7 @@ test('/status replaces Internal and Hints with effective agent concurrency', () 
   assert.match(sections.production, /recommended: 6/);
   assert.match(sections.production, /maximum: 10/);
   assert.doesNotMatch(sections.production, /manager ceiling/);
-  assert.match(sections.production, /scheduler workers: 7/);
+  assert.doesNotMatch(sections.production, /scheduler workers/);
   assert.match(sections.collection, /Collection concurrency/);
   assert.match(sections.collection, /effective: 3/);
   assert.doesNotMatch(`${sections.production}\n${sections.collection}`, /Internal|Hints/);

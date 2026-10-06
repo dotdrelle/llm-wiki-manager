@@ -2,13 +2,6 @@ import { readyTasks } from './dependencyResolver.js';
 
 export const DEFAULT_SCHEDULER_CONCURRENCY = 3;
 
-export function resolveSchedulerConcurrency(value = process.env.WIKI_MANAGER_SCHEDULER_CONCURRENCY) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0
-    ? Math.max(1, Math.floor(parsed))
-    : DEFAULT_SCHEDULER_CONCURRENCY;
-}
-
 // Display-only breakdown of the SAME computation resolvePlanConcurrency uses.
 // resolvePlanConcurrency delegates to this so the number surfaced to the UIs can
 // never diverge from the number the scheduler actually enforces. Never used to

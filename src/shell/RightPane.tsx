@@ -96,6 +96,16 @@ function activityDetailText(activity: any) {
   const stepProgress = Number.isFinite(stepIndex) && Number.isFinite(stepTotal) && stepTotal > 0
     ? `Step ${Math.max(1, stepIndex)}/${stepTotal}`
     : null;
+  // Live extraction processes (production agent's per-file states), never the
+  // lagging 1-based source index; same source as the served run graph.
+  const sourceStates = progress.sourceStates && typeof progress.sourceStates === 'object'
+    ? Object.values(progress.sourceStates).map(String) : null;
+  const sourceCount = Number(progress.sourceCount);
+  const sourceProgress = sourceStates && sourceStates.length
+    ? `Sources ${sourceStates.filter((value) => value === 'running').length} running`
+      + (sourceStates.some((value) => value === 'done') ? ` · ${sourceStates.filter((value) => value === 'done').length} done` : '')
+      + ` / ${Number.isFinite(sourceCount) && sourceCount > 0 ? sourceCount : sourceStates.length}`
+    : null;
   const batchProgress = Number.isFinite(batchIndex) && Number.isFinite(batchCount) && batchCount > 0
     ? `Batch ${Math.min(batchCount, Math.max(1, batchIndex + 1))}/${batchCount}`
     : null;
@@ -116,6 +126,7 @@ function activityDetailText(activity: any) {
   const values = [
     taskProgress,
     stepProgress,
+    sourceProgress,
     batchProgress,
     progress.label,
     detail,
@@ -631,6 +642,11 @@ export function RightPane(props: {
       <Show when={props.maintenance}>
         <box flexDirection="column" border={['left']} borderColor="#FBBF24" paddingX={1} marginBottom={1}>
           <text fg="#FBBF24" content={`Maintenance: ${props.maintenance?.enabled ? (props.maintenance?.paused ? 'paused' : 'active') : 'disabled'}`} />
+          <box flexDirection="row">
+            <text content={`Mode: ${props.maintenance?.mode === 'auto' ? 'Auto' : props.maintenance?.mode === 'human' ? 'Human' : 'Custom'}  `} />
+            <text fg={props.maintenance?.mode === 'auto' ? '#A6E3A1' : '#FBBF24'} content=" Auto " onMouseUp={() => props.onMaintenance?.('/maintenance mode auto')} />
+            <text fg={props.maintenance?.mode === 'human' ? '#FBBF24' : '#A6ADC8'} content=" Human " onMouseUp={() => props.onMaintenance?.('/maintenance mode human')} />
+          </box>
           <text content={`Build window: ${maintenanceBuildWindow(props.maintenance?.buildSchedule)}`} />
           <box flexDirection="row">
             <text content=" History " onMouseUp={() => props.onMaintenance?.('/maintenance status')} />

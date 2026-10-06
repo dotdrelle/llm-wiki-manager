@@ -339,6 +339,14 @@ export function startRuntimeServer({
             throw error;
           }
         }
+        if (body.command === 'mode') {
+          try {
+            return sendJson(response, 200, await maintenance.setMode(workspace, body.mode));
+          } catch (error) {
+            if (/^maintenance_/.test(String(error?.message))) return sendJson(response, 400, { error: error.message, message: describeMaintenanceError(error.message) });
+            throw error;
+          }
+        }
         if (['status','pause','resume','stop','clear'].includes(body.command)) return sendJson(response, 200, await maintenance.control(workspace, body.command, {historyOffset:body.historyOffset}));
         return sendJson(response, 400, { error: 'Unknown maintenance command' });
       }

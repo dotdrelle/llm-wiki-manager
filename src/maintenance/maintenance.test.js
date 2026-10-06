@@ -21,11 +21,11 @@ test('foreground pending before background admission wins the resource',async()=
 test('aborted waiter does not steal or leak admission',async()=>{enableMaintenanceAdmission('abort');const held=await admitExecution('abort',{},{background:true});const c=new AbortController();const pending=admitExecution('abort',{},{background:true,signal:c.signal});c.abort();await assert.rejects(pending);held();(await admitExecution('abort',{},{background:true}))();});
 test('disabled maintenance does not call tools or a model; scoped authority cannot approve',async()=>{const {db}=setup();let calls=0;const service=createMaintenanceService({db,getContext:async()=>{calls++;},readDocument:()=>({}),baseUrl:'http://localhost'});await service.tick('x');assert.equal(calls,0);assert.equal(service.authorizeBridge('unknown','token'),null);assert.equal(service.status('x').enabled,false);await service.close();db.close();});
 
-function harness({facts:override={},runtime=null,gate=null,statuses=[]}={}){
+function harness({facts:override={},runtime=null,gate=null,statuses=[],curate=null}={}){
   const {db}=setup();let version='a';let executions=[];const statusChecks=[];let access={maintenanceAccess:{defaults:{enabled:true,limits:{sourceQuietMinutes:0}}}};
   const facts=()=>({wikiHash:'wiki',pending:[{path:'raw/untracked/a.md',hash:version,stable:true,protected:false}],index:{enabled:false,fresh:true},deliverables:[],publications:[],proposals:[],...override});
   const provider={serverName:'production',health:'available',capability:{supportedOperations:['ingest','doctor','index','ingest_rebuild','build','export','polish','send'],inputSchema:{type:'object',additionalProperties:true}}};
-  const session={workspace:'x',workspacePath:'/private/tmp/nonexistent-maintenance-test',mcp:{wiki:{tools:[{name:'wiki_maintenance_state'}]}},capabilityRegistry:{providersFor:(capability)=>capability==='agent.maintain'?(runtime?[{runtimeProvider:runtime,runtimeId:'gw',health:'available',capability:{supportedOperations:['run']}}]:[]):[provider]}};
+  const session={workspace:'x',workspacePath:'/private/tmp/nonexistent-maintenance-test',mcp:{wiki:{tools:[{name:'wiki_maintenance_state'}]}},capabilityRegistry:{providersFor:(capability)=>capability==='agent.maintain'?(runtime?[{runtimeProvider:runtime,runtimeId:'gw',health:'available',capability:{supportedOperations:['run']}}]:[]):capability==='agent.curate'&&curate?[{runtimeProvider:curate,runtimeId:'gw-curate',health:'available',capability:{supportedOperations:['run'],inputSchema:{type:'object',additionalProperties:true}}}]:[provider]}};
   const service=createMaintenanceService({db,baseUrl:'http://localhost',discover:async(session)=>{session.runtimeProviderAgents=[];},getContext:async()=>({session}),readDocument:()=>access,callTool:async(_mcp,_server,tool,args)=>{if(tool==='wiki_maintenance_state')return facts();if(tool==='agent_execute'){executions.push(args);return {accepted:true,jobId:'job-'+executions.length};}if(tool==='agent_status'){statusChecks.push(args.jobId);if(gate)await gate;return {status:statuses.shift()??'done',result:{}};}throw new Error(tool);}});
   return {db,service,executions,statusChecks,provider,session,change:(v)=>{version=v;},policy:(p)=>{access=p;}};
 }
@@ -228,4 +228,43 @@ test('maintenance stream deltas roundtrip changes and reject a missed revision',
   assert.throws(()=>applyMaintenanceUpdate(applied,{...update,baseRevision:3,revision:6}),/gap/);
   const restarted=applyMaintenanceUpdate(applied,{kind:'snapshot',epoch:'next',revision:1,snapshot:before});
   assert.equal(restarted.stream.epoch,'next');assert.equal(restarted.stream.revision,1);
+});
+
+test('a failed mail send never feeds its own next alert',async()=>{
+  const h=harness({facts:{pending:[],proposals:[]},statuses:['failed']});
+  try {
+    h.policy({maintenanceAccess:{defaults:{enabled:true,mail:{to:['ops@example.org'],on:['failure']},limits:{sourceQuietMinutes:0}}}});
+    h.service.store.event('x',{kind:'failure',message:'Maintenance: Failed: export'});
+    const alert=(await h.service.state('x')).candidates.find((c)=>c.action==='mail');
+    assert.ok(alert);
+    const sent=await h.service.runCandidate('x','cycle',{action:'mail',target:'ops@example.org'});
+    assert.equal(sent.status,'failed');
+    assert.ok(!(await h.service.state('x')).candidates.some((c)=>c.action==='mail'),'the failed send is not quoted back into a retry loop');
+  }finally{await h.service.close();h.db.close();}
+});
+
+test('the daily digest covers yesterday only and never the mail action itself',()=>{
+  const {db,store}=setup();
+  try {
+    const insert=db.prepare('INSERT INTO maintenance_events(workspace,payload) VALUES(?,?)');
+    insert.run('x',JSON.stringify({kind:'action_done',action:'mail',at:'2026-10-04T09:00:00.000Z',message:'mail sent'}));
+    insert.run('x',JSON.stringify({kind:'action_done',at:'2026-10-04T10:00:00.000Z',message:'export done'}));
+    insert.run('x',JSON.stringify({kind:'action_done',at:'2026-10-05T08:00:00.000Z',message:'today'}));
+    const digest=store.relevantEvents('x',{kinds:['action_done'],since:'2026-10-04',before:'2026-10-05',excludeAction:'mail'});
+    assert.deepEqual(digest.map((e)=>e.message),['export done']);
+  }finally{db.close();}
+});
+
+test('a curation with no source fiche is announced as not started, never as done',async()=>{
+  const curate={execute:async()=>({runId:'curate-1'}),status:async()=>({status:'completed',result:{content:'no sources',curationOutcome:{kind:'nothing_to_curate',reason:'No wiki/sources fiche exists yet; ingest first.'}}}),cancel:async()=>{}};
+  const h=harness({facts:{pending:[],proposals:[]},curate});
+  try {
+    const candidate=(await h.service.state('x')).candidates.find((c)=>c.action==='curate');
+    assert.ok(candidate);
+    const result=await h.service.runCandidate('x','cycle',{action:'curate',target:candidate.target});
+    assert.equal(result.status,'done');
+    const events=h.service.store.events('x');
+    assert.ok(events.some((e)=>e.kind==='nothing_to_curate'&&/Ingest source documents first/.test(e.message)));
+    assert.ok(!events.some((e)=>e.kind==='action_done'),'a skipped curation is never reported as done');
+  }finally{await h.service.close();h.db.close();}
 });

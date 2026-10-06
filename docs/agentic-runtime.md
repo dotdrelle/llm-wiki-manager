@@ -351,9 +351,35 @@ after an ingest/rebuild completes):
 dispatcher (`dispatcher.execute`). Maintenance actions take scopes derived from
 what they touch (`workspace-write` for ingest/rebuild/index, `template:` /
 `deliverable:` for build/deliver, `raw/untracked` for sync); doctor, curate and
-mail take none. A user task registered before a maintenance start wins; a
-started job is never pre-empted; every wait is logged (`scheduler: waiting for
-maintenance — …`). Production locks stay authoritative underneath.
+mail take none. The user has priority:
+
+- maintenance starts nothing that writes while a user run has unfinished tasks
+  **or** a user request is queued (`foreground_run_pending`,
+  `foreground_queue_pending`), and a user task registered before a maintenance
+  start wins;
+- a started job of a **preemptible** action (`PREEMPTIBLE` in `service.js`:
+  sync, ingest, index, rebuild, build — replaying them leaves nothing half done)
+  is stopped when a user task waits on it: admission calls the holder's
+  `onPreempt` once, the service sends `agent_cancel`, the attempt is settled
+  `released` with `outcome: cancelled, preempted: true` (its credit returned),
+  and the next scan replays it under a new `:retry-N` id — a new idempotency
+  key, so the agent cannot answer with the cancelled job. A deliver (an
+  existing export update) or a mail is never interrupted: whether it took
+  effect would be unknown; the user task waits for it;
+- every action has a fixed time limit (`ACTION_CEILING_MINUTES`, not a
+  setting: sync 30 min, ingest 120, index 60, rebuild 180, build 60, deliver 30,
+  doctor 15, curate 90); past it the job is cancelled and reported `failed`
+  ("stopped after N min without finishing"). An agent that does not confirm a
+  stop within 2 minutes leaves the reservation held for reconciliation
+  (`maintenance_cancel_unconfirmed`).
+
+Every wait is logged (`scheduler: waiting for maintenance — …`) and, for a run
+task, published as an `admission:<taskId>` activity (`source: scheduler`,
+`status: queued`) so the run strip and the Plan tab read "Waiting for
+maintenance — <action>" instead of "Running · 0%"; it turns `done` when the task
+starts. Production locks stay authoritative underneath. The CME agent refuses
+an export whose Confluence does not accept a TCP connection within 5 s, so an
+unreachable instance fails fast instead of holding `raw/untracked`.
 
 **Recovery and durable accounting.** Each scan first queries every reserved
 job receipt, even if its candidate disappeared because the job archived the

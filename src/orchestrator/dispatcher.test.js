@@ -549,3 +549,41 @@ test('an approved task receives confirm when its closed schema declares it', asy
   );
   assert.equal(args.arguments.confirm, true);
 });
+
+test('activeProfileModel forwards the thinking knob to the external runtime, unless measured as refused', async () => {
+  const { activeProfileModel } = await import('./dispatcher.js');
+  const llm = { baseUrl: 'https://api.example/v1', model: 'gpt-6-luna', apiKey: 'k', reasoningEffort: 'none' };
+  assert.equal(activeProfileModel({ wikircConfig: { llm } }).reasoningEffort, 'none');
+  const refused = { ...llm, capabilities: { model: 'gpt-6-luna', reasoningEffort: false } };
+  assert.equal('reasoningEffort' in activeProfileModel({ wikircConfig: { llm: refused } }), false);
+});
+
+test('a task waiting behind maintenance shows the wait as an activity, closed when it starts', async () => {
+  const { admitExecution, enableMaintenanceAdmission } = await import('../maintenance/admission.js');
+  enableMaintenanceAdmission('wait-ws');
+  const held = await admitExecution('wait-ws', { locks: ['raw/untracked'] }, { background: true, label: 'maintenance: Synchronize the Confluence source liste-serveurs' });
+  const session = {
+    workspace: 'wait-ws',
+    mcp: { production: { tools: [{ name: 'agent_execute' }, { name: 'agent_status' }, { name: 'agent_cancel' }] } },
+    activities: {},
+  };
+  const dispatcher = createDispatcher({
+    session,
+    pollIntervalMs: 1,
+    callTool: async (_mcp, _server, tool) => (tool === 'agent_execute'
+      ? { accepted: true, jobId: 'job-ingest', status: 'queued' }
+      : { jobId: 'job-ingest', status: 'succeeded', terminal: true, result: { status: 'succeeded' } }),
+  });
+  const waitingFor = () => Object.values(session.activities).find((a) => String(a.id).startsWith('admission:'));
+  const run = dispatcher.execute(
+    { id: 'ingest-1', label: 'Ingest 41 source file(s)', requiredCapability: 'knowledge.update', operation: 'ingest', arguments: {}, locks: ['workspace-write'] },
+    { serverName: 'production', agentInstanceId: 'production-main' },
+    { runId: 'run-1', attempt: { attemptId: 'ingest-1:attempt-1', locks: [], release() {} } },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(waitingFor()?.status, 'queued');
+  assert.match(waitingFor()?.progress?.label ?? '', /Waiting for maintenance — maintenance: Synchronize the Confluence source liste-serveurs/);
+  held();
+  await run;
+  assert.equal(waitingFor()?.status, 'done');
+});

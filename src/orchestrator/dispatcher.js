@@ -5,7 +5,7 @@ import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { callMcpTool } from '../core/mcp.js';
 import { loadWorkspaceProfile } from '../core/profile.js';
 import { formatWorkspaceMemoryFacts } from '../core/workspaceMemory.js';
-import { supportsTemperature } from '../core/llmCapabilities.js';
+import { reasoningEffortParam, supportsTemperature } from '../core/llmCapabilities.js';
 import { containerReachableUrl } from '../core/wikiSetup.js';
 import { mapRuntimeEvent } from '../core/runtimeEventAdapter.js';
 import { emitRuntimeLog, pollActivitiesOnce } from '../runtime/supervisor.js';
@@ -42,13 +42,50 @@ export function createDispatcher({
 }
 
 export async function execute(task, assignment, options = {}) {
-  // A wait behind maintenance is announced, never silent: the run would look stalled.
+  // A wait behind maintenance is announced, never silent: the run would look
+  // stalled ("Running · 0%" for 8 minutes on juno). The log line goes to Logs;
+  // the activity is what the run strip and the Plan tab show while it lasts.
+  const name = task?.label ?? task?.description ?? `task ${task?.id ?? task?.step ?? '?'}`;
+  let waited = false;
   const release = await admitExecution(options.session?.workspace, task, {
     signal: options.signal,
-    label: `task ${task?.id ?? task?.step ?? "?"}`,
-    onWait: (holders) => emitRuntimeLog(options.session, `scheduler: waiting for maintenance — ${holders} must finish before task ${task?.id ?? task?.step ?? "?"} starts`),
+    label: name,
+    onWait: (holders, { preempting = false } = {}) => {
+      waited = true;
+      emitRuntimeLog(options.session, `scheduler: waiting for maintenance — ${holders} must finish before ${name} starts${preempting ? ' (asked to pause: your request goes first)' : ''}`);
+      dispatchAdmissionActivity(options.session, task, options.runId, { status: 'queued', holders, preempting });
+    },
   });
+  if (waited) dispatchAdmissionActivity(options.session, task, options.runId, { status: 'done' });
   try { return await executeAdmitted(task, assignment, options); } finally { release(); }
+}
+
+function dispatchAdmissionActivity(session, task, runId, { status, holders = '', preempting = false }) {
+  if (!session) return;
+  const waiting = status === 'queued';
+  const activity = normalizeActivity({
+    id: `admission:${task?.id ?? task?.step ?? 'task'}`,
+    source: 'scheduler',
+    kind: 'maintenance-wait',
+    label: task?.label ?? task?.description ?? String(task?.id ?? task?.step ?? 'task'),
+    status,
+    terminal: !waiting,
+    progress: waiting
+      ? {
+        label: `Waiting for maintenance — ${holders}`,
+        detail: preempting
+          ? 'Your request goes first: the maintenance action is being paused.'
+          : 'This maintenance action cannot be interrupted safely; your request starts when it ends.',
+      }
+      : { label: 'Maintenance released — your request started', percent: 100 },
+    outputRefs: [],
+  });
+  dispatchAgentEvent(session, createAgentEvent('activity_upserted', {
+    origin: 'dispatcher',
+    runId,
+    taskId: String(task?.id ?? task?.step ?? ''),
+    payload: { activity },
+  }));
 }
 
 async function executeAdmitted(task, assignment, {
@@ -579,6 +616,8 @@ export function activeProfileModel(session) {
     const value = Number(llm[key]);
     if (Number.isFinite(value)) model[key] = value;
   }
+  const reasoningEffort = reasoningEffortParam(llm);
+  if (reasoningEffort) model.reasoningEffort = reasoningEffort;
   return Object.keys(model).length > 0 ? model : null;
 }
 

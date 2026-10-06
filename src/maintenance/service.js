@@ -19,6 +19,17 @@ import { listWorkspaces } from '../core/workspaces.js';
 
 // Actions the manager runs itself, never through an agent cycle.
 const ROUTINE=new Set(['sync','doctor','mail']);
+// Actions a user request may interrupt: stopping them leaves nothing half
+// done (TAXO skips the sections already written, an export redelivers, an index
+// or a build is recomputed), and a later scan replays them. An existing export
+// update or a mail is never interrupted — whether it took effect is not known.
+const PREEMPTIBLE=new Set(['sync','ingest','index','rebuild','build']);
+// No action may hold its admission indefinitely: a Confluence export waiting
+// on an unreachable host kept raw/untracked for 20+ minutes on juno while the
+// user's ingest sat at 0%. Fixed ceilings, in minutes — not a setting.
+const ACTION_CEILING_MINUTES={sync:30,ingest:120,index:60,rebuild:180,build:60,deliver:30,doctor:15,curate:90,mail:5};
+// After a stop request, how long the agent has to confirm the job ended.
+const CANCEL_CONFIRM_MS=120_000;
 const modeFor=(p,c)=>{const mode=actionMode(p,c.action,c.target);return c.humanEdit&&mode==='auto'?'ask':mode;};
 const terminal=(s)=>['done','completed','succeeded','failed','error','cancelled'].includes(s);
 const parse=(r)=>{if(r?.content){const text=formatMcpToolResult(r);try{return JSON.parse(text);}catch{return parseYaml(text);}}return r;};
@@ -123,7 +134,10 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     const base=fingerprint([workspace,candidate,now().toISOString().slice(0,10)]);
     const attempts=store.attempts(workspace,base);
     const last=attempts.at(-1);
-    const id=held?.id??(last?.status==='consumed'&&last.outcome==='cancelled'?`${base}:retry-${attempts.length}`:base);const previous=store.latestRequest(workspace,candidate.action,candidate.target);
+    // A preempted attempt is `released` (its credit returned), a stopped one
+    // `consumed`: both open a new attempt, whose new idempotency key keeps the
+    // agent from answering with the cancelled job.
+    const id=held?.id??(['consumed','released'].includes(last?.status)&&last.outcome==='cancelled'?`${base}:retry-${attempts.length}`:base);const previous=store.latestRequest(workspace,candidate.action,candidate.target);
     let approved=previous?.version===identity&&previous.status==='approved';
     if(mode==='ask'&&!approved){const request=store.propose(workspace,candidate);return {status:request.status,request:{id:request.id,version:request.version,summary:candidate.summary}};}
     const ctx=await context(workspace);const spec=MAINTENANCE_ACTIONS[candidate.action];
@@ -132,11 +146,22 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     // touch; a read, a worktree curation or a mail never holds a user's task.
     const scopes=spec.scopes?.(candidate.target)??null;
     let release=()=>{};
+    // A user request asked this action to yield (admission onPreempt). Before
+    // the dispatch it simply never starts; after it, the job is stopped.
+    const preemption={requested:false,by:'',cancel:null};
+    const preempt=async(by)=>{
+      if(preemption.requested)return;preemption.requested=true;preemption.by=by;
+      log(workspace,'waiting',`${candidate.summary} — pausing: your ${by} goes first`);
+      await preemption.cancel?.();
+    };
     if(scopes){
       enableMaintenanceAdmission(workspace);
       // Existing foreground work is registered before we request a conflicting start.
       if(ctx.running&&(ctx.session.headlessPlan??[]).some((t)=>!terminal(t.status))){log(workspace,'waiting',`${candidate.summary} — waiting: your run in progress goes first`);return {status:'waiting',reason:'foreground_run_pending'};}
-      release=await admitExecution(workspace,{locks:scopes},{background:true,signal,label:`maintenance: ${candidate.summary}`,onWait:(holders)=>log(workspace,'waiting',`${candidate.summary} — waiting for ${holders}`)});
+      // A request queued behind that run is the user's work too.
+      if((ctx.session.controlQueue??[]).some((item)=>item.status==='queued')){log(workspace,'waiting',`${candidate.summary} — waiting: your queued request goes first`);return {status:'waiting',reason:'foreground_queue_pending'};}
+      release=await admitExecution(workspace,{locks:scopes},{background:true,signal,label:`maintenance: ${candidate.summary}`,onWait:(holders)=>log(workspace,'waiting',`${candidate.summary} — waiting for ${holders}`),
+        ...(PREEMPTIBLE.has(candidate.action)?{onPreempt:(by)=>preempt(by)}:{})});
     }
     let reserved=false,started=false;
     // Counted as an active run while it executes: a config or connector change
@@ -166,6 +191,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       let job=existing?.jobId;
       if(!job){
         if(existing?.dispatched&&provider.runtimeProvider)throw new Error('maintenance_dispatch_uncertain: external receipt requires reconciliation');
+        if(preemption.requested)throw new Error('maintenance_preempted');
         // Persist dispatch intent before any external effect. Idempotent agents
         // reconcile an unknown response using the identical request/key.
         store.updateReservation(id,{dispatched:true,provider:provider.serverName,runtimeId:provider.runtimeId});started=true;
@@ -179,8 +205,41 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
         if(!job)throw new Error('maintenance_execution_receipt_missing');
         store.updateReservation(id,{jobId:job});
       } else started=true;
+      const stopJob=async()=>{
+        try{
+          if(provider.runtimeProvider)await provider.runtimeProvider.cancel(job);
+          else await callTool(ctx.session.mcp,provider.serverName,'agent_cancel',{jobId:job});
+        }catch(error){log(workspace,'degraded',`${candidate.summary} — the stop request was not accepted: ${describeError(error.message)}`,{cycleId,action:candidate.action});}
+      };
+      preemption.cancel=stopJob;
+      if(preemption.requested)await stopJob();
+      const ceilingMs=(ACTION_CEILING_MINUTES[candidate.action]??60)*60_000;
+      const clock=()=>now().getTime();const startedAt=clock();let stopAskedAt=preemption.requested?clock():0;let timedOut=false;
       let result;
-      do{signal?.throwIfAborted();result=provider.runtimeProvider?await provider.runtimeProvider.status(job):parse(await callTool(ctx.session.mcp,provider.serverName,'agent_status',{jobId:job},signal));if(!terminal(result.status??result.result?.status))await wait(signal);}while(!terminal(result.status??result.result?.status));
+      do{
+        signal?.throwIfAborted();
+        if(!stopAskedAt&&clock()-startedAt>ceilingMs){timedOut=true;stopAskedAt=clock();await stopJob();}
+        if(!stopAskedAt&&preemption.requested)stopAskedAt=clock();
+        result=provider.runtimeProvider?await provider.runtimeProvider.status(job):parse(await callTool(ctx.session.mcp,provider.serverName,'agent_status',{jobId:job},signal));
+        if(terminal(result.status??result.result?.status))break;
+        if(stopAskedAt&&clock()-stopAskedAt>CANCEL_CONFIRM_MS)throw new Error('maintenance_cancel_unconfirmed');
+        await wait(signal);
+      }while(true);
+      const finalStatus=result.status??result.result?.status;
+      const finished=['done','completed','succeeded'].includes(finalStatus);
+      // A job that finished on its own before the stop landed counts as done.
+      if(!finished&&preemption.requested&&!timedOut){
+        store.updateReservation(id,{outcome:'cancelled',preempted:true,result});
+        store.settle(id,{started:false});if(candidate.action==='build')store.settle(id+':build',{started:false});
+        log(workspace,'interrupted',`${candidate.summary} — paused so your ${preemption.by} goes first; it resumes at a later scan`,{cycleId,action:candidate.action,jobId:job});
+        return {status:'preempted',result};
+      }
+      if(!finished&&timedOut){
+        store.updateReservation(id,{outcome:'failed',timedOut:true,result});
+        store.settle(id);if(candidate.action==='build')store.settle(id+':build');
+        log(workspace,'failure',`${candidate.summary} — stopped after ${ACTION_CEILING_MINUTES[candidate.action]??60} min without finishing (maintenance time limit)`,{cycleId,action:candidate.action,jobId:job});
+        return {status:'failed',result};
+      }
       const outcome=completeJob(workspace,ctx,id,result,cycleId,view.facts.wikiHash);
       return {status:outcome,result};
     }catch(error){
@@ -194,6 +253,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
           :'the agent cycle ended first; the job keeps running and the next scan follows it';
         log(workspace,'interrupted',`${candidate.summary} — ${why}`,{cycleId,action:candidate.action});
       }
+      else if(/^maintenance_preempted/.test(String(error.message)))log(workspace,'interrupted',`${candidate.summary} — not started: your ${preemption.by} goes first; it resumes at a later scan`,{cycleId,action:candidate.action});
       else if(/^maintenance_budget_exhausted/.test(String(error.message)))log(workspace,'budget_exhausted',`${candidate.summary} — waiting until tomorrow: ${describeError(error.message)}`,{cycleId,action:candidate.action,identity,detail:error.message});
       else log(workspace,'failure',`${candidate.summary} — not done: ${describeError(error.message)}`,{cycleId,action:candidate.action,detail:error.message});
       throw error;

@@ -21,13 +21,13 @@ test('foreground pending before background admission wins the resource',async()=
 test('aborted waiter does not steal or leak admission',async()=>{enableMaintenanceAdmission('abort');const held=await admitExecution('abort',{},{background:true});const c=new AbortController();const pending=admitExecution('abort',{},{background:true,signal:c.signal});c.abort();await assert.rejects(pending);held();(await admitExecution('abort',{},{background:true}))();});
 test('disabled maintenance does not call tools or a model; scoped authority cannot approve',async()=>{const {db}=setup();let calls=0;const service=createMaintenanceService({db,getContext:async()=>{calls++;},readDocument:()=>({}),baseUrl:'http://localhost'});await service.tick('x');assert.equal(calls,0);assert.equal(service.authorizeBridge('unknown','token'),null);assert.equal(service.status('x').enabled,false);await service.close();db.close();});
 
-function harness({facts:override={},runtime=null,gate=null,statuses=[],curate=null}={}){
-  const {db}=setup();let version='a';let executions=[];const statusChecks=[];let access={maintenanceAccess:{defaults:{enabled:true,limits:{sourceQuietMinutes:0}}}};
+function harness({facts:override={},runtime=null,gate=null,statuses=[],curate=null,onStatus=null,now=undefined}={}){
+  const {db}=setup();let version='a';let executions=[];const statusChecks=[];const cancels=[];let access={maintenanceAccess:{defaults:{enabled:true,limits:{sourceQuietMinutes:0}}}};
   const facts=()=>({wikiHash:'wiki',pending:[{path:'raw/untracked/a.md',hash:version,stable:true,protected:false}],index:{enabled:false,fresh:true},deliverables:[],publications:[],proposals:[],...override});
   const provider={serverName:'production',health:'available',capability:{supportedOperations:['ingest','doctor','index','ingest_rebuild','build','export','polish','send'],inputSchema:{type:'object',additionalProperties:true}}};
   const session={workspace:'x',workspacePath:'/private/tmp/nonexistent-maintenance-test',mcp:{wiki:{tools:[{name:'wiki_maintenance_state'}]}},capabilityRegistry:{providersFor:(capability)=>capability==='agent.maintain'?(runtime?[{runtimeProvider:runtime,runtimeId:'gw',health:'available',capability:{supportedOperations:['run']}}]:[]):capability==='agent.curate'&&curate?[{runtimeProvider:curate,runtimeId:'gw-curate',health:'available',capability:{supportedOperations:['run'],inputSchema:{type:'object',additionalProperties:true}}}]:[provider]}};
-  const service=createMaintenanceService({db,baseUrl:'http://localhost',discover:async(session)=>{session.runtimeProviderAgents=[];},getContext:async()=>({session}),readDocument:()=>access,callTool:async(_mcp,_server,tool,args)=>{if(tool==='wiki_maintenance_state')return facts();if(tool==='agent_execute'){executions.push(args);return {accepted:true,jobId:'job-'+executions.length};}if(tool==='agent_status'){statusChecks.push(args.jobId);if(gate)await gate;return {status:statuses.shift()??'done',result:{}};}throw new Error(tool);}});
-  return {db,service,executions,statusChecks,provider,session,change:(v)=>{version=v;},policy:(p)=>{access=p;}};
+  const service=createMaintenanceService({db,baseUrl:'http://localhost',discover:async(session)=>{session.runtimeProviderAgents=[];},getContext:async()=>({session}),readDocument:()=>access,callTool:async(_mcp,_server,tool,args)=>{if(tool==='wiki_maintenance_state')return facts();if(tool==='agent_execute'){executions.push(args);return {accepted:true,jobId:'job-'+executions.length};}if(tool==='agent_status'){statusChecks.push(args.jobId);if(gate)await gate;if(onStatus)return onStatus(args.jobId,cancels);return {status:statuses.shift()??'done',result:{}};}if(tool==='agent_cancel'){cancels.push(args.jobId);return {ok:true};}throw new Error(tool);},...(now?{now}:{})});
+  return {db,service,executions,statusChecks,cancels,provider,session,change:(v)=>{version=v;},policy:(p)=>{access=p;}};
 }
 test('pending ingestion does not prevent an independent diagnostic; approval is exact and dispatch reserves',async()=>{const h=harness();try{const pending=await h.service.runCandidate('x','cycle',{action:'ingest',target:'raw/untracked'});assert.equal(pending.status,'pending');assert.equal(h.executions.length,0);const doctor=await h.service.runCandidate('x','cycle',{action:'doctor',target:'workspace'});assert.equal(doctor.status,'done');await h.service.decide('x',pending.request.id,pending.request.version,true);const result=await h.service.runCandidate('x','cycle2',{action:'ingest',target:'raw/untracked'});assert.equal(result.status,'done');assert.equal(h.executions.length,2);assert.deepEqual(h.executions[1].arguments.maintenanceSelection,[{path:'raw/untracked/a.md',hash:'a'}]);assert.ok(h.service.store.reservations('x').every(r=>r.status==='consumed'));}finally{await h.service.close();h.db.close();}});
 test('stale approval is rejected at decision time and replaced by current content',async()=>{const h=harness();try{const pending=await h.service.runCandidate('x','cycle',{action:'ingest',target:'raw/untracked'});h.change('b');await assert.rejects(h.service.decide('x',pending.request.id,pending.request.version,true),/replaced/);assert.equal(h.service.status('x').requests.filter(r=>r.status==='pending').length,1);assert.equal(h.executions.length,0);}finally{await h.service.close();h.db.close();}});
@@ -271,5 +271,49 @@ test('a curation with no source fiche is announced as not started, never as done
     const events=h.service.store.events('x');
     assert.ok(events.some((e)=>e.kind==='nothing_to_curate'&&/Ingest source documents first/.test(e.message)));
     assert.ok(!events.some((e)=>e.kind==='action_done'),'a skipped curation is never reported as done');
+  }finally{await h.service.close();h.db.close();}
+});
+
+// ── The user has priority over maintenance ───────────────────────────────────
+const indexFacts={pending:[],index:{enabled:true,fresh:false},proposals:['p.json']};
+const untilCancelled=(jobId,cancels)=>({status:cancels.includes(jobId)?'cancelled':'running',result:{}});
+const waitFor=async(predicate)=>{for(let i=0;i<100&&!predicate();i++)await new Promise((r)=>setTimeout(r,20));assert.ok(predicate());};
+test('a foreground request preempts a preemptible holder once, and says so',async()=>{
+  const w='preempt-admission';enableMaintenanceAdmission(w);const asked=[];
+  const held=await admitExecution(w,{locks:['workspace-write']},{background:true,label:'maintenance: index',onPreempt:(by)=>{asked.push(by);setTimeout(held,50);}});
+  const heard=[];(await admitExecution(w,{locks:['deliverable:a']},{label:'Ingest 3 files',onWait:(names,info)=>heard.push(info.preempting)}))();
+  assert.deepEqual(asked,['Ingest 3 files']);assert.deepEqual(heard,[true]);
+});
+test('a user request pauses a running maintenance job, returns its credit, and the next scan replays it',async()=>{
+  const h=harness({facts:indexFacts,onStatus:untilCancelled});enableMaintenanceAdmission('x');
+  try{
+    const run=h.service.runCandidate('x','c1',{action:'index',target:'wiki'});
+    await waitFor(()=>h.executions.length===1);
+    const release=await admitExecution('x',{locks:['workspace-write']},{label:'Ingest 3 files'});
+    const result=await run;release();
+    assert.equal(result.status,'preempted');assert.deepEqual(h.cancels,['job-1']);
+    const attempt=h.service.store.reservations('x').find((r)=>r.kind==='actions');
+    assert.equal(attempt.status,'released');assert.equal(attempt.outcome,'cancelled');
+    assert.ok(h.service.store.events('x').some((e)=>/paused so your Ingest 3 files goes first/.test(e.message)));
+    const again=h.service.runCandidate('x','c2',{action:'index',target:'wiki'});
+    await waitFor(()=>h.executions.length===2);
+    assert.notEqual(h.executions[1].idempotencyKey,h.executions[0].idempotencyKey);
+    (await admitExecution('x',{locks:['workspace-write']},{label:'stop'}))();await again;
+  }finally{await h.service.close();h.db.close();}
+});
+test('a maintenance action past its time limit is stopped and reported as such',async()=>{
+  let offset=0;const now=()=>new Date(Date.parse('2026-10-06T10:00:00Z')+offset);
+  const h=harness({facts:indexFacts,now,onStatus:(jobId,cancels)=>{offset+=61*60_000;return untilCancelled(jobId,cancels);}});
+  try{
+    const result=await h.service.runCandidate('x','c1',{action:'index',target:'wiki'});
+    assert.equal(result.status,'failed');assert.deepEqual(h.cancels,['job-1']);
+    assert.ok(h.service.store.events('x').some((e)=>/stopped after 60 min without finishing/.test(e.message)));
+  }finally{await h.service.close();h.db.close();}
+});
+test('a request queued by the user keeps maintenance from starting',async()=>{
+  const h=harness({facts:indexFacts});h.session.controlQueue=[{id:'q',status:'queued'}];
+  try{
+    const result=await h.service.runCandidate('x','c1',{action:'index',target:'wiki'});
+    assert.deepEqual([result.status,result.reason],['waiting','foreground_queue_pending']);assert.equal(h.executions.length,0);
   }finally{await h.service.close();h.db.close();}
 });

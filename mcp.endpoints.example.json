@@ -70,7 +70,7 @@
       "enabled": false,
       "mode": "human",
       "actions": ["sync", "ingest", "doctor", "index", "rebuild", "curate", "build", "deliver", "mail"],
-      "buildSchedule": { "mode": "window", "start": "02:00", "end": "05:00", "timezone": "Europe/Paris" }
+      "buildSchedule": { "mode": "window", "start": "12:00", "end": "14:00", "timezone": "Europe/Paris" }
     },
     "workspaces": {}
   }

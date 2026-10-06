@@ -8,7 +8,7 @@ import { admitExecution,enableMaintenanceAdmission } from './admission.js';
 import { createMaintenanceService } from './service.js';
 import { maintenanceDelta, applyMaintenanceUpdate } from '../core/maintenanceUpdates.js';
 const setup=()=>{const db=new DatabaseSync(':memory:');return {db,store:createMaintenanceStore(db)};};
-test('policy defaults protect first ingest and publication and use the configured default build window',()=>{const p=maintenancePolicy({},'x');assert.equal(p.enabled,false);assert.equal(actionMode(p,'ingest','x'),'ask');assert.equal(actionMode(p,'deliver','x'),'ask');assert.deepEqual(p.buildSchedule,{mode:'window',start:'02:00',end:'05:00',timezone:'Europe/Paris'});assert.equal(inBuildWindow(p,new Date('2026-10-05T12:00:00Z')),false);});
+test('policy defaults protect first ingest and publication and use the configured default build window',()=>{const p=maintenancePolicy({},'x');assert.equal(p.enabled,false);assert.equal(actionMode(p,'ingest','x'),'ask');assert.equal(actionMode(p,'deliver','x'),'ask');assert.deepEqual(p.buildSchedule,{mode:'window',start:'12:00',end:'14:00',timezone:'Europe/Paris'});assert.equal(inBuildWindow(p,new Date('2026-10-05T12:00:00Z')),false);});
 test('maintenance status exposes the effective workspace actions and build window',async()=>{const h=harness();try{h.policy({maintenanceAccess:{defaults:{enabled:true,actions:{ingest:'off',build:['templates/acpi.md']},buildSchedule:{mode:'window',start:'22:00',end:'03:00',timezone:'Europe/Paris'}},workspaces:{x:{actions:{doctor:'ask'}}}}});const status=h.service.status('x');assert.equal(status.actions.ingest,'off');assert.deepEqual(status.actions.build,['templates/acpi.md']);assert.equal(status.actions.doctor,'ask');assert.equal(status.buildSchedule.start,'22:00');assert.equal(status.buildSchedule.timezone,'Europe/Paris');}finally{await h.service.close();h.db.close();}});
 test('clear history removes logs and finished cycles while retaining pending decisions and active cycles',()=>{const {db,store}=setup();try{store.event('x',{kind:'failure',message:'old log'});store.cycle({id:'finished',workspace:'x',status:'failed'});store.cycle({id:'active',workspace:'x',status:'running'});store.propose('x',{action:'ingest',target:'raw/a.md',summary:'Pending source'});const result=store.clearHistory('x');assert.deepEqual(result,{events:2,cycles:1});assert.equal(store.events('x').length,0);assert.deepEqual(store.cycles('x').map((cycle)=>cycle.id),['active']);assert.equal(store.requests('x').filter((request)=>request.status==='pending').length,1);}finally{db.close();}});
 test('workspace overrides inherit and explicit target lists never authorize others',()=>{const p=maintenancePolicy({maintenanceAccess:{defaults:{enabled:true},workspaces:{x:{actions:{build:['templates/a.md']}}}}},'x');assert.equal(actionMode(p,'build','templates/a.md'),'auto');assert.equal(actionMode(p,'build','templates/b.md'),'off');assert.equal(p.actions.ingest,'ask');});
@@ -21,12 +21,12 @@ test('foreground pending before background admission wins the resource',async()=
 test('aborted waiter does not steal or leak admission',async()=>{enableMaintenanceAdmission('abort');const held=await admitExecution('abort',{},{background:true});const c=new AbortController();const pending=admitExecution('abort',{},{background:true,signal:c.signal});c.abort();await assert.rejects(pending);held();(await admitExecution('abort',{},{background:true}))();});
 test('disabled maintenance does not call tools or a model; scoped authority cannot approve',async()=>{const {db}=setup();let calls=0;const service=createMaintenanceService({db,getContext:async()=>{calls++;},readDocument:()=>({}),baseUrl:'http://localhost'});await service.tick('x');assert.equal(calls,0);assert.equal(service.authorizeBridge('unknown','token'),null);assert.equal(service.status('x').enabled,false);await service.close();db.close();});
 
-function harness({facts:override={},runtime=null,gate=null,statuses=[],curate=null,onStatus=null,now=undefined}={}){
+function harness({facts:override={},runtime=null,gate=null,statuses=[],curate=null,onStatus=null,now=undefined,refuseExecute=null}={}){
   const {db}=setup();let version='a';let executions=[];const statusChecks=[];const cancels=[];let access={maintenanceAccess:{defaults:{enabled:true,limits:{sourceQuietMinutes:0}}}};
   const facts=()=>({wikiHash:'wiki',pending:[{path:'raw/untracked/a.md',hash:version,stable:true,protected:false}],index:{enabled:false,fresh:true},deliverables:[],publications:[],proposals:[],...override});
   const provider={serverName:'production',health:'available',capability:{supportedOperations:['ingest','doctor','index','ingest_rebuild','build','export','polish','send'],inputSchema:{type:'object',additionalProperties:true}}};
   const session={workspace:'x',workspacePath:'/private/tmp/nonexistent-maintenance-test',mcp:{wiki:{tools:[{name:'wiki_maintenance_state'}]}},capabilityRegistry:{providersFor:(capability)=>capability==='agent.maintain'?(runtime?[{runtimeProvider:runtime,runtimeId:'gw',health:'available',capability:{supportedOperations:['run']}}]:[]):capability==='agent.curate'&&curate?[{runtimeProvider:curate,runtimeId:'gw-curate',health:'available',capability:{supportedOperations:['run'],inputSchema:{type:'object',additionalProperties:true}}}]:[provider]}};
-  const service=createMaintenanceService({db,baseUrl:'http://localhost',discover:async(session)=>{session.runtimeProviderAgents=[];},getContext:async()=>({session}),readDocument:()=>access,callTool:async(_mcp,_server,tool,args)=>{if(tool==='wiki_maintenance_state')return facts();if(tool==='agent_execute'){executions.push(args);return {accepted:true,jobId:'job-'+executions.length};}if(tool==='agent_status'){statusChecks.push(args.jobId);if(gate)await gate;if(onStatus)return onStatus(args.jobId,cancels);return {status:statuses.shift()??'done',result:{}};}if(tool==='agent_cancel'){cancels.push(args.jobId);return {ok:true};}throw new Error(tool);},...(now?{now}:{})});
+  const service=createMaintenanceService({db,baseUrl:'http://localhost',discover:async(session)=>{session.runtimeProviderAgents=[];},getContext:async()=>({session}),readDocument:()=>access,callTool:async(_mcp,_server,tool,args)=>{if(tool==='wiki_maintenance_state')return facts();if(tool==='agent_execute'){executions.push(args);if(refuseExecute)return {accepted:false,error:refuseExecute};return {accepted:true,jobId:'job-'+executions.length};}if(tool==='agent_status'){statusChecks.push(args.jobId);if(gate)await gate;if(onStatus)return onStatus(args.jobId,cancels);return {status:statuses.shift()??'done',result:{}};}if(tool==='agent_cancel'){cancels.push(args.jobId);return {ok:true};}throw new Error(tool);},...(now?{now}:{})});
   return {db,service,executions,statusChecks,cancels,provider,session,change:(v)=>{version=v;},policy:(p)=>{access=p;}};
 }
 test('pending ingestion does not prevent an independent diagnostic; approval is exact and dispatch reserves',async()=>{const h=harness();try{const pending=await h.service.runCandidate('x','cycle',{action:'ingest',target:'raw/untracked'});assert.equal(pending.status,'pending');assert.equal(h.executions.length,0);const doctor=await h.service.runCandidate('x','cycle',{action:'doctor',target:'workspace'});assert.equal(doctor.status,'done');await h.service.decide('x',pending.request.id,pending.request.version,true);const result=await h.service.runCandidate('x','cycle2',{action:'ingest',target:'raw/untracked'});assert.equal(result.status,'done');assert.equal(h.executions.length,2);assert.deepEqual(h.executions[1].arguments.maintenanceSelection,[{path:'raw/untracked/a.md',hash:'a'}]);assert.ok(h.service.store.reservations('x').every(r=>r.status==='consumed'));}finally{await h.service.close();h.db.close();}});
@@ -40,6 +40,7 @@ test('maintenance only updates an export that already exists, never a first one'
 test('a stale deliverable is explained in words, not reason codes',async()=>{const h=harness({facts:{pending:[],deliverables:[{template:'templates/a.md',output:'deliverables/a.md',version:'v',fresh:false,reasons:['knowledge_changed','output_modified'],artifacts:{}}]}});try{const c=(await h.service.state('x')).candidates.find(c=>c.action==='build');assert.match(c.summary,/the wiki content changed/);assert.doesNotMatch(c.summary,/knowledge_changed/);assert.match(describeError('maintenance_budget_exhausted'),/budget/);}finally{await h.service.close();h.db.close();}});
 test('maintenance error descriptions extract structured errors instead of printing object tags',()=>{
   assert.match(describeError({message:'maintenance_target_not_current',status:409}),/situation changed/);
+  assert.match(describeError({message:'maintenance_operation_not_current',status:409}),/operation does not match/i);
   assert.match(describeError({error:{code:'maintenance_gateway_unavailable'}}),/gateway.*not available/i);
   assert.doesNotMatch(describeError({message:'maintenance_target_not_current'}),/\[object Object\]/);
 });
@@ -274,6 +275,16 @@ test('a curation with no source fiche is announced as not started, never as done
   }finally{await h.service.close();h.db.close();}
 });
 
+test('an irrelevant operation on a current curate target is identified as an operation mismatch',async()=>{
+  const h=harness({facts:{pending:[],proposals:[]}});
+  try {
+    const candidate=(await h.service.state('x')).candidates.find((c)=>c.action==='curate');
+    assert.ok(candidate);
+    await assert.rejects(h.service.runCandidate('x','cycle',{action:'curate',target:candidate.target,operation:'export'}),/maintenance_operation_not_current/);
+    assert.equal(h.executions.length,0);
+  }finally{await h.service.close();h.db.close();}
+});
+
 // ── The user has priority over maintenance ───────────────────────────────────
 const indexFacts={pending:[],index:{enabled:true,fresh:false},proposals:['p.json']};
 const untilCancelled=(jobId,cancels)=>({status:cancels.includes(jobId)?'cancelled':'running',result:{}});
@@ -315,5 +326,63 @@ test('a request queued by the user keeps maintenance from starting',async()=>{
   try{
     const result=await h.service.runCandidate('x','c1',{action:'index',target:'wiki'});
     assert.deepEqual([result.status,result.reason],['waiting','foreground_queue_pending']);assert.equal(h.executions.length,0);
+  }finally{await h.service.close();h.db.close();}
+});
+test('a refused action is not retried at every scan the same day',async()=>{
+  const h=harness({facts:indexFacts,refuseExecute:'export already running'});
+  try{
+    await assert.rejects(h.service.runCandidate('x','c1',{action:'index',target:'wiki'}),/export already running/);
+    const failure=h.service.store.events('x').filter((e)=>e.kind==='failure').at(-1);
+    assert.equal(typeof failure.identity,'string');
+    assert.ok(!(await h.service.state('x')).candidates.some((c)=>c.action==='index'),'the refused identity waits for tomorrow');
+  }finally{await h.service.close();h.db.close();}
+});
+test('an exhausted model-call budget waits for tomorrow instead of starting doomed cycles',async()=>{
+  let launches=0;const runtime={execute:async()=>{launches++;return {runId:'r'};},status:async()=>({status:'completed'}),cancel:async()=>{}};
+  const h=harness({facts:indexFacts,runtime});
+  try{
+    h.policy({maintenanceAccess:{defaults:{enabled:true,limits:{actionsPerDay:2,sourceQuietMinutes:0}}}});
+    for(let i=0;i<2;i++){h.service.store.reserve({id:'m'+i,workspace:'x',policy:'v',kind:'modelCalls',cycle:'c'+i,limit:1000});h.service.store.settle('m'+i);}
+    await h.service.tick('x');
+    assert.equal(launches,0,'no gateway cycle is started');
+    assert.match(h.service.store.events('x').filter((e)=>e.kind==='budget_exhausted').at(-1).message,/model-call budget/);
+    await h.service.tick('x');
+    assert.equal(h.service.store.events('x').filter((e)=>/model-call budget/.test(e.message)).length,1,'announced once');
+  }finally{await h.service.close();h.db.close();}
+});
+test('a cycle stopped by the model-call budget says why instead of a bare failure',async()=>{
+  const runtime={execute:async()=>({runId:'r'}),status:async()=>({status:'failed',error:'maintenance_budget_exhausted'}),cancel:async()=>{}};
+  const h=harness({facts:indexFacts,runtime});
+  try{
+    await h.service.tick('x');
+    let failed;
+    for(let i=0;i<100&&!failed;i++){
+      failed=h.service.store.events('x').find((e)=>e.kind==='failure'&&/cycle failed/.test(e.message));
+      if(!failed)await new Promise((r)=>setTimeout(r,10));
+    }
+    assert.ok(failed,'the cycle failure is logged');
+    assert.match(failed.message,/cycle failed — .*budget/i);
+  }finally{await h.service.close();h.db.close();}
+});
+test('a per-cycle budget refusal is retried at the next scan, not blocked for the day',async()=>{
+  const h=harness({facts:indexFacts});
+  try{
+    h.policy({maintenanceAccess:{defaults:{enabled:true,limits:{actionsPerCycle:1,sourceQuietMinutes:0}}}});
+    assert.equal((await h.service.runCandidate('x','c1',{action:'doctor',target:'workspace'})).status,'done');
+    await assert.rejects(h.service.runCandidate('x','c1',{action:'index',target:'wiki'}),/maintenance_budget_exhausted:cycle/);
+    assert.ok((await h.service.state('x')).candidates.some((c)=>c.action==='index'),'the next cycle may still run it');
+    assert.ok(!h.service.store.events('x').some((e)=>e.kind==='budget_exhausted'&&e.action==='index'),'no day-level block');
+    assert.ok(h.service.store.events('x').some((e)=>e.kind==='waiting'&&e.action==='index'));
+  }finally{await h.service.close();h.db.close();}
+});
+test('a failed action shows the gateway reason even when the agent reports a plain string',async()=>{
+  const curate={execute:async()=>({runId:'c1'}),status:async()=>({status:'failed',error:'gateway token budget exceeded (590475 > 500000); the run is stopped before the next model call'}),cancel:async()=>{}};
+  const h=harness({facts:{pending:[],proposals:[]},curate});
+  try{
+    const candidate=(await h.service.state('x')).candidates.find((c)=>c.action==='curate');
+    const result=await h.service.runCandidate('x','cycle',{action:'curate',target:candidate.target});
+    assert.equal(result.status,'failed');
+    const failure=h.service.store.events('x').filter((e)=>e.kind==='failure').at(-1);
+    assert.match(failure.message,/token budget exceeded/);
   }finally{await h.service.close();h.db.close();}
 });

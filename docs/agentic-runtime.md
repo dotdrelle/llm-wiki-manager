@@ -465,7 +465,7 @@ stream would accelerate one phase, not the run.
 
   Gateway-side ceilings for the hands (all optional, defaults in
   parentheses): `GATEWAY_RECURSION_LIMIT` (40) graph steps, `GATEWAY_TOKEN_BUDGET`
-  (500 000) estimated tokens, `GATEWAY_WORKTREE_MAX_FILES` (40) /
+  (2 000 000) estimated tokens, `GATEWAY_WORKTREE_MAX_FILES` (40) /
   `GATEWAY_WORKTREE_MAX_DIFF_CHARS` (300 000) — beyond them the run fails
   loudly and discards the branch instead of queueing an unreadable review —
   and `GATEWAY_WORKTREE_MAX_AGE_MS` (7 days), after which a startup prune

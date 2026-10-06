@@ -106,10 +106,14 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       }
     }
     // An action refused by its daily budget waits for tomorrow instead of looping.
-    const budgetBlocked=new Set(store.relevantEvents(workspace,{kinds:['budget_exhausted'],since:day}).map((e)=>e.identity));
-    const available=candidates.filter((candidate)=>!budgetBlocked.has(fingerprint(candidate))&&!store.wasCompleted(workspace,candidate,day));
+    const budgetBlocked=new Set(store.relevantEvents(workspace,{kinds:['budget_exhausted'],since:day}).map((e)=>e.identity).filter(Boolean));
     // A failed action is not offered again the same day unless it changes (a new
-    // identity): otherwise every scan would start a cycle that fails the same way.
+    // identity). A certain refusal before dispatch releases the budget units, so
+    // the reservation alone cannot remember it: the failure event carries the
+    // identity, and this filter is what stops a hopeless sync from being retried
+    // at every scan. A new content/version produces a new identity and is allowed.
+    const failedToday=new Set(store.relevantEvents(workspace,{kinds:['failure'],since:day}).map((e)=>e.identity).filter(Boolean));
+    const available=candidates.filter((candidate)=>!budgetBlocked.has(fingerprint(candidate))&&!failedToday.has(fingerprint(candidate))&&!store.wasCompleted(workspace,candidate,day));
     // The agent never sees routine work: the manager already runs it without a model.
     return {policy:p,paused:store.paused(workspace),facts,candidates:available.filter((c)=>!forAgent||!ROUTINE.has(c.action)).map((c)=>({...c,mode:modeFor(p,c),outsideWindow:c.action==='build'&&!inBuildWindow(p,now())})),requests,reservations,cycles:store.cycles(workspace).map(({secret,...c})=>c),events:store.events(workspace)};
   }
@@ -120,8 +124,9 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
   }
   async function runCandidate(workspace,cycleId,input,signal) {
     if(!MAINTENANCE_ACTIONS[input.action])throw new Error('maintenance_unknown_action');
-    let view=await state(workspace);let candidate=view.candidates.find((c)=>c.action===input.action&&c.target===input.target&&(input.operation==null||c.operation===input.operation));
-    if(!candidate)throw new Error('maintenance_target_not_current');
+    let view=await state(workspace);const matchingTarget=view.candidates.filter((c)=>c.action===input.action&&c.target===input.target);
+    let candidate=matchingTarget.find((c)=>input.operation==null?c.operation==null:c.operation===input.operation);
+    if(!candidate)throw new Error(matchingTarget.length?'maintenance_operation_not_current':'maintenance_target_not_current');
     const {mode,outsideWindow,...clean}=candidate;candidate=clean;
     const p=policy(workspace);
     if(!p.enabled||store.paused(workspace))throw new Error('maintenance_disabled_or_paused');
@@ -254,8 +259,9 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
         log(workspace,'interrupted',`${candidate.summary} — ${why}`,{cycleId,action:candidate.action});
       }
       else if(/^maintenance_preempted/.test(String(error.message)))log(workspace,'interrupted',`${candidate.summary} — not started: your ${preemption.by} goes first; it resumes at a later scan`,{cycleId,action:candidate.action});
-      else if(/^maintenance_budget_exhausted/.test(String(error.message)))log(workspace,'budget_exhausted',`${candidate.summary} — waiting until tomorrow: ${describeError(error.message)}`,{cycleId,action:candidate.action,identity,detail:error.message});
-      else log(workspace,'failure',`${candidate.summary} — not done: ${describeError(error.message)}`,{cycleId,action:candidate.action,detail:error.message});
+      else if(/^maintenance_budget_exhausted:cycle/.test(String(error.message)))log(workspace,'waiting',`${candidate.summary} — cycle action budget reached; retried at the next scan`,{cycleId,action:candidate.action,detail:error.message});
+      else if(/^maintenance_budget_exhausted:day/.test(String(error.message)))log(workspace,'budget_exhausted',`${candidate.summary} — waiting until tomorrow: ${describeError(error.message)}`,{cycleId,action:candidate.action,identity,detail:error.message});
+      else log(workspace,'failure',`${candidate.summary} — not done: ${describeError(error.message)}`,{cycleId,action:candidate.action,identity,detail:error.message});
       throw error;
     }finally{release();const left=(inflight.get(workspace)??1)-1;if(left>0)inflight.set(workspace,left);else inflight.delete(workspace);}
   }
@@ -277,7 +283,12 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     if(candidate.action==='build')store.settle(id+':build');
     if(outcome!=='cancelled')store.completeRequests(workspace,reservation.identity,outcome);
     if(nothingToCurate)log(workspace,'nothing_to_curate',`Curation not started: ${nothingToCurate}; no curation roles ran. Ingest source documents first, then curate.`,{cycleId,action:candidate.action});
-    else log(workspace,outcome==='done'?'action_done':outcome==='cancelled'?'interrupted':'failure',`${outcome==='done'?'Done':outcome==='cancelled'?'Cancelled':'Failed'}: ${candidate.summary}${outcome==='failed'&&(result.error?.message||result.result?.error)?` — ${describeError(result.error?.message??result.result?.error)}`:''}`,{cycleId,action:candidate.action,jobId:reservation.jobId});
+    else{
+      // The gateway reports `error` as a string (CME as a string too); reading
+      // only `.message` silently dropped the reason and left a bare "Failed:".
+      const rawError=typeof result.error==='string'?result.error:result.error?.message??result.result?.error;
+      log(workspace,outcome==='done'?'action_done':outcome==='cancelled'?'interrupted':'failure',`${outcome==='done'?'Done':outcome==='cancelled'?'Cancelled':'Failed'}: ${candidate.summary}${outcome==='failed'&&rawError?` — ${describeError(rawError)}`:''}`,{cycleId,action:candidate.action,jobId:reservation.jobId,...(outcome==='failed'&&rawError?{detail:String(rawError)}:{})});
+    }
     return outcome;
   }
   // A completed job can remove its own candidate (e.g. it archived Pending).
@@ -346,8 +357,25 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       const actionable=view.candidates.filter((c)=>!ROUTINE.has(c.action)&&c.mode!=='off'&&!c.outsideWindow&&!decided(view,c));
       if(!actionable.length)return;
       if(!host){degradedOnce(workspace,'maintenance_gateway_unavailable');return;}
+      // Every model call of a gateway cycle is admitted by the manager. When the
+      // day's model-call budget is used up, starting one can only produce a
+      // failed cycle: wait for tomorrow, announced once, instead of retrying
+      // every five minutes.
+      const usedModelCalls=store.modelCallUsage(workspace);
+      if(usedModelCalls>=p.limits.actionsPerDay){
+        const message=`model-call budget for today is used up (${usedModelCalls}/${p.limits.actionsPerDay}); maintenance resumes tomorrow`;
+        const last=store.relevantEvents(workspace,{kinds:['budget_exhausted']}).at(-1);
+        if(last?.message!==`Maintenance: ${message}`)log(workspace,'budget_exhausted',message);
+        return;
+      }
       const id='maintenance-'+randomUUID();const secret=randomUUID();
-      store.reserve({id,workspace,policy:p.version,kind:'cycles',cycle:id,limit:p.limits.cyclesPerDay});
+      try{store.reserve({id,workspace,policy:p.version,kind:'cycles',cycle:id,limit:p.limits.cyclesPerDay});}
+      catch(error){
+        // Name the budget that refused: "the daily maintenance budget is used
+        // up" left the reader unable to tell cycles from actions or calls.
+        if(/^maintenance_budget_exhausted/.test(String(error.message))){degradedOnce(workspace,'daily cycle budget used up; maintenance resumes tomorrow');return;}
+        throw error;
+      }
       const cycle={id,workspace,status:'running',secret,at:now().toISOString()};store.cycle(cycle);
       const request={capability:'agent.maintain',operation:'run',objective:'Maintain the workspace using current facts and the allowed narrow actions. Human decisions are handled by the manager.',workspace:{name:workspace},model:activeProfileModel(ctx.session),language:ctx.session.language,mcp:activeProfileMcp(ctx.session),maintenance:{cycleId:id,endpoint:baseUrl,token:secret,policy:p}};
       const accepted=await host.runtimeProvider.execute(request);cycle.runId=accepted.runId;cycle.runtimeId=host.runtimeId;store.cycle(cycle);active.set(workspace,{cycle,provider:host.runtimeProvider});
@@ -369,7 +397,8 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
           // A failed cycle says why: "cycle failed" alone left the reader (and Donna,
           // asked about it) with nothing to explain.
           const why=result.status==='completed'?'':describeError(result.error?.message??result.error??result.result?.error??'');
-          log(workspace,result.status==='completed'?'cycle_done':'failure',`cycle ${result.status}${why?` — ${why}`:''}`,{cycleId:cycle.id,...(why?{detail:why}:{})});break;
+          log(workspace,result.status==='completed'?'cycle_done':'failure',`cycle ${result.status}${why?` — ${why}`:''}`,{cycleId:cycle.id,...(why?{detail:why}:{})});
+          break;
         }
         await wait();
       }

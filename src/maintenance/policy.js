@@ -4,7 +4,7 @@ export const DEFAULT_POLICY = {
   enabled: false, mode:null, actions: { sync:'auto', ingest:'ask', doctor:'auto', index:'auto', rebuild:'auto', curate:'auto', build:'auto', deliver:'ask', mail:'auto' },
   mail: { to: [], on: ['failure','decision','daily'] },
   limits: { cyclesPerDay:12, buildsPerDay:4, actionsPerDay:40, actionsPerCycle:10, sourceQuietMinutes:10 },
-  buildSchedule: { mode:'window', start:'02:00', end:'05:00', timezone:'Europe/Paris' },
+  buildSchedule: { mode:'window', start:'12:00', end:'14:00', timezone:'Europe/Paris' },
 };
 export const fingerprint = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export function maintenancePolicy(document, workspace) {
@@ -80,8 +80,10 @@ export const describeReasons=(reasons=[])=>reasons.map((r)=>REASONS[r]??r.replac
 const ERRORS = [
   [/^maintenance_policy_invalid: (.+)/,(m)=>`the maintenance settings are invalid (${m[1]}); fix maintenanceAccess in mcp.endpoints.json`],
   [/^maintenance_request_replaced|^maintenance_request_unknown/,'this request was replaced by a newer one or no longer exists; review the current request'],
+  [/^maintenance_operation_not_current/,'the operation does not match the current maintenance candidate; review the latest candidate details'],
   [/^maintenance_target_not_current|^maintenance_target_changed/,'the situation changed before the action started; it will be re-evaluated on the next cycle'],
-  [/^maintenance_budget_exhausted/,'the daily maintenance budget is used up; it resumes tomorrow'],
+  [/^maintenance_budget_exhausted:day/,'the daily maintenance budget is used up; it resumes tomorrow'],
+  [/^maintenance_budget_exhausted:cycle/,'the action budget of this cycle is reached; it resumes at the next scan'],
   [/^maintenance_policy_changed/,'the maintenance settings changed during the cycle'],
   [/^maintenance_disabled_or_paused/,'maintenance is disabled or paused'],
   [/^maintenance_capability_unavailable: (.+)/,(m)=>`no connected agent currently offers ${m[1]}`],

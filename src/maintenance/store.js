@@ -72,7 +72,8 @@ export function createMaintenanceStore(db, { now = () => new Date(), retentionDa
       // Active reservations from an earlier day retain capacity until reconciled.
       const used=db.prepare("SELECT COALESCE((SELECT SUM(units) FROM maintenance_reservations WHERE workspace=? AND kind=? AND status='reserved'),0)+COALESCE((SELECT SUM(units) FROM maintenance_reservations WHERE workspace=? AND kind=? AND status='consumed' AND period=?),0) n").get(workspace,kind,workspace,kind,period).n;
       const usedCycle=db.prepare("SELECT COALESCE(SUM(units),0) n FROM maintenance_reservations WHERE workspace=? AND cycle=? AND kind=? AND status IN ('reserved','consumed')").get(workspace,cycle,kind).n;
-      if(used+units>limit || usedCycle+units>cycleLimit)throw new Error('maintenance_budget_exhausted');
+      if(used+units>limit)throw new Error('maintenance_budget_exhausted:day');
+      if(usedCycle+units>cycleLimit)throw new Error('maintenance_budget_exhausted:cycle');
       if(old)db.prepare('DELETE FROM maintenance_reservations WHERE id=?').run(id);
       db.prepare('INSERT INTO maintenance_reservations VALUES(?,?,?,?,?,?,?,?,?)').run(id,workspace,period,policy,kind,cycle,units,'reserved',JSON.stringify(payload));
       changed(workspace);return {id,status:'reserved',...payload};
@@ -105,6 +106,13 @@ export function createMaintenanceStore(db, { now = () => new Date(), retentionDa
     if(db.prepare("SELECT 1 FROM maintenance_reservations WHERE workspace=? AND json_extract(payload,'$.identity')=? AND kind='actions' AND status='consumed' AND "+outcome+" LIMIT 1").get(workspace,fingerprint(candidate),period))return true;
     return candidate.action==='mail'&&Boolean(db.prepare("SELECT 1 FROM maintenance_reservations WHERE workspace=? AND json_extract(payload,'$.candidate.target')=? AND json_extract(payload,'$.candidate.version')=? AND kind='actions' AND status='consumed' AND json_extract(payload,'$.candidate.action')='mail' AND "+outcome+" LIMIT 1").get(workspace,candidate.target,candidate.version,period));
   }
+  // Model calls reserved and consumed for one workspace and day. A gateway cycle
+  // whose first call is refused can only fail: the scan reads this before
+  // starting one, so an exhausted model-call budget waits for tomorrow instead
+  // of piling up failed cycles every five minutes.
+  function modelCallUsage(workspace,period=new Date().toISOString().slice(0,10)){
+    return Number(db.prepare("SELECT COALESCE((SELECT SUM(units) FROM maintenance_reservations WHERE workspace=? AND kind='modelCalls' AND status='reserved'),0)+COALESCE((SELECT SUM(units) FROM maintenance_reservations WHERE workspace=? AND kind='modelCalls' AND status='consumed' AND period=?),0) n").get(workspace,workspace,period).n);
+  }
   function completeRequests(workspace,version,status){const result=db.prepare("UPDATE maintenance_requests SET status=? WHERE workspace=? AND version=? AND status='approved'").run(status,workspace,version);if(result.changes)changed(workspace);}
   // Keep every actionable decision/effect visible; paginate settled history only.
   function statusPage(workspace,{historyOffset=0,historyLimit=100}={}) {
@@ -128,7 +136,7 @@ export function createMaintenanceStore(db, { now = () => new Date(), retentionDa
   function cycles(workspace){return parse(db.prepare('SELECT * FROM maintenance_cycles WHERE workspace=? ORDER BY rowid DESC LIMIT 20').all(workspace));}
   function paused(workspace){return Boolean(db.prepare('SELECT paused FROM maintenance_controls WHERE workspace=?').get(workspace)?.paused);}
   function pause(workspace,value){db.prepare('INSERT INTO maintenance_controls VALUES(?,?) ON CONFLICT(workspace) DO UPDATE SET paused=excluded.paused').run(workspace,value?1:0);changed(workspace);}
-  return {activeRequests,latestRequest,refusedSelection,reservation,reserved,attempts,mailCursor,wasCompleted,completeRequests,hasEvent,relevantEvents,requests,request,statusPage,pruneLogs,propose,decide,reserve,settle,reservations,updateReservation,cycle,cycles,paused,pause,event,
+  return {activeRequests,latestRequest,refusedSelection,reservation,reserved,attempts,mailCursor,wasCompleted,modelCallUsage,completeRequests,hasEvent,relevantEvents,requests,request,statusPage,pruneLogs,propose,decide,reserve,settle,reservations,updateReservation,cycle,cycles,paused,pause,event,
     events:(workspace,after=0)=>{pruneLogs();return parse(db.prepare(after>0?'SELECT seq,payload FROM maintenance_events WHERE workspace=? AND seq>? ORDER BY seq LIMIT 1000':'SELECT seq,payload FROM (SELECT seq,payload FROM maintenance_events WHERE workspace=? AND seq>? ORDER BY seq DESC LIMIT 1000) ORDER BY seq').all(workspace,after));},
     clearHistory:(workspace)=>{const events=Number(db.prepare('DELETE FROM maintenance_events WHERE workspace=?').run(workspace).changes);const cycles=Number(db.prepare("DELETE FROM maintenance_cycles WHERE workspace=? AND status NOT IN ('running','recovering')").run(workspace).changes);if(events||cycles)changed(workspace);return {events,cycles};},
     clear:(workspace)=>{for(const table of ['maintenance_requests','maintenance_reservations','maintenance_cycles','maintenance_events','maintenance_controls'])db.prepare(`DELETE FROM ${table} WHERE workspace=?`).run(workspace);changed(workspace);}};

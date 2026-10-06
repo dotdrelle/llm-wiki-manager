@@ -1583,11 +1583,15 @@ test('forced delegation is cleared after one valid tool call and does not loop',
         }
         calls += 1;
         choices.push(toolChoice);
+        if (calls === 2 && typeof toolChoice === 'object') {
+          throw new Error('HTTP 400 {"message":"Thinking mode does not support this tool_choice"}');
+        }
+        if (calls === 3) assert.deepEqual(tools.map((tool) => tool.function?.name), ['runtime__delegate']);
         if (calls === 1) {
           const content = 'Utilise cette commande :\n/pipeline';
           return { content, message: { role: 'assistant', content }, tool_calls: null };
         }
-        if (calls === 2) {
+        if (calls === 3) {
           return {
             content: null,
             message: { role: 'assistant', content: null },
@@ -1605,8 +1609,9 @@ test('forced delegation is cleared after one valid tool call and does not loop',
 
   try {
     const result = await createAgentGraph().invoke({ input: 'lance ingestion', session });
-    assert.equal(calls, 3);
+    assert.equal(calls, 4);
     assert.deepEqual(choices[1], { type: 'function', function: { name: 'runtime__delegate' } });
+    assert.equal(choices[2], 'auto');
     assert.equal(choices[2], 'auto');
     assert.equal(result.response, 'Ingestion déléguée.');
   } finally {

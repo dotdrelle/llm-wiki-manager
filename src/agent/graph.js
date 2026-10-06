@@ -485,9 +485,10 @@ async function classifyRequestedAction(llm, input, signal) {
   ].join('\n');
   const messages = [{ role: 'user', content: String(input ?? '') }];
 
-  // Preferred path: a forced structured tool call, reliable on providers that
-  // honour tool_choice. But an OpenAI-compatible gateway (e.g. Albert / gpt-oss)
-  // may reject a forced tool_choice or return neither tool_calls nor parsable
+  // Preferred path: a single-tool structured call with automatic selection.
+  // Some reasoning modes (including DeepSeek thinking mode) reject named
+  // tool_choice values even though they support tool calls with `auto`.
+  // OpenAI-compatible gateways may also return neither tool_calls nor parsable
   // content. Without a fallback that made EVERY request classify as a non-action
   // (catch → false), so Donna silently stopped delegating in agent mode. Fall
   // back to a plain JSON-text completion, and only give up if both paths fail.
@@ -508,7 +509,7 @@ async function classifyRequestedAction(llm, input, signal) {
     const result = await llm.completeWithTools({
       system,
       tools: [classifier],
-      toolChoice: { type: 'function', function: { name: 'classify_action_request' } },
+      toolChoice: 'auto',
       messages,
       signal,
     });
@@ -1749,24 +1750,34 @@ export function createAgentGraph(options = {}) {
       const toolChoice = state.forceDelegation
         ? { type: 'function', function: { name: 'runtime__delegate' } }
         : 'auto';
-      const result = useStreamWithTools
-        ? await llm.streamWithTools({
+      const invokeWithTools = (availableTools, choice) => useStreamWithTools
+        ? llm.streamWithTools({
             system,
-            tools,
+            tools: availableTools,
             messages: conversationMessages,
-            toolChoice,
+            toolChoice: choice,
             // Buffer until validation. Invalid commands and malformed tool
             // calls must never flash hundreds of lines before disappearing.
             onTextDelta: () => {},
             signal: state.session._abortSignal,
           })
-        : await llm.completeWithTools({
+        : llm.completeWithTools({
             system,
-            tools,
+            tools: availableTools,
             messages: conversationMessages,
-            toolChoice,
+            toolChoice: choice,
             signal: state.session._abortSignal,
           });
+      let result;
+      try {
+        result = await invokeWithTools(tools, toolChoice);
+      } catch (err) {
+        const message = String(err?.message ?? err);
+        const delegateTool = tools.filter((item) => item?.function?.name === 'runtime__delegate');
+        if (!state.forceDelegation || delegateTool.length !== 1 || !/thinking mode does not support this tool_choice/i.test(message)) throw err;
+        state.session._onStep?.('Provider rejected forced tool choice; retrying delegation with automatic tool selection.');
+        result = await invokeWithTools(delegateTool, 'auto');
+      }
 
       if (result.tool_calls?.length > 0) {
         state.session._onStreamReset?.();

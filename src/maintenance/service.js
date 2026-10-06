@@ -200,7 +200,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
           response=await provider.runtimeProvider.execute({capability:spec.capability,operation,objective:candidate.summary,workspace:{name:workspace},model:activeProfileModel(ctx.session),language:ctx.session.language,mcp:activeProfileMcp(ctx.session)});
           response={accepted:true,jobId:response.runId};
         }else response=parse(await callTool(ctx.session.mcp,provider.serverName,'agent_execute',{taskId:id,runId:cycleId,capability:spec.capability,operation,arguments:args,workspace:{name:workspace},idempotencyKey:id,constraints:{requireApprovalForMutations:true}},signal));
-        if(response.accepted===false){started=false;throw new Error(response.error?.message??'maintenance_execution_refused');}
+        if(response.accepted===false){started=false;const refusal=typeof response.error==='string'?response.error:response.error?.message;throw new Error(refusal||'maintenance_execution_refused');}
         job=response.jobId;
         if(!job)throw new Error('maintenance_execution_receipt_missing');
         store.updateReservation(id,{jobId:job});
@@ -366,7 +366,10 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
           cycle.status=result.status;cycle.result=result.result;store.cycle(cycle);store.settle(cycle.id);
           for(const r of store.reserved(workspace,{cycle:cycle.id,kind:'modelCalls'}))store.settle(r.id);
           if(result.result?.content)log(workspace,'summary',String(result.result.content).slice(0,16000),{cycleId:cycle.id});
-          log(workspace,result.status==='completed'?'cycle_done':'failure',`cycle ${result.status}`,{cycleId:cycle.id});break;
+          // A failed cycle says why: "cycle failed" alone left the reader (and Donna,
+          // asked about it) with nothing to explain.
+          const why=result.status==='completed'?'':describeError(result.error?.message??result.error??result.result?.error??'');
+          log(workspace,result.status==='completed'?'cycle_done':'failure',`cycle ${result.status}${why?` — ${why}`:''}`,{cycleId:cycle.id,...(why?{detail:why}:{})});break;
         }
         await wait();
       }

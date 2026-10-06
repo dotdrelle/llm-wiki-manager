@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { bareModelName, supportsTemperature } from './llmCapabilities.js';
+import { bareModelName, effectiveToolChoice, supportsTemperature } from './llmCapabilities.js';
 
 test('bareModelName strips a gateway prefix', () => {
   assert.equal(bareModelName('openai/gpt-5-mini'), 'gpt-5-mini');
@@ -28,4 +28,19 @@ test('every other model keeps temperature', () => {
   assert.equal(supportsTemperature({ model: 'gpt-4.1', provider: 'ai-gateway' }), true);
   assert.equal(supportsTemperature({ model: 'claude-3-5-sonnet' }), true);
   assert.equal(supportsTemperature({}), true);
+});
+
+test('a temperature measured by wiki doctor wins, for the model it was measured on only', () => {
+  const llm = { model: 'deepseek-v4-flash', engine: 'albert', capabilities: { model: 'deepseek-v4-flash', temperature: false } };
+  assert.equal(supportsTemperature(llm), false);
+  assert.equal(supportsTemperature({ ...llm, model: 'mistral-small' }), true);
+});
+
+test('a named tool_choice falls back to auto only when the model was measured to refuse it', () => {
+  const named = { type: 'function', function: { name: 'runtime__delegate' } };
+  const thinking = { model: 'deepseek-v4-flash', capabilities: { model: 'deepseek-v4-flash', toolChoice: 'auto' } };
+  assert.equal(effectiveToolChoice(thinking, named), 'auto');
+  assert.equal(effectiveToolChoice(thinking, 'auto'), 'auto');
+  assert.deepEqual(effectiveToolChoice({ model: 'x', capabilities: { model: 'x', toolChoice: 'named' } }, named), named);
+  assert.deepEqual(effectiveToolChoice({ model: 'x' }, named), named);
 });

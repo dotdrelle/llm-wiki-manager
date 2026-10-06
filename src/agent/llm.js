@@ -1,4 +1,4 @@
-import { supportsTemperature } from '../core/llmCapabilities.js';
+import { effectiveToolChoice, reasoningEffortParam, supportsTemperature } from '../core/llmCapabilities.js';
 
 function trimTrailingSlash(value) {
   return value.replace(/\/+$/, '');
@@ -30,9 +30,14 @@ export function createLlmClientFromWikiConfig(config) {
   // A gpt-5-class model rejects `temperature` outright (HTTP 400, "Only the
   // default (1) value is supported"), whether the profile sets one or not. When
   // it is refused, the field is omitted whole rather than sent and rejected.
-  const temperatureBody = supportsTemperature(llmConfig)
-    ? { temperature: typeof llmConfig.temperature === 'number' ? llmConfig.temperature : 0.2 }
-    : {};
+  const reasoningEffort = reasoningEffortParam(llmConfig);
+  const temperatureBody = {
+    ...(supportsTemperature(llmConfig)
+      ? { temperature: typeof llmConfig.temperature === 'number' ? llmConfig.temperature : 0.2 }
+      : {}),
+    // The thinking-mode knob (`llm.reasoningEffort`), sent on every call.
+    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+  };
 
   return {
     async complete({ system, input, signal }) {
@@ -77,7 +82,7 @@ export function createLlmClientFromWikiConfig(config) {
       };
       if (tools.length > 0) {
         body.tools = tools;
-        body.tool_choice = toolChoice;
+        body.tool_choice = effectiveToolChoice(llmConfig, toolChoice);
       }
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
@@ -113,7 +118,7 @@ export function createLlmClientFromWikiConfig(config) {
       };
       if (tools.length > 0) {
         body.tools = tools;
-        body.tool_choice = toolChoice;
+        body.tool_choice = effectiveToolChoice(llmConfig, toolChoice);
       }
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',

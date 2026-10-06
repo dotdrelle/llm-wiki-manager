@@ -70,3 +70,36 @@ test('keeps the 0.2 default when the profile declares no temperature', async () 
     restore();
   }
 });
+
+test('sends tool_choice auto instead of a forced tool to a model measured to refuse it', async () => {
+  const { calls, restore } = captureFetch(reply);
+  try {
+    const client = createLlmClientFromWikiConfig({
+      llm: {
+        ...gateway,
+        model: 'deepseek-v4-flash',
+        capabilities: { model: 'deepseek-v4-flash', thinking: true, toolChoice: 'auto' },
+      },
+    });
+    const tools = [{ type: 'function', function: { name: 'runtime__delegate', parameters: { type: 'object' } } }];
+    await client.completeWithTools({ system: 's', tools, toolChoice: { type: 'function', function: { name: 'runtime__delegate' } } });
+    assert.equal(calls[0].body.tool_choice, 'auto');
+  } finally {
+    restore();
+  }
+});
+
+test('sends the configured reasoning_effort, and drops it once measured as refused', async () => {
+  const { calls, restore } = captureFetch(reply);
+  try {
+    const llm = { ...gateway, model: 'gpt-6-luna', reasoningEffort: 'none' };
+    await createLlmClientFromWikiConfig({ llm }).complete({ system: 's', input: 'i' });
+    assert.equal(calls[0].body.reasoning_effort, 'none');
+    await createLlmClientFromWikiConfig({
+      llm: { ...llm, capabilities: { model: 'gpt-6-luna', reasoningEffort: false } },
+    }).complete({ system: 's', input: 'i' });
+    assert.equal('reasoning_effort' in calls[1].body, false);
+  } finally {
+    restore();
+  }
+});

@@ -314,3 +314,25 @@ test('resolver candidates carry the argument names each capability accepts, neve
   const [candidate] = capabilityCandidates(sessionWith([provider('connectors-1', sendEmail)]));
   assert.deepEqual(candidate.arguments, ['body', 'dryRun', 'subject', 'to']);
 });
+
+test('a declared runtime capability whose gateway is down is "not answering", not "nobody covers it"', async () => {
+  const session = sessionWith([provider('production-1', knowledge)], { capability: null, reason: 'nothing fits' });
+  session.runtimeProviderUnreachable = [{
+    runtimeId: 'deepagents',
+    error: 'fetch failed',
+    capabilities: [{ name: 'agent.curate', operations: ['run'], aliases: ['curate', 'deduplicate'] }],
+  }];
+  await assert.rejects(
+    resolveObjective('Curate the wiki: find duplicate pages and claims with no cited source, then write the corrections on a dedicated branch.', session),
+    /No healthy agent provides agent\.curate\/run: the agentic runtime deepagents is not reachable \(fetch failed\)/,
+  );
+  // An objective that names none of its aliases still goes to the normal path.
+  await assert.rejects(resolveObjective('Translate the release notes into Klingon', session), ObjectiveNotOrchestrableError);
+});
+
+test('with every agent down, a declared runtime capability is still named', async () => {
+  const session = sessionWith([]);
+  session.runtimeProviderUnreachable = [{ runtimeId: 'deepagents', error: 'ECONNREFUSED', capabilities: [{ name: 'agent.curate', operations: ['run'], aliases: ['curate'] }] }];
+  await assert.rejects(resolveObjective('/curate the wiki', session), /No healthy agent provides agent\.curate/);
+  await assert.rejects(resolveObjective('ingest everything', session), /No orchestrable capability is currently available/);
+});

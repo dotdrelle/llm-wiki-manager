@@ -899,7 +899,31 @@ export function startRuntimeServer({
         const workspace = workspaceFromUrl(url);
         const context = await resolveContext({ workspace });
         if (!context.running || !context.currentAbortController) {
-          sendJson(response, 200, { cancelled: false, reason: 'no active run' });
+          // No run executes in this process, yet the workspace may still own
+          // one: re-attached at boot, or left behind by a turn. The serve Stop
+          // used to get "no active run" here while Reset plan (/kill) stopped
+          // it. Stop those, chain-scoped like below — no purge, maintenance and
+          // unrelated queued requests untouched.
+          const targetWorkspace = context.workspace ?? workspace ?? null;
+          const orphans = targetWorkspace && typeof store.listRecoverableRuns === 'function'
+            ? store.listRecoverableRuns({ workspace: targetWorkspace })
+            : [];
+          if (!orphans.length) {
+            sendJson(response, 200, { cancelled: false, reason: 'no active run' });
+            return;
+          }
+          let tasks = 0;
+          for (const run of orphans) {
+            cancelControlChain(context.session, {
+              runId: run.id,
+              cancelItem: (item, reason) => emitControlSkipped(context, item, reason),
+            });
+            store.interruptRuns({ workspace: targetWorkspace, runId: run.id, reason: 'Runtime run stopped by user.' });
+            tasks += store.cancelActiveTasksForInterruptedRuns?.({ workspace: targetWorkspace, runId: run.id }) ?? 0;
+          }
+          await cancel?.(context);
+          publishState(targetWorkspace, context);
+          sendJson(response, 202, { cancelled: true, workspace: targetWorkspace, runs: orphans.length, tasks });
           return;
         }
         cancelControlChain(context.session, {

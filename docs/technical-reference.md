@@ -324,10 +324,14 @@ wiki-workspace start [--open]
 
 This uses the packaged `agents.docker-compose.yml` (it lives inside the npm
 package — never edit it, updates overwrite it). On first run, `agents up`
-generates the missing agent auth tokens into your manager `.env` and seeds
+generates the missing agent auth tokens into your manager `.env`, pins
+`AGENTS_DATA_DIR` to the resolved absolute store and seeds
 `mcp.endpoints.json` from the packaged example. `WORKSPACES_ROOT` is resolved
 automatically from the manager workspaces directory. Agent state is stored under
-`./.agents-data/` unless `AGENTS_DATA_DIR` is set.
+`<workspaces root>/.agents-data/` unless `AGENTS_DATA_DIR` is set; because the
+key is pinned in `.env`, a launch from another directory no longer mounts a
+different store — which is what re-triggered the Google consent screen after a
+restart.
 
 An `npm -g update @dotdrelle/wiki-manager` replaces the packaged Compose files
 but preserves the operator-owned `.env`, `mcp.endpoints.json`, workspaces, agent

@@ -15,12 +15,16 @@ export class ObjectiveNotOrchestrableError extends Error {
 
 export async function resolveObjective(objective, session) {
   const candidates = capabilityCandidates(session);
-  if (candidates.length === 0) throw new Error('No orchestrable capability is currently available.');
   // Resolution sees the primary intention only (notification + guardrails
   // stripped). The delegated agent still receives the full objective.
   const clean = objectiveForResolution(objective);
+  if (candidates.length === 0) {
+    assertNotUnreachable(clean, session, candidates);
+    throw new Error('No orchestrable capability is currently available.');
+  }
   const deterministic = resolveMentionedRegistryOperation(clean, candidates);
   if (deterministic) return selectionWithProvider(session, deterministic, candidates);
+  assertNotUnreachable(clean, session, candidates);
   const llm = session?.llm;
   if (!llm?.completeWithTools) throw new Error('Objective resolution requires the configured workspace LLM.');
 
@@ -93,6 +97,25 @@ function phraseIn(phrase, words, text) {
   // Any non-alphanumeric boundary, not only whitespace: "l'envoi d'un mail"
   // or "un mail, merci" must still match their phrase.
   return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`).test(text);
+}
+
+// A capability the configuration declares on an external runtime that is not
+// answering (or does not serve it) is not "something no agent covers": the
+// objective named it by one of its aliases, so say which runtime to start.
+// Aliases only — a generic operation word ("run") must not claim an objective.
+function assertNotUnreachable(objective, session, candidates) {
+  const live = new Set(candidates.map((item) => item.id));
+  const declared = (session?.runtimeProviderUnreachable ?? []).flatMap((runtime) =>
+    (runtime.capabilities ?? [])
+      .filter((capability) => capability.name && !live.has(capability.name))
+      .map((capability) => ({ id: capability.name, operations: capability.operations?.length ? capability.operations : ['run'], aliases: capability.aliases ?? [], runtime })));
+  if (!declared.length) return;
+  const words = normalizeText(objective).match(/[a-z0-9]+/g) ?? [];
+  const text = normalizeText(objective);
+  const hits = declared.filter((item) => item.aliases.some((alias) => phraseIn(normalizePhrase(alias), words, text)));
+  if (hits.length !== 1) return;
+  const [match] = hits;
+  throw new Error(`No healthy agent provides ${match.id}/${match.operations[0]}: the agentic runtime ${match.runtime.runtimeId} is not reachable (${match.runtime.error}).`);
 }
 
 // Deterministic fast path, safe by construction:

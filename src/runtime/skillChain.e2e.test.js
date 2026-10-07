@@ -39,7 +39,7 @@ function workspaceWithSkills(files) {
 
 // Starts the server with a run stub that records every started run and finishes
 // it on demand, so a chain can be observed step by step.
-async function harness(t, { skills, autoFinish = true, onRun = null } = {}) {
+async function harness(t, { skills, autoFinish = true, onRun = null, storeExtra = {} } = {}) {
   if (!existsSync(SCAFFOLD_SKILLS)) {
     t.skip('llm-wiki is not checked out next to llm-wiki-manager');
     return null;
@@ -58,6 +58,7 @@ async function harness(t, { skills, autoFinish = true, onRun = null } = {}) {
         dbPath: ':memory:',
         getState: () => ({ status: 'idle', plan: [], queue: [], approvals: [] }),
         listEvents: () => [],
+        ...storeExtra,
       },
       getContext: async () => context,
       run: async (ctx, body, { runId, signal } = {}) => {
@@ -216,6 +217,36 @@ test('E2E-003 cancel: the running step and its chain stop, unrelated queue survi
   assert.ok(unrelated, 'the unrelated enqueue must still be in the queue');
   assert.notEqual(unrelated.status, 'skipped');
   assert.notEqual(unrelated.status, 'cancelled');
+});
+
+test('E2E-003b cancel: a persisted run with no in-process execution is stopped too', async (t) => {
+  // A run re-attached at boot has no abort controller in this process. /cancel
+  // used to answer "no active run" while Reset plan (/kill) stopped it.
+  const interrupted = [];
+  const env = await harness(t, {
+    skills: { pipeline: null },
+    storeExtra: {
+      listRecoverableRuns: ({ workspace }) => (workspace === 'acme' ? [{ id: 'run-orphan', workspace, status: 'running' }] : []),
+      interruptRuns: ({ runId }) => { interrupted.push(runId); return 1; },
+      cancelActiveTasksForInterruptedRuns: () => 2,
+    },
+  });
+  if (!env) return;
+
+  const cancelled = await env.post('/cancel?workspace=acme');
+  assert.equal(cancelled.status, 202);
+  assert.equal(cancelled.body.cancelled, true);
+  assert.equal(cancelled.body.runs, 1);
+  assert.equal(cancelled.body.tasks, 2);
+  assert.deepEqual(interrupted, ['run-orphan']);
+});
+
+test('E2E-003c cancel: nothing to stop is said, not claimed', async (t) => {
+  const env = await harness(t, { skills: { pipeline: null }, storeExtra: { listRecoverableRuns: () => [] } });
+  if (!env) return;
+  const cancelled = await env.post('/cancel?workspace=acme');
+  assert.equal(cancelled.status, 200);
+  assert.equal(cancelled.body.cancelled, false);
 });
 
 // Plan V4.1 §57 — performance gate. The compiler test already locks the

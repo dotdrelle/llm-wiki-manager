@@ -311,6 +311,30 @@ export async function discoverRuntimeProvidersOnce(session, {
   const effectiveAgents = [...agents];
   for (const kept of preservedByRuntime.values()) effectiveAgents.push(...kept);
   session.runtimeProviderAgents = effectiveAgents;
+  // What the configuration DECLARES but nobody serves right now: a runtime
+  // down since boot (nothing last-known to keep) or one that answers without
+  // the capability (drift). Without it, /curate with the gateway stopped read
+  // "no connected agent covers this kind of action" instead of "the agent
+  // that does this is not answering — start it" (objectiveResolver.js).
+  const declaredCapabilities = (id) => {
+    const entry = (Array.isArray(entries) ? entries : []).find((item) => String(item?.id ?? item?.type ?? '') === id);
+    return Array.isArray(entry?.capabilities) ? entry.capabilities : [];
+  };
+  const describeDeclared = (capability) => ({
+    name: String(capability?.name ?? ''),
+    operations: Array.isArray(capability?.operations) ? capability.operations.map(String) : ['run'],
+    aliases: Array.isArray(capability?.aliases) ? capability.aliases.map(String) : [],
+  });
+  session.runtimeProviderUnreachable = [
+    ...unavailable
+      .filter((item) => !answeredIds.has(item.runtimeId) && !preservedByRuntime.has(item.runtimeId))
+      .map((item) => ({ runtimeId: item.runtimeId, error: String(item.error ?? 'not reachable'), capabilities: declaredCapabilities(item.runtimeId).map(describeDeclared) })),
+    ...drift.map((item) => ({
+      runtimeId: item.runtimeId,
+      error: 'it answers but does not serve this capability',
+      capabilities: declaredCapabilities(item.runtimeId).filter((capability) => item.missing.includes(String(capability?.name ?? ''))).map(describeDeclared),
+    })),
+  ].filter((item) => item.capabilities.length > 0);
   // A degradation is announced ONCE, on the transition to down/skipped — not
   // on every periodic re-scan. The agent registry learned this the hard way: a
   // stopped endpoint is a fact to state, not an error to repeat every minute.

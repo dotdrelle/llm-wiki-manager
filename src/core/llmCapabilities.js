@@ -62,3 +62,18 @@ export function reasoningEffortParam(llmConfig) {
   if (!value) return undefined;
   return probedCapabilities(llmConfig)?.reasoningEffort === false ? undefined : value;
 }
+
+/**
+ * A per-turn chat model override carried by a client (the served chat's Model
+ * field). Only the model travels: base URL and apiKey stay under server
+ * authority, so a browser can never point the manager at another endpoint.
+ * Anything that is not a plausible single-line model name — empty, oversized,
+ * control characters — is refused (null) rather than logged or sent.
+ */
+export function normalizeModelOverride(value) {
+  if (typeof value !== 'string') return null;
+  const model = value.trim();
+  if (!model || model.length > 200) return null;
+  if (/[\u0000-\u001f\u007f]/.test(model)) return null;
+  return model;
+}

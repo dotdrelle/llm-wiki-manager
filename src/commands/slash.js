@@ -1552,6 +1552,16 @@ export async function handleSlashCommand(line, context) {
               'Sending is disabled in this deployment (CONNECTORS_SEND_ENABLED=false in the manager .env), so the send grant cannot be authorized. Run `/connector auth google read` for read-only access, or enable sending and restart the connectors agent.',
             );
           }
+          // Already authorized: the agent returns no URL on purpose (sending
+          // the user through consent again proves nothing). Treating the
+          // missing URL as a failure told a user with a working token that
+          // authorization "could not start".
+          if (payload?.alreadyAuthorized === true) {
+            const held = Array.isArray(payload.grants) && payload.grants.length > 0 ? payload.grants : grants;
+            return connectorResult(
+              `Google is already authorized for ${held.join(', ')} — no new consent is needed. Use the Gmail tools directly; run \`/connector auth google <grant>\` only to add a grant that is missing.`,
+            );
+          }
           if (payload?.ok !== true || typeof authorizationUrl !== 'string') {
             return connectorResult(`Google authorization could not start (${payload?.error ?? 'missing authorization URL'}).`);
           }

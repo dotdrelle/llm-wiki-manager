@@ -496,3 +496,14 @@ test('resolveObjective deterministically routes "audit" to agent.review via alia
   assert.equal(selection.capability, 'agent.review');
   assert.equal(selection.operation, 'run');
 });
+
+test('a runtime down since boot leaves its declared capabilities named as unreachable, cleared once it answers', async () => {
+  const session = sessionWithEvents();
+  const declared = [{ name: 'agent.curate', operations: ['run'], aliases: ['curate'] }];
+  await discoverRuntimeProvidersOnce(session, { config: [{ id: 'deepagents', type: 'fake', available: false, capabilities: declared }] });
+  assert.equal(session.runtimeProviderUnreachable.length, 1);
+  assert.equal(session.runtimeProviderUnreachable[0].runtimeId, 'deepagents');
+  assert.deepEqual(session.runtimeProviderUnreachable[0].capabilities, [{ name: 'agent.curate', operations: ['run'], aliases: ['curate'] }]);
+  await discoverRuntimeProvidersOnce(session, { config: [{ id: 'deepagents', type: 'fake', capabilities: declared }] });
+  assert.deepEqual(session.runtimeProviderUnreachable, []);
+});

@@ -285,7 +285,14 @@ agents_compose() {
   # Canonical .agents-data lives next to the workspaces (same rule as the
   # manager's resolveAgentsDataDir): the serve stack and the agents stack MUST
   # mount the same host directory or document conversions break.
-  agents_data_dir="$(absolute_path "${AGENTS_DATA_DIR:-$workspaces_root/.agents-data}" "$DEFAULT_MANAGER_DIR")"
+  # A manual `agents up` used to derive the store from $PWD-dependent defaults,
+  # so two launches from different directories mounted two different connector
+  # stores and the Google token looked lost on every restart. The manager .env
+  # now pins the absolute path (written below on `up`); the app's own env still
+  # wins when it deliberately exports one.
+  local agents_data_config
+  agents_data_config="$(env_value "$MANAGER_ENV_FILE" AGENTS_DATA_DIR "${AGENTS_DATA_DIR:-$workspaces_root/.agents-data}")"
+  agents_data_dir="$(absolute_path "$agents_data_config" "$DEFAULT_MANAGER_DIR")"
 
   local compose_env_args=()
   [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
@@ -329,6 +336,14 @@ agents_compose() {
       # sans relancer toute la pile. Sans argument, tout monte comme avant.
       local only_services=("$@")
       ensure_agent_tokens
+      if [[ -z "$(env_value "$MANAGER_ENV_FILE" AGENTS_DATA_DIR "")" ]]; then
+        # Pin the resolved absolute store once, so every later launch — manual
+        # or through the app — mounts the same /data and the agents' durable
+        # state (Google tokens, CME credentials, gateway memory) survives.
+        mkdir -p "$(dirname "$MANAGER_ENV_FILE")"
+        set_env_value "$MANAGER_ENV_FILE" AGENTS_DATA_DIR "$agents_data_dir"
+        printf 'Pinned AGENTS_DATA_DIR=%s in %s\n' "$agents_data_dir" "$MANAGER_ENV_FILE"
+      fi
       ensure_endpoints_file
       # The .env may have just been created above — recompute the env-file
       # flag so freshly generated tokens reach the containers on first run.

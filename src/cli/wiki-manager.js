@@ -17,11 +17,13 @@ import { fileURLToPath } from 'node:url';
 import { ensureManagerScaffold, loadManagerEnv } from '../core/env.js';
 loadManagerEnv();
 import { createAgentGraph } from '../agent/graph.js';
+import { createLlmClientFromWikiConfig } from '../agent/llm.js';
 import { handleSlashCommand, printHelp, printVersion, refreshMcpRuntimeStatus } from '../commands/slash.js';
 import { runShell, runHeadlessChatTurn, sanitizeOpenWikiPages, chatInputBudgetChars } from '../shell/repl.js';
 import { runPreflightChecks, withRuntimePreflight } from '../core/startupCheck.js';
 import { refreshRunningContainers } from '../core/wikiSetup.js';
 import { applySessionWikircProfile } from '../core/sessionConfig.js';
+import { normalizeModelOverride } from '../core/llmCapabilities.js';
 import { listWikircProfiles } from '../core/wikirc.js';
 import { callMcpTool, formatMcpToolResult, readChatAccessConfig } from '../core/mcp.js';
 import { deleteManagedMcpEndpoint, listManagedMcpEndpoints, upsertManagedMcpEndpoint } from '../core/mcpEndpoints.js';
@@ -336,6 +338,24 @@ function createSession() {
     productionActivity: null,
     headlessPlan: null,
   };
+}
+
+/**
+ * The LLM client an interactive conversation turn should use when the caller
+ * carries a model override (the served chat's Model field). Scoped to the
+ * turn's EPHEMERAL session by the caller: the workspace's own `session.llm`
+ * is never rebuilt, so an active run keeps the model it started with. Only
+ * the model differs — provider, endpoint and key come from the active profile.
+ * Returns null when the value is not usable or equals the profile's model.
+ */
+export function interactiveLlmForModel(wikircConfig, model) {
+  const normalized = normalizeModelOverride(model);
+  if (!normalized || !wikircConfig?.llm) return null;
+  if (normalized === wikircConfig.llm.model) return null;
+  return createLlmClientFromWikiConfig({
+    ...wikircConfig,
+    llm: { ...wikircConfig.llm, model: normalized },
+  });
 }
 
 export function createInteractiveSession(context, { runtimeUrl, turnId, signal = null, conversationId = null, memoryStore = null, eventStore = null, embedMemory = null, onMemoryNotice = null } = {}) {
@@ -1886,6 +1906,17 @@ async function runRuntime(argv, agent) {
     const ephemeral = createInteractiveSession(context, { runtimeUrl: selfRuntimeUrl, turnId, signal, conversationId, memoryStore, eventStore: store, embedMemory: embedMemoryTexts,
       onMemoryNotice: (message) => emitRuntimeLog(context.session, message) });
     ephemeral._currentUserInput = input;
+    // Per-turn model override (serve's Model field): the conversation answers
+    // with the chosen model while the workspace client — and therefore every
+    // running job — keeps the active profile's. Overriding the profile itself
+    // stays blocked (409) while a run is active: the run reads the session at
+    // each phase, and switching under it would mix models mid-plan.
+    const overrideModel = normalizeModelOverride(body.model ?? body.llm?.model);
+    const overrideLlm = interactiveLlmForModel(context.session.wikircConfig, overrideModel);
+    if (overrideLlm) {
+      ephemeral.llm = overrideLlm;
+      emitRuntimeLog(context.session, `chat.model-override: this turn uses ${overrideModel} (conversation only; running jobs keep the profile model)`);
+    }
     if (!context.workspace) {
       ephemeral.workspaceMemoryFacts = [];
       emitRuntimeLog(context.session, 'memory.unavailable: workspace is not resolved; shared memory was not consulted');

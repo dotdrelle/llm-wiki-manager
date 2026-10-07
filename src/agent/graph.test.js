@@ -2854,4 +2854,7 @@ test('a delegation failure names its kind: nothing connected, agent not answerin
   assert.equal(kind('Delegation failed during agent_plan: provider=connectors endpoint=http://127.0.0.1:3338/mcp/ TypeError fetch failed'), 'agent_unavailable');
   assert.equal(kind('Delegation failed during agent_plan: provider=connectors endpoint=x Error invalid_arguments:to_required'), 'delegation_failed');
   assert.equal(kind('Delegation failed during objective_resolution: ObjectiveNotOrchestrableError No connected agent can do that.'), 'unsupported_action');
+  // /curate with the gateway stopped: the capability is declared, its runtime
+  // is not answering — "start it", not "nothing covers it".
+  assert.equal(kind('Delegation failed during objective_resolution: Error No healthy agent provides agent.curate/run: the agentic runtime deepagents is not reachable (fetch failed).'), 'agent_unavailable');
 });

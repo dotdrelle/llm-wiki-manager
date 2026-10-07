@@ -33,7 +33,7 @@ const CANCEL_CONFIRM_MS=120_000;
 const modeFor=(p,c)=>{const mode=actionMode(p,c.action,c.target);return c.humanEdit&&mode==='auto'?'ask':mode;};
 const terminal=(s)=>['done','completed','succeeded','failed','error','cancelled'].includes(s);
 const parse=(r)=>{if(r?.content){const text=formatMcpToolResult(r);try{return JSON.parse(text);}catch{return parseYaml(text);}}return r;};
-const wait=(signal)=>new Promise((resolve,reject)=>{const abort=()=>{clearTimeout(timer);reject(signal.reason??new Error('aborted'));};const timer=setTimeout(()=>{signal?.removeEventListener('abort',abort);resolve();},500);if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});});
+const wait=(signal,ms=500)=>new Promise((resolve,reject)=>{const abort=()=>{clearTimeout(timer);reject(signal.reason??new Error('aborted'));};const timer=setTimeout(()=>{signal?.removeEventListener('abort',abort);resolve();},ms);if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});});
 export function createMaintenanceService({db,getContext,baseUrl,readDocument=readMaintenanceAccessDocument,callTool=callMcpTool,now=()=>new Date(),onEvent=null,onChange=null,discover=discoverRuntimeProvidersOnce,writeEnabled=setMaintenanceEnabled,writeMode=setMaintenanceMode,intervalMs=Number(process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_MS??300_000)}) {
   const store=createMaintenanceStore(db,{onChange:(workspace)=>onChange?.(workspace)});const active=new Map();const scans=new Set();const inflight=new Map();let timer;
   const policy=(workspace)=>maintenancePolicy(readDocument(),workspace);
@@ -83,7 +83,10 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     // Sync source names come from the connector's read-only configuration, never the model.
     try {
       const server=Object.entries(ctx.session.mcp??{}).find(([,entry])=>(entry.tools??[]).some((t)=>t.name==='cme_sources_list'))?.[0];
-      if(server){const raw=parse(await callTool(ctx.session.mcp,server,'cme_sources_list',{workspace}));for(const source of raw.sources??(Array.isArray(raw)?raw:[])){const name=source.name??source.source_name;if(name)add('sync',String(name),String(Math.floor(now().getTime()/7_200_000)),{source_name:String(name)},`Synchronize the Confluence source ${name}`);}}
+      // ONE sync for every configured source: in human mode each source used to
+      // be its own approval, so a sync of N pages asked N times. The connector
+      // exports all the workspace's sources when no source_name is given.
+      if(server){const raw=parse(await callTool(ctx.session.mcp,server,'cme_sources_list',{workspace}));const names=(raw.sources??(Array.isArray(raw)?raw:[])).map((source)=>source.name??source.source_name).filter(Boolean).map(String);if(names.length)add('sync','confluence',fingerprint([Math.floor(now().getTime()/7_200_000),[...names].sort()]),{},`Synchronize ${names.length} Confluence source(s): ${names.slice(0,5).join(', ')}${names.length>5?` +${names.length-5}`:''}`);}
     }catch{log(workspace,'degraded','source configuration unavailable; synchronization skipped');}
     for(const f of facts.pending??[]){if(f.protected&&!store.hasEvent(workspace,'protected_source',{version:f.hash,target:f.path}))log(workspace,'protected_source',`${f.path} is waiting for human resolution (${f.reason})`,{version:f.hash,target:f.path});}
     const reservations=store.reserved(workspace);
@@ -220,7 +223,10 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       if(preemption.requested)await stopJob();
       const ceilingMs=(ACTION_CEILING_MINUTES[candidate.action]??60)*60_000;
       const clock=()=>now().getTime();const startedAt=clock();let stopAskedAt=preemption.requested?clock():0;let timedOut=false;
-      let result;
+      // Polling backs off from 0.5 s to 5 s: a flat 500 ms over a 30-minute sync
+      // is 120 calls a minute, the agents' own rate limit (MCP_RATE_LIMIT_REQUESTS)
+      // — the CME then answered the registry's agent_describe with a refusal.
+      let result;let polls=0;
       do{
         signal?.throwIfAborted();
         if(!stopAskedAt&&clock()-startedAt>ceilingMs){timedOut=true;stopAskedAt=clock();await stopJob();}
@@ -228,7 +234,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
         result=provider.runtimeProvider?await provider.runtimeProvider.status(job):parse(await callTool(ctx.session.mcp,provider.serverName,'agent_status',{jobId:job},signal));
         if(terminal(result.status??result.result?.status))break;
         if(stopAskedAt&&clock()-stopAskedAt>CANCEL_CONFIRM_MS)throw new Error('maintenance_cancel_unconfirmed');
-        await wait(signal);
+        await wait(signal,Math.min(5000,Math.round(500*1.5**polls++)));
       }while(true);
       const finalStatus=result.status??result.result?.status;
       const finished=['done','completed','succeeded'].includes(finalStatus);

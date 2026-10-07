@@ -97,10 +97,22 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   // The `Agent:` prefix is the one thing added, and it is load-bearing:
   // isAgentTraceLine routes these to the Agent status tab rather than mixing
   // them into the business flow.
+  // The turn's LAST step, shown above the composer while the turn runs (and
+  // in serve's waiting bubble): each step replaces the previous one, so the
+  // reader sees the turn move on until "Writing the answer…" — never a list.
+  const [turnStepText, setTurnStepText] = createSignal('');
+  const noteTurnStep = (text: string) => {
+    const compact = String(text ?? '').replace(/\s+/g, ' ').trim();
+    if (compact) setTurnStepText(compact.length > 120 ? `${compact.slice(0, 120)}…` : compact);
+  };
   const logRuntimeAgentEvent = (event: { type?: string; data?: any }) => {
     if (event?.type !== 'agent_event') return;
-    if (event.data?.type !== 'assistant_progress') return;
+    const type = event.data?.type;
+    if (type === 'assistant_message' || type === 'assistant_delta') { noteTurnStep('Writing the answer…'); return; }
+    if (type === 'runtime_log') { noteTurnStep(event.data?.payload?.message); return; }
+    if (type !== 'assistant_progress') return;
     const message = String(event.data?.payload?.message ?? '').trim();
+    noteTurnStep(message);
     if (message) addLog(`Agent: ${message}`);
   };
   const runtimeUnavailableReason = createMemo(() => {
@@ -119,7 +131,9 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     runtimeUrl: props.runtime?.url ?? null,
     runtimeUnavailableReason: runtimeUnavailableReason(),
     refresh,
-    addLog,
+    // The local (no-runtime) path reports its steps through onStep: they are
+    // the same steps, so they drive the same line.
+    addLog: (line: string) => { addLog(line); noteTurnStep(line); },
     onRuntimeAccepted: () => {
       setRuntimeState((state) => ({ ...(state ?? {}), status: 'running' }));
       setRuntimeStatus('connected');
@@ -134,6 +148,9 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
       : sessionActivities(session).some((activity) => !activity.terminal),
   );
   const agentBusy = conversationBusy;
+  // A new turn starts from a blank step; the line exists only while it runs.
+  createEffect(() => { if (agentBusy()) setTurnStepText(''); });
+  const turnStep = createMemo(() => (agentBusy() ? turnStepText() : ''));
   const localFallbackActive = createMemo(() => !props.runtime?.url || runtimeStatus() === 'disconnected');
 
   // Runtime conversation entries are merged into conversationMessages(session)
@@ -916,6 +933,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     conversationBusy,
     executionActive,
     busy: agentBusy,
+    turnStep,
     abort,
     submitInput,
     redoMessage,

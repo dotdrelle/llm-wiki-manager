@@ -1594,7 +1594,7 @@ export async function handleSlashCommand(line, context) {
       const result = await postRuntimeControl('message', {
         url: runtime.url,
         workspace: context.session.workspace ?? null,
-        input: args.slice(1).join(' ') || 'approve',
+        input: `/${args.join(' ')}`,
         intent: 'approve',
       });
       return { output: String(result?.explanation ?? (result?.accepted ? 'Approval granted.' : 'No pending approval found.')) };

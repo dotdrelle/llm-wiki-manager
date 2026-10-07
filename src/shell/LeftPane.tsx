@@ -799,6 +799,7 @@ export function LeftPane(props: {
   width: number;
   title: string;
   statusLine: string;
+  turnStep?: string;
   hintLine?: string | null;
   showWelcome: boolean;
   messages: Array<{ role: string; content: string; at?: number }>;
@@ -867,7 +868,7 @@ export function LeftPane(props: {
         right pane keeps the full Plan/Queue/Logs detail.
       */}
       <box flexShrink={0} height={4} flexDirection="column" overflow="hidden" backgroundColor="#111318">
-        <ActivityPanel activities={props.activities} width={props.width - 2} />
+        <ActivityPanel activities={props.activities} width={props.width - 2} step={props.turnStep} />
       </box>
       <ChatInput
         width={props.width}

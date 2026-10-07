@@ -311,7 +311,7 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
   );
 }
 
-export function ActivityPanel(props: { activities: any[]; width: number }) {
+export function ActivityPanel(props: { activities: any[]; width: number; step?: string }) {
   const lineWidth = () => Math.max(8, props.width - 2);
   // session.activities is never pruned within a run (see core/agentEvents.js),
   // so a long batch job's activity count is unbounded — render only the most
@@ -320,7 +320,8 @@ export function ActivityPanel(props: { activities: any[]; width: number }) {
   const visible = createMemo(() => props.activities.slice(-200).reverse());
   return (
     <box flexGrow={1} flexDirection="column" paddingX={1} backgroundColor="#111318">
-      <text width={lineWidth()} fg="#D6DEE8" content="Activity" />
+      {/* The running turn's last step rides on the title: one line, replaced at each step. */}
+      <text width={lineWidth()} fg={props.step ? '#FBBF24' : '#D6DEE8'} content={props.step ? fit(`Activity · ${props.step}`, lineWidth()) : 'Activity'} />
       <Show when={visible().length > 0} fallback={<text width={lineWidth()} fg="#7F8C8D" content="no active jobs" />}>
         <scrollbox
           flexGrow={1}

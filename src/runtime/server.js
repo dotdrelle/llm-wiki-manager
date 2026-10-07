@@ -302,6 +302,9 @@ export function startRuntimeServer({
         if (body.command === 'model_done') return sendJson(response, 200, maintenance.modelDone(cycle.id, body.call));
         if (body.command === 'model') return sendJson(response, 200, maintenance.modelAdmission(cycle.workspace, cycle.id, body.call));
         if (body.command === 'state') return sendJson(response, 200, await maintenance.state(cycle.workspace, { forAgent: true }));
+        // async: the action runs on a ticket the gateway polls (see startCandidate).
+        if (body.command === 'action' && body.async === true) return sendJson(response, 202, maintenance.startCandidate(cycle.workspace, cycle.id, body));
+        if (body.command === 'action_status') return sendJson(response, 200, maintenance.candidateTicket(cycle.id, String(body.ticket ?? '')));
         if (body.command === 'action') {
           const controller = new AbortController();
           request.on('aborted', () => controller.abort());
@@ -465,7 +468,7 @@ export function startRuntimeServer({
             cancel,
             approve,
           });
-          sendJson(response, result.statusCode, result.body);
+          sendJson(response, result.statusCode, await phraseControlResponse(context.session, input, result.body));
           return;
         }
         if (action === 'approve_patch') {
@@ -684,7 +687,7 @@ export function startRuntimeServer({
               cancel,
               approve,
             });
-            sendJson(response, result.statusCode, result.body);
+            sendJson(response, result.statusCode, await phraseControlResponse(context.session, input, result.body));
             return;
           }
           const accepted = startRuntimeRun(context, body);
@@ -716,6 +719,18 @@ export function startRuntimeServer({
         // `user_message` and replayed as history on every later turn, which is
         // exactly the "raw facts never enter the thread" rule it broke.
         const displayInput = input;
+        const explicitControl = /^\/(approve(?:\s+patch(?:\s+\S+)?)?|cancel)\s*$/i.exec(input);
+        if (explicitControl) {
+          const result = await handleControlMessage(context, store, input, {
+            intent: explicitControl[1].toLowerCase().startsWith('approve') ? 'approve' : 'cancel',
+            conversationId: body.conversationId ?? null,
+            startNextControlRequest,
+            cancel,
+            approve,
+          });
+          sendJson(response, result.statusCode, await phraseControlResponse(context.session, input, result.body));
+          return;
+        }
         // Read-only chat turns intentionally remain available while an agent
         // run is active. Other interactive turns still become control
         // messages so they cannot start a competing agent decision.
@@ -783,7 +798,7 @@ export function startRuntimeServer({
               cancel,
               approve,
             });
-            sendJson(response, result.statusCode, result.body);
+            sendJson(response, result.statusCode, await phraseControlResponse(context.session, input, result.body));
             return;
           } else {
             readOnlyChat = true;
@@ -2036,6 +2051,24 @@ async function handleControlMessage(context, store, input, { intent = null, conv
     return readOnlyControlResponse('cancel', classification, status, 'No active run to cancel.', { accepted: false });
   }
   if (classification.kind === 'approve') {
+    const patchCommand = /^\/approve\s+patch(?:\s+(\S+))?\s*$/i.exec(String(input ?? '').trim());
+    const pendingPatches = (status.planPatches ?? []).filter((patch) => patch.status === 'proposed');
+    const pendingRunApprovals = (status.approvals ?? []).some((approval) => approval.status === 'pending_approval')
+      || tasksAwaitingApproval({
+        runId: status.runId ?? null,
+        workspace: status.workspace ?? null,
+        planRevision: status.planRevision ?? null,
+        tasks: status.plan ?? [],
+      }, { approvals: status.approvals ?? [] }).length > 0;
+    if (patchCommand || (!pendingRunApprovals && pendingPatches.length === 1)) {
+      const patchId = patchCommand?.[1] ?? (pendingPatches.length === 1 ? pendingPatches[0].id : null);
+      if (!patchId) {
+        return readOnlyControlResponse('approve_patch', classification, status,
+          'Several plan changes are waiting. Specify which one with /approve patch <id>.', { accepted: false });
+      }
+      const result = approvePlanPatch(context, store, patchId);
+      return { statusCode: result.statusCode, body: { ...result.body, kind: 'approve_patch', classification } };
+    }
     const result = await approve?.(approvalRequestFromStatus(status));
     return readOnlyControlResponse('approve', classification, controlStatus(context, store), result?.approved
       ? 'Approval grant recorded for the current run revision.'
@@ -2061,7 +2094,6 @@ async function handleControlMessage(context, store, input, { intent = null, conv
     // startNextControlRequest), which can change running/plan/status — a full
     // controlStatus() recompute is required here, not just controlQueue.
     void startNextControlRequest(context);
-    const explanation = await generateControlAcknowledgment(context?.session, { kind: 'queued', input });
     return {
       statusCode: 202,
       body: {
@@ -2070,7 +2102,7 @@ async function handleControlMessage(context, store, input, { intent = null, conv
         classification,
         item,
         ...controlStatus(context, store),
-        explanation,
+        explanation: controlMessage(context?.session, 'queued_for_future_run'),
       },
     };
   }
@@ -2089,6 +2121,66 @@ async function handleControlMessage(context, store, input, { intent = null, conv
   return readOnlyControlResponse('converse', classification, status, status.running
     ? controlMessage(context?.session, 'converse_while_running')
     : controlMessage(context?.session, 'converse_while_idle'));
+}
+
+async function phraseControlResponse(session, input, body) {
+  if (!body || typeof body !== 'object') return body;
+  const language = String(session?.language ?? 'en').trim().toLowerCase();
+  const isFrench = language.startsWith('fr');
+  const deterministic = typeof body.explanation === 'string' ? body.explanation.trim() : '';
+  const localized = body.kind === 'approve_patch'
+    ? (body.accepted
+      ? (isFrench ? 'La modification proposée a été approuvée et ajoutée au plan.' : 'The proposed change was approved and added to the plan.')
+      : (isFrench ? 'Je n’ai pas pu appliquer la modification proposée. Vérifie qu’elle est toujours en attente.' : 'I could not apply the proposed change. Check that it is still pending.'))
+    : body.kind === 'approve'
+      ? (body.accepted
+        ? (isFrench ? 'L’approbation est enregistrée; le run peut continuer.' : 'Approval is recorded; the run can continue.')
+        : (isFrench ? 'Je ne vois aucune approbation en attente pour ce run.' : 'I could not find a pending approval for this run.'))
+      : body.kind === 'modify_run'
+        ? (isFrench ? 'La modification est proposée. Elle ne sera ajoutée au plan qu’après approbation.' : 'The change is proposed. It will join the plan only after approval.')
+        : body.kind === 'enqueue_run'
+          ? (isFrench ? 'Ta demande est en file et démarrera après le run en cours.' : 'Your request is queued and will start after the current run.')
+          : body.kind === 'cancel'
+            ? (body.accepted
+              ? (isFrench ? 'L’annulation du run a été demandée.' : 'The run cancellation was requested.')
+              : (isFrench ? 'Aucun run actif à annuler.' : 'There is no active run to cancel.'))
+            : body.kind === 'observe'
+              ? (isFrench ? 'Je n’ai pas pu résumer l’état du run.' : 'I could not summarize the run status.')
+              : body.kind === 'ambiguous'
+                ? (isFrench ? 'Précise si tu veux consulter le run, modifier son plan ou mettre une nouvelle demande en file.' : 'Choose whether to inspect the run, change its plan, or queue a new request.')
+                : body.kind === 'converse'
+                  ? (isFrench ? 'Le run continue; ton message n’a déclenché aucune action.' : 'The run continues; your message did not trigger an action.')
+                  : (isFrench ? 'Donna n’a pas pu formuler le résultat du contrôle.' : 'Donna could not phrase the control result.');
+  // The deterministic facts the lane already produced (the run's plan and
+  // status for an observe, the queue acknowledgement, …) are the fallback —
+  // losing them to a generic sentence made a status question answer "I could
+  // not summarize the run status" with the facts right there.
+  const fallback = deterministic || localized;
+  const llm = session?.llm;
+  if (!llm || typeof llm.complete !== 'function') return { ...body, explanation: fallback };
+  try {
+    const facts = {
+      kind: body.kind ?? 'control',
+      accepted: body.accepted === true,
+      running: body.running === true,
+      pendingPlanChanges: (body.planPatches ?? []).filter((patch) => patch.status === 'proposed').length,
+      pendingApprovals: (body.approvals ?? []).filter((approval) => approval.status === 'pending_approval').length,
+      requestQueued: body.kind === 'enqueue_run',
+      changeAwaitingApproval: body.kind === 'modify_run' || body.kind === 'approve_patch',
+      ...(deterministic ? { detail: deterministic } : {}),
+    };
+    const reply = await llm.complete({
+      system: 'You are Donna, the workspace assistant. Explain this completed runtime control action to the user in their language. Use only the supplied facts. State clearly whether something is awaiting the user\'s approval. Never expose internal event names, API details, or raw system text. Return exactly one concise sentence.',
+      input: `User request: ${String(input ?? '').slice(0, 500)}\nControl result: ${JSON.stringify(facts)}\nReply in ${language}.`,
+      signal: AbortSignal.timeout(8_000),
+    });
+    const explanation = String(reply ?? '').trim();
+    if (explanation) return { ...body, explanation };
+    emitRuntimeLog(session, 'control-response: Donna returned an empty reply; using localized fallback');
+  } catch (err) {
+    emitRuntimeLog(session, `control-response: Donna could not phrase the result; using localized fallback — ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return { ...body, explanation: fallback };
 }
 
 /*

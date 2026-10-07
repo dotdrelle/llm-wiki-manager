@@ -381,6 +381,7 @@ function App(props: {
             width={leftColumns()}
             title={state.title()}
             statusLine={state.statusLine()}
+            turnStep={state.turnStep()}
             hintLine={hintLine()}
             showWelcome={state.showWelcome()}
             messages={state.messages()}

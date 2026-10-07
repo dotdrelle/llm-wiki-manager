@@ -36,6 +36,10 @@ const parse=(r)=>{if(r?.content){const text=formatMcpToolResult(r);try{return JS
 const wait=(signal,ms=500)=>new Promise((resolve,reject)=>{const abort=()=>{clearTimeout(timer);reject(signal.reason??new Error('aborted'));};const timer=setTimeout(()=>{signal?.removeEventListener('abort',abort);resolve();},ms);if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});});
 export function createMaintenanceService({db,getContext,baseUrl,readDocument=readMaintenanceAccessDocument,callTool=callMcpTool,now=()=>new Date(),onEvent=null,onChange=null,discover=discoverRuntimeProvidersOnce,writeEnabled=setMaintenanceEnabled,writeMode=setMaintenanceMode,intervalMs=Number(process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_MS??300_000)}) {
   const store=createMaintenanceStore(db,{onChange:(workspace)=>onChange?.(workspace)});const active=new Map();const scans=new Set();const inflight=new Map();let timer;
+  // The actions executing right now, with their agent's last progress: the
+  // served run graph draws them, so maintenance work is seen, not only logged.
+  const live=new Map();
+  const setLive=(workspace,id,entry)=>{let byId=live.get(workspace);if(!entry){if(!byId?.delete(id))return;if(!byId.size)live.delete(workspace);onChange?.(workspace);return;}if(!byId)live.set(workspace,byId=new Map());if(JSON.stringify(byId.get(id))===JSON.stringify(entry))return;byId.set(id,entry);onChange?.(workspace);};
   const policy=(workspace)=>maintenancePolicy(readDocument(),workspace);
   const log=(w,kind,message,extra={})=>{let version;try{version=policy(w).version;}catch{version='invalid-policy';}const event=store.event(w,{kind,message:`Maintenance: ${message}`,origin:'maintenance',policyVersion:version,author:`maintenance:${version}`,...extra});try{onEvent?.(w,event);}catch{/* the Logs mirror never breaks the durable history */}return event;};
   // A lasting degradation is announced once, not at every scan.
@@ -213,6 +217,8 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
         if(!job)throw new Error('maintenance_execution_receipt_missing');
         store.updateReservation(id,{jobId:job});
       } else started=true;
+      const liveEntry={id,action:candidate.action,target:candidate.target,operation:operation??null,summary:candidate.summary,agent:provider.runtimeId??provider.serverName??null,jobId:job,startedAt:now().toISOString(),status:'running',progress:null};
+      setLive(workspace,id,liveEntry);
       const stopJob=async()=>{
         try{
           if(provider.runtimeProvider)await provider.runtimeProvider.cancel(job);
@@ -232,6 +238,8 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
         if(!stopAskedAt&&clock()-startedAt>ceilingMs){timedOut=true;stopAskedAt=clock();await stopJob();}
         if(!stopAskedAt&&preemption.requested)stopAskedAt=clock();
         result=provider.runtimeProvider?await provider.runtimeProvider.status(job):parse(await callTool(ctx.session.mcp,provider.serverName,'agent_status',{jobId:job},signal));
+        const progress=result.progress??result.result?.progress??null;
+        if(progress&&typeof progress==='object')setLive(workspace,id,{...liveEntry,progress});
         if(terminal(result.status??result.result?.status))break;
         if(stopAskedAt&&clock()-stopAskedAt>CANCEL_CONFIRM_MS)throw new Error('maintenance_cancel_unconfirmed');
         await wait(signal,Math.min(5000,Math.round(500*1.5**polls++)));
@@ -269,7 +277,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       else if(/^maintenance_budget_exhausted:day/.test(String(error.message)))log(workspace,'budget_exhausted',`${candidate.summary} — waiting until tomorrow: ${describeError(error.message)}`,{cycleId,action:candidate.action,identity,detail:error.message});
       else log(workspace,'failure',`${candidate.summary} — not done: ${describeError(error.message)}`,{cycleId,action:candidate.action,identity,detail:error.message});
       throw error;
-    }finally{release();const left=(inflight.get(workspace)??1)-1;if(left>0)inflight.set(workspace,left);else inflight.delete(workspace);}
+    }finally{setLive(workspace,id,null);release();const left=(inflight.get(workspace)??1)-1;if(left>0)inflight.set(workspace,left);else inflight.delete(workspace);}
   }
   function completeJob(workspace,ctx,id,result,cycleId,wikiHash) {
     const reservation=store.reservation(workspace,id);
@@ -438,7 +446,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     }
     return status(workspace,options);
   }
-  function status(workspace,options={}){const page=store.statusPage(workspace,options);const cycles=store.cycles(workspace).map(({secret,...c})=>c);let p,error;try{p=policy(workspace);}catch(e){error=e.message;}return {enabled:p?.enabled??false,paused:store.paused(workspace),mode:p?.mode??'custom',policyVersion:p?.version,actions:p?.actions??null,buildSchedule:p?.buildSchedule??null,error,...page,reservations:page.reservations.map(({candidate,...r})=>r),cycles};}
+  function status(workspace,options={}){const page=store.statusPage(workspace,options);const cycles=store.cycles(workspace).map(({secret,...c})=>c);let p,error;try{p=policy(workspace);}catch(e){error=e.message;}return {enabled:p?.enabled??false,paused:store.paused(workspace),mode:p?.mode??'custom',policyVersion:p?.version,actions:p?.actions??null,buildSchedule:p?.buildSchedule??null,error,...page,reservations:page.reservations.map(({candidate,...r})=>r),cycles,running:[...(live.get(workspace)?.values()??[])]};}
   // A human switch: Donna's tools never reach it (they only read, pause and stop).
   async function setEnabled(workspace,enabled){
     const doc=structuredClone(readDocument()??{});
@@ -473,7 +481,26 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
   }
   const isActive=(workspace)=>active.has(workspace)||inflight.has(workspace);
   const activeRuns=()=>[...new Set([...active.keys(),...inflight.keys()])].map((workspace)=>({workspace,runId:active.get(workspace)?.cycle?.id??'maintenance',kind:'maintenance'}));
-  return {store,state,tick,status,control,authorizeBridge,runCandidate,modelAdmission,isActive,activeRuns,setEnabled,setMode,
+  // The gateway's action bridge used to hold the HTTP request for the whole
+  // job: a 44-source ingest outlived its 300 s header timeout, the gateway saw
+  // "fetch failed" while the ingest went on, and the closed connection aborted
+  // the manager's own follow-up. An action now runs on a ticket bound to the
+  // runtime's lifetime, never to a connection; the gateway polls it.
+  const tickets=new Map();
+  function startCandidate(workspace,cycleId,input){
+    for(const [key,entry] of tickets)if(entry.settledAt&&Date.now()-entry.settledAt>3_600_000)tickets.delete(key);
+    const ticket=randomUUID();const entry={workspace,cycleId,status:'running'};tickets.set(ticket,entry);
+    runCandidate(workspace,cycleId,input,shutdown.signal).then((result)=>{Object.assign(entry,{status:'settled',result,settledAt:Date.now()});},(error)=>{Object.assign(entry,{status:'failed',error:String(error?.message??error),settledAt:Date.now()});});
+    return {status:'running',ticket};
+  }
+  function candidateTicket(cycleId,ticket){
+    const entry=tickets.get(ticket);
+    if(!entry||entry.cycleId!==cycleId)return {status:'unknown_ticket'};
+    if(entry.status==='running')return {status:'running',ticket};
+    tickets.delete(ticket);
+    return entry.status==='failed'?{status:'failed',error:entry.error}:{status:'settled',result:entry.result};
+  }
+  return {store,state,tick,status,control,authorizeBridge,runCandidate,startCandidate,candidateTicket,modelAdmission,isActive,activeRuns,setEnabled,setMode,
     modelDone:(cycleId,call)=>{store.settle(`${cycleId}:model:${call}`);return {ok:true};},
     decide:async(w,id,v,approved)=>{if(approved){const requested=store.request(w,id);if(!requested)throw new Error('maintenance_request_unknown');const view=await state(w);const current=view.candidates.find((c)=>c.action===requested.action&&c.target===requested.target&&c.operation===requested.candidate.operation);const clean=current?Object.fromEntries(Object.entries(current).filter(([k])=>!['mode','outsideWindow'].includes(k))):null;if(!clean||fingerprint(clean)!==v){if(clean)store.propose(w,clean);throw new Error('maintenance_request_replaced_or_target_changed');}}const request=store.decide(w,id,v,approved);if(approved)void tick(w);return request;},
     start(){timer=setInterval(()=>{try{store.pruneLogs();}catch(e){console.error('Maintenance: log retention cleanup failed — '+e.message);}let doc;try{doc=readDocument();}catch{return;}for(const w of listWorkspaces()){try{if(maintenancePolicy(doc,w.name).enabled)void tick(w.name);}catch(e){log(w.name,'degraded',e.message);}}},Math.max(30_000,intervalMs||300_000));timer.unref?.();},

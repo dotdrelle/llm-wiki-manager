@@ -346,6 +346,13 @@ after an ingest/rebuild completes):
    current policy version, the exact approval, the budget and the admission,
    then dispatches through the agents' `agent_execute`/`agent_status` with an
    `idempotencyKey`. The gateway never holds an agent credential.
+   The gateway sends `async: true`: the manager answers `202 {ticket}` at once
+   and runs the action bound to the runtime's lifetime, not to the request;
+   the gateway polls `command: action_status` (1 s → 10 s) until `settled` or
+   `failed`. Holding one request for a whole job outlived fetch's 300 s header
+   timeout — a 44-source ingest read "fetch failed" while it went on, and the
+   closed connection aborted the manager's own follow-up. A gateway that omits
+   `async` still gets the former synchronous answer.
 
 **Admission** (`src/maintenance/admission.js`) is shared with Donna's
 dispatcher (`dispatcher.execute`). Maintenance actions take scopes derived from

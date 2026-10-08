@@ -84,3 +84,12 @@ test('a second extraction sees the fact the first one just wrote', async () => {
   assert.equal(facts.length, 1);
   assert.match(inputs[1], /Use TAXO\./);
 });
+
+test('a fact is written in the workspace language, its evidence stays an exact quote', async () => {
+  let system = '';
+  const llm = { complete: async (request) => { system = request.system; return '{"operations":[]}'; } };
+  await extractAndApplyMemory({ llm, memoryStore: { search: () => [] }, workspace: 'juno', userText: 'We always deliver as PDF.', language: 'fr-FR' });
+  assert.match(system, /Write each "text" in fr-FR; "evidence" stays an exact, untranslated quote\./);
+  await extractAndApplyMemory({ llm, memoryStore: { search: () => [] }, workspace: 'juno', userText: 'We always deliver as PDF.' });
+  assert.doesNotMatch(system, /Write each "text" in/);
+});

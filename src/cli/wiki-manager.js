@@ -1863,6 +1863,7 @@ async function runRuntime(argv, agent) {
           userText: memorySourceText,
           assistantText: String(assistantText),
           vectorConfig: session.wikircConfig?.retrieval?.vector ?? null,
+          language: session.language ?? session.wikircConfig?.language ?? null,
           onNotice: (message) => emitRuntimeLog(session, message),
         }));
       }
@@ -2090,6 +2091,12 @@ async function runRuntime(argv, agent) {
     });
     if (ephemeral._memoryExplicitlyChanged) {
       emitRuntimeLog(context.session, 'memory.extract-skipped: this turn already made an explicit memory change');
+    } else if (body.extractMemory === false) {
+      // A message the interface composed (the Maintenance panel's "Ask Donna":
+      // its question, its instruction and its records) is not the user's
+      // words. Mined anyway, its "system records… not wiki pages" instruction
+      // became a durable workspace convention on juno.
+      emitRuntimeLog(context.session, 'memory.extract-skipped: message composed by the interface, not typed by the user');
     } else if (process.env.WIKI_MANAGER_MEMORY_AUTO !== 'off' && !/^(hi|hello|hey|bonjour|salut|merci|thanks|ok|okay)[!. ]*$/i.test(displayInput)) {
       void import('../runtime/memoryExtract.js').then(({ extractAndApplyMemory }) => extractAndApplyMemory({
         llm: context.session.llm,
@@ -2100,6 +2107,7 @@ async function runRuntime(argv, agent) {
         userText: displayInput,
         assistantText: String(response ?? ''),
         vectorConfig: context.session.wikircConfig?.retrieval?.vector ?? null,
+        language: context.session.language ?? context.session.wikircConfig?.language ?? null,
         onNotice: (message) => emitRuntimeLog(context.session, message),
       }));
     }

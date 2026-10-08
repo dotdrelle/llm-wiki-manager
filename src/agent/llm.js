@@ -40,7 +40,9 @@ export function createLlmClientFromWikiConfig(config) {
   };
 
   return {
-    async complete({ system, input, signal }) {
+    // `onUsage` receives the provider's token usage of this one call (the run's
+    // model meter, runtime/modelMeter.js); absent, nothing changes.
+    async complete({ system, input, signal, onUsage }) {
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         signal,
@@ -64,13 +66,14 @@ export function createLlmClientFromWikiConfig(config) {
       }
 
       const data = await response.json();
+      onUsage?.(data?.usage ?? null);
       const content = data?.choices?.[0]?.message?.content;
       if (!content || typeof content !== 'string') {
         throw new Error('reponse LLM sans contenu texte');
       }
       return content;
     },
-    async completeWithTools({ system, tools = [], messages = [], toolChoice = 'auto', signal }) {
+    async completeWithTools({ system, tools = [], messages = [], toolChoice = 'auto', signal, onUsage }) {
       const allMessages = [
         { role: 'system', content: system },
         ...messages,
@@ -98,6 +101,7 @@ export function createLlmClientFromWikiConfig(config) {
         throw new Error(`HTTP ${response.status} ${text.slice(0, 240)}`);
       }
       const data = await response.json();
+      onUsage?.(data?.usage ?? null);
       const msg = data?.choices?.[0]?.message;
       return {
         content: msg?.content ?? null,

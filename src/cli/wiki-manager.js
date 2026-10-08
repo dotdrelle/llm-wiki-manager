@@ -1605,6 +1605,9 @@ async function runRuntime(argv, agent) {
       // Approve at launch, before any model call (runtime/launchApproval.js).
       const { requestLaunchApproval } = await import('../runtime/launchApproval.js');
       await requestLaunchApproval(session, { runId, publicInput: body.publicInput ?? input });
+      // Every model call of the run, then one summary (runtime/modelMeter.js).
+      const { meterModelCalls } = await import('../runtime/modelMeter.js');
+      session._finishModelMeter = meterModelCalls(session, { scope: 'run', log: (message) => emitRuntimeLog(session, message) });
       session._onStep = (message) => emitRuntimeLog(session, message);
       session._delegateWithinRun = async (objective) => {
         const { delegateWithinRun } = await import('../runtime/delegation.js');
@@ -1843,6 +1846,8 @@ async function runRuntime(argv, agent) {
       }));
     } finally {
       supervisor?.setRunSignal(null);
+      session._finishModelMeter?.();
+      delete session._finishModelMeter;
       // Only what the USER said is admissible evidence. `publicInput` carries
       // the compiled objective of a skill step or the system-written review
       // objective, and an extractor quoting those would quote the same string
@@ -2042,6 +2047,8 @@ async function runRuntime(argv, agent) {
       body.context?.openWikiPages ?? body.context?.openWikiPage,
     );
     let response;
+    const { meterModelCalls } = await import('../runtime/modelMeter.js');
+    const finishModelMeter = meterModelCalls(ephemeral, { scope: 'turn', log: (message) => emitRuntimeLog(context.session, message) });
     try {
       if (chatMode) {
         ephemeral.chatMode = true;
@@ -2074,6 +2081,7 @@ async function runRuntime(argv, agent) {
         response = await runAgentTurn(agent, ephemeral, input, { messages, signal });
       }
     } finally {
+      finishModelMeter();
       // In a `finally`, not after the await: a throwing or aborted turn left
       // the 80 ms timer armed, so a stray assistant_delta fired AFTER the
       // "Runtime turn failed" message and appended orphan fragments to the

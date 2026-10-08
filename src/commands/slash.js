@@ -1925,6 +1925,7 @@ export async function handleSlashCommand(line, context) {
           const purged = killed.purged ?? { runs: 0, events: 0, queue: 0 };
           parts.push(`runtime: ${killed.runs ?? 0} run(s) stopped, ${killed.tasks ?? 0} task(s), ${killed.queued ?? 0} request(s)`);
           parts.push(`store purged: ${purged.runs ?? 0} run(s), ${purged.events ?? 0} event(s), ${purged.queue ?? 0} queue item(s)`);
+          if (killed.maintenanceError) parts.push(`maintenance stop not confirmed (${killed.maintenanceError}) — its history was kept`);
         } catch (err) {
           parts.push(`runtime kill failed: ${err instanceof Error ? err.message : String(err)}`);
         }

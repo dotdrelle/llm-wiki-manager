@@ -1386,7 +1386,17 @@ export function startRuntimeServer({
   async function killRuntimeRuns(context, { workspace = null, runId = null, purge = false } = {}) {
     const targetWorkspace = context?.workspace ?? workspace ?? null;
     const targetRunId = runId ? String(runId) : null;
-    if (!targetRunId && targetWorkspace && maintenance) { await maintenance.control(targetWorkspace, 'stop'); if (purge) maintenance.store.clear(targetWorkspace); }
+    // A maintenance stop that cannot be confirmed must not hold the user's
+    // kill/reset hostage: the runs are still stopped, and the failure is said.
+    let maintenanceError = null;
+    if (!targetRunId && targetWorkspace && maintenance) {
+      try {
+        await maintenance.control(targetWorkspace, 'stop');
+        if (purge) maintenance.store.clear(targetWorkspace);
+      } catch (err) {
+        maintenanceError = err instanceof Error ? err.message : String(err);
+      }
+    }
     if (!targetRunId || targetRunId === context?.currentRunId) {
       context?.currentAbortController?.abort();
       await cancel?.(context);
@@ -1426,7 +1436,7 @@ export function startRuntimeServer({
         ? store.clearWorkspaceState({ workspace: targetWorkspace })
         : { runs: 0, events: 0, queue: 0 };
     }
-    return { killed: true, workspace: targetWorkspace, runId: targetRunId, runs, tasks, queued, ...(purged !== null ? { purged } : {}) };
+    return { killed: true, workspace: targetWorkspace, runId: targetRunId, runs, tasks, queued, ...(purged !== null ? { purged } : {}), ...(maintenanceError ? { maintenanceError } : {}) };
   }
 
   function startRuntimeRun(context, body, { controlItemId = null, waitForPlan = false, announceLaunch = false } = {}) {

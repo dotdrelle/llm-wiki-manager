@@ -33,6 +33,13 @@ const CANCEL_CONFIRM_MS=120_000;
 const modeFor=(p,c)=>{const mode=actionMode(p,c.action,c.target);return c.humanEdit&&mode==='auto'?'ask':mode;};
 const terminal=(s)=>['done','completed','succeeded','failed','error','cancelled'].includes(s);
 const parse=(r)=>{if(r?.content){const text=formatMcpToolResult(r);try{return JSON.parse(text);}catch{return parseYaml(text);}}return r;};
+// An agent restarted without its job record answers `{ok:false, error:"Unknown
+// jobId"}` (production) or `{error:{code:'unknown_job'}}` (CME) — a normal
+// result, not an MCP error, and without a status. Read as "not finished", it
+// kept a reservation forever and turned a Stop (hence /clear --all) into an
+// endless poll. The job is gone: it ends failed, with the reason said.
+const lostJob=(r)=>r?.error?.code==='unknown_job'||(r?.ok===false&&/unknown jobid/i.test(String(r.error?.message??r.error??'')));
+const jobState=(r)=>lostJob(r)?{status:'failed',lost:true,error:'the agent no longer knows this job (restarted, or its record was removed)'}:r;
 const wait=(signal,ms=500)=>new Promise((resolve,reject)=>{const abort=()=>{clearTimeout(timer);reject(signal.reason??new Error('aborted'));};const timer=setTimeout(()=>{signal?.removeEventListener('abort',abort);resolve();},ms);if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});});
 export function createMaintenanceService({db,getContext,baseUrl,readDocument=readMaintenanceAccessDocument,callTool=callMcpTool,now=()=>new Date(),onEvent=null,onChange=null,discover=discoverRuntimeProvidersOnce,writeEnabled=setMaintenanceEnabled,writeMode=setMaintenanceMode,intervalMs=Number(process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_MS??300_000)}) {
   const store=createMaintenanceStore(db,{onChange:(workspace)=>onChange?.(workspace)});const active=new Map();const scans=new Set();const inflight=new Map();let timer;
@@ -237,7 +244,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
         signal?.throwIfAborted();
         if(!stopAskedAt&&clock()-startedAt>ceilingMs){timedOut=true;stopAskedAt=clock();await stopJob();}
         if(!stopAskedAt&&preemption.requested)stopAskedAt=clock();
-        result=provider.runtimeProvider?await provider.runtimeProvider.status(job):parse(await callTool(ctx.session.mcp,provider.serverName,'agent_status',{jobId:job},signal));
+        result=provider.runtimeProvider?await provider.runtimeProvider.status(job):jobState(parse(await callTool(ctx.session.mcp,provider.serverName,'agent_status',{jobId:job},signal)));
         const progress=result.progress??result.result?.progress??null;
         if(progress&&typeof progress==='object')setLive(workspace,id,{...liveEntry,progress});
         if(terminal(result.status??result.result?.status))break;
@@ -321,7 +328,8 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
           const provider=capabilityRegistryForSession(ctx.session).providersFor(MAINTENANCE_ACTIONS[r.candidate.action].capability).find((p)=>p.runtimeId===r.runtimeId)?.runtimeProvider;
           if(!provider)throw new Error('maintenance_gateway_unavailable');
           result=await provider.status(r.jobId);
-        }else result=parse(await callTool(ctx.session.mcp,r.provider,'agent_status',{jobId:r.jobId},shutdown.signal));
+        }else result=jobState(parse(await callTool(ctx.session.mcp,r.provider,'agent_status',{jobId:r.jobId},shutdown.signal)));
+        if(result.lost)log(workspace,'failure',`${r.candidate?.summary??r.candidate?.action??'action'} — ${result.error}; its credit is settled`,{action:r.candidate?.action,jobId:r.jobId});
         if(terminal(result.status??result.result?.status))completeJob(workspace,ctx,r.id,result,r.cycle);
         else settled=false;
       }catch(error){degradedOnce(workspace,`job reconciliation interrupted: ${error.message}`);settled=false;}
@@ -428,19 +436,20 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       for(const reservation of store.reserved(workspace).filter((r)=>r.jobId)) {
         if(reservation.runtimeId){const external=capabilityRegistryForSession(ctx.session).providersFor('agent.curate').find((p)=>p.runtimeId===reservation.runtimeId);await external?.runtimeProvider?.cancel(reservation.jobId);continue;}
         await callTool(ctx.session.mcp,reservation.provider,'agent_cancel',{jobId:reservation.jobId});
-        const status=parse(await callTool(ctx.session.mcp,reservation.provider,'agent_status',{jobId:reservation.jobId}));
-        if(terminal(status.status)){store.updateReservation(reservation.id,{outcome:'cancelled',result:status});store.settle(reservation.id);store.settle(reservation.id+':build');}
+        const status=jobState(parse(await callTool(ctx.session.mcp,reservation.provider,'agent_status',{jobId:reservation.jobId})));
+        if(terminal(status.status)){if(status.lost)log(workspace,'stopped',`${reservation.candidate?.summary??'action'} — ${status.error}; nothing left to cancel`,{jobId:reservation.jobId});store.updateReservation(reservation.id,{outcome:'cancelled',result:status});store.settle(reservation.id);store.settle(reservation.id+':build');}
       }
       for(const reservation of store.reserved(workspace,{kind:'actions'})){
         if(!reservation.jobId&&reservation.dispatched)throw new Error('maintenance_stop_uncertain: an external dispatch must be reconciled before purge');
         if(!reservation.jobId){store.settle(reservation.id,{started:false});continue;}
         const provider=reservation.runtimeId?capabilityRegistryForSession(ctx.session).providersFor('agent.curate').find((p)=>p.runtimeId===reservation.runtimeId)?.runtimeProvider:null;
-        for(;;){const result=provider?await provider.status(reservation.jobId):parse(await callTool(ctx.session.mcp,reservation.provider,'agent_status',{jobId:reservation.jobId}));if(terminal(result.status)){store.updateReservation(reservation.id,{outcome:'cancelled',result});store.settle(reservation.id);store.settle(reservation.id+':build');break;}await wait();}
+        const deadline=now().getTime()+CANCEL_CONFIRM_MS;
+        for(;;){const result=provider?await provider.status(reservation.jobId):jobState(parse(await callTool(ctx.session.mcp,reservation.provider,'agent_status',{jobId:reservation.jobId})));if(terminal(result.status)){if(result.lost)log(workspace,'stopped',`${reservation.candidate?.summary??'action'} — ${result.error}; nothing left to cancel`,{jobId:reservation.jobId});store.updateReservation(reservation.id,{outcome:'cancelled',result});store.settle(reservation.id);store.settle(reservation.id+':build');break;}if(now().getTime()>deadline)throw new Error(`maintenance_cancel_unconfirmed: job ${reservation.jobId} did not end within ${CANCEL_CONFIRM_MS/1000} s of the stop`);await wait();}
       }
       for(const c of store.cycles(workspace).filter((c)=>['running','recovering'].includes(c.status))){
         const provider=item?.provider??capabilityRegistryForSession(ctx.session).providersFor('agent.maintain').find((p)=>p.runtimeProvider)?.runtimeProvider;
         if(!provider||!c.runId)throw new Error('maintenance_cycle_stop_uncertain');
-        await provider.cancel(c.runId);for(;;){const result=await provider.status(c.runId);if(terminal(result.status)){c.status='cancelled';store.cycle(c);store.settle(c.id);break;}await wait();}
+        await provider.cancel(c.runId);const deadline=now().getTime()+CANCEL_CONFIRM_MS;for(;;){const result=await provider.status(c.runId);if(terminal(result.status)){c.status='cancelled';store.cycle(c);store.settle(c.id);break;}if(now().getTime()>deadline)throw new Error(`maintenance_cancel_unconfirmed: cycle ${c.runId} did not end within ${CANCEL_CONFIRM_MS/1000} s of the stop`);await wait();}
       }
       log(workspace,'stopped','stopped; pending decisions retained');
     }

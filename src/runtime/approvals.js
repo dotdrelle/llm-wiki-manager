@@ -14,7 +14,8 @@ export function createApprovalManager(session, {
     const approvalId = request.approvalId ?? randomUUID();
     const runId = request.runId ?? session._currentRunIdentity?.runId ?? null;
     const workspaceId = request.workspaceId ?? request.workspace ?? session._currentRunIdentity?.workspace ?? session.workspace ?? null;
-    const planRevision = request.planRevision ?? session.planRevision ?? null;
+    // A launch grant covers the run whatever its plan revision becomes.
+    const planRevision = request.anyRevision === true ? null : (request.planRevision ?? session.planRevision ?? null);
     const approvalClasses = normalizeClasses(request.approvalClasses ?? request.approvalClass);
     const timeoutMs = Number.isFinite(Number(request.timeoutMs))
       ? Math.max(1, Number(request.timeoutMs))

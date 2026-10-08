@@ -1602,6 +1602,9 @@ async function runRuntime(argv, agent) {
         ? Math.max(1, Number(body.approvalTimeoutMs))
         : undefined;
       supervisor?.setRunSignal(signal);
+      // Approve at launch, before any model call (runtime/launchApproval.js).
+      const { requestLaunchApproval } = await import('../runtime/launchApproval.js');
+      await requestLaunchApproval(session, { runId, publicInput: body.publicInput ?? input });
       session._onStep = (message) => emitRuntimeLog(session, message);
       session._delegateWithinRun = async (objective) => {
         const { delegateWithinRun } = await import('../runtime/delegation.js');

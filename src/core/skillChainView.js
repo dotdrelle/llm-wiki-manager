@@ -71,7 +71,10 @@ export function projectSkillChains(controlQueue = []) {
       optional: item.optional === true,
       ...(item.skipReason ? { skipReason: item.skipReason } : {}),
       ...(item.runId ? { runId: item.runId } : {}),
+      ...(item.finishedAt ? { finishedAt: item.finishedAt } : {}),
     }));
+    // When the chain settled: its last step's end, shown beside its status.
+    const ends = steps.map((step) => (typeof step.finishedAt === 'number' ? step.finishedAt : Date.parse(step.finishedAt))).filter(Number.isFinite);
     return {
       chainId,
       skillName: chainItems.find((item) => item.skillName)?.skillName ?? null,
@@ -79,6 +82,7 @@ export function projectSkillChains(controlQueue = []) {
       selectionLabel: selectionKindLabel(chainItems.find((item) => item.selectionKind)?.selectionKind ?? null),
       steps,
       status: chainStatus(steps),
+      ...(ends.length ? { finishedAt: new Date(Math.max(...ends)).toISOString() } : {}),
     };
   });
 }

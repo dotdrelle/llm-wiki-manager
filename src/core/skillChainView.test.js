@@ -61,3 +61,14 @@ test('the selection reason stays an audit field, never a user-facing label', () 
   // The queue head names the skill, not how it was selected.
   assert.equal(renderSkillChain(chain).split('\n')[0], 'wiki-build');
 });
+
+test('a settled chain carries when it ended, a running one does not', () => {
+  const [settled] = projectSkillChains([
+    { id: 'a', chainId: 'c', chainSequence: 0, status: 'done', finishedAt: '2026-10-08T14:00:00.000Z' },
+    { id: 'b', chainId: 'c', chainSequence: 1, status: 'failed', finishedAt: '2026-10-08T14:08:21.000Z' },
+  ]);
+  assert.equal(settled.status, 'failed');
+  assert.equal(settled.finishedAt, '2026-10-08T14:08:21.000Z');
+  const [running] = projectSkillChains([{ id: 'a', chainId: 'c', chainSequence: 0, status: 'running' }]);
+  assert.equal(running.finishedAt, undefined);
+});

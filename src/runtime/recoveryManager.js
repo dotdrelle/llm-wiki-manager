@@ -213,6 +213,37 @@ async function recoverExternalRuntimeTask({ store, session, run, task, attempt, 
   });
 }
 
+// Stopping a run this process does not execute (re-attached at boot, or left
+// behind by a restart) used to flip its tasks to `cancelled` in SQLite only:
+// nothing aborted the dispatcher, so no agent_cancel was sent and the agent's
+// job ran on, holding the workspace lock. Cancel each active task's job here,
+// before the store forgets which job it was. A failure is logged, never thrown.
+export async function cancelRunAgentJobs({ store, session, runId, callTool = defaultCallMcpTool } = {}) {
+  if (!store || !session || !runId) return [];
+  const cancelled = [];
+  for (const task of store.listTasks?.({ runId }) ?? []) {
+    if (!ACTIVE_TASK_STATUSES.has(String(task.status ?? '').toLowerCase())) continue;
+    const attempt = latestAttempt(store.listTaskAttempts?.({ taskId: task.id }) ?? []);
+    const assignment = latestAssignment(store.listTaskAssignments?.({ taskId: task.id }) ?? [], attempt?.attemptId);
+    if (!attempt?.jobId || !assignment?.agentInstanceId) continue;
+    const agent = agentFor(session, assignment.agentInstanceId);
+    const serverName = agent?.serverName ?? assignment.agentId ?? assignment.agentInstanceId;
+    const event = { origin: 'recovery_manager', runId, taskId: task.id, workspace: workspaceFromSession(session) };
+    try {
+      if (agent?.providerKind === 'external-runtime' && typeof agent?.runtimeProvider?.cancel === 'function') {
+        await agent.runtimeProvider.cancel(attempt.jobId);
+      } else {
+        await callTool(session.mcp, serverName, toolNameFor(session, serverName, 'agent_cancel'), { jobId: attempt.jobId });
+      }
+      dispatch(session, store, 'runtime_log', { ...event, payload: { message: `cancel: requested ${serverName} agent_cancel for job ${attempt.jobId}` } });
+      cancelled.push({ runId, taskId: task.id, jobId: attempt.jobId, serverName });
+    } catch (error) {
+      dispatch(session, store, 'runtime_log', { ...event, payload: { message: `cancel: ${serverName} agent_cancel failed for job ${attempt.jobId}: ${error instanceof Error ? error.message : String(error)}` } });
+    }
+  }
+  return cancelled;
+}
+
 function interruptTask({ store, session, run, task, reason }) {
   dispatch(session, store, 'runtime_log', {
     origin: 'recovery_manager',

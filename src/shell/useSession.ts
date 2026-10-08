@@ -134,6 +134,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     // The local (no-runtime) path reports its steps through onStep: they are
     // the same steps, so they drive the same line.
     addLog: (line: string) => { addLog(line); noteTurnStep(line); },
+    onRuntimeTurnSettled: () => syncRuntimeState(),
     onRuntimeAccepted: () => {
       setRuntimeState((state) => ({ ...(state ?? {}), status: 'running' }));
       setRuntimeStatus('connected');

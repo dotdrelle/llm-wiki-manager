@@ -2,7 +2,7 @@ import { createSignal } from 'solid-js';
 import { postRuntimeCancel } from '../runtime/client.js';
 import { applyRuntimeOutcome, conversationMessages, recordRuntimeUnavailableAgentInput, runLine, shouldHandleFreeTextLocally, submitRuntimeTurn } from './repl.js';
 
-export function useAgent(props: { agent: unknown; packageJson: Record<string, unknown>; session: Record<string, any>; chatMode: () => boolean; runtimeUrl?: string | null; runtimeUnavailableReason?: string | null; refresh: () => void; addLog: (line: string) => void; onRuntimeAccepted?: () => void }) {
+export function useAgent(props: { agent: unknown; packageJson: Record<string, unknown>; session: Record<string, any>; chatMode: () => boolean; runtimeUrl?: string | null; runtimeUnavailableReason?: string | null; refresh: () => void; addLog: (line: string) => void; onRuntimeAccepted?: () => void; onRuntimeTurnSettled?: () => void }) {
   const [busy, setBusy] = createSignal(false);
   const [abortController, setAbortController] = createSignal<AbortController | null>(null);
 
@@ -47,6 +47,10 @@ export function useAgent(props: { agent: unknown; packageJson: Record<string, un
         // by design, never localized; this only supplies the last-resort
         // fallback text for a response that carries neither.
         applyRuntimeOutcome(props.session, outcome, props.addLog);
+        // The reply itself only reaches the thread through the runtime state.
+        // Pull it now rather than wait on the event stream, which may be dead
+        // (sleep/standby) without having noticed it yet.
+        props.onRuntimeTurnSettled?.();
         props.refresh();
         return { exit: false, runtime: true };
       }

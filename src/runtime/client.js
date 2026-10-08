@@ -22,13 +22,23 @@ export function runtimeUrlFromEnv() {
   return process.env.WIKI_MANAGER_RUNTIME_URL ?? 'http://127.0.0.1:7788';
 }
 
+const RUNTIME_STATE_TIMEOUT_MS = 15_000;
+// The runtime writes an SSE comment every 15 s on every stream; a stream that
+// stays silent this long is dead (typically after a sleep/standby) even if its
+// socket still looks established, so the reader gives up and reconnects.
+export const RUNTIME_STREAM_IDLE_TIMEOUT_MS = 45_000;
+
 export async function fetchRuntimeState({
   url = runtimeUrlFromEnv(),
   token = runtimeToken(),
   workspace = null,
+  timeoutMs = RUNTIME_STATE_TIMEOUT_MS,
 } = {}) {
+  // Bounded: callers guard this with an in-flight flag, so a request left
+  // hanging on a socket killed by a machine sleep would block every later sync.
   const response = await fetch(runtimeEndpoint(url, '/state', workspace), {
     headers: runtimeHeaders(token),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) throw new Error(`Runtime state failed: HTTP ${response.status}`);
   return response.json();
@@ -298,17 +308,32 @@ export async function* streamRuntimeEvents({
   token = runtimeToken(),
   signal = null,
   workspace = null,
+  idleTimeoutMs = RUNTIME_STREAM_IDLE_TIMEOUT_MS,
 } = {}) {
-  const response = await fetch(runtimeEndpoint(url, '/events/stream', workspace), {
-    headers: { ...runtimeHeaders(token), Accept: 'text/event-stream' },
-    signal,
-  });
-  if (!response.ok) throw new Error(`Runtime SSE connect failed: HTTP ${response.status}`);
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
+  const local = new AbortController();
+  const forwardAbort = () => local.abort(signal?.reason);
+  if (signal?.aborted) forwardAbort();
+  else signal?.addEventListener('abort', forwardAbort, { once: true });
+  let idleTimer = null;
+  let idled = false;
+  const armIdle = () => {
+    if (!idleTimeoutMs) return;
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => { idled = true; local.abort(); reader?.cancel().catch(() => {}); }, idleTimeoutMs);
+  };
+  let reader = null;
   try {
+    armIdle();
+    const response = await fetch(runtimeEndpoint(url, '/events/stream', workspace), {
+      headers: { ...runtimeHeaders(token), Accept: 'text/event-stream' },
+      signal: local.signal,
+    });
+    if (!response.ok) throw new Error(`Runtime SSE connect failed: HTTP ${response.status}`);
+    reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
     while (true) {
+      armIdle();
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
@@ -322,15 +347,29 @@ export async function* streamRuntimeEvents({
           else if (line.startsWith('data: ')) data = line.slice(6);
         }
         if (!data) continue;
+        let parsed;
         try {
-          yield { type, data: JSON.parse(data) };
+          parsed = JSON.parse(data);
         } catch {
-          // malformed frame — skip
+          continue; // malformed frame — skip
         }
+        // The consumer's work between frames is not stream silence.
+        clearTimeout(idleTimer);
+        yield { type, data: parsed };
       }
     }
+    // Bun ends a cancelled read as a normal `done` rather than rejecting it.
+    if (idled) throw new Error('idle');
+  } catch (err) {
+    if (idled) throw new Error(`Runtime SSE stream silent for ${Math.round(idleTimeoutMs / 1000)}s; reconnecting.`);
+    throw err;
   } finally {
-    reader.releaseLock();
+    clearTimeout(idleTimer);
+    signal?.removeEventListener('abort', forwardAbort);
+    if (reader) {
+      try { await reader.cancel(); } catch { /* already closed */ }
+    }
+    local.abort();
   }
 }
 

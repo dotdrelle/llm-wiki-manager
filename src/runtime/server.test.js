@@ -2872,3 +2872,38 @@ test('memory routes refuse credential-shaped facts and say 503 when the store is
     await withoutStore.close();
   }
 });
+
+test('runtime server cancel of an orphaned run cancels its agent jobs first', async (t) => {
+  const order = [];
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1',
+      port: 0,
+      store: {
+        dbPath: ':memory:',
+        getState: () => ({ status: 'running' }),
+        listEvents: () => [],
+        listRecoverableRuns: () => [{ id: 'run-orphan', workspace: 'docs' }],
+        interruptRuns: () => { order.push('interrupt'); return 1; },
+        cancelActiveTasksForInterruptedRuns: () => { order.push('tasks'); return 1; },
+      },
+      session: {},
+      run: async () => {},
+      cancelRunAgentJobs: async ({ runId }) => { order.push(`jobs:${runId}`); return []; },
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') {
+      t.skip('network listen is not permitted in this sandbox');
+      return;
+    }
+    throw err;
+  }
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/cancel?workspace=docs`, { method: 'POST' });
+    assert.equal(response.status, 202);
+    assert.deepEqual(order, ['jobs:run-orphan', 'interrupt', 'tasks']);
+  } finally {
+    await handle.close();
+  }
+});

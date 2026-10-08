@@ -35,6 +35,7 @@ import { reconcileControlQueue } from './controlDrain.js';
 import { cancelControlChain, cancelQueuedControlItem } from './controlCancellation.js';
 import { generateSkillAcknowledgment, runSkillChain } from './skillRun.js';
 import { emitRuntimeLog } from './supervisor.js';
+import { cancelRunAgentJobs as defaultCancelRunAgentJobs } from './recoveryManager.js';
 import { summarizeCompactedConversation } from './conversationCompact.js';
 import { containsSensitiveMemoryMaterial } from './memoryExtract.js';
 import { embedMemoryTexts } from './vectorMemory.js';
@@ -120,6 +121,7 @@ export function startRuntimeServer({
   upsertMcpEndpoint,
   deleteMcpEndpoint,
   listActiveRuns = null,
+  cancelRunAgentJobs = defaultCancelRunAgentJobs,
   exitOnShutdown = process.env.WIKI_MANAGER_RUNTIME_CHILD === '1',
 } = {}) {
   const loginAbout = {
@@ -929,6 +931,7 @@ export function startRuntimeServer({
           }
           let tasks = 0;
           for (const run of orphans) {
+            await cancelRunAgentJobs({ store, session: context.session, runId: run.id });
             cancelControlChain(context.session, {
               runId: run.id,
               cancelItem: (item, reason) => emitControlSkipped(context, item, reason),
@@ -1233,14 +1236,20 @@ export function startRuntimeServer({
     }
   });
 
-  // Housekeeping for the in-memory login-attempt rate limiter: nothing else
-  // ever calls pruneLoginAttempts, so without this the `attempts` Map grows
-  // by one entry per distinct source address for the life of the process.
+  // Every stream gets a comment frame (ignored by SSE parsers) so a client can
+  // tell a quiet stream from a dead one — after a sleep/standby the socket may
+  // still look established while nothing will ever arrive on it.
   const maintenanceHeartbeatTimer = setInterval(() => {
-    for (const client of clients) if (maintenance && client.workspace) client.response.write(`event: maintenance_heartbeat\ndata: ${JSON.stringify({ workspace: client.workspace, epoch: maintenanceEpoch })}\n\n`);
+    for (const client of clients) {
+      if (maintenance && client.workspace) client.response.write(`event: maintenance_heartbeat\ndata: ${JSON.stringify({ workspace: client.workspace, epoch: maintenanceEpoch })}\n\n`);
+      else client.response.write(': ping\n\n');
+    }
   }, 15_000);
   maintenanceHeartbeatTimer.unref?.();
 
+  // Housekeeping for the in-memory login-attempt rate limiter: nothing else
+  // ever calls pruneLoginAttempts, so without this the `attempts` Map grows
+  // by one entry per distinct source address for the life of the process.
   const loginAttemptPruneTimer = setInterval(() => pruneLoginAttempts(), 10 * 60 * 1000);
   loginAttemptPruneTimer.unref?.();
 
@@ -1392,6 +1401,13 @@ export function startRuntimeServer({
         new Promise((resolve) => setTimeout(resolve, 5000)),
       ]);
     }
+    // The run this process executes cancels its own jobs through its abort;
+    // the others (re-attached, orphaned) only have their recorded job ids.
+    const orphans = targetWorkspace && typeof store.listRecoverableRuns === 'function'
+      ? store.listRecoverableRuns({ workspace: targetWorkspace })
+        .filter((run) => (!targetRunId || run.id === targetRunId) && !(context?.running && run.id === context?.currentRunId))
+      : [];
+    for (const run of orphans) await cancelRunAgentJobs({ store, session: context?.session, runId: run.id });
     const runs = typeof store.interruptRuns === 'function'
       ? store.interruptRuns({ workspace: targetWorkspace, runId: targetRunId, reason: 'Runtime run killed by user.' })
       : 0;

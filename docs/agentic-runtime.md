@@ -209,7 +209,7 @@ SSE-only and never persisted:
 - `progress` — coalesced by the gateway (one frame per window, not one per
   tool); the phase close always carries the final counts.
 - `heartbeat` — liveness while a long, tool-less phase runs. It becomes a
-  NON-persisted `runtime_heartbeat` event: the serve run strip reads it (elapsed
+  NON-persisted `runtime_heartbeat` event: the serve run card reads it (elapsed
   since the last beat) and it restarts the in-flight watchdog. It never reaches
   the journal — one line per beat would bury what actually happened.
 - `finding` — one per `[objection]` line, carrying severity, role and the page
@@ -382,7 +382,7 @@ mail take none. The user has priority:
 
 Every wait is logged (`scheduler: waiting for maintenance — …`) and, for a run
 task, published as an `admission:<taskId>` activity (`source: scheduler`,
-`status: queued`) so the run strip and the Plan tab read "Waiting for
+`status: queued`) so the Plan tab reads "Waiting for
 maintenance — <action>" instead of "Running · 0%"; it turns `done` when the task
 starts. Production locks stay authoritative underneath. The CME agent refuses
 an export whose Confluence does not accept a TCP connection within 5 s, so an

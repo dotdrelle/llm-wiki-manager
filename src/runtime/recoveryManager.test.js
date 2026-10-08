@@ -6,7 +6,7 @@ import { join } from 'node:path';
 
 import { createAgentEvent } from '../core/agentEvents.js';
 import { openRuntimeStore } from './store.js';
-import { recoverActiveRuns } from './recoveryManager.js';
+import { cancelRunAgentJobs, recoverActiveRuns } from './recoveryManager.js';
 
 test('recoveryManager attaches a terminal active job through agent_status', async () => {
   const { store, root, runId, taskId } = storeWithActiveTask();
@@ -234,6 +234,49 @@ test('recoveryManager keeps recovering when the registry has no capability infor
     assert.equal(store.listTasks({ runId })[0].status, 'done');
   } finally {
     store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('cancelRunAgentJobs sends agent_cancel for the running job of an orphaned run', async () => {
+  const { store, root, runId } = storeWithActiveTask();
+  const session = recoverySession();
+  session.mcp.production.tools.push({ name: 'agent_cancel' });
+  store.hydrateSession(session, { workspace: 'docs' });
+  const calls = [];
+  try {
+    const cancelled = await cancelRunAgentJobs({
+      store,
+      session,
+      runId,
+      callTool: async (_mcp, serverName, toolName, args) => { calls.push({ serverName, toolName, args }); return { ok: true }; },
+    });
+    assert.deepEqual(calls, [{ serverName: 'production', toolName: 'agent_cancel', args: { jobId: 'job-1' } }]);
+    assert.equal(cancelled.length, 1);
+  } finally {
+    store.close?.();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('cancelRunAgentJobs reports a failed agent_cancel instead of throwing', async () => {
+  const { store, root, runId } = storeWithActiveTask();
+  const session = recoverySession();
+  store.hydrateSession(session, { workspace: 'docs' });
+  const emitted = [];
+  const persistEvent = store.persistEvent;
+  store.persistEvent = (event) => { emitted.push(event); return persistEvent?.(event); };
+  try {
+    const cancelled = await cancelRunAgentJobs({
+      store,
+      session,
+      runId,
+      callTool: async () => { throw new Error('agent unreachable'); },
+    });
+    assert.deepEqual(cancelled, []);
+    assert.ok(emitted.some((event) => /agent_cancel failed for job job-1: agent unreachable/.test(event.payload?.message ?? '')));
+  } finally {
+    store.close?.();
     rmSync(root, { recursive: true, force: true });
   }
 });

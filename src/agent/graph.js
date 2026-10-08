@@ -878,6 +878,25 @@ async function awaitRunApproval(session, { runId, tool }) {
   session._runApprovalResolved = true;
 }
 
+/*
+ A write the human approved is the write that runs. Previewing tools
+ (template_write, wiki_write_page, profile_update…) answer a call without
+ `confirm` with a diff only, so after the approval the model had to produce
+ the WHOLE content again with confirm:true — a second generation (13 s on a
+ template, more on a small model) of text that was already there, and not
+ necessarily the same text. Covered by the run's human grant, the call that
+ carried the content is confirmed as is. An explicit dryRun is respected.
+*/
+function confirmApprovedWrite(session, server, tool, args) {
+  if (!session._runApprovalRequired || !session._runApprovalResolved) return args;
+  if (!args || typeof args !== 'object' || Array.isArray(args) || args.confirm === true || args.dryRun === true) return args;
+  const descriptor = (session.mcp?.[server]?.tools ?? []).find((item) => item?.name === tool);
+  const confirm = descriptor?.inputSchema?.properties?.confirm;
+  if (!confirm || (confirm.type && confirm.type !== 'boolean')) return args;
+  session._onStep?.(`Agent: ${server}.${tool} confirmed by the run approval — written as approved`);
+  return { ...args, confirm: true };
+}
+
 async function awaitToolApproval(session, { runId, server, tool, args, callId }) {
   if (!toolRequiresApproval(session, server, tool) || !session._requestApproval) return;
   const itemId = `approval-${callId ?? `${server}-${tool}`}`;
@@ -2248,6 +2267,7 @@ export function createAgentGraph(options = {}) {
         } else if (server !== 'shell') {
           if (!isReadOnlyMcpCall(state.session, server, tool)) {
             await awaitRunApproval(state.session, { runId, tool: toolName });
+            args = confirmApprovedWrite(state.session, server, tool, args);
           }
           await awaitToolApproval(state.session, {
             runId,

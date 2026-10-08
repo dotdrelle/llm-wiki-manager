@@ -282,3 +282,32 @@ test('multiple failed tasks retain pre-execution evidence across plan revisions'
   assert.equal(operations.filter(([op]) => op === 'act').length, 2);
   assert.deepEqual(operations.filter(([op]) => op === 'inspect').map(([, target]) => target).sort(), ['first', 'second']);
 });
+
+test('a successful run the check could not verify stays a success, and large receipts no longer truncate the facts', async () => {
+  const { session, task } = fixture();
+  // juno: a 43-file ingest, every task succeeded, the check blocked because
+  // its diagnostics failed and its facts were truncated — "Run failed".
+  const refs = Array.from({ length: 43 }, (_, i) => ({ type: 'file', ref: `wiki/sources/document-${i}/a-rather-long-section-name-${i}.md` }));
+  dispatchAgentEvent(session, createAgentEvent('plan_set', { runId: 'run', payload: { planRevision: 0, steps: [{ ...task, status: 'done', outputRefs: refs,
+    result: { status: 'succeeded', agentInstanceId: 'service-1', jobId: 'job-1', rawStatus: { result: { outputRefs: refs, log: 'x'.repeat(30_000) } } } }] } }));
+  let facts = null;
+  session.llm = { completeWithTools: async ({ system, messages }) => {
+    if (!system.includes('scheduler checkpoint')) return { content: 'ok' };
+    facts ??= JSON.parse(messages[0].content);
+    if (messages.length === 1) return { content: '', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'service__peek', arguments: '{}' } }] };
+    return answer({ action: 'blocked', summary: 'Could not verify the written pages.' });
+  } };
+  const outcome = await superviseObjective(session, 'Ingest the pending sources', { failures: [] }, { runId: 'run', state: state(),
+    callTool: async () => { throw new Error('upstream refused'); } });
+  assert.equal(facts.truncated, false);
+  assert.equal(outcome.blocked, false);
+  const logs = session.agentEvents.filter((event) => event.type === 'runtime_log').map((event) => event.payload?.message ?? event.payload?.line);
+  assert.ok(logs.some((line) => /unavailable \(degraded\): upstream refused/.test(line)), logs.join('\n'));
+  assert.ok(logs.some((line) => /success stands, unverified/.test(line)));
+  // Without a degraded check, a clean "blocked" on a success is still honoured.
+  const clean = fixture();
+  dispatchAgentEvent(clean.session, createAgentEvent('plan_set', { runId: 'run', payload: { planRevision: 0, steps: [{ ...clean.task, status: 'done' }] } }));
+  clean.session.llm = { completeWithTools: async ({ system }) => system.includes('scheduler checkpoint')
+    ? answer({ action: 'blocked', summary: 'The notification part of the objective was never planned.' }) : { content: 'ok' } };
+  assert.equal((await superviseObjective(clean.session, 'Act then notify', { failures: [] }, { runId: 'run', state: state() })).blocked, true);
+});

@@ -97,7 +97,9 @@ export async function investigateRun(session, facts, { signal, runId, callTool =
           degraded = true;
           const code = /^diagnostic_[a-z_]+$/.test(error?.message ?? '') ? error.message : 'diagnostic_unavailable';
           outcome = JSON.stringify({ error: code, workspace: session.workspace, effects: 'No action was executed.' });
-          emitRuntimeLog(session, `orchestrator: diagnostic ${name.slice(0, 100)} unavailable (degraded)`);
+          // Say why: "unavailable" alone left juno's four failed reads unexplained.
+          const cause = code === 'diagnostic_unavailable' ? String(sanitizeDiagnostic(String(error?.message ?? error)).value).slice(0, 160) : code;
+          emitRuntimeLog(session, `orchestrator: diagnostic ${name.slice(0, 100)} unavailable (degraded): ${cause}`);
         }
         evidence.push({ tool: name, result: outcome });
         messages.push({ role: 'tool', tool_call_id: call.id, content: outcome });

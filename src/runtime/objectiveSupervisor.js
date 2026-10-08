@@ -57,9 +57,14 @@ export async function superviseObjective(session, objective, result, { runId, si
     arguments: failure?.result?.executionContext?.arguments ?? task?.arguments,
     rejectedBeforeExecution: failure?.result?.executionContext?.rejectedBeforeExecution === true,
     error: failure?.result?.error,
+    // Bounded per task: a 43-file ingest's references and receipt pushed the
+    // facts past the 20 000-char cut, and truncated facts only allow
+    // explain/blocked — a large successful run could only end "blocked".
     completed: plan.map((item) => ({ id: item.id, label: item.label, status: item.status, capability: item.requiredCapability,
-      operation: item.operation, arguments: item.arguments, outputRefs: item.outputRefs,
-      evidence: item.result?.rawStatus?.result ?? item.result })),
+      operation: item.operation, arguments: boundedFact(item.arguments, 1500),
+      outputRefCount: Array.isArray(item.outputRefs) ? item.outputRefs.length : 0,
+      outputRefs: Array.isArray(item.outputRefs) ? item.outputRefs.slice(0, 10) : item.outputRefs,
+      evidence: boundedFact(item.result?.rawStatus?.result ?? item.result, 2500) })),
     failures: failureDiagnostics(session, plan),
     capabilities: Object.values(capabilities).flat().map((item) => ({ id: item.capability.id, description: item.capability.description,
       supportedOperations: item.capability.supportedOperations, inputSchema: item.capability.inputSchema,
@@ -83,7 +88,14 @@ export async function superviseObjective(session, objective, result, { runId, si
     }
   }
   const failedPlan = plan.some((item) => isFailed(item.status));
-  const blocked = !recovery.recovered && (proposal?.action === 'blocked' || (proposal?.action === 'complete' && failedPlan));
+  // A plan whose every task succeeded is not failed by a check that could not
+  // look: with restricted facts or unavailable diagnostics, "blocked" means
+  // "unverified", and the agents' receipts stand. juno: a 43-file ingest
+  // succeeded, then ended "Run failed" because the check could not verify it.
+  const unverifiedSuccess = proposal?.action === 'blocked' && !failedPlan && plan.every((item) => isSuccessful(item.status))
+    && (diagnosis.restricted || diagnosis.degraded);
+  if (unverifiedSuccess) emitRuntimeLog(session, 'orchestrator: objective check could not verify a successful run (facts truncated or diagnostics unavailable) — the agents\' success stands, unverified');
+  const blocked = !recovery.recovered && !unverifiedSuccess && (proposal?.action === 'blocked' || (proposal?.action === 'complete' && failedPlan));
   const summary = safeSummary(proposal?.summary) || (failedPlan
     ? `Execution failed: ${safeSummary(failure?.result?.error?.message ?? failure?.result?.error?.code ?? 'see task diagnostics')}. No safe continuation was established.`
     : 'Execution receipts are available; the objective could not be independently assessed.');
@@ -108,6 +120,14 @@ export async function superviseObjective(session, objective, result, { runId, si
   dispatchAgentEvent(session, createAgentEvent('orchestration.checkpoint', { origin: 'objective_supervisor', runId, workspace: session.workspace,
     payload: { message: `orchestrator: checkpoint ${state.checkpoints}/${MAX_SUPERVISOR_CHECKPOINTS}; ${incident.decision}; diagnostics=${diagnosis.calls}`, supervisorIncident: incident } }));
   return { ...recovery, diagnosed: failedPlan, blocked, reason: summary, degraded: diagnosis.degraded };
+}
+
+// One fact kept whole when small, cut to a marked excerpt otherwise.
+function boundedFact(value, max) {
+  if (value === undefined || value === null) return value;
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  if (text === undefined || text.length <= max) return value;
+  return `${text.slice(0, max)}… [${text.length - max} chars omitted]`;
 }
 
 // The supervisor states FACTS (English data); Donna words them in the

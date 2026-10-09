@@ -2907,3 +2907,32 @@ test('runtime server cancel of an orphaned run cancels its agent jobs first', as
     await handle.close();
   }
 });
+
+test('GET /workspace/stats answers from the shared container stats, and requires a workspace', async (t) => {
+  const asked = [];
+  let closed = false;
+  let handle;
+  try {
+    handle = await startRuntimeServer({ host: '127.0.0.1', port: 0,
+      store: { getState: () => ({ status: 'idle' }), listEvents: () => [] }, session: {},
+      containerStats: {
+        snapshot: (workspace) => { asked.push(workspace); return { ok: true, workspace, state: 'live', containers: 2, cpuPercent: 12 }; },
+        close: () => { closed = true; },
+      },
+    });
+  } catch (error) {
+    if (error.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw error;
+  }
+  try {
+    const ok = await fetch(`http://127.0.0.1:${handle.port}/workspace/stats?workspace=juno`);
+    assert.equal(ok.status, 200);
+    assert.equal((await ok.json()).cpuPercent, 12);
+    const missing = await fetch(`http://127.0.0.1:${handle.port}/workspace/stats`);
+    assert.equal(missing.status, 400);
+    assert.deepEqual(asked, ['juno']);
+  } finally {
+    await handle.close();
+  }
+  assert.equal(closed, true, 'closing the runtime stops the docker stats streams');
+});

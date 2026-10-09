@@ -103,11 +103,12 @@ src/activity/               Aggregated activity: synthesis, weighted progress, d
 src/graph/                  Run/Task graph projection + visibility policy
 src/runtime/                Agentic runtime HTTP/SSE server + SQLite store
   store.js                  SQLite persistence (events, runs, queue_items, agents, tasks, task_groups, task_dependencies, task_assignments, task_attempts, task_results, approval_grants, plan_revisions)
-  server.js                 HTTP/SSE endpoints: /health /state /events/stream /run /turn /cancel /kill /resume /approve /delegate /control /conversation/truncate /conversation/compact /memory/facts /memory/history /memory/workspace /config/profiles /config/use /mcp/endpoints (+ the public /login routes)
+  server.js                 HTTP/SSE endpoints: /health /state /workspace/stats /events/stream /run /turn /cancel /kill /resume /approve /delegate /control /conversation/truncate /conversation/compact /memory/facts /memory/history /memory/workspace /config/profiles /config/use /mcp/endpoints (+ the public /login routes)
   runner.js                 runRuntimeAgenticWorkflow: loop → evaluate → replan; parallel plan execution delegates to the orchestrator dispatcher (no child LLM sessions)
   recoveryManager.js        Boot-time re-attachment of active tasks via agent_status
   approvals.js              Run-level and tool-level approval gate; POST /approve handler
   supervisor.js             Background activity poller; pollBusy set shared with runner
+  containerStats.js         Workspace containers' summed docker stats for serve's Run execution view: one shared streaming `docker stats` per watched workspace, started on request, stopped 30 s after the last one, never an event
   lifecycle.js              ensureRuntime: health-check, spawn Node child, inject token
   auth.js                   Bearer token resolution and validation
   client.js                 HTTP client for /run /cancel /resume /approve /state /events/stream

@@ -54,6 +54,7 @@ import {
   verifySessionToken,
 } from './loginSession.js';
 import { loginPageHtml, loginSuccessFragment } from './loginPage.js';
+import { createContainerStats } from './containerStats.js';
 
 /*
  What the public login page and `/login/status` may say about this runtime:
@@ -123,6 +124,7 @@ export function startRuntimeServer({
   listActiveRuns = null,
   cancelRunAgentJobs = defaultCancelRunAgentJobs,
   exitOnShutdown = process.env.WIKI_MANAGER_RUNTIME_CHILD === '1',
+  containerStats = createContainerStats(),
 } = {}) {
   const loginAbout = {
     version: RUNTIME_PACKAGE_VERSION,
@@ -372,6 +374,18 @@ export function startRuntimeServer({
           cacertPath: activeCacertPath(),
           nodeExtraCaCerts: process.env.NODE_EXTRA_CA_CERTS ?? null,
         });
+        return;
+      }
+      // Live resource use of the workspace's own containers (serve's Run
+      // execution view). Read from one shared, lazily started `docker stats`
+      // stream (containerStats.js); never an event, never persisted.
+      if (request.method === 'GET' && url.pathname === '/workspace/stats') {
+        const workspace = workspaceFromUrl(url);
+        if (!workspace) {
+          sendJson(response, 400, { ok: false, error: 'workspace is required' });
+          return;
+        }
+        sendJson(response, 200, containerStats.snapshot(workspace));
         return;
       }
       if (request.method === 'GET' && url.pathname === '/state') {
@@ -989,6 +1003,7 @@ export function startRuntimeServer({
         // one database monitored the same cycle twice).
         await maintenance?.close();
         stopMaintenanceTransport();
+        containerStats.close();
         sendJson(response, 202, { shutdown: true });
         setImmediate(() => {
           for (const client of clients) client.response.end();
@@ -1283,7 +1298,7 @@ export function startRuntimeServer({
         port: typeof address === 'object' && address ? address.port : port,
         publish,
         drainControl: (context) => drainControlQueue(context),
-        close: async () => { stopMaintenanceTransport(); await maintenance?.close(); return new Promise((closeResolve, closeReject) => {
+        close: async () => { stopMaintenanceTransport(); containerStats.close(); await maintenance?.close(); return new Promise((closeResolve, closeReject) => {
           clearInterval(loginAttemptPruneTimer);
           if (corpusScanTimer) clearInterval(corpusScanTimer);
           for (const client of clients) client.response.end();

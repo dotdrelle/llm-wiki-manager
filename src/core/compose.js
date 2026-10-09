@@ -118,8 +118,14 @@ export function serviceDescription(name) {
   return serviceDescriptions()[name] ?? null;
 }
 
+// The Compose project of a workspace's own services (wiki, serve, mcp-http,
+// production-mcp). The shared agents stack is a separate project.
+export function workspaceProjectName(workspace) {
+  return `wiki-${workspace}`.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+}
+
 function projectName(session) {
-  return `wiki-${session.workspace}`.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+  return workspaceProjectName(session.workspace);
 }
 
 function composeBaseArgs(session) {

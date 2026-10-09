@@ -12,6 +12,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
 import { buildAgentSystemPrompt, formatLlmUnavailableMessage, isOrchestrationBypassTool } from '../agent/graph.js';
+import { summarizeToolArguments } from '../core/progressNotes.js';
 import { openWikiPagesPromptLine } from '../core/openWikiPages.js';
 import { handleSlashCommand, rawCommandAgentPrompt, refreshMcpRuntimeStatus } from '../commands/slash.js';
 import { serviceChoices as composeServiceChoices, serviceDescription } from '../core/compose.js';
@@ -1763,7 +1764,10 @@ async function runChatToolLoop({ input, session, history, donnaMessage, onUpdate
         onStep?.(`Chat: ${tool} same-workspace conversation…`);
         return await session.conversationActions[tool](args);
       }
-      onStep?.(`Chat: read ${server} ${tool}…`);
+      // Same shape as the agent loop's tool note: the main arguments say what
+      // the connector is looking for (serve's >_ line shows them).
+      const argsSummary = summarizeToolArguments(call.function?.arguments);
+      onStep?.(`Chat: read ${server}.${tool}${argsSummary ? ` (${argsSummary})` : ''}…`);
       const res = await callMcpTool(session.mcp, server, tool, args, session._abortSignal);
       const artifact = artifactFromToolCall(tool, args);
       if (artifact) rememberArtifact(session, artifact);

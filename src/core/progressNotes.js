@@ -20,8 +20,33 @@
 // to advertise six skills against eleven. The tool name is data; the sentence
 // around it is prose.
 
-export function toolStartNote(name) {
-  return `Using ${name || 'a tool'}…`;
+// The tool's main arguments ride along: "Using tavily.search" says which
+// connector is busy, not what it is looking for.
+export function toolStartNote(name, argsSummary = '') {
+  return `Using ${name || 'a tool'}${argsSummary ? ` (${argsSummary})` : ''}…`;
+}
+
+const MAX_SPINNER_ARG_LENGTH = 96;
+
+export function summarizeToolArguments(rawArguments) {
+  if (!rawArguments || rawArguments === '{}') return '';
+  try {
+    const parsed = JSON.parse(rawArguments);
+    const entries = Object.entries(parsed ?? {});
+    if (entries.length === 0) return '';
+    const summary = entries
+      .slice(0, 4)
+      .map(([key, value]) => {
+        const rendered = typeof value === 'string' ? value : JSON.stringify(value);
+        return `${key}=${String(rendered).replace(/\s+/g, ' ').slice(0, 36)}`;
+      })
+      .join(', ');
+    return summary.length > MAX_SPINNER_ARG_LENGTH
+      ? `${summary.slice(0, MAX_SPINNER_ARG_LENGTH - 3)}...`
+      : summary;
+  } catch {
+    return String(rawArguments).replace(/\s+/g, ' ').slice(0, MAX_SPINNER_ARG_LENGTH);
+  }
 }
 
 function noteReason(detail) {

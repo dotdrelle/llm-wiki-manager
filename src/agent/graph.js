@@ -24,7 +24,7 @@ import { RESERVED_SLASH_COMMANDS, explicitSkillReference, objectiveNamesSkill } 
 import { handleSlashCommand } from '../commands/slash.js';
 import { extractActivity, formatActivitySummary, parseJsonText, sessionActivities } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { toolResultNote, toolStartNote } from '../core/progressNotes.js';
+import { summarizeToolArguments, toolResultNote, toolStartNote } from '../core/progressNotes.js';
 import { openWikiPagesPromptLine } from '../core/openWikiPages.js';
 import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
 import { loadWorkspaceProfile, updateWorkspaceProfilePreference } from '../core/profile.js';
@@ -46,7 +46,6 @@ const MAX_TOOL_ITERATIONS = 80;
  * cycle, that would exhaust the budget just as surely.
  */
 const MAX_SKILL_DEPTH = 3;
-const MAX_SPINNER_ARG_LENGTH = 96;
 
 // Pseudo-servers handled directly by the tool executor (not present in
 // session.mcp). Listed so unqualified names like "plan_set" resolve the same
@@ -633,27 +632,6 @@ function unresolvedTargetForDonna(rawFailure) {
     instruction:
       'The target the user named does not match an existing file. Look up the available targets with the read-only list tools, then retry the delegation with the exact resolved path, or ask the user to confirm which target they meant. Never widen to an all-targets operation, and never expose exception names, tool names, or internal routing details.',
   });
-}
-
-function summarizeToolArguments(rawArguments) {
-  if (!rawArguments || rawArguments === '{}') return '';
-  try {
-    const parsed = JSON.parse(rawArguments);
-    const entries = Object.entries(parsed ?? {});
-    if (entries.length === 0) return '';
-    const summary = entries
-      .slice(0, 4)
-      .map(([key, value]) => {
-        const rendered = typeof value === 'string' ? value : JSON.stringify(value);
-        return `${key}=${String(rendered).replace(/\s+/g, ' ').slice(0, 36)}`;
-      })
-      .join(', ');
-    return summary.length > MAX_SPINNER_ARG_LENGTH
-      ? `${summary.slice(0, MAX_SPINNER_ARG_LENGTH - 3)}...`
-      : summary;
-  } catch {
-    return String(rawArguments).replace(/\s+/g, ' ').slice(0, MAX_SPINNER_ARG_LENGTH);
-  }
 }
 
 function googleOAuthUrlFromMessages(messages) {
@@ -2123,7 +2101,7 @@ export function createAgentGraph(options = {}) {
       // is the only thing that tells the user what is running while it runs.
       emitAgentEvent(state.session, 'assistant_progress', 'tool', {
         callId: call.id,
-        message: toolStartNote(toolName),
+        message: toolStartNote(toolName, argsSummary),
       });
       // A plan represents work, never observation. Read-only inventory/status
       // calls stay out of Plan even when Donna uses them to answer a question.

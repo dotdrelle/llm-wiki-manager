@@ -25,6 +25,7 @@ import { handleSlashCommand } from '../commands/slash.js';
 import { extractActivity, formatActivitySummary, parseJsonText, sessionActivities } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { summarizeToolArguments, toolResultNote, toolStartNote } from '../core/progressNotes.js';
+import { dsmlInvokedName, dsmlToolCalls, hasDsmlMarkup } from '../core/textArtifacts.js';
 import { openWikiPagesPromptLine } from '../core/openWikiPages.js';
 import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
 import { loadWorkspaceProfile, updateWorkspaceProfilePreference } from '../core/profile.js';
@@ -1776,6 +1777,21 @@ export function createAgentGraph(options = {}) {
         result = await invokeWithTools(delegateTool, 'auto');
       }
 
+      // DeepSeek sometimes writes its call in its native markup (DSML) as
+      // TEXT instead of a tool_call: shown to the user it read like an attack
+      // and ran nothing. A complete call to a tool offered in this turn is the
+      // closest lower-capability form of a tool call: it is recovered and goes
+      // through the same validation and approval as any call. Anything else
+      // in DSML (incomplete, unknown tool) is rejected and retried below.
+      if (!(result.tool_calls?.length > 0) && hasDsmlMarkup(result.content)) {
+        const offered = new Set(tools.map((item) => item?.function?.name).filter(Boolean));
+        const recovered = dsmlToolCalls(result.content);
+        if (recovered && recovered.every((call) => offered.has(call.function.name))) {
+          state.session._onStep?.(`Agent: tool call written as DSML text recovered (${recovered.map((call) => call.function.name).join(', ')})`);
+          result = { ...result, content: '', message: { role: 'assistant', content: null }, tool_calls: recovered };
+        }
+      }
+
       if (result.tool_calls?.length > 0) {
         state.session._onStreamReset?.();
         const malformed = invalidToolCalls(result.tool_calls);
@@ -1841,7 +1857,8 @@ export function createAgentGraph(options = {}) {
       // to contain JSON (a config excerpt, an API sample) must go through
       // untouched, which is why this is not a "content starts with {" test.
       const bareCall = (tools.length > 0 ? bareToolCallJson(result.content, tools) : null)
-        ?? narratedToolCallText(result.content);
+        ?? narratedToolCallText(result.content)
+        ?? (hasDsmlMarkup(result.content) ? (dsmlInvokedName(result.content) ?? 'a tool') : null);
       if (bareCall) {
         const retries = Number(state.invalidToolCallRetries ?? 0);
         // Retry only when a tool can still be called; when none are offered (the

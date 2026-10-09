@@ -564,3 +564,23 @@ test('no condensation when the base request alone nearly fills the budget', asyn
   assert.equal(condensed, false);
   assert.equal(out.stopReason, 'budget');
 });
+
+test('a read written in DSML text is recovered as a call; leftover markup is never the answer', async () => {
+  const dsml = '<｜DSML｜function_calls>\n<｜DSML｜invoke name="wiki__wiki_read_page">\n<｜DSML｜parameter name="path" string="true">wiki/a.md</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜function_calls>';
+  let round = 0;
+  const executed = [];
+  const llm = {
+    async completeWithTools() {
+      round += 1;
+      if (round === 1) return { content: dsml, tool_calls: [] };
+      return { content: 'from the page', tool_calls: [] };
+    },
+  };
+  const out = await runBoundedToolLoop({
+    llm,
+    tools: [{ function: { name: 'wiki__wiki_read_page' } }],
+    executeCall: async (call) => { executed.push([call.function.name, call.function.arguments]); return 'PAGE'; },
+  });
+  assert.deepEqual(executed, [['wiki__wiki_read_page', '{"path":"wiki/a.md"}']]);
+  assert.equal(out.content, 'from the page');
+});

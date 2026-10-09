@@ -1,4 +1,5 @@
 import { truncateToolResult } from './mcp.js';
+import { dsmlToolCalls, hasDsmlMarkup, stripDsmlArtifacts } from './textArtifacts.js';
 
 // Minimal, side-effect-free bounded tool-use loop.
 //
@@ -85,7 +86,7 @@ export async function runBoundedToolLoop({
     iterations += 1;
     onStep?.(iterations, cap);
     let streamedText = false;
-    const result = canStream
+    let result = canStream
       ? await llm.streamWithTools({
           system,
           tools,
@@ -101,10 +102,25 @@ export async function runBoundedToolLoop({
           toolChoice: 'auto',
           signal,
         });
-    const calls = result?.tool_calls ?? [];
-    if (calls.length > 0 && streamedText) onTextReset?.();
+    let calls = result?.tool_calls ?? [];
+    // A read written in DeepSeek's DSML markup instead of a tool_call: a
+    // complete call to an offered tool is recovered (the same allow-list
+    // check as any call, in executeCall); the rest of the markup is dropped,
+    // never shown as the answer.
+    let dsmlText = false;
+    if (calls.length === 0 && hasDsmlMarkup(result?.content ?? result?.message?.content)) {
+      dsmlText = true;
+      const offered = new Set(tools.map((item) => item?.function?.name).filter(Boolean));
+      const recovered = dsmlToolCalls(result?.content ?? result?.message?.content);
+      if (recovered && recovered.every((call) => offered.has(call.function.name))) {
+        calls = recovered;
+        result = { ...result, content: '', message: { role: 'assistant', content: null, tool_calls: recovered }, tool_calls: recovered };
+      }
+    }
+    if (calls.length > 0 && (streamedText || dsmlText)) onTextReset?.();
     if (calls.length === 0) {
-      const content = result?.content ?? result?.message?.content ?? '';
+      const raw = result?.content ?? result?.message?.content ?? '';
+      const content = dsmlText ? stripDsmlArtifacts(raw) : raw;
       // gpt-oss (Albert, observed) sometimes ends a turn with neither text
       // nor a tool call: only its reasoning channel was filled. That is not
       // an answer — fall through to the final request below rather than

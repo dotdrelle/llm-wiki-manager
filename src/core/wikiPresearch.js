@@ -25,6 +25,21 @@ export function isProductHelpQuestion(input) {
 // announced on the step line and the turn continues with its normal tools.
 const WIKI_PRESEARCH_TOOL = 'wiki_search_context';
 
+// What the pre-search found, for the step line: the user otherwise sees
+// "Searching" and then a long silence while the model reads the results.
+// Counts only — never an excerpt.
+export function presearchFoundNote(text) {
+  try {
+    const results = JSON.parse(String(text ?? ''))?.results;
+    if (!Array.isArray(results)) return '';
+    if (!results.length) return 'Wiki search: nothing found';
+    const pages = new Set(results.map((item) => item?.path).filter(Boolean)).size;
+    return `Wiki search: ${results.length} passage${results.length > 1 ? 's' : ''} from ${pages} page${pages > 1 ? 's' : ''}`;
+  } catch {
+    return '';
+  }
+}
+
 export async function wikiSearchContextMessages(input, session, allowedTools, onStep) {
   const text = String(input ?? '').trim();
   // A greeting or a one-word reply is no question to search for.
@@ -43,7 +58,10 @@ export async function wikiSearchContextMessages(input, session, allowedTools, on
       { question: text, includeRaw: true },
       session._abortSignal,
     );
-    const content = truncateToolResult(formatMcpToolResult(result)).trim();
+    const formatted = formatMcpToolResult(result);
+    const found = presearchFoundNote(formatted);
+    if (found) onStep?.(found);
+    const content = truncateToolResult(formatted).trim();
     if (!content) return [];
     return [{
       role: 'user',

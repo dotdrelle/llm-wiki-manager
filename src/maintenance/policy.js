@@ -3,7 +3,7 @@ export const ACTIONS = ['sync','ingest','doctor','index','rebuild','curate','bui
 export const DEFAULT_POLICY = {
   enabled: false, mode:null, actions: { sync:'auto', ingest:'ask', doctor:'auto', index:'auto', rebuild:'auto', curate:'auto', build:'auto', deliver:'ask', mail:'auto' },
   mail: { to: [], on: ['failure','decision','daily'] },
-  limits: { cyclesPerDay:12, buildsPerDay:4, actionsPerDay:40, actionsPerCycle:10, sourceQuietMinutes:10 },
+  limits: { cyclesPerDay:96, buildsPerDay:50, actionsPerDay:500, actionsPerCycle:30, sourceQuietMinutes:10 },
   buildSchedule: { mode:'window', start:'12:00', end:'14:00', timezone:'Europe/Paris' },
 };
 export const fingerprint = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');

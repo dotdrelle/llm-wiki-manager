@@ -297,9 +297,9 @@ nothing and is reported by `/maintenance status`. User view:
 | `defaults.mail.to` | `[]` | the only recipients maintenance may email |
 | `defaults.mail.on` | `failure, decision, daily` | immediate alerts (failure, decision) and a digest of the previous day |
 | `defaults.buildSchedule` | `12:00–14:00 Europe/Paris` | `{mode: "window", start, end, timezone}`; set it to `null` to disable automatic builds |
-| `defaults.limits.cyclesPerDay` | `12` | agent cycles (routine work is not counted) |
-| `defaults.limits.buildsPerDay` | `4` | build attempts, reserved at admission |
-| `defaults.limits.actionsPerDay` / `actionsPerCycle` | `40` / `10` | every action, routine included; gateway cycles' LLM calls also count here (per-cycle ceiling: `actionsPerCycle × 3` calls) |
+| `defaults.limits.cyclesPerDay` | `96` | agent cycles (routine work is not counted) |
+| `defaults.limits.buildsPerDay` | `50` | build attempts, reserved at admission — the build window is what groups builds; this is a runaway guard, not a quota |
+| `defaults.limits.actionsPerDay` / `actionsPerCycle` | `500` / `30` | every action, routine included; gateway cycles' LLM calls also count here (per-cycle ceiling: `actionsPerCycle × 3` calls) |
 | `defaults.limits.sourceQuietMinutes` | `10` | a pending file younger than this is not offered for ingest |
 
 The packaged example enables all listed actions and uses `human` mode. In older

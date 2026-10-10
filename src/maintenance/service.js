@@ -257,7 +257,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
         try{
           if(provider.runtimeProvider)await provider.runtimeProvider.cancel(job);
           else await callTool(ctx.session.mcp,provider.serverName,'agent_cancel',{jobId:job});
-        }catch(error){log(workspace,'degraded',`${candidate.summary} — the stop request was not accepted: ${describeError(error.message)}`,{cycleId,action:candidate.action});}
+        }catch(error){log(workspace,'degraded',`${candidate.summary} — the stop request was not accepted: ${describeError(error.message)}`,{cycleId,action:candidate.action,target:candidate.target});}
       };
       preemption.cancel=stopJob;
       if(preemption.requested)await stopJob();
@@ -284,13 +284,13 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       if(!finished&&preemption.requested&&!timedOut){
         store.updateReservation(id,{outcome:'cancelled',preempted:true,result});
         store.settle(id,{started:false});if(candidate.action==='build')store.settle(id+':build',{started:false});
-        log(workspace,'interrupted',`${candidate.summary} — paused so your ${preemption.by} goes first; it resumes at a later scan`,{cycleId,action:candidate.action,jobId:job});
+        log(workspace,'interrupted',`${candidate.summary} — paused so your ${preemption.by} goes first; it resumes at a later scan`,{cycleId,action:candidate.action,target:candidate.target,jobId:job});
         return {status:'preempted',result};
       }
       if(!finished&&timedOut){
         store.updateReservation(id,{outcome:'failed',timedOut:true,result});
         store.settle(id);if(candidate.action==='build')store.settle(id+':build');
-        log(workspace,'failure',`${candidate.summary} — stopped after ${ACTION_CEILING_MINUTES[candidate.action]??60} min without finishing (maintenance time limit)`,{cycleId,action:candidate.action,jobId:job});
+        log(workspace,'failure',`${candidate.summary} — stopped after ${ACTION_CEILING_MINUTES[candidate.action]??60} min without finishing (maintenance time limit)`,{cycleId,action:candidate.action,target:candidate.target,jobId:job});
         return {status:'failed',result};
       }
       const outcome=completeJob(workspace,ctx,id,result,cycleId,view.facts.wikiHash);
@@ -304,12 +304,12 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
         const why=shutdown.signal.aborted?'still running in its agent; followed again when the runtime restarts'
           :store.paused(workspace)?'stopped by you; the job is being cancelled'
           :'the agent cycle ended first; the job keeps running and the next scan follows it';
-        log(workspace,'interrupted',`${candidate.summary} — ${why}`,{cycleId,action:candidate.action});
+        log(workspace,'interrupted',`${candidate.summary} — ${why}`,{cycleId,action:candidate.action,target:candidate.target});
       }
-      else if(/^maintenance_preempted/.test(String(error.message)))log(workspace,'interrupted',`${candidate.summary} — not started: your ${preemption.by} goes first; it resumes at a later scan`,{cycleId,action:candidate.action});
-      else if(/^maintenance_budget_exhausted:cycle/.test(String(error.message)))log(workspace,'waiting',`${candidate.summary} — cycle action budget reached; retried at the next scan`,{cycleId,action:candidate.action,detail:error.message});
-      else if(/^maintenance_budget_exhausted:day/.test(String(error.message)))log(workspace,'budget_exhausted',`${candidate.summary} — waiting until tomorrow: ${describeError(error.message)}`,{cycleId,action:candidate.action,identity,detail:error.message});
-      else log(workspace,'failure',`${candidate.summary} — not done: ${describeError(error.message)}`,{cycleId,action:candidate.action,identity,detail:error.message});
+      else if(/^maintenance_preempted/.test(String(error.message)))log(workspace,'interrupted',`${candidate.summary} — not started: your ${preemption.by} goes first; it resumes at a later scan`,{cycleId,action:candidate.action,target:candidate.target});
+      else if(/^maintenance_budget_exhausted:cycle/.test(String(error.message)))log(workspace,'waiting',`${candidate.summary} — cycle action budget reached; retried at the next scan`,{cycleId,action:candidate.action,target:candidate.target,detail:error.message});
+      else if(/^maintenance_budget_exhausted:day/.test(String(error.message)))log(workspace,'budget_exhausted',`${candidate.summary} — waiting until tomorrow: ${describeError(error.message)}`,{cycleId,action:candidate.action,target:candidate.target,identity,detail:error.message});
+      else log(workspace,'failure',`${candidate.summary} — not done: ${describeError(error.message)}`,{cycleId,action:candidate.action,target:candidate.target,identity,detail:error.message});
       throw error;
     }finally{unfollowRoles?.();setLive(workspace,id,null);release();const left=(inflight.get(workspace)??1)-1;if(left>0)inflight.set(workspace,left);else inflight.delete(workspace);}
   }
@@ -330,12 +330,12 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     store.updateReservation(id,{outcome,result});store.settle(id);
     if(candidate.action==='build')store.settle(id+':build');
     if(outcome!=='cancelled')store.completeRequests(workspace,reservation.identity,outcome);
-    if(nothingToCurate)log(workspace,'nothing_to_curate',`Curation not started: ${nothingToCurate}; no curation roles ran. Ingest source documents first, then curate.`,{cycleId,action:candidate.action});
+    if(nothingToCurate)log(workspace,'nothing_to_curate',`Curation not started: ${nothingToCurate}; no curation roles ran. Ingest source documents first, then curate.`,{cycleId,action:candidate.action,target:candidate.target});
     else{
       // The gateway reports `error` as a string (CME as a string too); reading
       // only `.message` silently dropped the reason and left a bare "Failed:".
       const rawError=typeof result.error==='string'?result.error:result.error?.message??result.result?.error;
-      log(workspace,outcome==='done'?'action_done':outcome==='cancelled'?'interrupted':'failure',`${outcome==='done'?'Done':outcome==='cancelled'?'Cancelled':'Failed'}: ${candidate.summary}${outcome==='failed'&&rawError?` — ${describeError(rawError)}`:''}`,{cycleId,action:candidate.action,jobId:reservation.jobId,...(outcome==='failed'&&rawError?{detail:String(rawError)}:{})});
+      log(workspace,outcome==='done'?'action_done':outcome==='cancelled'?'interrupted':'failure',`${outcome==='done'?'Done':outcome==='cancelled'?'Cancelled':'Failed'}: ${candidate.summary}${outcome==='failed'&&rawError?` — ${describeError(rawError)}`:''}`,{cycleId,action:candidate.action,target:candidate.target,jobId:reservation.jobId,...(outcome==='failed'&&rawError?{detail:String(rawError)}:{})});
     }
     return outcome;
   }

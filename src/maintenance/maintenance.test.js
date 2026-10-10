@@ -431,3 +431,28 @@ test('a job its agent no longer knows ends the stop and the reconciliation inste
     assert.equal(h.service.store.reservations('x').find(r=>r.id==='lost2').status,'consumed');
   }finally{await h.service.close();h.db.close();}
 });
+
+test('an ask-only candidate files its decision and starts no model cycle',async()=>{
+  // juno: four rebuilds read as hand-edited started a gateway cycle every five
+  // minutes that ended on "no action", and no decision ever reached the panel.
+  let launches=0;const runtime={execute:async()=>{launches++;return {runId:'r'};},status:async()=>({status:'completed'}),cancel:async()=>{}};
+  const h=harness({facts:{pending:[],proposals:['p.json'],deliverables:[{template:'templates/a.md',output:'deliverables/a.md',version:'v',fresh:false,reasons:['output_modified'],artifacts:{}}]},runtime});
+  try{
+    h.policy({maintenanceAccess:{defaults:{enabled:true,actions:{build:'auto'},buildSchedule:{mode:'window',start:'00:00',end:'23:59',timezone:'UTC'},limits:{sourceQuietMinutes:0}}}});
+    await h.service.tick('x');await h.service.tick('x');
+    assert.equal(launches,0,'no model cycle for work that waits on a human');
+    const requests=h.service.status('x').requests.filter(r=>r.action==='build');
+    assert.equal(requests.length,1,'one decision, filed once');
+    assert.equal(requests[0].status,'pending');
+  }finally{await h.service.close();h.db.close();}
+});
+
+test('the agent does not see routine requests the manager runs itself',async()=>{
+  const h=harness({facts:{pending:[]}});
+  try{
+    h.service.store.propose('x',{action:'sync',target:'confluence',version:'old',args:{},summary:'Synchronize'});
+    const forAgent=await h.service.state('x',{forAgent:true});
+    assert.equal(forAgent.requests.some(r=>r.action==='sync'),false);
+    assert.equal((await h.service.state('x')).requests.some(r=>r.action==='sync'),true);
+  }finally{await h.service.close();h.db.close();}
+});

@@ -135,7 +135,9 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     const failedToday=new Set(store.relevantEvents(workspace,{kinds:['failure'],since:day}).map((e)=>e.identity).filter(Boolean));
     const available=candidates.filter((candidate)=>!budgetBlocked.has(fingerprint(candidate))&&!failedToday.has(fingerprint(candidate))&&!store.wasCompleted(workspace,candidate,day));
     // The agent never sees routine work: the manager already runs it without a model.
-    return {policy:p,paused:store.paused(workspace),facts,candidates:available.filter((c)=>!forAgent||!ROUTINE.has(c.action)).map((c)=>({...c,mode:modeFor(p,c),outsideWindow:c.action==='build'&&!inBuildWindow(p,now())})),requests,reservations,cycles:store.cycles(workspace).map(({secret,...c})=>c),events:store.events(workspace)};
+    // Nor its decisions: an approved sync whose candidate had changed was
+    // retried by the agent at every cycle (maintenance_target_not_current).
+    return {policy:p,paused:store.paused(workspace),facts,candidates:available.filter((c)=>!forAgent||!ROUTINE.has(c.action)).map((c)=>({...c,mode:modeFor(p,c),outsideWindow:c.action==='build'&&!inBuildWindow(p,now())})),requests:forAgent?requests.filter((r)=>!ROUTINE.has(r.action)):requests,reservations,cycles:store.cycles(workspace).map(({secret,...c})=>c),events:store.events(workspace)};
   }
   function authorizeBridge(cycleId,token) {
     const cycle=db.prepare('SELECT payload FROM maintenance_cycles WHERE id=?').get(cycleId);
@@ -401,6 +403,18 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
         catch{/* already logged in plain words by runCandidate */}
       }
       view=ROUTINE.size?await state(workspace):view;
+      // An `ask` candidate waits on a human, not on a model: its decision is
+      // filed here (idempotent), so no gateway cycle starts for work the agent
+      // must not do. On juno, four rebuilds read as hand-edited started a model
+      // cycle every five minutes that ended on "no action", without a decision
+      // ever reaching the panel.
+      let filed=false;
+      for(const c of view.candidates.filter((c)=>!ROUTINE.has(c.action)&&c.mode==='ask'&&!c.outsideWindow)){
+        const candidate=clean(c);const previous=store.latestRequest(workspace,candidate.action,candidate.target);
+        if(previous?.version===fingerprint(candidate)&&previous.status==='approved')continue;
+        store.propose(workspace,candidate);filed=true;
+      }
+      if(filed)view=await state(workspace);
       const actionable=view.candidates.filter((c)=>!ROUTINE.has(c.action)&&c.mode!=='off'&&!c.outsideWindow&&!decided(view,c));
       if(!actionable.length)return;
       if(!host){degradedOnce(workspace,'maintenance_gateway_unavailable');return;}

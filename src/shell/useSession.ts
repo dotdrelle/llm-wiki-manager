@@ -21,6 +21,7 @@ import {
   sanitizeRuntimeStateForDisplay,
 } from './repl.js';
 import { useAgent } from './useAgent';
+import { formatLocalTime, localizeLogLine } from '../core/localTime.js';
 
 function runtimeStatusText(status: 'disabled' | 'connected' | 'disconnected', runStatus: string, reason: string | null, workspace: string | null): string {
   if (status === 'connected') return `runtime: connected (${workspace ?? 'no workspace'}) ${runStatus}`;
@@ -86,7 +87,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     // Fixed 24h HH:MM:SS, like the runtime's own log lines: a locale default
     // rendered "9:50:37 PM" on some machines, and the Runtime/Agent-status
     // split classifies lines structurally from that time prefix.
-    setLogs((items) => [...items, `${new Date().toLocaleTimeString('en-GB', { hour12: false })} ${line}`].slice(-200));
+    setLogs((items) => [...items, `${formatLocalTime(new Date())} ${line}`].slice(-200));
   };
   // An interactive turn runs on an ephemeral runtime session: its events are
   // published over SSE but never enter the projection /state serves, so syncing
@@ -456,7 +457,8 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     const runtimeLogs = runtimeState()?.logs;
     if (!Array.isArray(runtimeLogs) || runtimeLogs.length === 0) return logs();
     const filter = String((session as any).runtimeLogFilter ?? '').trim();
-    const tagged = filterRuntimeLogs(runtimeLogs.map((line: any) => `runtime ${String(line)}`), filter);
+    // The runtime stores its log clocks in UTC; show them in local time.
+    const tagged = filterRuntimeLogs(runtimeLogs.map((line: any) => `runtime ${localizeLogLine(line)}`), filter);
     return [...logs(), ...tagged];
   });
   const pendingApprovals = createMemo(() => {

@@ -251,8 +251,11 @@ test('local log lines carry a fixed 24h timestamp like the runtime lines', async
   // A locale default rendered "9:50:37 PM" on some machines while runtime
   // lines read "21:50:37" — two time dialects in one panel, and the
   // Runtime/Agent-status classification reads the time prefix structurally.
-  assert.match(source, /toLocaleTimeString\('en-GB', \{ hour12: false \}\)/);
-  assert.doesNotMatch(source, /toLocaleTimeString\(\)/);
+  // Both go through the shared 24 h formatter, runtime lines re-expressed
+  // from their stored UTC clock into local time (core/localTime.js).
+  assert.match(source, /formatLocalTime\(new Date\(\)\)/);
+  assert.match(source, /localizeLogLine\(line\)/);
+  assert.doesNotMatch(source, /toLocaleTimeString\(/);
 });
 
 test('runtime logs have a separator and a concise Runtime tab label', async () => {

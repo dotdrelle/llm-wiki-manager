@@ -59,6 +59,7 @@ import {
 } from '../core/documentIntake.js';
 import { runtimeMaintenance, fetchRuntimeState, postRuntimeCancel, postRuntimeControl, postRuntimeKill, postRuntimeRun } from '../runtime/client.js';
 import { versionWithBuild } from '../core/buildInfo.js';
+import { formatLocalDateTime } from '../core/localTime.js';
 
 export function printVersion(packageJson) {
   console.log(versionWithBuild(packageJson));
@@ -206,7 +207,7 @@ function formatBytes(bytes) {
 
 function formatDate(value) {
   if (!Number.isFinite(value) || value <= 0) return '-';
-  return new Date(value).toLocaleString();
+  return formatLocalDateTime(value);
 }
 
 function compactPath(value) {
@@ -1037,7 +1038,7 @@ export function maintenanceStatusText(status = {}) {
     actions.length ? `Actions: ${actions.join(' · ')}` : 'Actions: unavailable',
     `Build window: ${schedule ? `${schedule.start}–${schedule.end} (${schedule.timezone})` : 'none — automatic builds wait'}`,
     `Pending decisions: ${pending.length ? pending.map((request) => `${request.candidate?.summary ?? request.action} [id ${request.id}, version ${request.version}]`).join('; ') : 'none'}`,
-    cycles.length ? `Recent cycles: ${cycles.map((cycle) => `${cycle.status}${cycle.at ? ` (${cycle.at.slice(0, 16).replace('T', ' ')})` : ''}`).join(', ')}` : 'Recent cycles: none',
+    cycles.length ? `Recent cycles: ${cycles.map((cycle) => `${cycle.status}${cycle.at ? ` (${formatLocalDateTime(cycle.at)})` : ''}`).join(', ')}` : 'Recent cycles: none',
     events.length ? `Latest activity: ${events.join(' | ')}` : 'Latest activity: none',
     status.history?.hasMore
       ? `Older history: /maintenance status ${Math.floor((status.history.offset ?? 0) / (status.history.limit || 100)) + 2}`

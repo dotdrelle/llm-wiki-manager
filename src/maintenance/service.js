@@ -12,10 +12,16 @@ import { readMaintenanceAccessDocument, setMaintenanceEnabled, setMaintenanceMod
 import { capabilityRegistryForSession } from '../orchestrator/capabilityRegistry.js';
 import { discoverRuntimeProvidersOnce } from '../orchestrator/providers/runtimeProviders.js';
 import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
-import { activeProfileMcp, activeProfileModel, acceptsArgument } from '../orchestrator/dispatcher.js';
+import { activeProfileMcp, activeProfileModel, acceptsArgument, externalRoleProgress } from '../orchestrator/dispatcher.js';
 import { validateJsonSchema } from '../orchestrator/planValidator.js';
 import { admitExecution, enableMaintenanceAdmission } from './admission.js';
 import { listWorkspaces } from '../core/workspaces.js';
+
+// The collective's roles in their order, each pending, running or done — what
+// the served run graph draws under a maintenance action.
+export function maintenanceRoles({roles,finished,current}) {
+  return roles.map((name)=>({name,status:finished.has(name)?'done':name===current?'running':'pending'}));
+}
 
 // Actions the manager runs itself, never through an agent cycle.
 const ROUTINE=new Set(['sync','doctor','mail']);
@@ -182,7 +188,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       release=await admitExecution(workspace,{locks:scopes},{background:true,signal,label:`maintenance: ${candidate.summary}`,onWait:(holders)=>log(workspace,'waiting',`${candidate.summary} — waiting for ${holders}`),
         ...(PREEMPTIBLE.has(candidate.action)?{onPreempt:(by)=>preempt(by)}:{})});
     }
-    let reserved=false,started=false;
+    let reserved=false,started=false,unfollowRoles=null;
     // Counted as an active run while it executes: a config or connector change
     // must not land under it, and the shell must not stop the runtime.
     inflight.set(workspace,(inflight.get(workspace)??0)+1);
@@ -226,6 +232,25 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       } else started=true;
       const liveEntry={id,action:candidate.action,target:candidate.target,operation:operation??null,summary:candidate.summary,agent:provider.runtimeId??provider.serverName??null,jobId:job,startedAt:now().toISOString(),status:'running',progress:null};
       setLive(workspace,id,liveEntry);
+      // An external runtime's collective (curate, review): follow its roles, as
+      // the dispatcher does for Donna's runs. Polling status() alone left the
+      // run graph on one bare node for the whole curation — scout, analyst and
+      // critique ran two to three minutes each with nothing drawn.
+      let liveProgress=null;
+      const roleState=provider.runtimeProvider?.subscribe?{declared:(provider.capability?.subagents??[]).map(String),roles:(provider.capability?.subagents??[]).map(String),finished:new Set(),current:null}:null;
+      if(roleState){
+        unfollowRoles=provider.runtimeProvider.subscribe(job,(event)=>{
+          if(event?.type!=='subagent_started'&&event?.type!=='subagent_finished')return;
+          const role=String(event.subagent??'');if(!role)return;
+          if(!roleState.roles.includes(role))roleState.roles.push(role);
+          if(event.type==='subagent_started')roleState.current=role;
+          else{roleState.finished.add(role);if(roleState.current===role)roleState.current=null;}
+          // The action keeps its own title; the role line goes to the detail.
+          const {label:_roleLabel,...roleLine}=externalRoleProgress({...roleState,declared:roleState.declared.length});
+          liveProgress={...liveProgress,...roleLine,roles:maintenanceRoles(roleState)};
+          setLive(workspace,id,{...liveEntry,progress:liveProgress});
+        });
+      }
       const stopJob=async()=>{
         try{
           if(provider.runtimeProvider)await provider.runtimeProvider.cancel(job);
@@ -246,7 +271,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
         if(!stopAskedAt&&preemption.requested)stopAskedAt=clock();
         result=provider.runtimeProvider?await provider.runtimeProvider.status(job):jobState(parse(await callTool(ctx.session.mcp,provider.serverName,'agent_status',{jobId:job},signal)));
         const progress=result.progress??result.result?.progress??null;
-        if(progress&&typeof progress==='object')setLive(workspace,id,{...liveEntry,progress});
+        if(progress&&typeof progress==='object'){liveProgress={...liveProgress,...progress};setLive(workspace,id,{...liveEntry,progress:liveProgress});}
         if(terminal(result.status??result.result?.status))break;
         if(stopAskedAt&&clock()-stopAskedAt>CANCEL_CONFIRM_MS)throw new Error('maintenance_cancel_unconfirmed');
         await wait(signal,Math.min(5000,Math.round(500*1.5**polls++)));
@@ -284,7 +309,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       else if(/^maintenance_budget_exhausted:day/.test(String(error.message)))log(workspace,'budget_exhausted',`${candidate.summary} — waiting until tomorrow: ${describeError(error.message)}`,{cycleId,action:candidate.action,identity,detail:error.message});
       else log(workspace,'failure',`${candidate.summary} — not done: ${describeError(error.message)}`,{cycleId,action:candidate.action,identity,detail:error.message});
       throw error;
-    }finally{setLive(workspace,id,null);release();const left=(inflight.get(workspace)??1)-1;if(left>0)inflight.set(workspace,left);else inflight.delete(workspace);}
+    }finally{unfollowRoles?.();setLive(workspace,id,null);release();const left=(inflight.get(workspace)??1)-1;if(left>0)inflight.set(workspace,left);else inflight.delete(workspace);}
   }
   function completeJob(workspace,ctx,id,result,cycleId,wikiHash) {
     const reservation=store.reservation(workspace,id);

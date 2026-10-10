@@ -261,6 +261,35 @@ test('the daily digest covers yesterday only and never the mail action itself',(
   }finally{db.close();}
 });
 
+test('a curation run by maintenance shows its collective roles while it runs',async()=>{
+  // Polling status() alone drew one bare node for the whole curation: the
+  // roles reach the run graph only through the runtime's event stream.
+  let listener=null,unsubscribed=false,seen=null,polls=0;
+  const curate={execute:async()=>({runId:'curate-roles'}),
+    subscribe:(runId,fn)=>{assert.equal(runId,'curate-roles');listener=fn;return ()=>{unsubscribed=true;};},
+    status:async()=>{
+      if(polls++===0){
+        listener({type:'subagent_started',subagent:'scout'});
+        listener({type:'subagent_finished',subagent:'scout'});
+        listener({type:'subagent_started',subagent:'analyst'});
+        listener({type:'tool_finished',tool:'wiki_read_page'});
+        seen=h.service.status('x').running[0];
+        return {status:'running'};
+      }
+      return {status:'completed',result:{content:'ok',curationOutcome:{kind:'nothing_to_curate',reason:'test'}}};
+    },cancel:async()=>{}};
+  const h=harness({facts:{pending:[],proposals:[]},curate});
+  try {
+    const candidate=(await h.service.state('x')).candidates.find((c)=>c.action==='curate');
+    await h.service.runCandidate('x','cycle',{action:'curate',target:candidate.target});
+    assert.deepEqual(seen.progress.roles,[{name:'scout',status:'done'},{name:'analyst',status:'running'}]);
+    // The action keeps its own title: the role line is a detail.
+    assert.equal(seen.progress.label,undefined);
+    assert.match(seen.progress.detail,/analyst/);
+    assert.equal(unsubscribed,true,'the stream is released when the action ends');
+  }finally{await h.service.close();h.db.close();}
+});
+
 test('a curation with no source fiche is announced as not started, never as done',async()=>{
   const curate={execute:async()=>({runId:'curate-1'}),status:async()=>({status:'completed',result:{content:'no sources',curationOutcome:{kind:'nothing_to_curate',reason:'No wiki/sources fiche exists yet; ingest first.'}}}),cancel:async()=>{}};
   const h=harness({facts:{pending:[],proposals:[]},curate});

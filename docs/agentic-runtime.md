@@ -341,7 +341,10 @@ after an ingest/rebuild completes):
 3. Only if other work remains is a gateway cycle started
    (`agent.maintain`, operation `run`), with a per-cycle bearer secret and the
    bridge URL. The gateway reads `state` (routine work filtered out) and calls
-   one tool per action; each tool calls back `POST /maintenance/bridge`
+   one tool per action — `maintenance_build` takes several templates at once
+   (`targets`) and runs them in parallel, `GATEWAY_MAINTENANCE_BUILD_CONCURRENCY`
+   at a time (default 3), each holding only its own `template:<path>` lock;
+   each tool calls back `POST /maintenance/bridge`
    (`command: action`), where the manager re-validates the candidate, the
    current policy version, the exact approval, the budget and the admission,
    then dispatches through the agents' `agent_execute`/`agent_status` with an

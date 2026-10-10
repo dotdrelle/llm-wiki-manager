@@ -207,8 +207,8 @@ test('shortLogId caps an over-long task slug while shortening embedded UUIDs', (
 });
 
 
-test('log retention defaults to fifteen days and rejects invalid configured ages',()=>{
-  assert.equal(logRetentionDays({}),15);assert.equal(logRetentionDays({WIKI_MANAGER_LOG_RETENTION_DAYS:''}),15);
+test('log retention defaults to seven days and rejects invalid configured ages',()=>{
+  assert.equal(logRetentionDays({}),7);assert.equal(logRetentionDays({WIKI_MANAGER_LOG_RETENTION_DAYS:''}),7);
   assert.equal(logRetentionDays({WIKI_MANAGER_LOG_RETENTION_DAYS:'3'}),3);
   for(const value of ['0','-1','1.5','bad','Infinity','9999999999999999'])assert.throws(()=>logRetentionDays({WIKI_MANAGER_LOG_RETENTION_DAYS:value}),/WIKI_MANAGER_LOG_RETENTION_DAYS/);
 });

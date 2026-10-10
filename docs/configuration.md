@@ -651,7 +651,7 @@ key is access to the model a workspace uses.**
 ## Maintenance log retention
 
 `WIKI_MANAGER_LOG_RETENTION_DAYS` sets the sliding age limit for saved
-maintenance log events. It defaults to **15 days** and accepts a positive
+maintenance log events. It defaults to **7 days** and accepts a positive
 integer number of days. Blank values use the default; invalid values produce
 an explicit startup/configuration error. Put it in the manager `.env` and
 restart the runtime after changing it.

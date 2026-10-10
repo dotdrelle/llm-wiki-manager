@@ -471,7 +471,7 @@ stream would accelerate one phase, not the run.
   nothing to review and that `/wiki-rebuild` is the next step.
 
   Gateway-side ceilings for the hands (all optional, defaults in
-  parentheses): `GATEWAY_RECURSION_LIMIT` (40) graph steps, `GATEWAY_TOKEN_BUDGET`
+  parentheses): `GATEWAY_RECURSION_LIMIT` (200) graph steps, `GATEWAY_TOKEN_BUDGET`
   (2 000 000) estimated tokens, `GATEWAY_WORKTREE_MAX_FILES` (40) /
   `GATEWAY_WORKTREE_MAX_DIFF_CHARS` (300 000) — beyond them the run fails
   loudly and discards the branch instead of queueing an unreadable review —

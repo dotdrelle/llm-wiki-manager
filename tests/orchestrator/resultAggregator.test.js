@@ -411,7 +411,7 @@ test('a gateway worktree proposal (rawStatus shape) is persisted for review', as
 });
 
 test('a curation that wrote no file says so instead of vanishing from the review page', async () => {
-  // Observed on acpi: the Redactor described its corrections in prose on a
+  // Observed on atlas: the Redactor described its corrections in prose on a
   // branch it invented, wrote nothing, and the run was reported a success
   // while /agent-proposals stayed empty with no word anywhere.
   const workspacePath = mkdtempSync(join(tmpdir(), 'worktree-proposal-'));
@@ -450,7 +450,7 @@ test('a curation that wrote no file says so instead of vanishing from the review
 });
 
 test('a curation that wrote nothing on purpose (rebuild-owned) completes and names the rebuild', async () => {
-  // Observed on juno: every finding sat on generated wiki/concepts pivots, the
+  // Observed on lyra: every finding sat on generated wiki/concepts pivots, the
   // Redactor wrote nothing as told, and the task failed with "re-run with a
   // narrower objective" — which Donna turned into "a human must intervene".
   const workspacePath = mkdtempSync(join(tmpdir(), 'worktree-proposal-'));

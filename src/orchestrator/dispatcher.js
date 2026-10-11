@@ -43,7 +43,7 @@ export function createDispatcher({
 
 export async function execute(task, assignment, options = {}) {
   // A wait behind maintenance is announced, never silent: the run would look
-  // stalled ("Running · 0%" for 8 minutes on juno). The log line goes to Logs;
+  // stalled ("Running · 0%" for 8 minutes on lyra). The log line goes to Logs;
   // the activity is what the run strip and the Plan tab show while it lasts.
   const name = task?.label ?? task?.description ?? `task ${task?.id ?? task?.step ?? '?'}`;
   let waited = false;
@@ -723,7 +723,7 @@ export function activeProfileMcp(session) {
 // over. It used to assert "READ tools only (the workspace wiki)" whatever the
 // pool held, so a run handed an external web-search read tool still answered
 // "je suis limité aux seules sources du wiki" and made zero tool calls
-// (observed on acpi: "cherche sur internet" → agent.answer → refusal, gateway
+// (observed on atlas: "cherche sur internet" → agent.answer → refusal, gateway
 // /metrics tools:0). The pool is the authority; the prompt reports it, never
 // denies it.
 function describeRuntimePool(mcpPool) {

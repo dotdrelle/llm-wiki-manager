@@ -630,7 +630,7 @@ export function buildAttachedDocMessages(docs) {
 // The chat prompt must NAME the non-wiki read tools it offers. Their schemas
 // are passed, but with the wiki tools alone described in prose, gpt-oss
 // answered "je ne dispose d'aucun outil de recherche sur le Web" while
-// web_search_exa sat in its tool list (reproduced on acpi with the real
+// web_search_exa sat in its tool list (reproduced on atlas with the real
 // 27-tool turn). Same contract as the runtime prompt: the pool is the
 // authority and the prompt reports it. No connector is named in code — the
 // list is built from the tools actually offered for this turn.
@@ -677,7 +677,7 @@ export function buildDirectChatSystemPrompt(session, rawOpenWikiPages, allowedTo
     // The wiki-first rule above covered workspace facts and nothing said the
     // other offered tools existed, so "cherche sur internet" was answered
     // "je ne peux pas" although a web-search tool was offered for the turn
-    // (observed on acpi). The wiki stays first; the tools cover the rest.
+    // (observed on atlas). The wiki stays first; the tools cover the rest.
     'The wiki-first rule covers workspace facts only. When a web or external search/read tool is offered for this turn, use it for an internet/web request — never answer that you cannot search the internet when such a tool is provided, and never claim a search you did not run.',
     // Observed: « compare les options A et B » answered from the previous
     // answers alone — the history carries Donna's text, not the pages — and
@@ -685,7 +685,7 @@ export function buildDirectChatSystemPrompt(session, rawOpenWikiPages, allowedTo
     'Your earlier answers in this conversation are not evidence: they keep your text, not the pages. For each new question, search the wiki again for every fact you have not quoted from a tool result in this very turn. Never fill a gap (an acronym expansion, a missing option, a figure) from general knowledge.',
     'When the conversation already contains attached document content (delimited by BEGIN/END ATTACHED DOCUMENT markers), read and summarize or answer from that content directly — you do NOT need a tool for it, and must not claim you cannot read the document.',
     'If no provided tool covers the request and no attached content answers it — or the request needs a service that is not connected — say plainly you cannot do it in chat mode and to switch to agent mode (/agent). Do not pretend to execute it and never guess. An action is allowed in chat only when its matching tool is explicitly provided for this turn.',
-    // Observed on acpi: asked to email a report, chat mode listed the direct
+    // Observed on atlas: asked to email a report, chat mode listed the direct
     // Gmail tools (read/search/labels/modify), concluded no send existed and
     // told the user to add one to the catalogue. Sending is a delegable
     // capability performed in Agent mode — never a missing feature.
@@ -693,7 +693,7 @@ export function buildDirectChatSystemPrompt(session, rawOpenWikiPages, allowedTo
     // Same stale-answer trap as the agent prompt (graph.js): a connector
     // reported unconfigured in an earlier turn may be authorized now.
     'A connector\'s availability can change between turns — the user may have just authorized it, or a service may have come back. Never answer that a connector or tool is not configured, unauthorized or unavailable from an earlier turn of this conversation: call the relevant tool again in THIS turn and answer from its result.',
-    // Observed on juno: asked "configure my gmail", Donna ran a web search,
+    // Observed on lyra: asked "configure my gmail", Donna ran a web search,
     // fetched the GitHub docs and read the help before calling the connector's
     // own setup tool — right answer, three useless round trips.
     'A request about a service the user names (a mailbox, a calendar, a source system…) is served by the listed tools whose name contains that service: call them FIRST and directly — status or setup to check or configure it, its read tools to fetch from it. Do not web-search or read the product help before trying them.',

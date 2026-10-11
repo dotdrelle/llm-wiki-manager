@@ -2925,12 +2925,12 @@ test('GET /workspace/stats answers from the shared container stats, and requires
     throw error;
   }
   try {
-    const ok = await fetch(`http://127.0.0.1:${handle.port}/workspace/stats?workspace=juno`);
+    const ok = await fetch(`http://127.0.0.1:${handle.port}/workspace/stats?workspace=lyra`);
     assert.equal(ok.status, 200);
     assert.equal((await ok.json()).cpuPercent, 12);
     const missing = await fetch(`http://127.0.0.1:${handle.port}/workspace/stats`);
     assert.equal(missing.status, 400);
-    assert.deepEqual(asked, ['juno']);
+    assert.deepEqual(asked, ['lyra']);
   } finally {
     await handle.close();
   }

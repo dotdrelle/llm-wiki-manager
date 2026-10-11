@@ -5,7 +5,7 @@ import { createMaintenanceService } from '../../src/maintenance/service.js';
 
 // A refusal or a failed cycle must say why: "maintenance_execution_refused" and
 // "cycle failed" alone left the panel — and Donna, asked about it — with
-// nothing to explain (juno: an unreachable Confluence, an exhausted budget).
+// nothing to explain (lyra: an unreachable Confluence, an exhausted budget).
 function service({ execute, runtime = null }) {
   const db = new DatabaseSync(':memory:');
   const provider = { serverName: 'cme', health: 'available', capability: { supportedOperations: ['export', 'doctor'], inputSchema: { type: 'object', additionalProperties: true } } };

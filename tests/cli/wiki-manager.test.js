@@ -312,7 +312,7 @@ test('argument extraction keeps a real value that is not the workspace name', as
       tool_calls: [{
         function: {
           name: 'set_task_arguments',
-          arguments: JSON.stringify({ source_name: 'EAS_Avant_projet_ACPI' }),
+          arguments: JSON.stringify({ source_name: 'Sample_source' }),
         },
       }],
     }),
@@ -321,11 +321,11 @@ test('argument extraction keeps a real value that is not the workspace name', as
   assert.deepEqual(
     await resolveExecutorArguments({
       llm,
-      objective: 'exporter la source EAS_Avant_projet_ACPI',
+      objective: 'exporter la source Sample_source',
       capability: EXPORT_CAPABILITY,
       workspace: 'acme',
     }),
-    { source_name: 'EAS_Avant_projet_ACPI' },
+    { source_name: 'Sample_source' },
   );
 });
 
@@ -359,7 +359,7 @@ test('argument extraction rejects a value outside the closed vocabulary', async 
       type: 'object',
       additionalProperties: true,
       properties: {
-        source_name: { type: 'string', enum: ['EAS_Avant_projet_ACPI'] },
+        source_name: { type: 'string', enum: ['Sample_source'] },
       },
     },
   };
@@ -389,7 +389,7 @@ test('argument extraction keeps a value the vocabulary allows', async () => {
       type: 'object',
       additionalProperties: true,
       properties: {
-        source_name: { type: 'string', enum: ['EAS_Avant_projet_ACPI', 'autre'] },
+        source_name: { type: 'string', enum: ['Sample_source', 'autre'] },
       },
     },
   };
@@ -398,7 +398,7 @@ test('argument extraction keeps a value the vocabulary allows', async () => {
       tool_calls: [{
         function: {
           name: 'set_task_arguments',
-          arguments: JSON.stringify({ source_name: 'EAS_Avant_projet_ACPI' }),
+          arguments: JSON.stringify({ source_name: 'Sample_source' }),
         },
       }],
     }),
@@ -407,11 +407,11 @@ test('argument extraction keeps a value the vocabulary allows', async () => {
   assert.deepEqual(
     await resolveExecutorArguments({
       llm,
-      objective: 'exporter la source EAS_Avant_projet_ACPI',
+      objective: 'exporter la source Sample_source',
       capability,
       workspace: 'acme',
     }),
-    { source_name: 'EAS_Avant_projet_ACPI' },
+    { source_name: 'Sample_source' },
   );
 });
 

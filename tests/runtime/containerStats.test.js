@@ -19,8 +19,8 @@ test('parses docker sizes and stats lines, ANSI clear codes included', () => {
   assert.equal(parseDockerSize('1.5GiB'), 1.5 * 1024 ** 3);
   assert.equal(parseDockerSize('12.3kB'), 12300);
   assert.equal(parseDockerSize('0B'), 0);
-  const sample = parseStatsLine(`\x1b[2J\x1b[H${line('wiki-juno-serve-1', '12.5%', '100MiB / 7.7GiB')}`);
-  assert.equal(sample.name, 'wiki-juno-serve-1');
+  const sample = parseStatsLine(`\x1b[2J\x1b[H${line('wiki-lyra-serve-1', '12.5%', '100MiB / 7.7GiB')}`);
+  assert.equal(sample.name, 'wiki-lyra-serve-1');
   assert.equal(sample.cpuPercent, 12.5);
   assert.equal(sample.memUsedBytes, 100 * 1024 ** 2);
   assert.equal(parseStatsLine('CONTAINER ID   NAME'), null);
@@ -48,20 +48,20 @@ test('one stream per workspace, shared by every reader, stopped when nobody look
     now: () => clock,
     idleMs: 30_000,
     listEveryMs: 30_000,
-    listContainers: async (project) => { listed.push(project); return ['wiki-juno-serve-1', 'wiki-juno-wiki-1']; },
+    listContainers: async (project) => { listed.push(project); return ['wiki-lyra-serve-1', 'wiki-lyra-wiki-1']; },
     spawnImpl: (cmd, args) => { const child = fakeChild(); spawned.push({ cmd, args, child }); return child; },
     setIntervalImpl: (fn) => { tickFn = fn; return 1; },
     clearIntervalImpl: () => { tickFn = null; },
   });
-  assert.equal(stats.snapshot('juno').state, 'starting');
+  assert.equal(stats.snapshot('lyra').state, 'starting');
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(listed, ['wiki-juno']);
+  assert.deepEqual(listed, ['wiki-lyra']);
   assert.equal(spawned.length, 1);
-  assert.deepEqual(spawned[0].args, ['stats', '--format', '{{json .}}', 'wiki-juno-serve-1', 'wiki-juno-wiki-1']);
+  assert.deepEqual(spawned[0].args, ['stats', '--format', '{{json .}}', 'wiki-lyra-serve-1', 'wiki-lyra-wiki-1']);
 
-  spawned[0].child.stdout.emit('data', `${line('wiki-juno-serve-1', '10%', '1GiB / 8GiB')}\n${line('wiki-juno-wiki-1', '5%', '1GiB / 8GiB')}\n`);
-  for (let i = 0; i < 5; i += 1) stats.snapshot('juno');
-  const snap = stats.snapshot('juno');
+  spawned[0].child.stdout.emit('data', `${line('wiki-lyra-serve-1', '10%', '1GiB / 8GiB')}\n${line('wiki-lyra-wiki-1', '5%', '1GiB / 8GiB')}\n`);
+  for (let i = 0; i < 5; i += 1) stats.snapshot('lyra');
+  const snap = stats.snapshot('lyra');
   assert.equal(snap.state, 'live');
   assert.equal(snap.cpuPercent, 15);
   assert.equal(snap.containers, 2);
@@ -79,9 +79,9 @@ test('an unavailable docker is reported, not shown as an empty line', async () =
     setIntervalImpl: () => 1,
     clearIntervalImpl: () => {},
   });
-  stats.snapshot('juno');
+  stats.snapshot('lyra');
   await new Promise((resolve) => setImmediate(resolve));
-  const snap = stats.snapshot('juno');
+  const snap = stats.snapshot('lyra');
   assert.equal(snap.state, 'unavailable');
   assert.equal(snap.error, 'docker command not found');
   stats.close();

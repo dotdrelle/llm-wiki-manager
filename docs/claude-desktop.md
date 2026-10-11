@@ -97,10 +97,10 @@ path.
 Examples:
 
 ```text
-Sélectionne le workspace ACPI.
+Sélectionne le workspace ATLAS.
 Recherche les informations sur le dernier COPIL.
 Lance l’ingestion des sources en attente.
-Exécute /wiki doctor sur ACPI.
+Exécute /wiki doctor sur ATLAS.
 ```
 
 `wiki_ingest` is the native ingestion command. `doctor`, `run`, `build`, and

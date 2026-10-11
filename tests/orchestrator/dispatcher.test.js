@@ -115,7 +115,7 @@ test('activeProfileMcp rewrites loopback URLs for the container the runtime runs
 });
 
 test('activeRuntimeSystemPrompt names the declared web tools and forbids "cannot search the internet"', () => {
-  const session = { workspace: 'acpi', language: 'fr-FR' };
+  const session = { workspace: 'atlas', language: 'fr-FR' };
   const pool = [
     { name: 'wiki', tools: ['wiki_read_page', 'wiki_search_context'] },
     { name: 'exa', tools: ['web_search_exa', 'web_fetch_exa'] },
@@ -134,7 +134,7 @@ test('activeRuntimeSystemPrompt names the declared web tools and forbids "cannot
 });
 
 test('activeRuntimeSystemPrompt stays wiki-only when the pool declares no external read tools', () => {
-  const session = { workspace: 'acpi' };
+  const session = { workspace: 'atlas' };
   const prompt = activeRuntimeSystemPrompt(
     session,
     { requiredCapability: 'agent.review' },
@@ -532,7 +532,7 @@ async function executeArgsFor(task, capability) {
 }
 
 test('an approved task never receives confirm when its capability schema forbids it', async () => {
-  // Observed on juno: every approved email send failed with
+  // Observed on lyra: every approved email send failed with
   // invalid_arguments:unsupported_field:confirm — the send-email schema is
   // closed and does not declare confirm.
   const args = await executeArgsFor(

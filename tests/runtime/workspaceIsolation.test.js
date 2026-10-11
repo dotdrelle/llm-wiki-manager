@@ -170,14 +170,14 @@ test('locks are per workspace: shared by its runs, never across workspaces', asy
   const { workspaceLockRegistry } = await import('../../src/orchestrator/lockManager.js');
   const { createAttemptManager } = await import('../../src/orchestrator/attemptManager.js');
   const acme = { workspace: 'acme' };
-  const juno = { workspace: 'juno' };
+  const lyra = { workspace: 'lyra' };
   const manager = (session, owner) => {
     const registry = workspaceLockRegistry(session);
     return createAttemptManager({ locks: registry.locks, owners: registry.owners, owner });
   };
 
   assert.ok(manager(acme, 'run-a1').reserve({ id: 't1', locks: ['workspace-write'] }));
-  assert.ok(manager(juno, 'run-j1').reserve({ id: 't1', locks: ['workspace-write'] }), 'two workspaces never share their locks');
+  assert.ok(manager(lyra, 'run-j1').reserve({ id: 't1', locks: ['workspace-write'] }), 'two workspaces never share their locks');
   const second = manager(acme, 'run-a2');
   assert.equal(second.reserve({ id: 't2', locks: ['workspace-write'] }), null, 'two runs of one workspace do');
   assert.deepEqual(second.foreignHolders({ locks: ['workspace-write'] }), [{ lock: 'workspace-write', owner: 'run-a1' }]);

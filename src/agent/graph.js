@@ -1345,13 +1345,13 @@ export function buildAgentSystemPrompt(state) {
     `Available primitives: ${commandList(state.session)}.`,
     'Only announce or call slash commands that appear exactly in Available primitives. Do not invent command names, subcommands, or arguments.',
     'Connected MCP tools you may call directly (server__tool naming convention). Everything listed below is directly callable. When the requested action has no matching direct tool, call runtime__delegate with the original objective: the runtime resolves it against the discovered agent capability contracts, including executor-only single-task capabilities.',
-    // Observed on juno, twice: asked "configure my gmail", Donna ran a web
+    // Observed on lyra, twice: asked "configure my gmail", Donna ran a web
     // search, then a refused delegation, and only then the connector's own
     // setup tool — the right answer after three useless round trips. A rule
     // buried far from the tool list did not change it; it sits here, next to
     // the list it is about, and says how to recognise the tools concerned.
     'A request about a service the user names (a mailbox, a calendar, a source system…) is served by the listed tools whose name contains that service: call them FIRST and directly — status or setup to check or configure it, its read tools to fetch from it. Do not web-search, read the product help or delegate before trying them. A connection or setup request whose status tool already reports the access configured is answered from that result: there is nothing to delegate.',
-    // Observed on juno: gmail_read returned the full message, then Donna
+    // Observed on lyra: gmail_read returned the full message, then Donna
     // delegated the same request, got "no agent covers this" and told the user
     // it was impossible — contradicting the data she already held.
     'Once a direct tool has returned the data the user asked for, answer from that data. Never delegate the same request afterwards, and never claim it is impossible.',
@@ -1378,7 +1378,7 @@ export function buildAgentSystemPrompt(state) {
     // the external runtime's agent.answer, which burned 519k tokens and failed
     // on its budget, while one wiki search answers it in a second.
     'A question about the subject matter of this workspace (its projects, documents, tickets, people, decisions, figures, dates) is answered from the wiki: search it FIRST with the wiki search/read tools and answer from what they return. Never runtime__delegate a question those read tools can answer; delegation is for actions, or for an analysis the user explicitly asks an agent to perform.',
-    // Observed (acpi): "cherche sur internet" was delegated to the external
+    // Observed (atlas): "cherche sur internet" was delegated to the external
     // runtime, which answered it could not search the internet — while a
     // connected web-search read tool was available and offered right here. The
     // wiki stays first for workspace facts; the web tools cover the rest and
@@ -1411,11 +1411,11 @@ export function buildAgentSystemPrompt(state) {
     'When an action fails or is refused for lack of an authorization grant or scope (rather than a missing capability), say exactly that and name the primitive that grants it. Do not describe the feature as unavailable.',
     'For an action with no matching direct tool, call runtime__delegate with the user objective only. The runtime chooses the capability, operation, agent and plan, including a validated single task for executor-only agents. Never choose those identifiers yourself. Never call <provider>__agent_plan, <provider>__agent_execute, legacy production__production_start_job, wiki__plan_set, or wiki__plan_done from interactive chat.',
     // A capability can be deliberately tool-less: the Gmail send is reachable
-    // only through agent_execute, never as a direct tool. Observed on acpi:
+    // only through agent_execute, never as a direct tool. Observed on atlas:
     // asked to email a report, the agent listed its direct tools and concluded
     // the product had no send function instead of delegating the capability.
     'A capability may deliberately have NO direct tool — sending an email is never exposed as a chat tool. The absence of a tool proves nothing: delegate the action and let the runtime resolve the capability. Never tell the user a capability is missing or must be added to a catalogue.',
-    // Observed on juno: Gmail search answered google_not_configured, the user
+    // Observed on lyra: Gmail search answered google_not_configured, the user
     // authorized through the OAuth link Donna gave, and the next two "get my
     // last mail" turns repeated "not configured" with NO tool call — copied
     // from her own earlier answer while the status tool already said
@@ -1446,7 +1446,7 @@ export function buildAgentSystemPrompt(state) {
     openWikiPagesPromptLine(state.session.openWikiPages),
     currentArtifactPromptLine(currentArtifactFor(state.session)),
     'Runtime control: you have runtime__status, runtime__cancel, runtime__kill and runtime__enqueue. When the user asks to stop, remove, clean or kill the current run, its jobs or the queue ("supprime le job et la queue", "arr\u00eate tout"), call runtime__kill (or runtime__cancel for a soft stop of just the run) and confirm what was stopped. When the user explicitly asks to delete, reset, abandon or replace the current plan, call runtime__kill with purge=true; never set purge=true for a simple stop. For questions about what is running or queued, call runtime__status and answer from its data. You have no approval tool: a pending approval is granted only by the user through the approval button or the /approve command. Never grant, claim or report an approval yourself; when the user asks to proceed with pending mutations, tell them to use those controls. A request to approve, validate, confirm or accept a pending run is a human control action: NEVER call runtime__delegate (or any capability) for it — answer with the control to use and nothing else. When the user asks for a NEW action while a run is active: if one of your direct tools performs it (write or edit a template, a build-context file or a wiki page; a read or a check), do it now — a write may be refused because the running job is using that part of the workspace, and then say so plainly and offer runtime__enqueue. Heavier work (ingest, build, export, curate, rebuilding an index) is queued with runtime__enqueue (it runs after), or, if the user insists it replaces the current work, runtime__kill then the new action.',
-    // Observed on juno: "planifie curate dans 10 min" launched curate at once
+    // Observed on lyra: "planifie curate dans 10 min" launched curate at once
     // and answered "C'est lancé" — the delay vanished without a word.
     'You cannot schedule anything: no tool launches an action at a given time or after a delay. When the user asks for an action later (in 10 minutes, tonight, at 6 pm, tomorrow), do NOT launch it now and never claim it is scheduled: say plainly that you cannot schedule a launch, and offer to run it now instead.',
     'When the user asks to refresh, show, or update the displayed plan or status, call runtime__status. This is a state refresh request, not a new business capability, and must never be delegated.',

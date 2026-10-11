@@ -50,7 +50,7 @@ test('Donna is the one who tells the user, in the reply language', () => {
 });
 
 test('the compact cut never separates a question from its answer', () => {
-  // Observed on acpi: 6 raw messages kept, the cut fell between the user's
+  // Observed on atlas: 6 raw messages kept, the cut fell between the user's
   // question and Donna's answer, and the summary dropped the question.
   const conversation = [
     ...[1, 2, 3, 4, 5].flatMap(exchange),

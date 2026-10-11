@@ -285,7 +285,7 @@ test('multiple failed tasks retain pre-execution evidence across plan revisions'
 
 test('a successful run the check could not verify stays a success, and large receipts no longer truncate the facts', async () => {
   const { session, task } = fixture();
-  // juno: a 43-file ingest, every task succeeded, the check blocked because
+  // lyra: a 43-file ingest, every task succeeded, the check blocked because
   // its diagnostics failed and its facts were truncated — "Run failed".
   const refs = Array.from({ length: 43 }, (_, i) => ({ type: 'file', ref: `wiki/sources/document-${i}/a-rather-long-section-name-${i}.md` }));
   dispatchAgentEvent(session, createAgentEvent('plan_set', { runId: 'run', payload: { planRevision: 0, steps: [{ ...task, status: 'done', outputRefs: refs,

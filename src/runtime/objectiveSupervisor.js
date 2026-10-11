@@ -90,7 +90,7 @@ export async function superviseObjective(session, objective, result, { runId, si
   const failedPlan = plan.some((item) => isFailed(item.status));
   // A plan whose every task succeeded is not failed by a check that could not
   // look: with restricted facts or unavailable diagnostics, "blocked" means
-  // "unverified", and the agents' receipts stand. juno: a 43-file ingest
+  // "unverified", and the agents' receipts stand. lyra: a 43-file ingest
   // succeeded, then ended "Run failed" because the check could not verify it.
   const unverifiedSuccess = proposal?.action === 'blocked' && !failedPlan && plan.every((item) => isSuccessful(item.status))
     && (diagnosis.restricted || diagnosis.degraded);

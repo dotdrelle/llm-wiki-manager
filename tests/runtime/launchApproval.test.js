@@ -17,16 +17,16 @@ test('a run requiring approval asks at launch, before any model call', async () 
 });
 
 test('the launch grant covers the tasks the run delegates later, not a recovery replan', async () => {
-  const session = { workspace: 'juno', planRevision: 0, agentEvents: [] };
+  const session = { workspace: 'lyra', planRevision: 0, agentEvents: [] };
   const manager = createApprovalManager(session);
-  const waiting = manager.requestApproval({ scope: 'run', runId: 'r1', workspaceId: 'juno', anyRevision: true });
+  const waiting = manager.requestApproval({ scope: 'run', runId: 'r1', workspaceId: 'lyra', anyRevision: true });
   const pending = manager.listPending?.() ?? [];
   manager.approve({ runId: 'r1', ...(pending[0]?.approvalId ? { approvalId: pending[0].approvalId } : {}) });
   await waiting;
   const grant = session.agentEvents.filter((event) => event.type === 'approval.granted').at(-1)?.payload;
   assert.equal(grant?.planRevision ?? null, null);
   const delegated = { id: 'ingest', requiresApproval: true };
-  assert.equal(approvalCovered(delegated, [grant], { runId: 'r1', workspaceId: 'juno', planRevision: 3 }), true);
-  assert.equal(approvalCovered({ ...delegated, recoveryRevision: 4 }, [grant], { runId: 'r1', workspaceId: 'juno', planRevision: 4 }), false);
-  assert.equal(approvalCovered(delegated, [grant], { runId: 'other', workspaceId: 'juno', planRevision: 3 }), false);
+  assert.equal(approvalCovered(delegated, [grant], { runId: 'r1', workspaceId: 'lyra', planRevision: 3 }), true);
+  assert.equal(approvalCovered({ ...delegated, recoveryRevision: 4 }, [grant], { runId: 'r1', workspaceId: 'lyra', planRevision: 4 }), false);
+  assert.equal(approvalCovered(delegated, [grant], { runId: 'other', workspaceId: 'lyra', planRevision: 3 }), false);
 });

@@ -129,11 +129,11 @@ test('maintenance enable writes only the workspace switch and keeps the operator
   await withEndpoints(async (root) => {
     const file = join(root, 'mcp.endpoints.json');
     const doc = JSON.parse(readFileSync(file, 'utf8'));
-    doc.maintenanceAccess = { defaults: { enabled: false, limits: { buildsPerDay: 2 } }, workspaces: { juno: { actions: { build: 'off' } } } };
+    doc.maintenanceAccess = { defaults: { enabled: false, limits: { buildsPerDay: 2 } }, workspaces: { lyra: { actions: { build: 'off' } } } };
     writeFileSync(file, JSON.stringify(doc));
-    setMaintenanceEnabled('juno', true);
+    setMaintenanceEnabled('lyra', true);
     const after = JSON.parse(readFileSync(file, 'utf8'));
-    assert.deepEqual(after.maintenanceAccess.workspaces.juno, { actions: { build: 'off' }, enabled: true });
+    assert.deepEqual(after.maintenanceAccess.workspaces.lyra, { actions: { build: 'off' }, enabled: true });
     assert.deepEqual(after.maintenanceAccess.defaults, { enabled: false, limits: { buildsPerDay: 2 } });
     assert.deepEqual(after.mcpServers, doc.mcpServers);
     assert.throws(() => setMaintenanceEnabled('../escape', true));

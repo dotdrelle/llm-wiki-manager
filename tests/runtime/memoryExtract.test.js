@@ -88,8 +88,8 @@ test('a second extraction sees the fact the first one just wrote', async () => {
 test('a fact is written in the workspace language, its evidence stays an exact quote', async () => {
   let system = '';
   const llm = { complete: async (request) => { system = request.system; return '{"operations":[]}'; } };
-  await extractAndApplyMemory({ llm, memoryStore: { search: () => [] }, workspace: 'juno', userText: 'We always deliver as PDF.', language: 'fr-FR' });
+  await extractAndApplyMemory({ llm, memoryStore: { search: () => [] }, workspace: 'lyra', userText: 'We always deliver as PDF.', language: 'fr-FR' });
   assert.match(system, /Write each "text" in fr-FR; "evidence" stays an exact, untranslated quote\./);
-  await extractAndApplyMemory({ llm, memoryStore: { search: () => [] }, workspace: 'juno', userText: 'We always deliver as PDF.' });
+  await extractAndApplyMemory({ llm, memoryStore: { search: () => [] }, workspace: 'lyra', userText: 'We always deliver as PDF.' });
   assert.doesNotMatch(system, /Write each "text" in/);
 });

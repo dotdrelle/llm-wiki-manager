@@ -376,7 +376,7 @@ function failEmptyWorktreeProposal(result) {
   if (Array.isArray(proposal.changes) && proposal.changes.length > 0) return result;
   // A deliberate no-op is an outcome: failing it made Donna tell the human
   // that re-running "would reproduce the same failure" instead of naming the
-  // rebuild that fixes the pivots (observed on juno).
+  // rebuild that fixes the pivots (observed on lyra).
   if (rebuildOwnedReasonOf(result)) return result;
   const degradations = result?.rawStatus?.result?.degradations ?? result?.result?.degradations ?? [];
   const causes = [...new Set((Array.isArray(degradations) ? degradations : [])
@@ -409,7 +409,7 @@ export function persistWorktreeProposal(session, result, { runId, taskId }) {
   // A curation that wrote nothing has nothing to review — but it must SAY so.
   // Returning silently here left the review page empty while the run was
   // reported a success, its report describing corrections on a branch that
-  // held none (observed on acpi).
+  // held none (observed on atlas).
   if (changes.length === 0) return { path: null, empty: true };
   const workspacePath = session?.workspacePath;
   if (!workspacePath || typeof workspacePath !== 'string') {

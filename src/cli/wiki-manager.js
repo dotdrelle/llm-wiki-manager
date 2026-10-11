@@ -2115,7 +2115,7 @@ async function runRuntime(argv, agent) {
       // A message the interface composed (the Maintenance panel's "Ask Donna":
       // its question, its instruction and its records) is not the user's
       // words. Mined anyway, its "system records… not wiki pages" instruction
-      // became a durable workspace convention on juno.
+      // became a durable workspace convention on lyra.
       emitRuntimeLog(context.session, 'memory.extract-skipped: message composed by the interface, not typed by the user');
     } else if (process.env.WIKI_MANAGER_MEMORY_AUTO !== 'off' && !/^(hi|hello|hey|bonjour|salut|merci|thanks|ok|okay)[!. ]*$/i.test(displayInput)) {
       void import('../runtime/memoryExtract.js').then(({ extractAndApplyMemory }) => extractAndApplyMemory({

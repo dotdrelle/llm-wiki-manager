@@ -17,7 +17,7 @@ workspace**: the hands are the DAG, and there is one pair per workspace.
   (`activeProfileMcp`) and the run's system prompt is built from that same pool
   (`activeRuntimeSystemPrompt`): it says the workspace wiki is searched
   **first**, then names the declared external read tools. A prompt that denies
-  a tool the pool carries is the defect — observed on acpi, `agent.answer`
+  a tool the pool carries is the defect — observed on atlas, `agent.answer`
   answered "je suis limité aux seules sources du wiki" to "cherche sur
   internet" with an external web-search connector connected, making zero tool
   calls, while its own declared description promised web search.

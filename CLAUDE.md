@@ -758,7 +758,7 @@ takes the turn's `allowedTools` and appends the non-wiki read tools actually
 offered (`externalChatToolsLine`, built from the pool — no connector named in
 code). Passed only as schemas, with the wiki described in prose, gpt-oss
 answered "je ne dispose d'aucun outil de recherche sur le Web" while a
-web-search tool sat in its tool list (reproduced on acpi with the real
+web-search tool sat in its tool list (reproduced on atlas with the real
 27-tool turn); naming it is what makes the model call it. Same contract as the
 runtime's `activeRuntimeSystemPrompt` (`orchestrator/dispatcher.js`): wiki
 FIRST, then the offered tools — never a refusal that a tool the run carries

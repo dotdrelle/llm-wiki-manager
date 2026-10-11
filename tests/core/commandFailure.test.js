@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { classifyCommandFailure, failureHint, rawFailureText } from '../../src/core/commandFailure.js';
 import { localizedOperationFailure } from '../../src/commands/slash.js';
 
-const COMPOSE_COMMAND = 'Command failed: docker compose -f /home/p/.nvm/versions/node/v24/lib/node_modules/@dotdrelle/wiki-manager/docker-compose.yml -p wiki-juno --env-file /mnt/c/Users/p/Documents/docker/llm-wiki/.env up -d';
+const COMPOSE_COMMAND = 'Command failed: docker compose -f /home/p/.nvm/versions/node/v24/lib/node_modules/@dotdrelle/wiki-manager/docker-compose.yml -p wiki-lyra --env-file /mnt/c/Users/p/Documents/docker/llm-wiki/.env up -d';
 
 test('common docker failures map to a stable reason code', () => {
   const cases = [

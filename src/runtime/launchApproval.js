@@ -1,7 +1,7 @@
 /*
  Approve at launch. The approval never showed the content — it is produced
  after it — so it authorizes the action and what it will spend. Asked at the
- first write, it came ~33 s and four model calls late on juno: paid for before
+ first write, it came ~33 s and four model calls late on lyra: paid for before
  consent. A run that requires approval now asks before any model call. The
  grant covers the whole run whatever its plan revision becomes, so the tasks
  it delegates are covered too; a recovery replan still asks anew

@@ -285,7 +285,7 @@ test('resolveObjective rejects invented capability and operation', async () => {
 });
 
 test('an email request resolves to communication.send-email, not the report notifier', async () => {
-  // Observed on juno: agent.notify declared the generic aliases "send"/"email"
+  // Observed on lyra: agent.notify declared the generic aliases "send"/"email"
   // and communication.send-email declared none — an email request went to the
   // external runtime's report notifier.
   const sendEmail = makeCapability('communication.send-email', {

@@ -31,7 +31,7 @@ const ROUTINE=new Set(['sync','doctor','mail']);
 // update or a mail is never interrupted — whether it took effect is not known.
 const PREEMPTIBLE=new Set(['sync','ingest','index','rebuild','build']);
 // No action may hold its admission indefinitely: a Confluence export waiting
-// on an unreachable host kept raw/untracked for 20+ minutes on juno while the
+// on an unreachable host kept raw/untracked for 20+ minutes on lyra while the
 // user's ingest sat at 0%. Fixed ceilings, in minutes — not a setting.
 const ACTION_CEILING_MINUTES={sync:30,ingest:120,index:60,rebuild:180,build:60,deliver:30,doctor:15,curate:90,mail:5};
 // After a stop request, how long the agent has to confirm the job ended.
@@ -411,7 +411,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       view=ROUTINE.size?await state(workspace):view;
       // An `ask` candidate waits on a human, not on a model: its decision is
       // filed here (idempotent), so no gateway cycle starts for work the agent
-      // must not do. On juno, four rebuilds read as hand-edited started a model
+      // must not do. On lyra, four rebuilds read as hand-edited started a model
       // cycle every five minutes that ended on "no action", without a decision
       // ever reaching the panel.
       let filed=false;

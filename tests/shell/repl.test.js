@@ -1354,7 +1354,7 @@ test('both prompts tell Donna to answer workspace questions from the wiki first'
 });
 
 test('the chat prompt says an email send is an Agent-mode capability, never a missing feature', () => {
-  // Observed on acpi: chat mode listed the direct Gmail tools, concluded no
+  // Observed on atlas: chat mode listed the direct Gmail tools, concluded no
   // send existed and told the user to add one to the catalogue. The send is a
   // delegable capability performed in Agent mode.
   const prompt = buildDirectChatSystemPrompt(createSession());

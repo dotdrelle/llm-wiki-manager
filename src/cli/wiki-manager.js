@@ -22,7 +22,7 @@ import { handleSlashCommand, printHelp, printVersion, refreshMcpRuntimeStatus } 
 import { runShell, runHeadlessChatTurn, sanitizeOpenWikiPages, chatInputBudgetChars } from '../shell/repl.js';
 import { runPreflightChecks, withRuntimePreflight } from '../core/startupCheck.js';
 import { refreshRunningContainers } from '../core/wikiSetup.js';
-import { applySessionWikircProfile } from '../core/sessionConfig.js';
+import { applySessionWikircProfile, syncSessionWikirc, wikircSyncNotice } from '../core/sessionConfig.js';
 import { normalizeModelOverride } from '../core/llmCapabilities.js';
 import { listWikircProfiles } from '../core/wikirc.js';
 import { callMcpTool, formatMcpToolResult, readChatAccessConfig } from '../core/mcp.js';
@@ -1501,6 +1501,11 @@ async function runRuntime(argv, agent) {
     };
   }
 
+  function syncRuntimeWikirc(session) {
+    const notice = wikircSyncNotice(syncSessionWikirc(session));
+    if (notice) emitRuntimeLog(session, notice);
+  }
+
   async function executeRun(context, body, { signal } = {}) {
     const session = context.session;
     const supervisor = context.supervisor;
@@ -1521,6 +1526,7 @@ async function runRuntime(argv, agent) {
         if (!session.workspacePath) throw new Error(result.output || `Workspace not loaded: ${workspace}`);
       }
       context.workspace = session.workspace ?? workspace ?? context.workspace ?? null;
+      syncRuntimeWikirc(session);
       await loadWorkspaceHelpIndex(session, { onNotice: (message) => emitRuntimeLog(session, message) });
       if (context.workspace && memoryStore) {
         try {
@@ -1901,6 +1907,9 @@ async function runRuntime(argv, agent) {
     // put a raw English dump in their bubble and seeded every later turn with
     // it.
     const displayInput = String(body.displayInput ?? '').trim() || input;
+    // Another surface may have switched the profile, or its file was edited.
+    // Never under an active run: the run keeps the client it planned with.
+    if (!context.running) syncRuntimeWikirc(context.session);
     // The runtime may start while optional agents are still stopped. `/start
     // agents` happens in the shell process, so its refreshed MCP snapshot does
     // not mutate this long-lived runtime context. Re-probe only while at least
@@ -2145,6 +2154,7 @@ async function runRuntime(argv, agent) {
     resume: ({ workspace }) => recoverRuntime({ workspace, manual: true }),
     approve: (request) => forwardRuntimeApproval(getWorkspaceContext, request),
     configProfiles: async (context) => {
+      if (!context.running) syncRuntimeWikirc(context.session);
       const profiles = listWikircProfiles(context.session.workspacePath);
       return {
         profiles: profiles.map((profile) => profile.name),
@@ -2157,7 +2167,8 @@ async function runRuntime(argv, agent) {
       };
     },
     useConfigProfile: async (context, profile) => {
-      const { summary, config } = applySessionWikircProfile(context.session, profile);
+      // Persisted in the workspace: the ShellUI follows at its next turn.
+      const { summary, config } = applySessionWikircProfile(context.session, profile, { persist: true });
       await refreshMcpRuntimeStatus(context.session);
       dispatchAgentEvent(context.session, createAgentEvent('runtime_log', {
         origin: 'runtime',

@@ -41,7 +41,7 @@ import {
   resolveWikircProfile,
   summarizeWikircConfig,
 } from '../core/wikirc.js';
-import { applySessionWikircProfile } from '../core/sessionConfig.js';
+import { applySessionWikircProfile, readActiveProfileName } from '../core/sessionConfig.js';
 import { loadManagerEnv } from '../core/env.js';
 import {
   deleteWorkspaceAndFiles,
@@ -758,9 +758,35 @@ async function statusText(session) {
   return [pad, twoColumns(wikiColumnAll, configColumnAll), pad].join('\n');
 }
 
-function loadWorkspaceSystemPrompt(workspacePath) {
-  const promptPath = join(workspacePath, '.wiki', 'system-prompt.md');
-  return existsSync(promptPath) ? readFileSync(promptPath, 'utf8').trim() || null : null;
+/*
+ The same snapshot as `statusText`, as plain fact lines for Donna: serve's
+ `/status` (the empty-chat Status tile) used to hand her the run facts only,
+ so an idle workspace read "Runtime status: idle" and nothing about its wiki,
+ sources, services or connected tools. No paths and no base URL — a system
+ prompt is echoed and persisted.
+ */
+export async function workspaceStatusFacts(session) {
+  const states = await refreshMcpRuntimeStatus(session);
+  await discoverRuntimeProvidersOnce(session);
+  const stats = collectWorkspaceStats(session);
+  const lines = [`Workspace: ${session.workspace ?? '-'}`];
+  if (stats) {
+    lines.push(
+      `Wiki: ${statLine('pages', stats.wiki)}; ${statLine('concept pivots', stats.concepts)}; ${statLine('section fiches', stats.sourceFiches)}; ${statLine('saved answers', stats.answers)}; search index ${stats.index.exists ? 'ok' : 'missing'}`,
+      `Raw sources: ${statLine('waiting to ingest (raw/untracked)', stats.untracked)}; ${statLine('ingested', stats.ingested)}`,
+      `Production: ${statLine('templates', stats.templates)}; ${statLine('deliverables', stats.deliverables)}`,
+    );
+  }
+  lines.push(`Model: ${session.wikircConfig?.llm?.model ?? '-'} (profile ${session.wikirc?.profile ?? '-'}, language ${session.language ?? '-'})`);
+  if (states && Object.keys(states).length > 0) {
+    lines.push(`Services: ${Object.entries(states).sort(([a], [b]) => a.localeCompare(b)).map(([name, state]) => `${name} ${state.running ? 'running' : state.state || 'unknown'}`).join(', ')}`);
+  }
+  for (const line of compactMcpStatus(session.mcp).split('\n')) lines.push(`MCP connector: ${line.replace(/\s+/g, ' ').trim()}`);
+  const runtimes = runtimeProvidersSection(session);
+  if (runtimes) lines.push(`Agentic runtime: ${runtimes.split('\n').slice(1).map((line) => line.trim()).filter(Boolean).join(' ')}`);
+  const skills = listSkills(session).map((skill) => `/${skill.name}`);
+  if (skills.length) lines.push(`Workspace skills: ${skills.join(', ')}`);
+  return lines.join('\n');
 }
 
 function clearWorkspaceSession(session) {
@@ -773,7 +799,6 @@ function clearWorkspaceSession(session) {
   session.language = null;
   session.llm = null;
   session.mcp = null;
-  session.systemPrompt = null;
 }
 
 function formatWorkspaceList(workspaces, session = null) {
@@ -1186,11 +1211,21 @@ export async function handleSlashCommand(line, context) {
       context.session.workspacePath = workspace.workspacePath;
       context.session.workspaceEnv = workspace.env;
       context.session.workspaceEnvFile = workspace.envFile;
-      context.session.systemPrompt = loadWorkspaceSystemPrompt(workspace.workspacePath);
       let summary;
+      let profileNotice = null;
       try {
         step(`Workspace: loading ${workspace.name} config…`);
-        ({ summary } = applySessionWikircProfile(context.session, 'default'));
+        // The workspace's active profile (shared by the runtime, the ShellUI
+        // and serve), `default` when none was ever chosen. A persisted profile
+        // that no longer loads falls back to `default`, and says so.
+        const persisted = readActiveProfileName(workspace.workspacePath);
+        try {
+          ({ summary } = applySessionWikircProfile(context.session, persisted ?? 'default'));
+        } catch (err) {
+          if (!persisted || persisted === 'default') throw err;
+          profileNotice = `Active profile "${persisted}" could not be loaded (${err instanceof Error ? err.message : String(err)}); using default.`;
+          ({ summary } = applySessionWikircProfile(context.session, 'default'));
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return {
@@ -1201,12 +1236,12 @@ export async function handleSlashCommand(line, context) {
         step(`Workspace: discovering ${workspace.name} MCP tools…`);
         await refreshMcpRuntimeStatus(context.session);
         return {
-          output: workspaceLoadedText(workspace, summary, context.session),
+          output: [profileNotice, workspaceLoadedText(workspace, summary, context.session)].filter(Boolean).join('\n'),
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return {
-          output: workspaceLoadedText(workspace, summary, context.session, message),
+          output: [profileNotice, workspaceLoadedText(workspace, summary, context.session, message)].filter(Boolean).join('\n'),
         };
       }
     }
@@ -1236,7 +1271,8 @@ export async function handleSlashCommand(line, context) {
           return { output: 'Usage: /config use <default|name>' };
         }
         try {
-          const { summary } = applySessionWikircProfile(context.session, profileName);
+          // Persisted: the runtime and serve follow at their next turn.
+          const { summary } = applySessionWikircProfile(context.session, profileName, { persist: true });
           await refreshMcpRuntimeStatus(context.session);
           return {
             output: [

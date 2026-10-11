@@ -41,6 +41,16 @@ export function loadWorkspaceProfile(workspacePath) {
   return content ? content.slice(0, MAX_PROFILE_CHARS) : null;
 }
 
+// The workspace's own instructions (.wiki/system-prompt.md), read from disk
+// at every prompt build like the profile above. They used to be copied into
+// the session once, at `/use`: an edit had no effect until the workspace was
+// reloaded — and chat mode never received them at all.
+export function loadWorkspaceSystemPrompt(workspacePath) {
+  if (!workspacePath) return null;
+  const content = readOptionalText(join(workspacePath, '.wiki', 'system-prompt.md'));
+  return content ? content.trim() || null : null;
+}
+
 function formatPreference(preference) {
   const clean = String(preference ?? '').trim();
   if (!clean) return '';

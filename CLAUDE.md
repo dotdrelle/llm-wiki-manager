@@ -57,7 +57,7 @@ expose the runtime as a shared write surface before that work lands.
 `npm test` (see `package.json`) is the release gate: it includes the
 orchestrator suites (registry, resolver, validator, integrator, scheduler,
 attemptManager, resultAggregator, approvalPolicy), `recoveryManager.test.js`,
-and `src/runtime/donna-contract.test.js`. No release ships while it is red.
+and `tests/runtime/donna-contract.test.js`. No release ships while it is red.
 When adding an orchestrator module, add its test file to the `npm test` list —
 tests that exist but are not in the gate protect nothing.
 
@@ -830,7 +830,22 @@ of newly replanned steps, which all depend on them.
 **Config profile switching** (`/config/profiles`, `/config/use`): lists and
 switches the active `.wikirc` profile for a workspace via
 `applySessionWikircProfile`. `POST /config/use` is rejected with 409 while a
-run is active. `llm-wiki serve` treats the manager as the canonical source for
+run is active. The active profile is the WORKSPACE's, not a process's: every
+switch (`/config use` in the shell, `/config/use` from serve) persists it in
+`<workspace>/.wiki/active-profile.json`, `/use` loads it (falling back to
+`default`, announced), and `syncSessionWikirc` (`core/sessionConfig.js`)
+re-applies it before each runtime turn/run (never under an active run), each
+`/config/profiles` read and each ShellUI line — the same fingerprint (name +
+file mtime/size) reloads an edited profile file. Serve follows the file through
+`src/serve/activeProfile.ts`. Each process used to keep the profile in memory
+only: a serve switch never reached the ShellUI, a shell switch never reached
+the runtime, and a runtime restart went back to `default`.
+
+`.wiki/system-prompt.md` is read from disk at every prompt build
+(`loadWorkspaceSystemPrompt`, `core/profile.js`) and prepended in BOTH modes;
+it used to be copied into the session at `/use` — an edit needed a reload — and
+chat mode never received it. Serve's System instructions drawer edits that file
+(`GET`/`PUT /api/system-prompt`). `llm-wiki serve` treats the manager as the canonical source for
 which profile is active — see `llm-wiki/CLAUDE.md`'s Agent Runtime Integration
 section for how serve re-derives its own config instead of trusting the raw
 payload.
@@ -911,10 +926,10 @@ the secret or the session logic anywhere else.
 
 - `src/runtime/totp.js` — RFC 6238 core (HMAC-SHA1, 6 digits, 30 s, ±1 window,
   timing-safe digest compare), base32, `otpauthUri`. Vectors-tested.
-- `src/runtime/loginSession.js` — enrollment (in-memory pending secret shown
-  on the page BEFORE the first successful code persists it; enrollment refused
-  from non-loopback addresses), session issue/verify/slide/revoke, per-address
-  attempt rate limit. TTL: `WIKI_MANAGER_SESSION_TTL_HOURS` (default 12);
+- `src/runtime/loginSession.js` — enrollment (the host CLI creates a
+  short-lived, one-time grant; the pending secret is shown only after the
+  browser presents it), session issue/verify/slide/revoke, per-address attempt
+  rate limit. TTL: `WIKI_MANAGER_SESSION_TTL_HOURS` (default 12);
   disable with `WIKI_MANAGER_TOTP=off`.
 - `src/runtime/loginPage.js` + `src/runtime/qrCode.js` — the login page
   (English chrome) with the enrollment QR (vendored MIT `qrcode-generator` in
@@ -923,15 +938,17 @@ the secret or the session logic anywhere else.
   reachable, version, up since, enrollment, session lifetime, TLS) fed by
   `/login/status`'s `about`. The page is public, so it never carries a
   workspace, a run, an agent or a path.
-- `server.js` routes **before the bearer gate** (public by design — the door,
-  not a room): `GET /login`, `POST /login/verify`, `GET /login/status`,
+- `server.js` routes **before the bearer gate** (the login door): `GET /login`,
+  `POST /login/enrollment` (requires the short-lived host CLI grant),
+  `POST /login/verify`, `GET /login/status`,
   `POST /logout`, and `GET /session/verify?token=`. The verify endpoint is
   public ON PURPOSE: the token IS the credential being checked — the caller
   already holds it, so confirming it leaks nothing possession does not imply,
   and requiring the bearer there turns a token/URL mismatch into a login loop
   on serve.
 - `src/runtime/totpLogin.js` — `wiki-manager login`/`logout` and the
-  interactive startup gate (open browser, poll, report expiry).
+  interactive startup gate (open browser, pass the enrollment grant in a URL
+  fragment, poll, report expiry).
 - Headless/CI never passes through the gate; the runtime bearer stays the
   service-to-service credential, untouched.
 
@@ -1217,7 +1234,7 @@ wiki-manager runtime [--host 127.0.0.1] [--port 7788] [--state-dir .wiki/runtime
 ```
 
 The `npm test` release gate also pins the shipped compose wiring in
-`src/core/dockerCompose.test.js`, in particular that `production-mcp`'s
+`tests/core/dockerCompose.test.js`, in particular that `production-mcp`'s
 `PRODUCTION_ALLOWED_STEPS` carries `ingest_rebuild` and `lint`. That env value
 **overrides** the agent's own in-code default, and an omission is silent
 (`agent_describe` simply drops the capability), so removing `ingest_rebuild` or

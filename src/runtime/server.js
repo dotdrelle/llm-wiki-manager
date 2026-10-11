@@ -789,7 +789,10 @@ export function startRuntimeServer({
         // supplied here so the model cannot mistake the runtime run id for a
         // production job id ("job not found").
         if (asksForRunStatus(input)) {
-          input = runtimeStatusSynthesisPrompt(input, controlStatus(context, store));
+          const workspaceFacts = /^\/status\s*$/i.test(String(input).trim())
+            ? await workspaceSnapshotFacts(context?.session)
+            : null;
+          input = runtimeStatusSynthesisPrompt(input, controlStatus(context, store), workspaceFacts);
           readOnlyChat = true;
         }
         if (context.running && !readOnlyChat) {
@@ -1924,13 +1927,29 @@ function runtimeStatusFacts(status) {
   return lines.join('\n');
 }
 
-function runtimeStatusSynthesisPrompt(asked, status) {
+// A bare `/status` (serve's empty-chat Status tile) is a workspace overview,
+// not only a run status: the same snapshot as the ShellUI's /status. A failure
+// to collect it is announced in the facts, never dropped in silence.
+async function workspaceSnapshotFacts(session) {
+  if (!session?.workspace) return null;
+  try {
+    const { workspaceStatusFacts } = await import('../commands/slash.js');
+    return await workspaceStatusFacts(session);
+  } catch (error) {
+    return `Workspace snapshot unavailable: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+function runtimeStatusSynthesisPrompt(asked, status, workspaceFacts = null) {
   return [
     'The runtime facts below are the authoritative status the system just collected (this is a runtime run, not a production job — do not look up a job id).',
     `User question: ${asked}`,
-    'Answer in the session language with a concise, natural status: name the requested target first, then progress, blockers (pending approvals), queued items and the next step.',
+    workspaceFacts
+      ? 'Answer in the session language with a short workspace overview: what the wiki holds, what waits to be ingested, the deliverables, which services and connectors answer (name any that do not), then the run state (idle, progress, pending approvals, queued items). End with one or two concrete next steps that fit these facts (e.g. ingest waiting sources, build a template, start a stopped service).'
+      : 'Answer in the session language with a concise, natural status: name the requested target first, then progress, blockers (pending approvals), queued items and the next step.',
     'Keep every figure (percent, step, batch, instruction and stabilize counts) and every task status accurate; never invent, drop or round away a figure. Do not paste the fact block verbatim; summarize it into prose.',
     '',
+    ...(workspaceFacts ? ['Workspace facts:', workspaceFacts, ''] : []),
     'Runtime facts:',
     runtimeStatusFacts(status),
   ].join('\n');

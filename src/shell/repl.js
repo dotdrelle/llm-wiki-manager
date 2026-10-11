@@ -24,7 +24,8 @@ import { isProductHelpQuestion, wikiSearchContextMessages } from '../core/wikiPr
 import { createAgentEvent, dispatchAgentEvent, dispatchRuntimeLog } from '../core/agentEvents.js';
 import { managerMcpEndpointsFile } from '../core/env.js';
 import { togglableAgentNames } from '../core/agentsCompose.js';
-import { loadWorkspaceProfile } from '../core/profile.js';
+import { loadWorkspaceProfile, loadWorkspaceSystemPrompt } from '../core/profile.js';
+import { syncSessionWikirc, wikircSyncNotice } from '../core/sessionConfig.js';
 import { artifactFromToolCall, currentArtifactFor, currentArtifactPromptLine, rememberArtifact } from '../core/currentArtifact.js';
 import { formatSkillsForAgent, listSkills } from '../core/skills.js';
 import { matchSkillInvocation } from '../core/skillInvocation.js';
@@ -660,8 +661,11 @@ export function buildDirectChatSystemPrompt(session, rawOpenWikiPages, allowedTo
   // their endpoints file, and the profile must shape every reply anyway, not just
   // the turns where the model thinks to fetch it.
   const workspaceProfile = loadWorkspaceProfile(session.workspacePath);
+  const workspaceInstructions = loadWorkspaceSystemPrompt(session.workspacePath);
   const skillCatalog = formatSkillsForAgent(session);
   return [
+    // Same workspace instructions agent mode prepends (graph.js), read fresh.
+    ...(workspaceInstructions ? [workspaceInstructions, ''] : []),
     'You are Donna, the llm-wiki-manager chat assistant: warm, plain-spoken, and helpful — like an attentive colleague, never a raw status dump.',
     'You have a small explicitly authorized toolset — the tools provided to you for this turn, which may be none. Use them to answer questions about live state and to perform a requested direct action when a matching tool is offered. A write tool may return a preview requiring confirmation; present that preview and wait for the user before calling it again with confirmation.',
     'Questions about Donna, wikiLLM, the manager, its interfaces, commands, configuration, agents, concurrency, or troubleshooting are product-help questions, not action requests. When PRODUCT HELP REFERENCE content is attached, answer directly from it in chat mode; never redirect such a question to /agent.',
@@ -1381,6 +1385,9 @@ export async function submitRuntimeRun(line, { runtime, session }) {
 
 export async function submitRuntimeTurn(line, { runtime, session }) {
   const workspace = session.workspace ?? null;
+  // Keeps the shell's own view (status foot, local fallbacks) on the active
+  // profile; the runtime re-syncs its session on its side.
+  syncSessionWikirc(session);
   try {
     const result = await postRuntimeTurn(line, {
       url: runtime.url,
@@ -1945,6 +1952,10 @@ function directChatUnavailableText(session) {
 export async function runLine(line, { agent, packageJson, session, onUpdate, onStep, chatMode = session.chatMode ?? true, runtime = null }) {
   const trimmed = stripHtml(line).trim();
   if (!trimmed) return { exit: false };
+  // The profile may have been switched from serve (or its file edited):
+  // follow the workspace's active profile before answering.
+  const wikircNotice = wikircSyncNotice(syncSessionWikirc(session));
+  if (wikircNotice) onStep?.(wikircNotice);
 
   if (/^\/chat(?:\s|$)/.test(trimmed) && trimmed.replace(/^\/chat(?:\s+|$)/, '').trim()) {
     conversationMessages(session).push({ role: 'command', content: 'Usage: /chat\nThen type your message in chat mode.' });

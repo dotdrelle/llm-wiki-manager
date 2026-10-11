@@ -28,7 +28,7 @@ import { summarizeToolArguments, toolResultNote, toolStartNote } from '../core/p
 import { dsmlInvokedName, dsmlToolCalls, hasDsmlMarkup } from '../core/textArtifacts.js';
 import { openWikiPagesPromptLine } from '../core/openWikiPages.js';
 import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
-import { loadWorkspaceProfile, updateWorkspaceProfilePreference } from '../core/profile.js';
+import { loadWorkspaceProfile, loadWorkspaceSystemPrompt, updateWorkspaceProfilePreference } from '../core/profile.js';
 import { formatLlmConfigFact } from '../core/wikirc.js';
 import { buildWorkspaceContext, CONVERSATION_READ_TOOL, CONVERSATION_SEARCH_TOOL, formatCrossConversationContext, formatWorkspaceMemoryFacts, MEMORY_TOOL_NAMES, MEMORY_TOOLS } from '../core/workspaceMemory.js';
 import { wikiSearchContextMessages } from '../core/wikiPresearch.js';
@@ -1324,7 +1324,7 @@ export function buildAgentSystemPrompt(state) {
     include: (qualifiedName) => !isOrchestrationBypassTool(qualifiedName),
   });
   const skills = formatSkillsForAgent(state.session);
-  const customPrompt = state.session.systemPrompt ?? null;
+  const customPrompt = loadWorkspaceSystemPrompt(state.session.workspacePath);
   const workspaceProfile = loadWorkspaceProfile(state.session.workspacePath);
   const runningSkillStack = normalizedSkillStack(state.session);
   const runningSkillExecution = resolvedSkillExecution(state.session, runningSkillStack);

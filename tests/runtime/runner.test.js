@@ -1,0 +1,1423 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../../src/core/agentEvents.js';
+import { tasksAwaitingApproval } from '../../src/orchestrator/dependencyResolver.js';
+import { isTerminal } from '../../src/orchestrator/taskStatuses.js';
+import { readyPlanTasks } from '../../src/core/planPatch.js';
+import { skipImpossibleTasks, structuredPlanEvaluation, ensurePlanProjection, evaluateRuntimeRun, finishRuntimeRun, materializeTaskInputs, replanRuntimeRun, runRuntimeAgenticWorkflow, runRuntimeParallelPlan, shouldUseParallelScheduler, announceRunOutcome } from '../../src/runtime/runner.js';
+
+test('ensurePlanProjection re-projects when the chained plan changes shape (step 2)', () => {
+  const session = { agentEvents: [], agentProjection: null };
+  // Step 1: a fresh plan is projected.
+  session.headlessPlan = [{ id: 'a', description: 'ingest', status: 'pending' }];
+  ensurePlanProjection(session, 'run-1');
+  assert.deepEqual(
+    (session.agentProjection?.plan ?? []).map((step) => step.id),
+    ['a'],
+  );
+
+  // Step 1 completes in place — same plan shape, no re-projection needed.
+  session.headlessPlan = [{ id: 'a', description: 'ingest', status: 'done' }];
+  const eventsAfterStep1 = session.agentEvents.length;
+  ensurePlanProjection(session, 'run-1');
+  assert.equal(session.agentEvents.length, eventsAfterStep1, 'unchanged shape must not re-emit plan_set');
+
+  // Step 2 adds a task — the projection must now reflect the new plan.
+  session.headlessPlan = [
+    { id: 'a', description: 'ingest', status: 'done' },
+    { id: 'b', description: 'build', status: 'pending' },
+  ];
+  ensurePlanProjection(session, 'run-1');
+  assert.deepEqual(
+    (session.agentProjection?.plan ?? []).map((step) => step.id),
+    ['a', 'b'],
+    'step 2 plan must be projected instead of staying on step 1',
+  );
+  // Completed step 1 status is preserved through the re-projection.
+  assert.equal(session.agentProjection.plan.find((step) => step.id === 'a').status, 'done');
+});
+
+test('validated tasks waiting for approval stay in the scheduler instead of falling back to Donna', () => {
+  assert.equal(shouldUseParallelScheduler([
+    {
+      id: 'ingest-plan',
+      requiredCapability: 'knowledge.update',
+      operation: 'ingest_plan',
+      status: 'waiting_approval',
+    },
+    {
+      id: 'ingest-apply',
+      requiredCapability: 'knowledge.update',
+      operation: 'ingest_apply',
+      status: 'waiting_approval',
+    },
+  ]), true);
+  assert.equal(shouldUseParallelScheduler([
+    { id: 'finished', requiredCapability: 'knowledge.update', operation: 'ingest', status: 'done' },
+  ]), false);
+});
+
+test('downstream tasks consume actual dependency outputs instead of planned placeholder refs', () => {
+  const plannedRef = '.wiki/ingest-plans/planned.json';
+  const actualRef = '.wiki/ingest-plans/ingest-2026-07-10.json';
+  const plan = [{
+    id: 'ingest-plan',
+    expectedOutputRefs: [{ type: 'file', ref: plannedRef }],
+    outputRefs: [{ type: 'file', ref: actualRef }],
+  }];
+  const apply = {
+    id: 'ingest-apply',
+    dependsOn: ['ingest-plan'],
+    arguments: { inputs: [plannedRef] },
+    inputRefs: [{ type: 'file', ref: plannedRef }],
+  };
+
+  const executable = materializeTaskInputs(apply, plan);
+  assert.deepEqual(executable.arguments.inputs, [actualRef]);
+  assert.equal(executable.inputRefs[0].ref, actualRef);
+  assert.deepEqual(apply.arguments.inputs, [plannedRef], 'the validated plan declaration remains immutable');
+});
+
+test('evaluateRuntimeRun trusts a completed provider TaskGraph without asking an LLM to reinterpret it', async () => {
+  const session = {
+    headlessPlan: [{
+      id: 'ingest-a',
+      label: 'Ingest A.md',
+      requiredCapability: 'knowledge.update',
+      operation: 'ingest_plan',
+      status: 'done',
+    }],
+    llm: {
+      async completeWithTools() {
+        assert.fail('a structured terminal TaskGraph must not be reinterpreted by an LLM');
+      },
+    },
+  };
+
+  const evaluation = await evaluateRuntimeRun(session, 'ingère A.md');
+
+  assert.equal(evaluation.ok, true);
+  assert.match(evaluation.reason, /1 task/);
+});
+
+test('runRuntimeAgenticWorkflow completes conversational turns without evaluation or replan', async () => {
+  const events = [];
+  const session = {
+    activities: {},
+    headlessPlan: null,
+    llm: {
+      async completeWithTools() {
+        assert.fail('conversation-only turn must not call evaluator or replanner');
+      },
+    },
+    _onAgentEvent: (event) => events.push(event),
+  };
+  const agent = {
+    async invoke() {
+      return { response: 'Salut.' };
+    },
+  };
+
+  const started = Date.now();
+  const result = await runRuntimeAgenticWorkflow(agent, session, 'salut', {
+    runId: 'run-chat',
+    timeoutMs: 1000,
+    maxTurns: 1,
+    maxReplans: 1,
+  });
+
+  assert.equal(result.ok, true);
+  assert.ok(Date.now() - started < 5000);
+  assert.equal(session.headlessPlan, null);
+  assert.equal(Object.keys(session.activities).length, 0);
+  assert.ok(events.some((event) => event.type === 'run_done'));
+  assert.equal(events.some((event) => event.type === 'run_evaluated'), false);
+  assert.equal(events.some((event) => event.type === 'run_replanned'), false);
+});
+
+test('finishRuntimeRun emits evaluation before run_done', async () => {
+  const events = [];
+  const session = {
+    activities: {},
+    headlessPlan: [
+      { step: 1, description: 'Analyze', status: 'done' },
+      { step: 2, description: 'Execute', status: 'done' },
+    ],
+    agentProjection: {
+      conversation: [{ role: 'assistant', content: 'Done.' }],
+    },
+    llm: {
+      async completeWithTools({ system, tools, messages }) {
+        assert.match(system, /strict evaluator/);
+        assert.deepEqual(tools, []);
+        assert.match(messages[0].content, /Original task:/);
+        return { content: '{"ok":true,"reason":"Task complete.","suggestedAction":null}' };
+      },
+    },
+    _onAgentEvent: (event) => events.push(event),
+  };
+
+  const result = await finishRuntimeRun(session, 'Build workspace', { runId: 'run-1' });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(events.map((event) => event.type), ['runtime_log', 'run_evaluated', 'run_done']);
+  assert.equal(session.agentProjection.evaluation.ok, true);
+  assert.equal(session.agentProjection.status, 'done');
+});
+
+test('runRuntimeAgenticWorkflow clarifies vague evaluations without replan', async () => {
+  const events = [];
+  const session = {
+    activities: {},
+    headlessPlan: [{ step: 1, id: 'task', description: 'Task', status: 'done' }],
+    llm: {
+      async completeWithTools({ system }) {
+        assert.match(system, /strict evaluator/);
+        return { content: '{"ok":false,"reason":"demande vague / objectif indefini","suggestedAction":"clarifier l objectif"}' };
+      },
+    },
+    _onAgentEvent: (event) => events.push(event),
+  };
+  const agent = {
+    async invoke({ session: turnSession }) {
+      if (turnSession.headlessPlan === null) {
+        dispatchAgentEvent(turnSession, createAgentEvent('plan_set', {
+          origin: 'tool',
+          payload: { steps: [{ step: 1, id: 'task', description: 'Task', status: 'done' }] },
+        }));
+      }
+      return { response: 'Terminé.' };
+    },
+  };
+
+  const result = await runRuntimeAgenticWorkflow(agent, session, 'fais le truc', {
+    runId: 'run-vague',
+    timeoutMs: 1000,
+    maxTurns: 1,
+    maxReplans: 1,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.clarified, true);
+  assert.ok(session.agentProjection.conversation.at(-1).content.includes('clarifier'));
+  assert.ok(events.some((event) => event.type === 'run_evaluated'));
+  assert.equal(events.some((event) => event.type === 'run_replanned'), false);
+  assert.equal(events.some((event) => event.type === 'tool_call_started'), false);
+  assert.equal(session.agentProjection.status, 'done');
+});
+
+test('finishRuntimeRun turns negative evaluation into run_error', async () => {
+  const events = [];
+  const session = {
+    activities: {},
+    headlessPlan: [{ step: 1, description: 'Export', status: 'done' }],
+    agentProjection: {
+      conversation: [{ role: 'assistant', content: 'Done.' }],
+    },
+    llm: {
+      async completeWithTools() {
+        return { content: '{"ok":false,"reason":"Export file missing.","suggestedAction":"Run export again."}' };
+      },
+    },
+    _onAgentEvent: (event) => events.push(event),
+  };
+
+  const result = await finishRuntimeRun(session, 'Export deliverable', { runId: 'run-2' });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.evaluationRejected, true);
+  assert.deepEqual(events.map((event) => event.type), ['runtime_log', 'run_evaluated', 'run_error']);
+  assert.equal(session.agentProjection.evaluation.ok, false);
+  assert.equal(session.agentProjection.status, 'error');
+  assert.match(session.agentProjection.logs.at(-1), /Export file missing/);
+});
+
+test('finishRuntimeRun falls back open when evaluator response is invalid', async () => {
+  const session = {
+    activities: {},
+    headlessPlan: [{ step: 1, description: 'Do work', status: 'done' }],
+    agentProjection: { conversation: [] },
+    llm: {
+      async completeWithTools() {
+        return { content: 'not json' };
+      },
+    },
+  };
+
+  const result = await finishRuntimeRun(session, 'Do work', { runId: 'run-3' });
+
+  assert.equal(result.ok, true);
+  assert.equal(session.agentProjection.evaluation.ok, true);
+  assert.match(session.agentProjection.evaluation.reason, /Evaluator unavailable/);
+  assert.equal(session.agentProjection.status, 'done');
+});
+
+test('finishRuntimeRun can skip evaluation', async () => {
+  let called = false;
+  const session = {
+    activities: {},
+    headlessPlan: null,
+    agentProjection: { conversation: [] },
+    llm: {
+      async completeWithTools() {
+        called = true;
+        return { content: '{"ok":true,"reason":"ok"}' };
+      },
+    },
+  };
+
+  const result = await finishRuntimeRun(session, 'Do work', { runId: 'run-4', evaluate: false });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.evaluation, null);
+  assert.equal(called, false);
+  assert.equal(session.agentProjection.evaluation, null);
+  assert.equal(session.agentProjection.status, 'done');
+});
+
+test('runRuntimeAgenticWorkflow replans after negative evaluation', async () => {
+  const events = [];
+  const llmCalls = [];
+  const session = {
+    activities: {},
+    headlessPlan: null,
+    llm: {
+      async completeWithTools({ system }) {
+        llmCalls.push(system);
+        if (/strict evaluator/.test(system) && llmCalls.length === 1) {
+          return { content: '{"ok":false,"reason":"Export missing.","suggestedAction":"Run export."}' };
+        }
+        if (/replanner/.test(system)) {
+          return { content: '{"steps":["Run export"]}' };
+        }
+        return { content: '{"ok":true,"reason":"Export complete.","suggestedAction":null}' };
+      },
+    },
+    _onAgentEvent: (event) => events.push(event),
+  };
+  let turns = 0;
+  const agent = {
+    async invoke({ session: turnSession }) {
+      turns += 1;
+      if (turnSession.headlessPlan === null) {
+        dispatchAgentEvent(turnSession, createAgentEvent('plan_set', {
+          origin: 'tool',
+          payload: { steps: [{ step: 1, id: 'initial', description: 'Initial work', status: 'done' }] },
+        }));
+        return { response: 'Initial done.' };
+      }
+      const pending = turnSession.headlessPlan?.find((step) => step.status === 'pending');
+      if (pending) {
+        dispatchAgentEvent(turnSession, createAgentEvent('plan_step_updated', {
+          origin: 'tool',
+          payload: { taskId: pending.id, status: 'done' },
+        }));
+      }
+      return { response: 'Export done.' };
+    },
+  };
+
+  const result = await runRuntimeAgenticWorkflow(agent, session, 'Export deliverable', {
+    runId: 'run-replan-eval',
+    timeoutMs: 1000,
+    maxTurns: 2,
+    maxReplans: 1,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(turns, 2);
+  assert.ok(events.some((event) => event.type === 'run_replanned'));
+  assert.deepEqual(session.agentProjection.replans[0].plan, ['Run export']);
+  assert.equal(session.agentProjection.status, 'done');
+});
+
+test('replanRuntimeRun preserves completed outputs when replacing remaining work', async () => {
+  const session = {
+    activities: {},
+    headlessPlan: [
+      { step: 1, id: 'export', description: 'Export', status: 'done', outputRefs: ['raw/export.json'] },
+      { step: 2, id: 'build', description: 'Build', status: 'failed' },
+    ],
+    llm: {
+      async completeWithTools() {
+        return { content: '{"steps":["Retry build"]}' };
+      },
+    },
+  };
+
+  const result = await replanRuntimeRun(session, 'Build deliverable', {
+    kind: 'activity_error',
+    reason: 'Build failed.',
+  }, { runId: 'run-replan-preserve', replansLeft: 1 });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(session.headlessPlan.map((step) => step.id), ['export', 'replan-1']);
+  assert.deepEqual(session.headlessPlan[0].outputRefs, ['raw/export.json']);
+  assert.deepEqual(session.headlessPlan[1].dependsOn, ['export']);
+});
+
+test('replanRuntimeRun normalizes object steps without leaking object strings', async () => {
+  const session = {
+    activities: {},
+    headlessPlan: [{ step: 1, id: 'done', description: 'Done', status: 'done' }],
+    llm: {
+      async completeWithTools({ system }) {
+        assert.match(system, /Each step MUST be a plain string, not an object\./);
+        return { content: '{"steps":["a",{"description":"b"},{"id":"c"},{},null]}' };
+      },
+    },
+  };
+
+  const result = await replanRuntimeRun(session, 'Build deliverable', {
+    kind: 'activity_error',
+    reason: 'Build failed.',
+  }, { runId: 'run-replan-object-steps', replansLeft: 1 });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.steps, ['a', 'b', 'c']);
+  assert.deepEqual(session.agentProjection.replans[0].plan, ['a', 'b', 'c']);
+  assert.deepEqual(session.headlessPlan.slice(1).map((step) => step.description), ['a', 'b', 'c']);
+  assert.equal(JSON.stringify(session.headlessPlan).includes('[object Object]'), false);
+});
+
+test('replanRuntimeRun requires runtime approval for mutating replanned work', async () => {
+  const session = {
+    activities: {},
+    headlessPlan: [{ step: 1, id: 'build', description: 'Build', status: 'failed' }],
+    llm: {
+      async completeWithTools() {
+        return { content: '{"steps":["Run production build"]}' };
+      },
+    },
+  };
+
+  const result = await replanRuntimeRun(session, 'Build deliverable', {
+    kind: 'evaluation',
+    reason: 'Build missing.',
+  }, { runId: 'run-replan-approval', replansLeft: 1 });
+
+  assert.equal(result.ok, true);
+  assert.equal(session._runApprovalRequired, true);
+  assert.equal(session._runApprovalResolved, false);
+});
+
+test('runRuntimeAgenticWorkflow replans after terminal activity error', async () => {
+  const originalFetch = globalThis.fetch;
+  let pollAttempts = 0;
+  globalThis.fetch = async (_url, init) => {
+    // Count polls, not the one-off MCP session handshake.
+    if (JSON.parse(init.body).method === 'initialize') {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18"}}',
+      };
+    }
+    pollAttempts += 1;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({
+        result: {
+          content: [{ type: 'text', text: JSON.stringify({
+            _activity: {
+              id: 'job-failed',
+              source: 'production',
+              label: 'Production build',
+              status: 'error',
+              terminal: true,
+              error: 'build failed',
+            },
+          }) }],
+        },
+      }),
+    };
+  };
+  const session = {
+    mcp: {
+      production: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3000/mcp/',
+        retry: { maxAttempts: 1, backoffMs: 0 },
+      },
+    },
+    activities: {},
+    headlessPlan: null,
+    llm: {
+      async completeWithTools({ system }) {
+        if (/replanner/.test(system)) return { content: '{"steps":["Retry build"]}' };
+        return { content: '{"ok":true,"reason":"Build complete.","suggestedAction":null}' };
+      },
+    },
+  };
+  let turns = 0;
+  const agent = {
+    async invoke({ session: turnSession }) {
+      turns += 1;
+      if (turns === 1) {
+        dispatchAgentEvent(turnSession, createAgentEvent('activity_upserted', {
+          payload: {
+            activity: {
+              id: 'job-failed',
+              source: 'production',
+              label: 'Production build',
+              status: 'running',
+              terminal: false,
+              poll: { server: 'production', tool: 'production_job_status', args: { jobId: 'job-failed' }, intervalMs: 0 },
+            },
+          },
+        }));
+        return { response: 'Started build.' };
+      }
+      if (turnSession.headlessPlan?.[0]?.status === 'pending') {
+        dispatchAgentEvent(turnSession, createAgentEvent('plan_step_updated', {
+          origin: 'tool',
+          payload: { step: 1, status: 'done' },
+        }));
+      }
+      return { response: 'Retry done.' };
+    },
+  };
+
+  try {
+    const result = await runRuntimeAgenticWorkflow(agent, session, 'Build workspace', {
+      runId: 'run-replan-activity',
+      timeoutMs: 1000,
+      maxTurns: 3,
+      maxReplans: 1,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(pollAttempts, 1);
+    assert.equal(turns, 2);
+    assert.equal(session.agentProjection.replans[0].reason, 'Production build ended with error: build failed');
+    assert.deepEqual(session.agentProjection.replans[0].plan, ['Retry build']);
+    assert.equal(session.agentProjection.status, 'done');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('runRuntimeAgenticWorkflow treats user-cancelled activity as terminal cancellation without replan', async () => {
+  const originalFetch = globalThis.fetch;
+  let pollAttempts = 0;
+  const events = [];
+  globalThis.fetch = async () => {
+    pollAttempts += 1;
+    return mcpActivityResponse({
+      id: 'job-cancelled',
+      source: 'production',
+      label: 'Production build',
+      status: 'cancelled',
+      terminal: true,
+    });
+  };
+  const session = {
+    mcp: {
+      production: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3000/mcp/',
+        retry: { maxAttempts: 1, backoffMs: 0 },
+      },
+    },
+    activities: {},
+    headlessPlan: null,
+    llm: {
+      async completeWithTools() {
+        assert.fail('cancelled activity must not call evaluator or replanner');
+      },
+    },
+    _onAgentEvent: (event) => events.push(event),
+  };
+  const agent = {
+    async invoke({ session: turnSession }) {
+      dispatchAgentEvent(turnSession, createAgentEvent('activity_upserted', {
+        payload: {
+          activity: runningPollableActivity('job-cancelled', 'Production build'),
+        },
+      }));
+      return { response: 'Started build.' };
+    },
+  };
+
+  try {
+    const result = await runRuntimeAgenticWorkflow(agent, session, 'Build workspace', {
+      runId: 'run-cancelled-activity',
+      timeoutMs: 1000,
+      maxTurns: 1,
+      maxReplans: 1,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.cancelled, true);
+    assert.equal(pollAttempts, 1);
+    assert.equal(events.some((event) => event.type === 'run_replanned'), false);
+    assert.ok(events.some((event) => event.type === 'run_cancelled' && event.payload?.cancelled === true));
+    assert.equal(session.agentProjection.status, 'cancelled');
+    assert.match(session.agentProjection.logs.join('\n'), /run ended by user cancellation \(no replan\)/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('runRuntimeAgenticWorkflow replans from failed activity when another activity is cancelled', async () => {
+  const originalFetch = globalThis.fetch;
+  const events = [];
+  const pollStatuses = new Map([
+    ['job-failed', {
+      id: 'job-failed',
+      source: 'production',
+      label: 'Production build',
+      status: 'failed',
+      terminal: true,
+      error: 'build failed',
+    }],
+    ['job-cancelled', {
+      id: 'job-cancelled',
+      source: 'production',
+      label: 'Production cleanup',
+      status: 'cancelled',
+      terminal: true,
+    }],
+  ]);
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = JSON.parse(String(options.body ?? '{}'));
+    return mcpActivityResponse(pollStatuses.get(body.params?.arguments?.jobId));
+  };
+  const session = {
+    mcp: {
+      production: {
+        status: 'connected',
+        url: 'http://127.0.0.1:3000/mcp/',
+        retry: { maxAttempts: 1, backoffMs: 0 },
+      },
+    },
+    activities: {},
+    headlessPlan: null,
+    llm: {
+      async completeWithTools({ system }) {
+        if (/replanner/.test(system)) return { content: '{"steps":["Retry build"]}' };
+        return { content: '{"ok":true,"reason":"Build complete.","suggestedAction":null}' };
+      },
+    },
+    _onAgentEvent: (event) => events.push(event),
+  };
+  let turns = 0;
+  const agent = {
+    async invoke({ session: turnSession }) {
+      turns += 1;
+      if (turns === 1) {
+        dispatchAgentEvent(turnSession, createAgentEvent('activity_upserted', {
+          payload: { activity: runningPollableActivity('job-failed', 'Production build') },
+        }));
+        dispatchAgentEvent(turnSession, createAgentEvent('activity_upserted', {
+          payload: { activity: runningPollableActivity('job-cancelled', 'Production cleanup') },
+        }));
+        return { response: 'Started build.' };
+      }
+      const pending = turnSession.headlessPlan?.find((step) => step.status === 'pending');
+      if (pending) {
+        dispatchAgentEvent(turnSession, createAgentEvent('plan_step_updated', {
+          origin: 'tool',
+          payload: { taskId: pending.id, status: 'done' },
+        }));
+      }
+      return { response: 'Retry done.' };
+    },
+  };
+
+  try {
+    const result = await runRuntimeAgenticWorkflow(agent, session, 'Build workspace', {
+      runId: 'run-failed-and-cancelled',
+      timeoutMs: 1000,
+      maxTurns: 3,
+      maxReplans: 1,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(turns, 2);
+    assert.equal(events.some((event) => event.type === 'run_cancelled'), false);
+    assert.ok(events.some((event) => event.type === 'run_replanned'));
+    assert.equal(session.agentProjection.replans[0].reason, 'Production build ended with failed: build failed');
+    assert.deepEqual(session.agentProjection.replans[0].plan, ['Retry build']);
+    assert.equal(session.agentProjection.status, 'done');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('runRuntimeAgenticWorkflow stops after replan budget is exhausted', async () => {
+  const session = {
+    activities: {},
+    headlessPlan: null,
+    llm: {
+      async completeWithTools() {
+        return { content: '{"ok":false,"reason":"Still missing.","suggestedAction":"Try again."}' };
+      },
+    },
+  };
+  const agent = {
+    async invoke({ session: turnSession }) {
+      if (turnSession.headlessPlan === null) {
+        dispatchAgentEvent(turnSession, createAgentEvent('plan_set', {
+          origin: 'tool',
+          payload: { steps: [{ step: 1, id: 'task', description: 'Task', status: 'done' }] },
+        }));
+      }
+      return { response: 'Done.' };
+    },
+  };
+
+  const result = await runRuntimeAgenticWorkflow(agent, session, 'Do task', {
+    runId: 'run-replan-limit',
+    timeoutMs: 1000,
+    maxTurns: 1,
+    maxReplans: 0,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.evaluationRejected, true);
+  assert.equal(session.agentProjection.status, 'error');
+  assert.equal(session.agentProjection.replans.length, 0);
+});
+
+test('runRuntimeParallelPlan dispatches orchestrated tasks without child LLM loops', async () => {
+  let llmCalls = 0;
+  const executeOrder = [];
+  const completed = new Set(['join']);
+  const jobs = new Map();
+  const session = {
+    workspace: 'demo-workspace',
+    activities: {},
+    mcp: {
+      production: {
+        status: 'connected',
+        tools: [
+          { name: 'agent_execute' },
+          { name: 'agent_status' },
+          { name: 'agent_cancel' },
+        ],
+      },
+    },
+    agentRegistrySnapshot: [productionAgent()],
+    wikircConfig: { capabilityRouting: {} },
+    llm: {
+      async completeWithTools() {
+        llmCalls += 1;
+        return { content: '{"ok":true,"reason":"unused"}' };
+      },
+    },
+    headlessPlan: [
+      plannedDoctorTask('a', []),
+      plannedDoctorTask('b', []),
+      plannedDoctorTask('join', ['a', 'b']),
+    ],
+  };
+  const agent = {
+    async invoke() {
+      assert.fail('orchestrated task execution must not invoke a child Donna loop');
+    },
+  };
+  const callTool = async (_mcp, _serverName, toolName, args) => {
+    if (toolName === 'agent_execute') {
+      executeOrder.push(args.taskId);
+      const jobId = `job-${args.taskId}`;
+      jobs.set(jobId, { jobId, taskId: args.taskId });
+      return toolResult({ accepted: true, jobId, status: 'queued' });
+    }
+    if (toolName === 'agent_status') {
+      const job = jobs.get(args.jobId);
+      const done = completed.has(job.taskId);
+      return toolResult({
+        jobId: job.jobId,
+        taskId: job.taskId,
+        operation: 'doctor',
+        status: done ? 'done' : 'running',
+        progress: { percent: done ? 100 : 50 },
+        ...(done ? {
+          result: {
+            status: 'succeeded',
+            outputRefs: [{ type: 'file', ref: `out/${job.taskId}.json` }],
+            metrics: { durationMs: 1 },
+          },
+        } : {}),
+      });
+    }
+    if (toolName === 'agent_cancel') return toolResult({ ok: true });
+    throw new Error(`unexpected tool: ${toolName}`);
+  };
+
+  const running = runRuntimeParallelPlan(agent, session, 'Run three tasks', {
+    runId: 'run-dispatch',
+    timeoutMs: 1000,
+    maxTurns: 1,
+    concurrency: 2,
+    callTool,
+    dispatcherPollIntervalMs: 1,
+  });
+  await waitFor(() => executeOrder.includes('a') && executeOrder.includes('b'));
+  assert.deepEqual(session.headlessPlan.slice(0, 2).map((step) => step.status), ['running', 'running']);
+  completed.add('a');
+  completed.add('b');
+
+  const result = await running;
+
+  assert.equal(result.ok, true);
+  assert.equal(llmCalls, 0);
+  assert.deepEqual(executeOrder, ['a', 'b', 'join']);
+  assert.deepEqual(session.headlessPlan.map((step) => step.status), ['done', 'done', 'done']);
+  assert.deepEqual(session.headlessPlan.map((step) => step.outputRefs?.[0]?.ref), ['out/a.json', 'out/b.json', 'out/join.json']);
+  assert.deepEqual(
+    session.agentEvents
+      .filter((event) => ['task.result_returned', 'task.completed'].includes(event.type))
+      .map((event) => `${event.type}:${event.taskId}`),
+    [
+      'task.result_returned:a',
+      'task.completed:a',
+      'task.result_returned:b',
+      'task.completed:b',
+      'task.result_returned:join',
+      'task.completed:join',
+    ],
+  );
+  const logs = session.agentProjection.logs.join('\n');
+  for (const label of ['READY', 'RESOLVING', 'SELECTED', 'ASSIGNED', 'CREATED', 'ACQUIRED', 'AGENT_EXECUTE', 'ACCEPTED', 'AGENT_STATUS', 'RESULT_RETURNED', 'RELEASED', 'COMPLETED']) {
+    assert.match(logs, new RegExp(`\\b${label}\\b`));
+  }
+  // Compact dispatch plumbing: the routing fields ride the line as a sentence
+  // (who · what · task · job), no run=/plan=/attempt= soup.
+  assert.match(logs, /AGENT_EXECUTE · production-main · workspace\.diagnose\/doctor · a\b/);
+  assert.match(logs, /ACCEPTED · production-main · workspace\.diagnose\/doctor · a · job-a · queued/);
+  assert.match(logs, /task=a/);
+  // Business events keep the full field=value form.
+  assert.match(logs, /run=run-dispatch/);
+  assert.match(logs, /workspace=demo-workspace/);
+});
+
+test('runRuntimeParallelPlan fails cleanly when scheduler budget is exceeded', async () => {
+  const session = {
+    mcp: { tools: {} },
+    agentEvents: [],
+    headlessPlan: [plannedDoctorTask('a', [])],
+  };
+  const agent = {
+    async invoke() {
+      assert.fail('budget rejection must happen before child execution');
+    },
+  };
+
+  const result = await runRuntimeParallelPlan(agent, session, 'Run one task', {
+    runId: 'run-budget',
+    timeoutMs: 1000,
+    maxTurns: 1,
+    budgets: { maxTasks: 0 },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.budgetExceeded, true);
+  assert.equal(result.reason, 'max_tasks_exceeded');
+  assert.ok(session.agentEvents.some((event) => event.type === 'run_error' && event.payload?.budget?.reason === 'max_tasks_exceeded'));
+  // run_error now cancels leftover pending steps: a dead run must not leave
+  // ghost work in the panels or reappear at the next relaunch.
+  assert.equal(session.headlessPlan[0].status, 'cancelled');
+});
+
+/*
+ Ce test gardait l'ancien comportement : la tâche bloquée derrière un échec
+ laissait le run « stalled ». Ne pas attendre d'approbation était déjà acquis,
+ mais s'arrêter là déclenchait une replanification et laissait le run vivant.
+
+ Cas observé le 2026-08-04 (workspace demo) : dix fichiers à ingérer, neuf
+ réussis, un en échec sur du JSON malformé — le run n'est jamais retombé.
+ Une tâche qui ne deviendra jamais exécutable est donc marquée `skipped` avec
+ le nom de la dépendance fautive, et le run se termine sur un résultat partiel.
+*/
+test('runRuntimeParallelPlan skips work stuck behind a failed dependency instead of stalling', async () => {
+  const session = {
+    workspace: 'demo-workspace',
+    mcp: { tools: {} },
+    agentEvents: [],
+    headlessPlan: [
+      { ...plannedDoctorTask('a', []), status: 'failed' },
+      {
+        ...plannedDoctorTask('b', ['a']),
+        status: 'waiting_approval',
+        requiresApproval: true,
+        approvalClass: 'mutation',
+      },
+    ],
+  };
+
+  const result = await runRuntimeParallelPlan(
+    { invoke: async () => assert.fail('blocked work must not invoke an agent') },
+    session,
+    'Apply after failed plan',
+    { runId: 'run-failed-dependency', timeoutMs: 1000, maxTurns: 1 },
+  );
+
+  // Plus de blocage : le run retombe au lieu de rester actif indéfiniment.
+  assert.notEqual(result.stalled, true);
+  assert.equal(session.headlessPlan[1].status, 'skipped');
+  assert.equal(session.headlessPlan[1].error?.code, 'dependency_failed');
+  // Le motif nomme la dépendance fautive : sans lui, l'utilisateur voit une
+  // tâche disparaître sans savoir pourquoi.
+  assert.match(session.headlessPlan[1].error.message, /\ba\b/);
+  assert.equal(session.agentEvents.some((event) => event.type === 'assistant_message'
+    && /Approval required/.test(event.payload?.content ?? '')), false);
+  assert.equal(session.agentEvents.some((event) => event.type === 'plan_step_updated'
+    && event.payload?.status === 'skipped'), true);
+});
+
+test('runRuntimeParallelPlan retries a retryable task on a fallback agent', async () => {
+  const executeServers = [];
+  const session = {
+    mcp: {
+      cme: { tools: [{ name: 'agent_execute' }, { name: 'agent_status' }, { name: 'agent_cancel' }] },
+      commercial: { tools: [{ name: 'agent_execute' }, { name: 'agent_status' }, { name: 'agent_cancel' }] },
+    },
+    agentEvents: [],
+    headlessPlan: [{
+      ...plannedDoctorTask('a', []),
+      retryPolicy: {
+        maxAttempts: 2,
+        retryableErrors: ['temporarily_unavailable'],
+        allowAgentFallback: true,
+      },
+    }],
+    capabilityRegistry: fallbackRegistry(),
+  };
+  const jobs = new Map();
+  const callTool = async (_mcp, serverName, toolName, args) => {
+    if (toolName === 'agent_execute') {
+      executeServers.push(serverName);
+      const jobId = `${serverName}-job`;
+      jobs.set(jobId, { serverName, taskId: args.taskId });
+      return toolResult({ accepted: true, jobId, status: 'queued' });
+    }
+    if (toolName === 'agent_status') {
+      const job = jobs.get(args.jobId);
+      if (job.serverName === 'cme') {
+        return toolResult({
+          jobId: args.jobId,
+          taskId: job.taskId,
+          status: 'failed',
+          result: {
+            status: 'failed',
+            error: { code: 'temporarily_unavailable', message: 'CME unavailable', retryable: true },
+          },
+        });
+      }
+      return toolResult({
+        jobId: args.jobId,
+        taskId: job.taskId,
+        status: 'done',
+        result: {
+          status: 'succeeded',
+          outputRefs: [{ type: 'file', ref: 'out/a.json' }],
+          metrics: { durationMs: 1 },
+        },
+      });
+    }
+    return toolResult({ ok: true });
+  };
+
+  const result = await runRuntimeParallelPlan({ invoke: async () => assert.fail('no child loop') }, session, 'Retry task', {
+    runId: 'run-retry-fallback',
+    timeoutMs: 1000,
+    maxTurns: 1,
+    concurrency: 1,
+    callTool,
+    dispatcherPollIntervalMs: 1,
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(executeServers, ['cme', 'commercial']);
+  assert.equal(session.headlessPlan[0].status, 'done');
+  assert.ok(session.agentEvents.some((event) => event.type === 'task.retry_scheduled'
+    && event.payload.previousAgentInstanceId === 'cme-main'
+    && event.payload.newAgentInstanceId === 'commercial-main'));
+});
+
+function plannedDoctorTask(id, dependsOn) {
+  return {
+    step: id === 'a' ? 1 : id === 'b' ? 2 : 3,
+    id,
+    label: `Task ${id}`,
+    description: `Task ${id}`,
+    status: 'pending',
+    dependsOn,
+    requiredCapability: 'workspace.diagnose',
+    operation: 'doctor',
+    arguments: {},
+    parallelizable: true,
+    inputRefs: [],
+    expectedOutputRefs: [],
+    locks: [],
+    requiresApproval: false,
+    idempotencyKey: null,
+    progressWeight: 1,
+    outputRefs: [],
+  };
+}
+
+function fallbackRegistry() {
+  const providers = [
+    fallbackProvider('cme-main', 'cme'),
+    fallbackProvider('commercial-main', 'commercial'),
+  ];
+  return {
+    providersFor(capability) {
+      return capability === 'workspace.diagnose' ? providers : [];
+    },
+    isCompatible(contractVersion) {
+      return String(contractVersion) === '1';
+    },
+  };
+}
+
+function fallbackProvider(agentInstanceId, serverName) {
+  return {
+    agentInstanceId,
+    serverName,
+    health: 'available',
+    capability: {
+      id: 'workspace.diagnose',
+      version: '1',
+      description: 'Diagnose',
+      inputSchema: { type: 'object', additionalProperties: true },
+      outputSchema: {},
+      supportedOperations: ['doctor'],
+    },
+    description: { contractVersion: '1', limits: { maxTaskDurationMs: 1000 } },
+  };
+}
+
+function productionAgent() {
+  return {
+    serverName: 'production',
+    agentInstanceId: 'production-main',
+    health: 'available',
+    description: {
+      contractVersion: '1',
+      agentType: 'production',
+      agentInstanceId: 'production-main',
+      displayName: 'Production',
+      capabilities: [
+        {
+          id: 'workspace.diagnose',
+          version: '1',
+          description: 'Diagnose workspace',
+          inputSchema: { type: 'object', additionalProperties: true },
+          outputSchema: { type: 'object', additionalProperties: true },
+          supportedOperations: ['doctor'],
+        },
+      ],
+      orchestration: {
+        canPlan: true,
+        canExpandPlan: false,
+        canExecute: true,
+        canCancel: true,
+        canResume: false,
+        supportsIdempotency: false,
+        supportsParallelWorkers: true,
+      },
+      limits: {
+        recommendedConcurrency: 2,
+        maxConcurrency: 2,
+        maxTaskDurationMs: 1000,
+      },
+      health: { status: 'available' },
+    },
+  };
+}
+
+function runningPollableActivity(id, label) {
+  return {
+    id,
+    source: 'production',
+    label,
+    status: 'running',
+    terminal: false,
+    poll: { server: 'production', tool: 'production_job_status', args: { jobId: id }, intervalMs: 0 },
+  };
+}
+
+function mcpActivityResponse(activity) {
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    text: async () => JSON.stringify({
+      result: {
+        content: [{ type: 'text', text: JSON.stringify({ _activity: activity }) }],
+      },
+    }),
+  };
+}
+
+function toolResult(payload) {
+  return { content: [{ type: 'text', text: JSON.stringify(payload) }] };
+}
+
+async function waitFor(predicate, timeoutMs = 500) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  assert.fail('condition was not met before timeout');
+}
+
+test('runtime runs are seeded with the chat that preceded them', async () => {
+  // "Donna n'a pas de contexte" was literally true: runs started with an
+  // empty history, so the model reinvented the missing context. The seed
+  // carries the prior exchanges, minus the run's own triggering message.
+  const { conversationSeed } = await import('../../src/runtime/runner.js');
+  const session = {
+    agentProjection: {
+      conversation: [
+        { role: 'user', content: 'peux-tu configurer le CME ?' },
+        { role: 'assistant', content: 'CME configuré sur confluent.meteo.fr. Veux-tu ingérer les documents en attente ?' },
+        { role: 'user', content: 'oui lance l\'ingestion' },
+      ],
+    },
+  };
+
+  const seed = conversationSeed(session, "oui lance l'ingestion");
+  assert.deepEqual(seed.map((message) => message.role), ['user', 'assistant']);
+  assert.match(seed[1].content, /confluent\.meteo\.fr/);
+
+  // Long entries are clipped, empty/technical roles dropped.
+  const noisy = {
+    agentProjection: {
+      conversation: [
+        { role: 'command', content: 'Runtime is idle.' },
+        { role: 'assistant', content: 'x'.repeat(5000) },
+      ],
+    },
+  };
+  const clipped = conversationSeed(noisy, 'autre demande');
+  assert.equal(clipped.length, 1);
+  assert.equal(clipped[0].content.length, 2000);
+});
+
+test('a compact boundary hides the prior exchanges from the seed but keeps them in the conversation', async () => {
+  const { conversationSeed } = await import('../../src/runtime/runner.js');
+  const session = {
+    agentProjection: {
+      conversation: [
+        { role: 'user', content: 'avant 1' },
+        { role: 'assistant', content: 'avant 2' },
+        { role: 'user', content: 'après 1' },
+        { role: 'assistant', content: 'après 2' },
+      ],
+      conversationSeedStart: 2,
+    },
+  };
+  const seed = conversationSeed(session, 'nouvelle question');
+  assert.deepEqual(seed, [
+    { role: 'user', content: 'après 1' },
+    { role: 'assistant', content: 'après 2' },
+  ]);
+  // The pre-compact exchange is gone from the grounding…
+  assert.equal(seed.some((message) => /avant/.test(message.content)), false);
+  // …but it stays in the displayed conversation.
+  assert.equal(session.agentProjection.conversation.length, 4);
+});
+
+test('a stored compact summary is prepended to the seed, ahead of the recent exchanges', async () => {
+  const { conversationSeed } = await import('../../src/runtime/runner.js');
+  const session = {
+    agentProjection: {
+      conversation: [
+        { role: 'user', content: 'après 1' },
+        { role: 'assistant', content: 'après 2' },
+      ],
+      conversationSeedStart: 0,
+      conversationSummary: 'Résumé condensé des échanges précédents.',
+    },
+  };
+  const seed = conversationSeed(session, 'nouvelle question');
+  assert.equal(seed.length, 3);
+  assert.equal(seed[0].role, 'user');
+  assert.match(seed[0].content, /Résumé condensé des échanges précédents\./);
+  assert.deepEqual(seed.slice(1), [
+    { role: 'user', content: 'après 1' },
+    { role: 'assistant', content: 'après 2' },
+  ]);
+});
+
+test('no stored summary means no synthetic entry is added to the seed', async () => {
+  const { conversationSeed } = await import('../../src/runtime/runner.js');
+  const session = {
+    agentProjection: {
+      conversation: [{ role: 'user', content: 'salut' }],
+      conversationSeedStart: 0,
+    },
+  };
+  const seed = conversationSeed(session, 'autre question');
+  assert.deepEqual(seed, [{ role: 'user', content: 'salut' }]);
+});
+
+test('skipImpossibleTasks propage un échec jusqu’au point fixe', () => {
+  /*
+   Marquer les seules tâches directement bloquées laissait un résidu : A en
+   échec rend B impossible, mais C dépend de B et serait resté en attente
+   d'une tâche désormais terminale sans succès. La propagation doit descendre
+   toute la chaîne en une fois.
+  */
+  const session = { workspace: 'demo-workspace', agentEvents: [] };
+  const steps = [
+    { id: 'a', step: 1, status: 'failed' },
+    { id: 'b', step: 2, status: 'pending', dependsOn: ['a'] },
+    { id: 'c', step: 3, status: 'pending', dependsOn: ['b'] },
+    { id: 'independent', step: 4, status: 'pending', dependsOn: [] },
+  ];
+  // Le plan passe par la projection, comme en production : chaque dépêche
+  // remplace session.headlessPlan, et c'est précisément ce qui rendait une
+  // référence capturée orpheline.
+  dispatchAgentEvent(session, createAgentEvent('plan_set', { origin: 'tool', payload: { steps } }));
+
+  const skipped = skipImpossibleTasks(session, 'run-fixpoint');
+
+  assert.equal(skipped, 2);
+  assert.equal(session.headlessPlan[1].status, 'skipped');
+  assert.equal(session.headlessPlan[2].status, 'skipped');
+  // La branche indépendante n'est pas touchée : c'est tout l'objet du
+  // correctif, laisser finir ce qui peut finir.
+  assert.equal(session.headlessPlan[3].status, 'pending');
+  assert.equal(session.agentEvents.filter((event) => event.payload?.status === 'skipped').length, 2);
+});
+
+test('skipImpossibleTasks s’arrête au lieu de tourner sans rien changer', () => {
+  // Sans garde-fou, une incohérence de statut se paierait en boucle infinie,
+  // c'est-à-dire en run figé — exactement ce que l'on répare.
+  const session = { workspace: 'demo-workspace', agentEvents: [] };
+  dispatchAgentEvent(session, createAgentEvent('plan_set', {
+    origin: 'tool',
+    payload: {
+      steps: [
+        { id: 'a', step: 1, status: 'failed' },
+        { id: 'b', step: 2, status: 'skipped', dependsOn: ['a'] },
+      ],
+    },
+  }));
+  const eventsBefore = session.agentEvents.length;
+
+  assert.equal(skipImpossibleTasks(session, 'run-guard', { maxPasses: 3 }), 0);
+  assert.equal(session.agentEvents.length, eventsBefore);
+});
+
+test('structuredPlanEvaluation compte séparément, sans fraction trompeuse', () => {
+  const task = (id, status) => ({
+    id, status, label: `Task ${id}`, requiredCapability: 'knowledge.update', operation: 'ingest',
+  });
+
+  const allDone = structuredPlanEvaluation([task('a', 'done'), task('b', 'succeeded')]);
+  assert.equal(allDone.ok, true);
+
+  const partial = structuredPlanEvaluation([
+    task('a', 'done'), task('b', 'failed'), task('c', 'skipped'),
+  ]);
+  assert.equal(partial.ok, false);
+  // Trois compteurs qui s'additionnent, pas un « 1/3 » dont le dénominateur
+  // mêlerait tâches métier et étapes techniques.
+  assert.match(partial.reason, /1 succeeded/);
+  assert.match(partial.reason, /1 failed/);
+  assert.match(partial.reason, /1 skipped/);
+  assert.doesNotMatch(partial.reason, /\d+\/\d+/);
+
+  // Uniquement des ignorées : jamais un succès.
+  const onlySkipped = structuredPlanEvaluation([task('a', 'skipped')]);
+  assert.equal(onlySkipped.ok, false);
+
+  // Succès + ignorée sans échec : toujours pas un succès.
+  const doneAndSkipped = structuredPlanEvaluation([task('a', 'done'), task('b', 'skipped')]);
+  assert.equal(doneAndSkipped.ok, false);
+
+  // Statut actif ou inconnu : incomplet, jamais réussi.
+  for (const status of ['running', 'brouette']) {
+    const pending = structuredPlanEvaluation([task('a', 'done'), task('b', status)]);
+    assert.equal(pending.ok, false, status);
+    assert.match(pending.reason, /unfinished/);
+  }
+});
+
+test('une tâche ignorée est terminale pour la reprise et pour les approbations', () => {
+  /*
+   Vérifications transversales sur le nouveau statut : il ne suffit pas que
+   l'ordonnanceur le comprenne. S'il n'est pas terminal pour la reprise, le
+   redémarrage réattache un run fantôme ; s'il n'est pas terminal pour la
+   politique d'approbation, on demande un accord pour une tâche qui ne sera
+   jamais exécutée.
+  */
+  const skippedTask = {
+    id: 'ingest-b',
+    status: 'skipped',
+    requiresApproval: true,
+    requiredCapability: 'knowledge.update',
+    operation: 'ingest_apply',
+  };
+
+  assert.equal(isTerminal(skippedTask.status), true);
+  assert.deepEqual(tasksAwaitingApproval([skippedTask], { approvals: [] }), []);
+  assert.deepEqual(readyPlanTasks([skippedTask]).map((task) => task.id), []);
+});
+
+test('rejouer les événements redonne exactement les mêmes statuts', () => {
+  // La projection est reconstruite au démarrage à partir du journal : si le
+  // rejeu ne rendait pas le même état, une tâche ignorée pourrait réapparaître
+  // en attente et relancer un travail déjà abandonné.
+  const events = [
+    createAgentEvent('plan_set', { origin: 'tool', payload: { steps: ['A', 'B'] } }),
+    createAgentEvent('plan_step_updated', { origin: 'runtime', payload: { step: 1, status: 'failed' } }),
+    createAgentEvent('plan_step_updated', {
+      origin: 'runtime',
+      payload: { step: 2, status: 'skipped', reason: 'dependency_failed:A' },
+    }),
+  ];
+
+  const first = reduceAgentEvents(events);
+  const replayed = reduceAgentEvents(events);
+
+  assert.deepEqual(
+    replayed.plan.map((step) => step.status),
+    first.plan.map((step) => step.status),
+  );
+  assert.deepEqual(replayed.plan.map((step) => step.status), ['failed', 'skipped']);
+});
+
+test('announceRunOutcome never calls a plan with pending tasks a success', async () => {
+  // The outcome summary counted only failed/cancelled/successful, so a run
+  // whose single mutating task was still `pending_approval` produced
+  // "Plan terminé avec succès — 0/1 réussie", which the model rephrased into
+  // "le livrable a bien été publié" — before the approval that would run it.
+  const session = {
+    agentEvents: [],
+    agentProjection: null,
+    headlessPlan: [{ id: 'a', description: 'Build TechSections', status: 'pending_approval' }],
+  };
+  await announceRunOutcome(session, { runId: 'run-1', ok: true });
+  const message = session.agentEvents.find((event) => event.type === 'assistant_message');
+  assert.match(message.payload.content, /NOT finished/);
+  assert.match(message.payload.content, /pending/);
+  assert.doesNotMatch(message.payload.content, /finished successfully/i);
+});
+
+test('announceRunOutcome says a rebuild-owned curation has nothing to review and names /wiki-rebuild', async () => {
+  const session = {
+    agentEvents: [],
+    agentProjection: null,
+    headlessPlan: [{
+      id: 'a',
+      description: 'Curate',
+      status: 'done',
+      result: { rawStatus: { result: { curationOutcome: { kind: 'rebuild_owned', reason: 'pivots lack sources:' } } } },
+    }],
+  };
+  await announceRunOutcome(session, { runId: 'run-2', ok: true });
+  const message = session.agentEvents.find((event) => event.type === 'assistant_message');
+  assert.match(message.payload.content, /nothing to review/);
+  assert.match(message.payload.content, /pivots lack sources:/);
+  assert.match(message.payload.content, /\/wiki-rebuild/);
+});
+
+test('announceRunOutcome tells the user to ingest before curating an empty wiki', async () => {
+  const session = {
+    agentEvents: [],
+    agentProjection: null,
+    headlessPlan: [{
+      id: 'curate-empty', description: 'Curate', status: 'done',
+      result: { rawStatus: { result: { curationOutcome: {
+        kind: 'nothing_to_curate', reason: 'No wiki/sources fiche exists yet.',
+      } } } },
+    }],
+  };
+  await announceRunOutcome(session, { runId: 'run-empty', ok: true });
+  const message = session.agentEvents.find((event) => event.type === 'assistant_message');
+  assert.match(message.payload.content, /ingest source documents first/i);
+  assert.match(message.payload.content, /no curation roles ran/i);
+});
+
+test('announceRunOutcome names the steps a failed chain abandoned', async () => {
+  // `skipped` fell through every bucket: a 3-step chain failing at step 1
+  // announced "0/3 réussie(s), 1 en erreur" and never mentioned the two steps
+  // nobody ran. "When something is skipped, say so where the panels read."
+  const session = {
+    agentEvents: [],
+    agentProjection: null,
+    headlessPlan: [
+      { id: 'a', description: 'Sync', status: 'failed' },
+      { id: 'b', description: 'Ingest', status: 'skipped' },
+      { id: 'c', description: 'Build', status: 'skipped' },
+    ],
+  };
+  await announceRunOutcome(session, { runId: 'run-3', ok: false });
+  const message = session.agentEvents.find((event) => event.type === 'assistant_message');
+  assert.match(message.payload.content, /NOT finished/);
+  assert.match(message.payload.content, /1 failed/);
+  assert.match(message.payload.content, /2 skipped/);
+});
+
+test('announceRunOutcome reports success only when every task finished', async () => {
+  const session = {
+    agentEvents: [],
+    agentProjection: null,
+    headlessPlan: [
+      { id: 'a', description: 'Build TechSections', status: 'done' },
+      { id: 'b', description: 'Export', status: 'success' },
+    ],
+  };
+  await announceRunOutcome(session, { runId: 'run-2', ok: true });
+  const message = session.agentEvents.find((event) => event.type === 'assistant_message');
+  assert.match(message.payload.content, /finished successfully/);
+});
+
+
+test('structured evaluation distinguishes execution receipts from observed results', () => {
+  const task = (id, status) => ({ id, status: 'succeeded', requiredCapability: 'example.action', operation: 'act',
+    result: { rawStatus: { result: { verification: status ? { status } : undefined } } } });
+  const verified = structuredPlanEvaluation([task('a', 'verified')]);
+  assert.equal(verified.ok, true);
+  assert.equal(verified.verification.verified, 1);
+  const missing = structuredPlanEvaluation([task('a', 'not_observed')]);
+  assert.equal(missing.ok, false);
+  assert.match(missing.reason, /NOT observed/);
+  assert.equal(missing.suggestedAction, null);
+  const uncertain = structuredPlanEvaluation([task('a', 'unavailable'), task('b'), task('c', 'not_applicable')]);
+  assert.equal(uncertain.ok, true);
+  assert.equal(uncertain.verification.unavailable, 1);
+  assert.equal(uncertain.verification.unreported, 1);
+  assert.match(uncertain.reason, /without any available verification/);
+  assert.match(uncertain.reason, /simulation/);
+});
+
+
+test('the run outcome hands verification facts to Donna, in the session language, never pasted raw', async () => {
+  let request;
+  const session = { agentEvents: [], agentProjection: null, language: 'de-DE',
+    llm: { async completeWithTools(args) { request = args; return { content: 'Erledigt, Ergebnis nicht überprüfbar.' }; } },
+    headlessPlan: [{ id: 'a', status: 'succeeded', result: { rawStatus: { result: {
+      verification: { status: 'unavailable', method: 'example.readback' },
+    } } } }] };
+  await announceRunOutcome(session, { runId: 'verification-run', ok: true });
+  const message = session.agentEvents.find((event) => event.type === 'assistant_message');
+  // Donna's wording only: no French (or any) system line appended.
+  assert.equal(message.payload.content, 'Erledigt, Ergebnis nicht überprüfbar.');
+  assert.match(request.system, /reply language: de-DE/);
+  assert.match(request.system, /state it: how many results were verified/);
+  const facts = request.messages[0].content;
+  assert.match(facts, /Post-action verification: 0 result\(s\) verified\./);
+  assert.match(facts, /1 result\(s\) without any available verification/);
+});
+
+test('without a model, the outcome falls back to the English fact line, verification included', async () => {
+  const session = { agentEvents: [], agentProjection: null,
+    headlessPlan: [{ id: 'a', status: 'succeeded', result: { rawStatus: { result: { verification: { status: 'not_observed' } } } } }] };
+  await announceRunOutcome(session, { runId: 'fallback-run', ok: true });
+  const message = session.agentEvents.find((event) => event.type === 'assistant_message');
+  assert.match(message.payload.content, /NOT finished/);
+  assert.match(message.payload.content, /1 result\(s\) NOT observed/);
+});

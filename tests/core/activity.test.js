@@ -1,0 +1,231 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { normalizeActivity, extractActivity, mergePolledActivity, isCancelledStatus, rememberActivity, rememberActivityFromPayload } from '../../src/core/activity.js';
+
+test('normalizeActivity: plan.steps preserved with id and label', () => {
+  const a = normalizeActivity({
+    id: 'job-1',
+    source: 'prod',
+    label: 'Test',
+    status: 'running',
+    plan: { steps: [{ id: 'extract', label: 'Extraction' }, { id: 'build', label: 'Build' }] },
+    progress: {},
+  });
+  assert.equal(a.schemaVersion, '1');
+  assert.deepEqual(a.outputRefs, []);
+  assert.deepEqual(a.plan.steps, [
+    { id: 'extract', label: 'Extraction', dependsOn: [], executor: null, executorQuery: null, outputRefs: [] },
+    { id: 'build', label: 'Build', dependsOn: [], executor: null, executorQuery: null, outputRefs: [] },
+  ]);
+});
+
+test('normalizeActivity: plan null when steps is empty array', () => {
+  const a = normalizeActivity({ id: '1', status: 'running', plan: { steps: [] } });
+  assert.equal(a.plan, null);
+});
+
+test('normalizeActivity: plan null when no plan field', () => {
+  const a = normalizeActivity({ id: '1', status: 'running' });
+  assert.equal(a.plan, null);
+});
+
+test('normalizeActivity: succeeded is terminal', () => {
+  const a = normalizeActivity({ id: 'job-connectors', status: 'succeeded' });
+  assert.equal(a.terminal, true);
+});
+
+test('isCancelledStatus recognizes both cancellation spellings', () => {
+  assert.equal(isCancelledStatus('cancelled'), true);
+  assert.equal(isCancelledStatus('canceled'), true);
+  assert.equal(isCancelledStatus('CANCELLED'), true);
+  assert.equal(isCancelledStatus('failed'), false);
+  assert.equal(isCancelledStatus(null), false);
+});
+
+test('normalizeActivity: step id falls back to 1-based index when missing', () => {
+  const a = normalizeActivity({
+    id: '1',
+    status: 'running',
+    plan: { steps: [{ label: 'Step A' }, { label: 'Step B' }] },
+  });
+  assert.equal(a.plan.steps[0].id, '1');
+  assert.equal(a.plan.steps[0].label, 'Step A');
+  assert.equal(a.plan.steps[1].id, '2');
+});
+
+test('normalizeActivity: stepId/stepIndex/stepTotal normalized from progress', () => {
+  const a = normalizeActivity({
+    id: '1',
+    status: 'running',
+    progress: { stepId: 'build', stepIndex: 2, stepTotal: 3 },
+  });
+  assert.equal(a.progress.stepId, 'build');
+  assert.equal(a.progress.stepIndex, 2);
+  assert.equal(a.progress.stepTotal, 3);
+});
+
+test('normalizeActivity: stepId/stepIndex absent when not provided', () => {
+  const a = normalizeActivity({ id: '1', status: 'running', progress: {} });
+  assert.equal(a.progress.stepId, undefined);
+  assert.equal(a.progress.stepIndex, undefined);
+});
+
+test('extractActivity: extracts _activity.plan.steps from payload', () => {
+  const payload = {
+    _activity: {
+      id: 'j1',
+      source: 'custom',
+      label: 'Custom job',
+      status: 'running',
+      plan: { steps: [{ id: 's1', label: 'Step 1' }] },
+      progress: { stepId: 's1', stepIndex: 1, stepTotal: 1 },
+    },
+  };
+  const a = extractActivity(payload);
+  assert.equal(a.plan.steps[0].id, 's1');
+  assert.equal(a.progress.stepId, 's1');
+  assert.equal(a.progress.stepIndex, 1);
+  assert.equal(a.progress.stepTotal, 1);
+});
+
+test('extractActivity: documents conversion activity carries plan and percent', () => {
+  const payload = {
+    _activity: {
+      id: 'documents:schema.png',
+      source: 'documents',
+      kind: 'conversion',
+      label: 'Documents: conversion schema.png',
+      status: 'done',
+      progress: { percent: 100, stepId: 'write', stepIndex: 3, stepTotal: 3 },
+      plan: {
+        steps: [
+          { id: 'resolve', label: 'Résoudre le fichier source' },
+          { id: 'convert', label: 'Convertir en Markdown' },
+          { id: 'write', label: 'Écrire le Markdown converti' },
+        ],
+      },
+      terminal: true,
+    },
+  };
+  const activity = extractActivity(payload, { server: 'documents' });
+  assert.equal(activity.source, 'documents');
+  assert.equal(activity.progress.percent, 100);
+  assert.equal(activity.terminal, true);
+  assert.deepEqual(activity.plan.steps.map((step) => step.id), ['resolve', 'convert', 'write']);
+});
+
+test('extractActivity: agent_status carries structured processing progress', () => {
+  const activity = extractActivity({
+    jobId: 'job-build',
+    taskId: 'build-report',
+    operation: 'build',
+    status: 'running',
+    progress: {
+      percent: 47,
+      phase: 'build',
+      detail: 'Batch 2/4 · LLM throttled',
+      stepIndex: 1,
+      stepTotal: 2,
+      steps: [
+        { id: 'build', name: 'build', status: 'running' },
+        { id: 'export', name: 'export', status: 'pending' },
+      ],
+      batch: { index: 2, total: 4, status: 'running' },
+      throttling: { active: true, waitMs: 1200, retryAt: '2026-07-21T10:00:01Z' },
+      processing: { instructionCount: 8 },
+    },
+  }, { server: 'production', tool: 'agent_status' });
+
+  assert.deepEqual(activity.plan.steps.map((step) => [step.id, step.status]), [
+    ['build', 'running'],
+    ['export', 'pending'],
+  ]);
+  assert.equal(activity.progress.batch.index, 2);
+  assert.equal(activity.progress.throttling.active, true);
+  assert.equal(activity.progress.processing.instructionCount, 8);
+});
+
+test('rememberActivity: returns normalized activity on success', () => {
+  const session = {};
+  const result = rememberActivity(session, { id: '1', status: 'running', source: 'x', kind: 'job' });
+  assert.ok(result);
+  assert.equal(typeof result, 'object');
+  assert.equal(result.status, 'running');
+});
+
+test('rememberActivity: returns null for invalid input', () => {
+  const session = {};
+  assert.equal(rememberActivity(session, null), null);
+  assert.equal(rememberActivity(session, 'bad'), null);
+});
+
+test('rememberActivityFromPayload: returns activity for _activity payload', () => {
+  const session = {};
+  const payload = { _activity: { id: '1', source: 'x', status: 'running' } };
+  const result = rememberActivityFromPayload(session, payload);
+  assert.ok(result);
+  assert.equal(result.source, 'x');
+});
+
+test('rememberActivityFromPayload: returns null for irrelevant payload', () => {
+  const session = {};
+  assert.equal(rememberActivityFromPayload(session, { message: 'ok' }), null);
+});
+
+test('extractActivity: a non-production agent status payload yields an activity', () => {
+  const activity = extractActivity({
+    jobId: 'job-know-1',
+    status: 'running',
+    progress: { percent: 42, phase: 'knowledge.update', detail: 'chunk 3/7' },
+  }, { server: 'cme', tool: 'agent_status' });
+  assert.ok(activity, 'a knowledge.update job run outside the production server must still produce an activity');
+  assert.equal(activity.source, 'cme');
+  assert.equal(activity.progress.percent, 42);
+  assert.equal(activity.poll.server, 'cme');
+  assert.equal(activity.poll.tool, 'agent_status');
+});
+
+test('extractActivity: a non-status tool result on another server is not inferred into an activity', () => {
+  // Agent mode: the LLM calls an arbitrary connector tool whose result happens
+  // to carry a jobId/progress-shaped object. Without an `_activity` opt-in and
+  // without a `*_status` poll tool, this must not create or replace the plan.
+  const activity = extractActivity({
+    jobId: 'export-42',
+    progress: { steps: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] },
+  }, { server: 'connectors', tool: 'gmail_export_run' });
+  assert.equal(activity, null);
+});
+
+test('extractActivity: production start-job result is still inferred without a status tool', () => {
+  const activity = extractActivity({
+    jobId: 'job-1',
+    status: 'running',
+    progress: { percent: 5, phase: 'ingest' },
+  }, { server: 'production', tool: 'production_start_job' });
+  assert.ok(activity);
+  assert.equal(activity.source, 'production');
+  assert.equal(activity.poll.tool, 'production_job_status');
+});
+
+test('mergePolledActivity: keeps the tracked key, poll and stepId across polls', () => {
+  const tracked = normalizeActivity({
+    id: 'job-know-1',
+    source: 'cme',
+    kind: 'knowledge.update',
+    label: 'Mise a jour des connaissances',
+    status: 'queued',
+    progress: { percent: 0, stepId: 'task-3' },
+    poll: { server: 'cme', tool: 'agent_status', args: { jobId: 'job-know-1' }, intervalMs: 1000 },
+  });
+  const polled = extractActivity({
+    jobId: 'job-know-1',
+    status: 'running',
+    progress: { percent: 63, detail: 'chunk 5/7' },
+  }, { server: 'cme', tool: 'agent_status' });
+  const merged = mergePolledActivity(tracked, polled);
+  assert.equal(merged.key, tracked.key, 'the activity must not be re-keyed by a poll');
+  assert.equal(merged.progress.stepId, 'task-3', 'the plan task link must survive a poll');
+  assert.equal(merged.progress.percent, 63);
+  assert.equal(merged.poll.tool, 'agent_status');
+  assert.equal(merged.terminal, false);
+});

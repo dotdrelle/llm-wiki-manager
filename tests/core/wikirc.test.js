@@ -1,0 +1,409 @@
+import assert from 'node:assert/strict';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import YAML from 'yaml';
+import {
+  formatLlmConfigFact,
+  loadWikircProfile,
+  normalizeCapabilityRouting,
+  patchWikircProfile,
+  promptSafeBaseUrl,
+} from '../../src/core/wikirc.js';
+import {
+  containerReachableUrl,
+  finalizeCreatedWorkspace,
+  writeLlmConfig,
+  writeVectorConfig,
+} from '../../src/core/wikiSetup.js';
+
+test('patchWikircProfile merges keys and preserves existing values', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wikirc-patch-'));
+  const file = join(root, '.wikirc.yaml');
+  writeFileSync(file, [
+    '# workspace config',
+    'language: en-US',
+    'llm:',
+    '  provider: openai',
+    '  temperature: 0.2',
+    '',
+  ].join('\n'), 'utf8');
+
+  patchWikircProfile(root, 'default', {
+    llm: {
+      model: 'gpt-5.4-mini',
+      apiKey: 'secret',
+    },
+    retrieval: {
+      vector: {
+        enabled: true,
+        embeddingModel: 'text-embedding-3-small',
+      },
+    },
+  });
+
+  const raw = readFileSync(file, 'utf8');
+  const parsed = YAML.parse(raw);
+  assert.match(raw, /# workspace config/);
+  assert.equal(parsed.language, 'en-US');
+  assert.equal(parsed.llm.provider, 'openai');
+  assert.equal(parsed.llm.temperature, 0.2);
+  assert.equal(parsed.llm.model, 'gpt-5.4-mini');
+  assert.equal(parsed.retrieval.vector.enabled, true);
+});
+
+test('loadWikircProfile parses capabilityRouting agent lists', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wikirc-routing-'));
+  writeFileSync(join(root, '.wikirc.yaml'), [
+    'language: en-US',
+    'capabilityRouting:',
+    '  external-source.export:',
+    '    preferredAgents:',
+    '      - commercial-main',
+    '    fallbackAgents:',
+    '      - cme-main',
+    '  knowledge.update:',
+    '    allowedAgents:',
+    '      - production-main',
+    '',
+  ].join('\n'), 'utf8');
+
+  const { config } = loadWikircProfile(root);
+
+  assert.deepEqual(config.capabilityRouting, {
+    'external-source.export': {
+      preferredAgents: ['commercial-main'],
+      fallbackAgents: ['cme-main'],
+      allowedAgents: [],
+    },
+    'knowledge.update': {
+      preferredAgents: [],
+      fallbackAgents: [],
+      allowedAgents: ['production-main'],
+    },
+  });
+});
+
+test('normalizeCapabilityRouting ignores invalid routing values safely', () => {
+  assert.deepEqual(normalizeCapabilityRouting({
+    'knowledge.update': {
+      preferredAgents: ['production-main', '', null],
+      fallbackAgents: 'production-secondary',
+      allowedAgents: ['production-main'],
+    },
+  }), {
+    'knowledge.update': {
+      preferredAgents: ['production-main'],
+      fallbackAgents: [],
+      allowedAgents: ['production-main'],
+    },
+  });
+});
+
+test('writeVectorConfig writes llm-wiki vector and rerank keys', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wikirc-vector-'));
+  writeFileSync(join(root, '.wikirc.yaml'), [
+    'language: en',
+    'llm:',
+    '  provider: openai-compatible',
+    '  baseUrl: http://localhost:8000/v1',
+    '  apiKey: llm-key',
+    '  model: chat-model',
+    'retrieval:',
+    '  vector:',
+    '    enabled: false',
+    '',
+  ].join('\n'), 'utf8');
+
+  writeVectorConfig(root, 'default', {
+    baseUrl: 'http://host.docker.internal:7997/v1',
+    apiKey: 'vector-key',
+    embeddingModel: 'BAAI/bge-m3',
+    rerankEnabled: true,
+    rerankerModel: 'BAAI/bge-reranker-v2-m3',
+  });
+
+  const parsed = YAML.parse(readFileSync(join(root, '.wikirc.yaml'), 'utf8'));
+  assert.equal(parsed.retrieval.vector.enabled, true);
+  assert.equal(parsed.retrieval.vector.baseUrl, 'http://host.docker.internal:7997/v1');
+  assert.equal(parsed.retrieval.vector.apiKey, 'vector-key');
+  assert.equal(parsed.retrieval.vector.embeddingModel, 'BAAI/bge-m3');
+  assert.equal(parsed.retrieval.vector.rerankEnabled, true);
+  assert.equal(parsed.retrieval.vector.rerankerModel, 'BAAI/bge-reranker-v2-m3');
+});
+
+test('writeVectorConfig removes commented vector placeholders it replaces', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wikirc-vector-comments-'));
+  writeFileSync(join(root, '.wikirc.yaml'), [
+    'language: en',
+    'llm:',
+    '  provider: openai-compatible',
+    '  baseUrl: http://localhost:8000/v1',
+    '  apiKey: llm-key',
+    '  model: chat-model',
+    'retrieval:',
+    '  vector:',
+    '    enabled: false',
+    '    # Defaults to llm.baseUrl.',
+    '    # baseUrl: http://127.0.0.1:7997/v1',
+    '    # apiKey: your-vector-key',
+    '    embeddingModel: BAAI/bge-m3',
+    '    rerankerModel: BAAI/bge-reranker-v2-m3',
+    '',
+  ].join('\n'), 'utf8');
+
+  writeVectorConfig(root, 'default', {
+    baseUrl: 'http://host.docker.internal:7997/v1',
+    apiKey: 'vector-key',
+    embeddingModel: 'BAAI/bge-m3',
+    rerankEnabled: true,
+    rerankerModel: 'custom-reranker',
+  });
+
+  const raw = readFileSync(join(root, '.wikirc.yaml'), 'utf8');
+  const parsed = YAML.parse(raw);
+  assert.doesNotMatch(raw, /^\s*#\s*baseUrl:/m);
+  assert.doesNotMatch(raw, /^\s*#\s*apiKey:/m);
+  assert.equal(parsed.retrieval.vector.baseUrl, 'http://host.docker.internal:7997/v1');
+  assert.equal(parsed.retrieval.vector.apiKey, 'vector-key');
+});
+
+test('finalizeCreatedWorkspace copies generated wiki token into default wikirc', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wikirc-workspace-token-'));
+  const registryRoot = join(root, 'registry');
+  const registryPath = join(registryRoot, 'demo');
+  const workspacePath = join(root, 'workspace');
+  const token = 'a'.repeat(64);
+  mkdirSync(registryPath, { recursive: true });
+  mkdirSync(workspacePath, { recursive: true });
+  writeFileSync(
+    join(registryPath, '.env'),
+    [
+      'WORKSPACE_NAME=demo',
+      `WIKI_WORKSPACE_PATH=${workspacePath}`,
+      `WIKI_MCP_AUTH_TOKEN=${token}`,
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  writeFileSync(
+    join(workspacePath, '.wikirc.yaml'),
+    ['language: en', 'mcp:', '  # accessKey: your-secret-key', ''].join('\n'),
+    'utf8',
+  );
+
+  const previousDir = process.env.WIKI_WORKSPACES_DIR;
+  process.env.WIKI_WORKSPACES_DIR = registryRoot;
+  try {
+    const { workspace } = await finalizeCreatedWorkspace('demo');
+    const parsed = YAML.parse(readFileSync(join(workspacePath, '.wikirc.yaml'), 'utf8'));
+
+    assert.equal(workspace.name, 'demo');
+    assert.equal(parsed.mcp.accessKey, token);
+  } finally {
+    if (previousDir === undefined) delete process.env.WIKI_WORKSPACES_DIR;
+    else process.env.WIKI_WORKSPACES_DIR = previousDir;
+  }
+});
+
+test('writeLlmConfig writes provider + engine and rewrites loopback hosts for containers', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wikirc-llm-'));
+  writeFileSync(join(root, '.wikirc.yaml'), ['language: en', ''].join('\n'), 'utf8');
+
+  writeLlmConfig(root, 'default', {
+    provider: 'openai-compatible',
+    engine: 'ollama',
+    baseUrl: 'http://localhost:11434/v1',
+    apiKey: 'ollama',
+    model: 'qwen2.5',
+  });
+
+  const parsed = YAML.parse(readFileSync(join(root, '.wikirc.yaml'), 'utf8'));
+  assert.equal(parsed.llm.provider, 'openai-compatible');
+  assert.equal(parsed.llm.engine, 'ollama');
+  // Le wizard tourne sur l'hôte, serve dans Docker : localhost y désigne le
+  // container lui-meme.
+  assert.equal(parsed.llm.baseUrl, 'http://host.docker.internal:11434/v1');
+});
+
+test('writeLlmConfig omits engine behind a gateway and leaves real hostnames alone', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wikirc-llm-gw-'));
+  writeFileSync(join(root, '.wikirc.yaml'), ['language: en', ''].join('\n'), 'utf8');
+
+  writeLlmConfig(root, 'default', {
+    provider: 'ai-gateway',
+    engine: null,
+    baseUrl: 'https://gateway.internal.example/v1',
+    apiKey: 'sk-virtual',
+    model: 'anthropic/claude-sonnet-4-5',
+  });
+
+  const parsed = YAML.parse(readFileSync(join(root, '.wikirc.yaml'), 'utf8'));
+  assert.equal(parsed.llm.provider, 'ai-gateway');
+  assert.equal(parsed.llm.engine, undefined);
+  assert.equal(parsed.llm.baseUrl, 'https://gateway.internal.example/v1');
+});
+
+test('containerReachableUrl only touches loopback hosts', () => {
+  assert.deepEqual(containerReachableUrl('http://127.0.0.1:8000/v1'), {
+    url: 'http://host.docker.internal:8000/v1',
+    rewritten: true,
+    from: '127.0.0.1',
+  });
+  assert.equal(containerReachableUrl('https://api.openai.com/v1').rewritten, false);
+  assert.equal(containerReachableUrl('http://gateway:4000/v1').rewritten, false);
+  assert.equal(containerReachableUrl(undefined).rewritten, false);
+});
+
+// /new used to leave the operator re-entering the same endpoint, key and model
+// they had just proven working in the workspace next door.
+test('finalizeCreatedWorkspace seeds a new workspace from the one in use', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wikirc-inherit-'));
+  const registryRoot = join(root, 'registry');
+  const agentsData = join(root, '.agents-data');
+  const token = 'b'.repeat(64);
+
+  const makeWorkspace = (name, wikirc) => {
+    const registryPath = join(registryRoot, name);
+    const workspacePath = join(root, name);
+    mkdirSync(registryPath, { recursive: true });
+    mkdirSync(workspacePath, { recursive: true });
+    writeFileSync(join(registryPath, '.env'), [
+      `WORKSPACE_NAME=${name}`,
+      `WIKI_WORKSPACE_PATH=${workspacePath}`,
+      `WIKI_MCP_AUTH_TOKEN=${token}`,
+      '',
+    ].join('\n'), 'utf8');
+    writeFileSync(join(workspacePath, '.wikirc.yaml'), wikirc, 'utf8');
+    return workspacePath;
+  };
+
+  makeWorkspace('acme', [
+    'language: en',
+    'llm:',
+    '  provider: ai-gateway',
+    '  engine: generic',
+    '  baseUrl: https://itsdonna.events/v1',
+    '  model: deepseek-v4-pro',
+    '  apiKey: sk-real-gateway-key',
+    'mcp:',
+    '  accessKey: ' + 'c'.repeat(64),
+    '',
+  ].join('\n'));
+
+  // Exactly what the scaffold writes: placeholders everywhere.
+  const targetPath = makeWorkspace('fresh', [
+    'language: en',
+    'llm:',
+    '  provider: openai-compatible',
+    '  engine: generic',
+    '  baseUrl: https://mon-provider.example.com/v1',
+    '  model: YOUR_MODEL_NAME',
+    '  apiKey: YOUR_LLM_API_KEY',
+    'mcp:',
+    '  # accessKey: your-secret-key',
+    '',
+  ].join('\n'));
+
+  // Confluence credentials are agent-wide now — a stale per-workspace
+  // app_data.json from a legacy layout must NOT be copied into the new
+  // workspace, and must not be reported as inherited.
+  mkdirSync(join(agentsData, 'cme', 'acme', 'cme'), { recursive: true });
+  writeFileSync(join(agentsData, 'cme', 'acme', 'cme', 'app_data.json'), '{"pat":"x"}', 'utf8');
+
+  const previousDir = process.env.WIKI_WORKSPACES_DIR;
+  const previousData = process.env.AGENTS_DATA_DIR;
+  process.env.WIKI_WORKSPACES_DIR = registryRoot;
+  process.env.AGENTS_DATA_DIR = agentsData;
+  try {
+    const { inherited } = await finalizeCreatedWorkspace('fresh', { inheritFrom: 'acme' });
+    const parsed = YAML.parse(readFileSync(join(targetPath, '.wikirc.yaml'), 'utf8'));
+
+    assert.equal(parsed.llm.baseUrl, 'https://itsdonna.events/v1');
+    assert.equal(parsed.llm.model, 'deepseek-v4-pro');
+    assert.equal(parsed.llm.apiKey, 'sk-real-gateway-key');
+    assert.equal(parsed.llm.provider, 'ai-gateway');
+    // The workspace keeps ITS own MCP credential, written just before.
+    assert.equal(parsed.mcp.accessKey, token);
+    assert.ok(inherited.includes('llm.baseUrl'));
+    assert.ok(!inherited.includes('cme.app_data.json'));
+    assert.equal(existsSync(join(agentsData, 'cme', 'fresh', 'cme', 'app_data.json')), false);
+  } finally {
+    if (previousDir === undefined) delete process.env.WIKI_WORKSPACES_DIR;
+    else process.env.WIKI_WORKSPACES_DIR = previousDir;
+    if (previousData === undefined) delete process.env.AGENTS_DATA_DIR;
+    else process.env.AGENTS_DATA_DIR = previousData;
+  }
+});
+
+test('finalizeCreatedWorkspace without a source keeps scaffold defaults', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wikirc-noinherit-'));
+  const registryRoot = join(root, 'registry');
+  const registryPath = join(registryRoot, 'solo');
+  const workspacePath = join(root, 'solo');
+  const token = 'd'.repeat(64);
+  mkdirSync(registryPath, { recursive: true });
+  mkdirSync(workspacePath, { recursive: true });
+  writeFileSync(join(registryPath, '.env'), [
+    'WORKSPACE_NAME=solo',
+    `WIKI_WORKSPACE_PATH=${workspacePath}`,
+    `WIKI_MCP_AUTH_TOKEN=${token}`,
+    '',
+  ].join('\n'), 'utf8');
+  writeFileSync(join(workspacePath, '.wikirc.yaml'), [
+    'language: en',
+    'llm:',
+    '  baseUrl: https://mon-provider.example.com/v1',
+    'mcp:',
+    '  # accessKey: your-secret-key',
+    '',
+  ].join('\n'), 'utf8');
+
+  const previousDir = process.env.WIKI_WORKSPACES_DIR;
+  process.env.WIKI_WORKSPACES_DIR = registryRoot;
+  try {
+    const { inherited } = await finalizeCreatedWorkspace('solo');
+    const parsed = YAML.parse(readFileSync(join(workspacePath, '.wikirc.yaml'), 'utf8'));
+
+    assert.deepEqual(inherited, []);
+    assert.equal(parsed.llm.baseUrl, 'https://mon-provider.example.com/v1');
+    assert.equal(parsed.mcp.accessKey, token);
+  } finally {
+    if (previousDir === undefined) delete process.env.WIKI_WORKSPACES_DIR;
+    else process.env.WIKI_WORKSPACES_DIR = previousDir;
+  }
+});
+
+test('promptSafeBaseUrl drops credentials, query and fragment, and says so', () => {
+  assert.equal(promptSafeBaseUrl('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+  assert.equal(promptSafeBaseUrl('https://api.example.com/'), 'https://api.example.com');
+  assert.equal(
+    promptSafeBaseUrl('https://alice:s3cr3t@gw.example.com/v1'),
+    'https://gw.example.com/v1 (credentials withheld)',
+  );
+  assert.equal(
+    promptSafeBaseUrl('https://gw.example.com/openai?api-key=s3cr3t#x'),
+    'https://gw.example.com/openai (query, fragment withheld)',
+  );
+  assert.equal(promptSafeBaseUrl('not a url s3cr3t'), '(withheld: not a parseable URL)');
+  assert.equal(promptSafeBaseUrl(undefined), 'unset');
+  assert.equal(promptSafeBaseUrl('  '), 'unset');
+});
+
+test('formatLlmConfigFact never carries the API key or a secret embedded in baseUrl', () => {
+  const fact = formatLlmConfigFact({
+    llm: {
+      provider: 'ai-gateway',
+      model: 'gpt-5',
+      apiKey: 'sk-top-secret',
+      baseUrl: 'https://bob:pw-secret@gw.example.com/v1?key=q-secret',
+    },
+  }, { name: 'default' });
+  assert.match(fact, /provider=ai-gateway/);
+  assert.match(fact, /model=gpt-5/);
+  assert.match(fact, /baseUrl=https:\/\/gw\.example\.com\/v1 \(credentials, query withheld\)/);
+  for (const secret of ['sk-top-secret', 'pw-secret', 'q-secret', 'bob']) {
+    assert.ok(!fact.includes(secret), `fact leaked ${secret}`);
+  }
+});

@@ -97,7 +97,7 @@ A body that *does* carry an explicit split never reaches this check at all.
 
 The first line of an objective is what the executor reads first. It must be the
 business sentence, never a heading — the end-to-end gates in
-`src/runtime/skillChain.e2e.test.js` assert exactly that for the shipped
+`tests/runtime/skillChain.e2e.test.js` assert exactly that for the shipped
 scaffold. The readable shape is therefore:
 
 ```markdown
@@ -314,5 +314,5 @@ language ends up in front of a user. Write it for the user; keep the invariant
 in the body.
 
 The shipped scaffold is also covered by the `§57 performance gate` cases in
-`src/runtime/skillChain.e2e.test.js`, which assert the objective and run count
+`tests/runtime/skillChain.e2e.test.js`, which assert the objective and run count
 of every scaffold skill. Adding a skill there means adding its expected counts.

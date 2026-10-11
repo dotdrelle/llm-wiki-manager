@@ -1079,7 +1079,7 @@ test('runtime runs are seeded with the chat that preceded them', async () => {
     agentProjection: {
       conversation: [
         { role: 'user', content: 'peux-tu configurer le CME ?' },
-        { role: 'assistant', content: 'CME configuré sur confluent.meteo.fr. Veux-tu ingérer les documents en attente ?' },
+        { role: 'assistant', content: 'CME configuré sur confluence.example.com. Veux-tu ingérer les documents en attente ?' },
         { role: 'user', content: 'oui lance l\'ingestion' },
       ],
     },
@@ -1087,7 +1087,7 @@ test('runtime runs are seeded with the chat that preceded them', async () => {
 
   const seed = conversationSeed(session, "oui lance l'ingestion");
   assert.deepEqual(seed.map((message) => message.role), ['user', 'assistant']);
-  assert.match(seed[1].content, /confluent\.meteo\.fr/);
+  assert.match(seed[1].content, /confluence\.example\.com/);
 
   // Long entries are clipped, empty/technical roles dropped.
   const noisy = {

@@ -2159,6 +2159,9 @@ async function runRuntime(argv, agent) {
       return {
         profiles: profiles.map((profile) => profile.name),
         active: context.session.wikirc?.profile ?? null,
+        // Names can collide (`.wikirc.yaml` and `.wikirc.yaml.default` are
+        // both "default"): the file name is what identifies the active one.
+        activeFileName: context.session.wikirc?.fileName ?? null,
         items: profiles.map((profile) => ({
           name: profile.name,
           fileName: profile.fileName,

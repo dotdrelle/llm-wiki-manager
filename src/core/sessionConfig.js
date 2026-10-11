@@ -23,23 +23,36 @@ function activeProfilePath(workspacePath) {
   return join(workspacePath, ACTIVE_PROFILE_FILE);
 }
 
+// The FILE is the identity: `.wikirc.yaml` and `.wikirc.yaml.default` both
+// list as "default", and a switch by that name always landed on the first one.
+// Returns the recorded file name (or, for a record without one, the name);
+// `resolveWikircProfile` accepts either.
 export function readActiveProfileName(workspacePath) {
   if (!workspacePath) return null;
   try {
     const record = JSON.parse(readFileSync(activeProfilePath(workspacePath), 'utf8'));
-    const name = typeof record?.profile === 'string' ? record.profile.trim() : '';
-    return name || null;
+    for (const value of [record?.fileName, record?.profile]) {
+      const clean = typeof value === 'string' ? value.trim() : '';
+      if (clean) return clean;
+    }
+    return null;
   } catch {
     return null;
   }
 }
 
-export function writeActiveProfileName(workspacePath, profileName) {
+export function writeActiveProfileName(workspacePath, profileName, fileName = null) {
   const path = activeProfilePath(workspacePath);
   mkdirSync(dirname(path), { recursive: true });
   const temp = `${path}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify({ profile: profileName, updatedAt: new Date().toISOString() }, null, 2)}\n`);
+  const record = { profile: profileName, ...(fileName ? { fileName } : {}), updatedAt: new Date().toISOString() };
+  writeFileSync(temp, `${JSON.stringify(record, null, 2)}\n`);
   renameSync(temp, path);
+}
+
+function isCurrentProfile(session, wanted) {
+  return wanted === session.wikirc?.fileName
+    || (!String(wanted).startsWith('.wikirc.yaml') && wanted === session.wikirc?.profile);
 }
 
 function profileFingerprint(profileName, profilePath) {
@@ -68,7 +81,7 @@ export function applySessionWikircProfile(session, profileName = 'default', { pe
   if (session.mcp?.production) {
     session.mcp.production.activeConfigPath = loaded.profile.fileName;
   }
-  if (persist) writeActiveProfileName(session.workspacePath, loaded.profile.name);
+  if (persist) writeActiveProfileName(session.workspacePath, loaded.profile.name, loaded.profile.fileName);
   return {
     summary: summarizeWikircConfig(loaded.profile, loaded.config),
     config: loaded.config,
@@ -83,13 +96,13 @@ export function applySessionWikircProfile(session, profileName = 'default', { pe
  */
 export function syncSessionWikirc(session) {
   if (!session?.workspacePath || !session.wikirc) return { changed: false };
-  const wanted = readActiveProfileName(session.workspacePath) ?? session.wikirc.profile;
-  let profilePath = session.wikirc.path;
-  if (wanted !== session.wikirc.profile) profilePath = null;
-  if (profilePath && profileFingerprint(wanted, profilePath) === session._wikircFingerprint) {
+  const wanted = readActiveProfileName(session.workspacePath) ?? session.wikirc.fileName;
+  if (isCurrentProfile(session, wanted)
+    && profileFingerprint(session.wikirc.profile, session.wikirc.path) === session._wikircFingerprint) {
     return { changed: false };
   }
   const previous = session.wikirc.profile;
+  const previousFile = session.wikirc.fileName;
   try {
     applySessionWikircProfile(session, wanted);
     session._wikircSyncError = null;
@@ -97,7 +110,7 @@ export function syncSessionWikirc(session) {
       changed: true,
       previous,
       profile: session.wikirc.profile,
-      reason: previous === session.wikirc.profile ? 'edited' : 'switched',
+      reason: previousFile === session.wikirc.fileName ? 'edited' : 'switched',
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -31,7 +31,7 @@ test('a switch is persisted in the workspace and followed by another process ses
   applySessionWikircProfile(runtime, 'default');
 
   applySessionWikircProfile(runtime, 'fast', { persist: true });
-  assert.equal(readActiveProfileName(dir), 'fast');
+  assert.equal(readActiveProfileName(dir), '.wikirc.yaml.fast');
 
   const result = syncSessionWikirc(shell);
   assert.equal(result.changed, true);
@@ -69,7 +69,7 @@ test('a persisted profile that no longer loads keeps the current one and says so
 
   const first = syncSessionWikirc(session);
   assert.equal(first.changed, false);
-  assert.match(first.error, /"fast" could not be loaded/);
+  assert.match(first.error, /".wikirc.yaml.fast" could not be loaded/);
   assert.equal(session.wikirc.profile, 'default');
   assert.deepEqual(syncSessionWikirc(session), { changed: false });
 });
@@ -83,4 +83,23 @@ test('the workspace system prompt is read from disk at every call', (t) => {
   assert.equal(loadWorkspaceSystemPrompt(dir), 'First instructions.');
   writeFileSync(join(dir, '.wiki', 'system-prompt.md'), 'Edited instructions.\n');
   assert.equal(loadWorkspaceSystemPrompt(dir), 'Edited instructions.');
+});
+
+test('two profiles both named "default" are told apart by their file', (t) => {
+  const dir = workspace();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, '.wikirc.yaml.default'), 'language: it\nllm:\n  provider: openai-compatible\n  baseUrl: http://localhost:1\n  model: model-d\n');
+  const shell = sessionOn(dir);
+  const runtime = sessionOn(dir);
+  applySessionWikircProfile(shell, 'default');
+  applySessionWikircProfile(runtime, 'default');
+  assert.equal(shell.wikirc.fileName, '.wikirc.yaml');
+
+  applySessionWikircProfile(runtime, '.wikirc.yaml.default', { persist: true });
+  assert.equal(readActiveProfileName(dir), '.wikirc.yaml.default');
+  const result = syncSessionWikirc(shell);
+  assert.equal(result.reason, 'switched');
+  assert.equal(shell.wikirc.fileName, '.wikirc.yaml.default');
+  assert.equal(shell.wikircConfig.llm.model, 'model-d');
+  assert.deepEqual(syncSessionWikirc(shell), { changed: false });
 });

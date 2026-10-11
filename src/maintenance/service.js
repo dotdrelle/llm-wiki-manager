@@ -48,7 +48,7 @@ const lostJob=(r)=>r?.error?.code==='unknown_job'||(r?.ok===false&&/unknown jobi
 const jobState=(r)=>lostJob(r)?{status:'failed',lost:true,error:'the agent no longer knows this job (restarted, or its record was removed)'}:r;
 const wait=(signal,ms=500)=>new Promise((resolve,reject)=>{const abort=()=>{clearTimeout(timer);reject(signal.reason??new Error('aborted'));};const timer=setTimeout(()=>{signal?.removeEventListener('abort',abort);resolve();},ms);if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});});
 export function createMaintenanceService({db,getContext,baseUrl,readDocument=readMaintenanceAccessDocument,callTool=callMcpTool,now=()=>new Date(),onEvent=null,onChange=null,discover=discoverRuntimeProvidersOnce,writeEnabled=setMaintenanceEnabled,writeMode=setMaintenanceMode,intervalMs=Number(process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_MS??300_000)}) {
-  const store=createMaintenanceStore(db,{onChange:(workspace)=>onChange?.(workspace)});const active=new Map();const scans=new Set();const inflight=new Map();let timer;
+  const store=createMaintenanceStore(db,{onChange:(workspace)=>onChange?.(workspace)});const active=new Map();const scans=new Set();const inflight=new Map();const sourceConfigFailures=new Set();let timer;
   // The actions executing right now, with their agent's last progress: the
   // served run graph draws them, so maintenance work is seen, not only logged.
   const live=new Map();
@@ -104,7 +104,13 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       // be its own approval, so a sync of N pages asked N times. The connector
       // exports all the workspace's sources when no source_name is given.
       if(server){const raw=parse(await callTool(ctx.session.mcp,server,'cme_sources_list',{workspace}));const names=(raw.sources??(Array.isArray(raw)?raw:[])).map((source)=>source.name??source.source_name).filter(Boolean).map(String);if(names.length)add('sync','confluence',fingerprint([Math.floor(now().getTime()/7_200_000),[...names].sort()]),{},`Synchronize ${names.length} Confluence source(s): ${names.slice(0,5).join(', ')}${names.length>5?` +${names.length-5}`:''}`);}
-    }catch{log(workspace,'degraded','source configuration unavailable; synchronization skipped');}
+      if(sourceConfigFailures.delete(workspace))log(workspace,'recovered','source configuration is available again; synchronization can resume');
+    }catch{
+      if(!sourceConfigFailures.has(workspace)){
+        sourceConfigFailures.add(workspace);
+        log(workspace,'degraded','source configuration unavailable; synchronization skipped');
+      }
+    }
     for(const f of facts.pending??[]){if(f.protected&&!store.hasEvent(workspace,'protected_source',{version:f.hash,target:f.path}))log(workspace,'protected_source',`${f.path} is waiting for human resolution (${f.reason})`,{version:f.hash,target:f.path});}
     const reservations=store.reserved(workspace);
     // Mail is routine (no model): an alert for each new failure/decision batch,

@@ -34,6 +34,18 @@ export function loginSuccessFragment(sessionExpiresAt) {
       </section>`;
 }
 
+export function loginEnrollmentFragment(secret, uri) {
+  return `<section class="card" id="login-card">
+    <h2>Enroll your authenticator</h2>
+    <p>Scan the QR code with your authenticator app, or enter the secret manually:</p>
+    <div class="qr">${qrSvg(uri)}</div>
+    <code class="secret">${escapeHtml(secret)}</code>
+    <p class="hint">Manual entry: add an account, choose <strong>TOTP</strong> / time-based code, and paste the secret above. Then confirm with the first code below.</p>
+    <form id="login-form" autocomplete="off"><input id="code" name="code" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000" aria-label="Verification code" autofocus required><button type="submit" id="submit">Verify</button></form>
+    <p class="error" id="error" hidden></p>
+  </section>`;
+}
+
 function formatSince(startedAt) {
   if (!Number.isFinite(startedAt)) return null;
   return new Date(startedAt).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
@@ -54,26 +66,20 @@ function statusRows({ about = {}, enrolled = false, enabled = true, tls = false 
 export function loginPageHtml({
   enrolled = false,
   enabled = true,
-  secret = null,
-  uri = null,
   error = null,
   sessionExpiresAt = null,
   about = {},
   tls = false,
 } = {}) {
-  const enrolling = !enrolled && secret;
   const loginCard = sessionExpiresAt
     ? loginSuccessFragment(sessionExpiresAt)
     : `<section class="card" id="login-card">
-        ${enrolling ? `
-        <h2>Enroll your authenticator</h2>
-        <p>Scan the QR code with your authenticator app, or enter the secret manually:</p>
-        <div class="qr">${qrSvg(uri)}</div>
-        <code class="secret">${escapeHtml(secret)}</code>
-        <p class="hint">Manual entry: add an account, choose <strong>TOTP</strong> / time-based code, and paste the secret above. Then confirm with the first code below.</p>` : `
+        ${!enrolled ? `
+        <h2>Authenticator setup required</h2>
+        <p>Run <code>wiki-manager login</code> on the manager host to authorize enrollment in a browser.</p>` : `
         <h2>Sign in</h2>
         <p>Enter the 6-digit code from your authenticator app.</p>`}
-        ${enabled ? `<form id="login-form" autocomplete="off">
+        ${enabled && enrolled ? `<form id="login-form" autocomplete="off">
           <input id="code" name="code" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000" aria-label="Verification code" autofocus required>
           <button type="submit" id="submit">Verify</button>
         </form>` : ''}
@@ -165,42 +171,55 @@ export function loginPageHtml({
 </div>
 <script>
 (function () {
-  var form = document.getElementById('login-form');
-  if (!form) return;
-  var input = document.getElementById('code');
-  var submit = document.getElementById('submit');
-  var error = document.getElementById('error');
-  input.addEventListener('input', function () {
-    input.value = input.value.replace(/\\D/g, '').slice(0, 6);
-  });
-  form.addEventListener('submit', async function (event) {
-    event.preventDefault();
-    var code = input.value.replace(/\\D/g, '');
-    if (code.length !== 6) return;
-    submit.disabled = true;
-    error.hidden = true;
-    try {
-      var response = await fetch('/login/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: code })
-      });
-      var payload = await response.json().catch(function () { return {}; });
-      if (response.ok && payload.ok) {
-        document.getElementById('login-card').outerHTML = payload.page;
-      } else {
-        error.textContent = payload.error || 'Verification failed.';
+  var activeGrant = null;
+  function bindLoginForm() {
+    var form = document.getElementById('login-form');
+    if (!form) return;
+    var input = document.getElementById('code');
+    var submit = document.getElementById('submit');
+    var error = document.getElementById('error');
+    input.addEventListener('input', function () {
+      input.value = input.value.replace(/\\D/g, '').slice(0, 6);
+    });
+    form.addEventListener('submit', async function (event) {
+      event.preventDefault();
+      var code = input.value.replace(/\\D/g, '');
+      if (code.length !== 6) return;
+      submit.disabled = true;
+      error.hidden = true;
+      try {
+        var response = await fetch('/login/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: code, grant: activeGrant })
+        });
+        var payload = await response.json().catch(function () { return {}; });
+        if (response.ok && payload.ok) {
+          document.getElementById('login-card').outerHTML = payload.page;
+        } else {
+          error.textContent = payload.error || 'Verification failed.';
+          error.hidden = false;
+          input.value = '';
+          input.focus();
+        }
+      } catch (err) {
+        error.textContent = 'The login service is not answering.';
         error.hidden = false;
-        input.value = '';
-        input.focus();
+      } finally {
+        submit.disabled = false;
       }
-    } catch (err) {
-      error.textContent = 'The login service is not answering.';
-      error.hidden = false;
-    } finally {
-      submit.disabled = false;
-    }
-  });
+    });
+  }
+  bindLoginForm();
+  var grant = new URLSearchParams(location.hash.slice(1)).get('enroll');
+  if (grant) {
+    activeGrant = grant;
+    history.replaceState(null, '', location.pathname);
+    fetch('/login/enrollment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ grant: grant }) })
+      .then(function (response) { return response.json().then(function (payload) { if (!response.ok) throw new Error(payload.error || 'Enrollment authorization expired.'); return payload; }); })
+      .then(function (payload) { document.getElementById('login-card').outerHTML = payload.html; bindLoginForm(); })
+      .catch(function (err) { var card = document.getElementById('login-card'); if (card) { var error = document.getElementById('error'); if (error) { error.textContent = err.message; error.hidden = false; } } });
+  }
 })();
 </script>
 </body>

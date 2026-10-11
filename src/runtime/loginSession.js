@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { defaultRuntimeStateDir } from '../core/env.js';
 import { digestEqual, generateTotpSecret, otpauthUri, verifyTotp } from './totp.js';
 
@@ -14,11 +14,13 @@ import { digestEqual, generateTotpSecret, otpauthUri, verifyTotp } from './totp.
 const SESSION_TTL_HOURS = Number(process.env.WIKI_MANAGER_SESSION_TTL_HOURS ?? 12);
 export const SESSION_TTL_MS = (Number.isFinite(SESSION_TTL_HOURS) && SESSION_TTL_HOURS > 0 ? SESSION_TTL_HOURS : 12) * 60 * 60 * 1000;
 
-// A pending enrollment lives only in memory: the secret is shown on the login
-// page BEFORE its first successful code, and only that code persists it.
-let pendingEnrollment = null;
-let pendingEnrollmentSince = 0;
+// A pending enrollment is the secret shown on the login page BEFORE its first
+// successful code; only that code turns it into totp.json. It is kept on disk
+// (totp.pending.json, 0600) rather than in memory: the runtime restarts on its
+// own when its sources change, and an in-memory secret re-rolled on every
+// restart — the QR already scanned then produced codes that could never match.
 const PENDING_ENROLLMENT_TTL_MS = 30 * 60 * 1000;
+const ENROLLMENT_GRANT_TTL_MS = 10 * 60 * 1000;
 
 export function isTotpEnabled() {
   const value = String(process.env.WIKI_MANAGER_TOTP ?? '').trim().toLowerCase();
@@ -31,6 +33,14 @@ function stateDir() {
 
 function totpPath() {
   return join(stateDir(), 'totp.json');
+}
+
+function pendingPath() {
+  return join(stateDir(), 'totp.pending.json');
+}
+
+function enrollmentGrantPath() {
+  return join(stateDir(), 'totp.enrollment-grant.json');
 }
 
 function sessionPath() {
@@ -49,6 +59,43 @@ function readJsonFile(path) {
   } catch {
     return null;
   }
+}
+
+function pendingEnrollment(now = Date.now()) {
+  const record = readJsonFile(pendingPath());
+  if (!record || typeof record.secret !== 'string' || !record.secret) return null;
+  if (!(now - Number(record.createdAt) <= PENDING_ENROLLMENT_TTL_MS)) return null;
+  return record;
+}
+
+function sha256(value) {
+  return createHash('sha256').update(String(value)).digest('hex');
+}
+
+// The host CLI creates this grant; the public login page can reveal the
+// pending TOTP secret only to a browser that presents it. Store only its hash.
+export function createEnrollmentGrant(timestamp = Date.now()) {
+  if (!isTotpEnabled() || currentTotpSecret()) return null;
+  const token = randomBytes(32).toString('hex');
+  writePrivate(enrollmentGrantPath(), { digest: sha256(token), createdAt: timestamp });
+  return token;
+}
+
+function validEnrollmentGrant(token, timestamp = Date.now()) {
+  const record = readJsonFile(enrollmentGrantPath());
+  if (!record || !Number.isFinite(Number(record.createdAt))) return false;
+  const age = timestamp - Number(record.createdAt);
+  return age >= 0 && age <= ENROLLMENT_GRANT_TTL_MS && digestEqual(record.digest, sha256(token));
+}
+
+export function enrollmentForGrant(token, timestamp = Date.now()) {
+  if (!isTotpEnabled() || currentTotpSecret() || !validEnrollmentGrant(token, timestamp)) return null;
+  let pending = pendingEnrollment(timestamp);
+  if (!pending) {
+    pending = { secret: generateTotpSecret(), label: 'wiki', issuer: 'wikiLLM', createdAt: timestamp };
+    writePrivate(pendingPath(), pending);
+  }
+  return { secret: pending.secret, uri: otpauthUri(pending.secret, { label: pending.label, issuer: pending.issuer }) };
 }
 
 function currentTotpSecret() {
@@ -70,27 +117,15 @@ export function loginStatus() {
 export function enrollment() {
   if (!isTotpEnabled()) return null;
   if (currentTotpSecret()) return null;
-  const now = Date.now();
-  if (!pendingEnrollment || now - pendingEnrollmentSince > PENDING_ENROLLMENT_TTL_MS) {
-    const secret = generateTotpSecret();
-    pendingEnrollment = { secret, label: 'wiki', issuer: 'wikiLLM', createdAt: now };
-    pendingEnrollmentSince = now;
+  let pending = pendingEnrollment();
+  if (!pending) {
+    pending = { secret: generateTotpSecret(), label: 'wiki', issuer: 'wikiLLM', createdAt: Date.now() };
+    writePrivate(pendingPath(), pending);
   }
   return {
-    secret: pendingEnrollment.secret,
-    uri: otpauthUri(pendingEnrollment.secret, { label: pendingEnrollment.label, issuer: pendingEnrollment.issuer }),
+    secret: pending.secret,
+    uri: otpauthUri(pending.secret, { label: pending.label, issuer: pending.issuer }),
   };
-}
-
-export function isLoopbackAddress(address) {
-  // "::" is the unspecified/any address (a bind address, never a real peer's
-  // remote address) — only "::1" is actually loopback. Treating it as
-  // loopback would trust a connection whose address we failed to read as if
-  // it proved local origin.
-  const value = String(address ?? '').replace(/^::ffff:/, '').trim();
-  if (value === '::1') return true;
-  if (!/^\d+\.\d+\.\d+\.\d+$/.test(value)) return false;
-  return value.startsWith('127.');
 }
 
 /*
@@ -99,33 +134,23 @@ export function isLoopbackAddress(address) {
  code that failed verification. Returns { ok, enrolled, token, expiresAt } or
  { ok: false, error }.
  */
-// remoteAddress defaults to loopback, not "unknown": the only production
-// caller (server.js's /login/verify) always resolves and passes an explicit
-// value (including an explicit null when the socket itself reports none),
-// so this default is only ever exercised by a direct/programmatic call with
-// no HTTP request behind it at all (tests, internal callers) — which really
-// is local, unlike an HTTP request whose remote address could not be read.
-export function issueSessionWithTotp(code, { timestamp = Date.now(), remoteAddress = '127.0.0.1' } = {}) {
+export function issueSessionWithTotp(code, { timestamp = Date.now() } = {}) {
   if (!isTotpEnabled()) return { ok: false, error: 'totp_disabled' };
   const existing = currentTotpSecret();
   const enrolled = Boolean(existing);
-  const secret = existing ? existing.secret : pendingEnrollment?.secret;
+  const pending = enrolled ? null : pendingEnrollment(timestamp);
+  const secret = existing ? existing.secret : pending?.secret;
   if (!secret) return { ok: false, error: 'no_enrollment' };
-  // Enrollment shows the secret in the page: only the host itself may claim
-  // it. An address we could not determine is not proof of loopback origin —
-  // refuse it, the same as any other non-loopback address.
-  if (!enrolled && !isLoopbackAddress(remoteAddress)) {
-    return { ok: false, error: 'enrollment_requires_loopback' };
-  }
   if (!verifyTotp(secret, code, { timestamp })) return { ok: false, error: 'invalid_code' };
   if (!enrolled) {
     writePrivate(totpPath(), {
       secret,
-      issuer: pendingEnrollment?.issuer ?? 'wikiLLM',
-      label: pendingEnrollment?.label ?? 'wiki',
+      issuer: pending?.issuer ?? 'wikiLLM',
+      label: pending?.label ?? 'wiki',
       enrolledAt: new Date(timestamp).toISOString(),
     });
-    pendingEnrollment = null;
+    rmSync(pendingPath(), { force: true });
+    rmSync(enrollmentGrantPath(), { force: true });
   }
   const token = randomBytes(32).toString('hex');
   const issuedAt = timestamp;
@@ -181,8 +206,8 @@ export function currentSessionToken() {
  no HTTP route can trigger it.
  */
 export function resetTotpEnrollment() {
-  pendingEnrollment = null;
-  pendingEnrollmentSince = 0;
+  rmSync(pendingPath(), { force: true });
+  rmSync(enrollmentGrantPath(), { force: true });
   rmSync(totpPath(), { force: true });
   rmSync(sessionPath(), { force: true });
 }

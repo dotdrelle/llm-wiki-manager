@@ -256,8 +256,9 @@ wiki-manager                              # then: /use demo
 ```
 
 > **Two-step login (TOTP).** The first interactive start enrolls your
-> authenticator: `wiki-manager login` opens the manager's login page (QR code +
-> secret) — also the product's front door, with a live status block. One session
+> authenticator: `wiki-manager login` opens the manager's login page. The host
+> CLI authorizes the QR code with a short-lived, one-time grant, so a reverse
+> proxy cannot enroll an authenticator on your behalf. One session
 > covers the shell and the served wiki, sliding for 12 h of inactivity;
 > `WIKI_MANAGER_TOTP=off` disables the gate, and headless/CI runs or a
 > standalone `serve` without the manager runtime never pass through it.

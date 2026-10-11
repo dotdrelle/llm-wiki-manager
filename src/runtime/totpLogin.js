@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { createEnrollmentGrant } from './loginSession.js';
 
 /*
  The interactive entry gate: `wiki-manager login` opens the runtime's TOTP
@@ -15,8 +16,8 @@ export function runtimeBaseUrl(runtime) {
   return base.replace(/\/+$/, '');
 }
 
-export function loginPageUrl(runtime) {
-  return `${runtimeBaseUrl(runtime)}/login`;
+export function loginPageUrl(runtime, enrollmentGrant = null) {
+  return `${runtimeBaseUrl(runtime)}/login${enrollmentGrant ? `#enroll=${encodeURIComponent(enrollmentGrant)}` : ''}`;
 }
 
 // Returns a promise that reflects the real outcome: spawn() itself does not
@@ -95,7 +96,11 @@ export async function requestTotpSession(runtime, { timeoutMs = 5 * 60 * 1000, o
   if (!status.enabled) return { ok: true, reason: 'totp_disabled' };
   if (status.sessionActive) return { ok: true, expiresAt: status.sessionExpiresAt, reason: 'already_active' };
 
-  const url = loginPageUrl(runtime);
+  const grant = !status.enrolled ? createEnrollmentGrant() : null;
+  if (!status.enrolled && !grant) {
+    return { ok: false, error: 'Could not authorize a new TOTP enrollment from the host CLI.' };
+  }
+  const url = loginPageUrl(runtime, grant);
   if (!quiet) console.log(`\x1b[33mTOTP login required — ${url}\x1b[0m`);
   if (open) {
     try {

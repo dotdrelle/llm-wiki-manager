@@ -41,8 +41,7 @@ import { containsSensitiveMemoryMaterial } from './memoryExtract.js';
 import { embedMemoryTexts } from './vectorMemory.js';
 import { findSkill, listSkills } from '../core/skills.js';
 import {
-  enrollment,
-  isLoopbackAddress,
+  enrollmentForGrant,
   isTotpEnabled,
   issueSessionWithTotp,
   loginAttemptAllowed,
@@ -53,7 +52,7 @@ import {
   SESSION_TTL_MS,
   verifySessionToken,
 } from './loginSession.js';
-import { loginPageHtml, loginSuccessFragment } from './loginPage.js';
+import { loginEnrollmentFragment, loginPageHtml, loginSuccessFragment } from './loginPage.js';
 import { createContainerStats } from './containerStats.js';
 
 /*
@@ -73,7 +72,6 @@ function loginErrorText(code) {
   const messages = {
     totp_disabled: 'TOTP login is disabled on this manager.',
     no_enrollment: 'Enrollment expired. Reload this page.',
-    enrollment_requires_loopback: 'Enrollment must be done from the machine running the manager.',
     invalid_code: 'Invalid verification code.',
   };
   return messages[code] ?? 'Verification failed.';
@@ -221,8 +219,6 @@ export function startRuntimeServer({
 
       // ── TOTP login surface — public by design: it is the door, not a room ──
       if (url.pathname === '/login' && request.method === 'GET') {
-        const remoteAddress = request.socket?.remoteAddress ?? null;
-        const current = enrollment();
         const status = loginStatus();
         // The runtime is plain node:http, so behind an HTTPS reverse proxy the
         // socket is never encrypted: honour X-Forwarded-Proto too. Display only
@@ -233,17 +229,22 @@ export function startRuntimeServer({
           sendHtml(response, 200, loginPageHtml({ enabled: false, error: 'TOTP login is disabled on this manager.', about: loginAbout, tls }));
           return;
         }
-        if (!status.enrolled && !isLoopbackAddress(remoteAddress)) {
-          sendHtml(response, 403, loginPageHtml({ error: 'Enrollment must be done from the machine running the manager.', about: loginAbout, tls }));
-          return;
-        }
         sendHtml(response, 200, loginPageHtml({
           enrolled: status.enrolled,
-          secret: current?.secret ?? null,
-          uri: current?.uri ?? null,
           about: loginAbout,
           tls,
         }));
+        return;
+      }
+      if (url.pathname === '/login/enrollment' && request.method === 'POST') {
+        const body = await readJson(request).catch(() => ({}));
+        const enrollment = enrollmentForGrant(body?.grant);
+        if (!enrollment) {
+          sendJson(response, 401, { ok: false, error: 'Enrollment authorization expired or invalid. Run wiki-manager login again on the manager host.' });
+          return;
+        }
+        response.setHeader('Cache-Control', 'no-store');
+        sendJson(response, 200, { ok: true, html: loginEnrollmentFragment(enrollment.secret, enrollment.uri) });
         return;
       }
       if (url.pathname === '/login/verify' && request.method === 'POST') {
@@ -254,6 +255,10 @@ export function startRuntimeServer({
           return;
         }
         const body = await readJson(request).catch(() => ({}));
+        if (!loginStatus().enrolled && !enrollmentForGrant(body?.grant)) {
+          sendJson(response, 401, { ok: false, error: 'Enrollment authorization expired or invalid. Run wiki-manager login again on the manager host.' });
+          return;
+        }
         const result = issueSessionWithTotp(body?.code, { remoteAddress });
         if (!result.ok) {
           sendJson(response, 401, { ok: false, error: loginErrorText(result.error) });

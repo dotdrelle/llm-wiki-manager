@@ -11,6 +11,8 @@
  Without a model (or when the call fails) the English fact line itself is the
  message: degraded, but never silent and never invented.
  */
+import { conversationChannelPromptLine } from '../core/conversationChannel.js';
+
 export async function phraseFactsForUser(session, facts, { signal = null, rules = [] } = {}) {
   const factLine = String(facts ?? '').trim();
   if (!factLine) return '';
@@ -25,7 +27,9 @@ export async function phraseFactsForUser(session, facts, { signal = null, rules 
         'No lists, no headers, no raw job ids — just a concise human summary. Keep every number, every failure and every required intervention.',
         'Never claim more than the facts: a pending, failed, refused or unverified item stays so in your sentence.',
         ...rules,
-      ].join('\n'),
+        // The run's thread may be a messaging channel (Tchap): say so here too.
+        conversationChannelPromptLine(session.conversationChannels?.get?.(session._currentRunIdentity?.conversationId)),
+      ].filter(Boolean).join('\n'),
       tools: [],
       messages: [{ role: 'user', content: `Facts:\n${factLine}` }],
       signal,

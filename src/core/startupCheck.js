@@ -87,7 +87,9 @@ export async function checkProxy({ env = process.env, reachable = tcpReachable, 
     return { ok: false, detail: `Proxy URL invalid: ${proxyUrl}`, context: { proxyUrl } };
   }
   const port = Number(target.port) || (target.protocol === 'https:' ? 443 : 80);
-  if (await reachable(target.hostname, port, timeoutMs)) return { ok: true, detail: `${target.hostname}:${port}`, context: { proxyUrl } };
+  // URL.hostname keeps an IPv6 literal's brackets; net.connect wants it bare.
+  const host = target.hostname.replace(/^\[(.*)\]$/, '$1');
+  if (await reachable(host, port, timeoutMs)) return { ok: true, detail: `${target.hostname}:${port}`, context: { proxyUrl } };
   for (const name of PROXY_VARIABLES) delete env[name];
   return {
     ok: false,

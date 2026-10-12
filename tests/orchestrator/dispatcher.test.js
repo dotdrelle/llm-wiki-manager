@@ -13,6 +13,8 @@ test('activeProfileMcp forwards only the read-only wiki tools to the external ru
           { name: 'wiki_read_page' },
           { name: 'wiki_search_context' },
           { name: 'wiki_workspace_status' },
+          // the curation Scout's first call: without it the collective ran blind
+          { name: 'wiki_curation_inventory' },
           { name: 'help_read' },
           // every mutation tool must be dropped, including the ones the old
           // substring denylist ("write_page|add_source|…") let through:
@@ -31,7 +33,7 @@ test('activeProfileMcp forwards only the read-only wiki tools to the external ru
   const [pool] = activeProfileMcp(session);
   assert.deepEqual(
     [...pool.tools].sort(),
-    ['help_read', 'wiki_read_page', 'wiki_search_context', 'wiki_workspace_status'],
+    ['help_read', 'wiki_curation_inventory', 'wiki_read_page', 'wiki_search_context', 'wiki_workspace_status'],
   );
 });
 

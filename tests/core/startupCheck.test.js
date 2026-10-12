@@ -93,6 +93,7 @@ test('runChecks treats default LLM config without baseUrl as incomplete', async 
     '    enabled: true',
   ], async () => {
     const gaps = await runChecks({
+      proxyCheck: async () => null,
       dockerCheck: async () => ({ ok: true }),
       internetCheck: async () => ({ ok: true }),
       agentsCheck: async () => null,
@@ -115,6 +116,7 @@ test('runChecks treats default LLM config with provider, baseUrl, apiKey and mod
     '    enabled: true',
   ], async () => {
     const gaps = await runChecks({
+      proxyCheck: async () => null,
       dockerCheck: async () => ({ ok: true }),
       internetCheck: async () => ({ ok: true }),
       agentsCheck: async () => null,
@@ -150,6 +152,7 @@ test('runChecks reports and probes every registered workspace', async () => {
     const mcpCalls = [];
     const reports = [];
     await runChecks({
+      proxyCheck: async () => null,
       dockerCheck: async () => ({ ok: true }),
       internetCheck: async () => ({ ok: true }),
       agentsCheck: async () => null,
@@ -187,6 +190,7 @@ test('runChecks executes Docker before Internet and reports both failures in ord
   const calls = [];
   const reports = [];
   const gaps = await runChecks({
+    proxyCheck: async () => null,
     dockerCheck: async () => { calls.push('docker'); return { ok: false, context: { dockerUnavailable: true } }; },
     internetCheck: async () => { calls.push('internet'); return { ok: false, context: { error: 'offline' } }; },
     agentsCheck: async () => { calls.push('agents'); return null; },
@@ -231,6 +235,7 @@ test('preflight status is setup_required without a valid workspace and runtime f
   process.env.WIKI_WORKSPACES_DIR = root;
   try {
     const preflight = await runPreflightChecks({
+      proxyCheck: async () => null,
       dockerCheck: async () => ({ ok: true }),
       internetCheck: async () => ({ ok: true }),
       agentsCheck: async () => null,
@@ -247,6 +252,7 @@ test('preflight status is setup_required without a valid workspace and runtime f
 
 test('runChecks presents Internet failure before stopped agents after Docker succeeds', async () => {
   const gaps = await runChecks({
+    proxyCheck: async () => null,
     dockerCheck: async () => ({ ok: true }),
     internetCheck: async () => ({ ok: false, context: { error: 'offline' } }),
     agentsCheck: async () => ({ kind: 'agents', context: { downServices: ['documents'] } }),
@@ -266,6 +272,7 @@ test('runChecks still probes MCP endpoints when Docker is unavailable', async ()
   ], async () => {
     const calls = [];
     await runChecks({
+      proxyCheck: async () => null,
       dockerCheck: async () => ({ ok: false, context: { dockerUnavailable: true } }),
       internetCheck: async () => ({ ok: true }),
       agentsCheck: async () => { calls.push('agents'); return null; },
@@ -397,4 +404,13 @@ test('the proxy check runs before every other startup check', async () => {
   });
   assert.equal(kinds[0], 'proxy');
   assert.equal(kinds[1], 'docker');
+});
+
+test('an IPv6 proxy is probed without the URL brackets', async () => {
+  const probed = [];
+  const env = { HTTPS_PROXY: 'http://[fd00::1]:3128/' };
+  const result = await checkProxy({ env, reachable: async (host, port) => { probed.push(`${host}|${port}`); return true; } });
+  assert.equal(result.ok, true);
+  assert.deepEqual(probed, ['fd00::1|3128']);
+  assert.equal(env.HTTPS_PROXY, 'http://[fd00::1]:3128/');
 });

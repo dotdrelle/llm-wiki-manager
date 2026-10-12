@@ -2059,6 +2059,12 @@ async function runRuntime(argv, agent) {
     // A messaging thread (the Tchap bridge): Donna must know her replies are
     // posted there and read on a phone. Both branches read it from the session.
     ephemeral.conversationChannel = sanitizeConversationChannel(body.context?.channel);
+    // Remembered per conversation on the workspace session, so what the runtime
+    // words OUTSIDE this turn for that thread (run outcomes, supervisor notices)
+    // knows it too.
+    if (ephemeral.conversationChannel) {
+      (context.session.conversationChannels ??= new Map()).set(conversationId, ephemeral.conversationChannel);
+    }
     let response;
     const { meterModelCalls } = await import('../runtime/modelMeter.js');
     const finishModelMeter = meterModelCalls(ephemeral, { scope: 'turn', log: (message) => emitRuntimeLog(context.session, message) });

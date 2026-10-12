@@ -28,3 +28,21 @@ test('the chat prompt carries the channel line only for a channel turn', () => {
   assert.match(withChannel, /Tchap messaging thread/);
   assert.doesNotMatch(buildDirectChatSystemPrompt({ workspace: 'demo' }, []), /messaging thread/);
 });
+
+// What the runtime words outside the turn — a run outcome in the Tchap thread —
+// must know the thread is a phone channel too.
+test('run facts worded for a Tchap thread carry the channel line', async () => {
+  const { phraseFactsForUser } = await import('../../src/runtime/userFacts.js');
+  let system = '';
+  const session = {
+    language: 'fr-FR',
+    llm: { completeWithTools: async (request) => { system = request.system; return { content: 'ok' }; } },
+    conversationChannels: new Map([['tchap-demo-1', { kind: 'tchap' }]]),
+    _currentRunIdentity: { conversationId: 'tchap-demo-1' },
+  };
+  await phraseFactsForUser(session, 'Plan finished successfully — 1/1 task(s) succeeded.');
+  assert.match(system, /Tchap messaging thread/);
+  session._currentRunIdentity = { conversationId: 'serve-thread' };
+  await phraseFactsForUser(session, 'Plan finished successfully — 1/1 task(s) succeeded.');
+  assert.doesNotMatch(system, /messaging thread/);
+});

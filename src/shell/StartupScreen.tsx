@@ -266,7 +266,7 @@ export function StartupScreen(props: {
     return ordered;
   });
   const checkLabel = (kind: string) => ({
-    docker: 'Docker', internet: 'Internet', agents: 'Agents', workspace: 'Workspaces',
+    proxy: 'Proxy', docker: 'Docker', internet: 'Internet', agents: 'Agents', workspace: 'Workspaces',
     containers: 'Containers', mcp: 'MCP', agentic: 'Agentic runtime', runtime: 'Runtime',
   } as Record<string, string>)[kind] ?? kind;
 

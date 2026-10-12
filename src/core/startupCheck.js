@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { connect as netConnect } from 'node:net';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -41,6 +42,58 @@ export async function checkDockerAvailability({ exec = execFileAsync } = {}) {
   } catch (err) {
     return dockerFailure(err);
   }
+}
+
+const PROXY_VARIABLES = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'];
+const LOCAL_NO_PROXY = ['localhost', '127.0.0.1', '::1', 'host.docker.internal'];
+
+function declaredProxy(env) {
+  for (const name of PROXY_VARIABLES) if (env[name]) return env[name];
+  return null;
+}
+
+/** Whether a TCP connection to host:port opens within `timeoutMs`. */
+export function tcpReachable(host, port, timeoutMs) {
+  return new Promise((resolve) => {
+    const socket = netConnect({ host, port });
+    const done = (ok) => { socket.destroy(); resolve(ok); };
+    socket.setTimeout(timeoutMs, () => done(false));
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+  });
+}
+
+/**
+ * The declared HTTP(S) proxy, checked first. A corporate proxy stays exported
+ * in the shell after the VPN drops; Bun's fetch then sends every call to it —
+ * local MCP endpoints included — and the startup hung silently on a
+ * connection that never opens. Now:
+ * - local addresses are always added to NO_PROXY when a proxy is declared;
+ * - an unreachable proxy is announced and dropped from this process, so the
+ *   checks, the runtime and the agents continue on the direct network.
+ * Returns null when no proxy is declared (nothing to report).
+ */
+export async function checkProxy({ env = process.env, reachable = tcpReachable, timeoutMs = 2000 } = {}) {
+  const proxyUrl = declaredProxy(env);
+  if (!proxyUrl) return null;
+  for (const name of ['NO_PROXY', 'no_proxy']) {
+    const entries = String(env[name] ?? '').split(',').map((entry) => entry.trim()).filter(Boolean);
+    env[name] = [...entries, ...LOCAL_NO_PROXY.filter((entry) => !entries.includes(entry))].join(',');
+  }
+  let target;
+  try {
+    target = new URL(proxyUrl);
+  } catch {
+    return { ok: false, detail: `Proxy URL invalid: ${proxyUrl}`, context: { proxyUrl } };
+  }
+  const port = Number(target.port) || (target.protocol === 'https:' ? 443 : 80);
+  if (await reachable(target.hostname, port, timeoutMs)) return { ok: true, detail: `${target.hostname}:${port}`, context: { proxyUrl } };
+  for (const name of PROXY_VARIABLES) delete env[name];
+  return {
+    ok: false,
+    detail: `${target.hostname}:${port} unreachable (VPN disconnected?) — continuing without proxy`,
+    context: { proxyUrl, droppedProxy: true },
+  };
 }
 
 export async function checkInternetConnectivity({
@@ -419,6 +472,7 @@ function compactContainerSummary(results, pending) {
 }
 
 export async function runChecks({
+  proxyCheck = checkProxy,
   dockerCheck = checkDockerAvailability,
   internetCheck = checkInternetConnectivity,
   agentsCheck = checkAgents,
@@ -428,7 +482,10 @@ export async function runChecks({
   onCheck = () => {},
 } = {}) {
   // Keep infrastructure checks first and sequential: the order is part of the
-  // startup contract and makes proxy/CA diagnostics understandable.
+  // startup contract and makes proxy/CA diagnostics understandable. The proxy
+  // goes first: every later check may travel through it.
+  const proxy = await proxyCheck();
+  if (proxy) onCheck({ kind: 'proxy', ...proxy });
   const docker = await dockerCheck();
   onCheck({ kind: 'docker', ...docker });
   const internet = await internetCheck();

@@ -137,6 +137,14 @@ container-to-host coordination from being sent to the corporate proxy. Without
 `HTTP_PROXY` or `HTTPS_PROXY`, `NODE_USE_ENV_PROXY=1` does not force a proxy and
 normal direct networking remains unchanged.
 
+At startup the shell checks the declared proxy first (a 2 s TCP connect). It
+always adds `localhost`, `127.0.0.1`, `::1` and `host.docker.internal` to
+`NO_PROXY`; and when the proxy does not answer — a corporate proxy still
+exported after the VPN dropped — it prints `Proxy bypassed — <host:port> unreachable (VPN
+disconnected?)` and drops the proxy variables from its own process, so the
+checks, the runtime and the agents it starts go direct instead of hanging on
+a connection that never opens.
+
 Those variables cover the **manager process**, not the containers. Docker never
 inherits the host environment: a container only sees a variable that its Compose
 service declares. Of the packaged services, only `connectors` declares the proxy

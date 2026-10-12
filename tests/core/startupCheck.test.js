@@ -4,7 +4,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { checkAgents, checkAgenticRuntimes, checkInternetConnectivity, checkMcpConnections, runChecks, runPreflightChecks, withRuntimePreflight } from '../../src/core/startupCheck.js';
+import { checkAgents, checkAgenticRuntimes, checkInternetConnectivity, checkMcpConnections, runChecks, runPreflightChecks, withRuntimePreflight, checkProxy } from '../../src/core/startupCheck.js';
 
 async function withWorkspace(wikircLines, fn) {
   const root = await mkdtemp(join(tmpdir(), 'wiki-manager-startup-check-'));
@@ -354,4 +354,47 @@ test('checkAgenticRuntimes asks the runtime what it serves and reports configure
   assert.deepEqual(runtime.capabilities, ['agent.review'], 'the served set, not the configured one');
   assert.deepEqual(runtime.missingCapabilities, ['agent.notify']);
   assert.match(runtime.reason, /does not serve configured: agent\.notify/);
+});
+
+test('no declared proxy: nothing to check, nothing reported', async () => {
+  const env = {};
+  assert.equal(await checkProxy({ env, reachable: async () => assert.fail('no probe without a proxy') }), null);
+  assert.deepEqual(env, {});
+});
+
+test('a reachable proxy is kept, and local addresses never go through it', async () => {
+  const env = { HTTPS_PROXY: 'http://proxy.example:3128/', NO_PROXY: 'intranet.example' };
+  const probed = [];
+  const result = await checkProxy({ env, reachable: async (host, port) => { probed.push(`${host}:${port}`); return true; } });
+  assert.equal(result.ok, true);
+  assert.deepEqual(probed, ['proxy.example:3128']);
+  assert.equal(env.HTTPS_PROXY, 'http://proxy.example:3128/');
+  assert.equal(env.NO_PROXY, 'intranet.example,localhost,127.0.0.1,::1,host.docker.internal');
+  assert.equal(env.no_proxy, 'localhost,127.0.0.1,::1,host.docker.internal');
+});
+
+// The corporate proxy stays exported after the VPN drops: Bun's fetch sent
+// every startup call to it and the shell hung silently after "Workspaces ready".
+test('an unreachable proxy is announced and dropped so startup continues direct', async () => {
+  const env = { HTTPS_PROXY: 'http://10.0.0.1:11011/', http_proxy: 'http://10.0.0.1:11011/' };
+  const result = await checkProxy({ env, reachable: async () => false });
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /10\.0\.0\.1:11011 unreachable \(VPN disconnected\?\) — continuing without proxy/);
+  assert.equal(result.context.droppedProxy, true);
+  assert.equal(env.HTTPS_PROXY, undefined);
+  assert.equal(env.http_proxy, undefined);
+});
+
+test('the proxy check runs before every other startup check', async () => {
+  const kinds = [];
+  await runChecks({
+    proxyCheck: async () => ({ ok: true, detail: 'proxy.example:3128' }),
+    dockerCheck: async () => ({ ok: false, context: { dockerUnavailable: true } }),
+    internetCheck: async () => ({ ok: true }),
+    agenticRuntimesCheck: async () => ({ ok: true, skipped: true }),
+    mcpCheck: async () => ({ ok: true, context: { endpoints: [] } }),
+    onCheck: (check) => kinds.push(check.kind),
+  });
+  assert.equal(kinds[0], 'proxy');
+  assert.equal(kinds[1], 'docker');
 });

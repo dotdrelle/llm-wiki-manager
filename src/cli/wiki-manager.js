@@ -20,6 +20,7 @@ import { createAgentGraph } from '../agent/graph.js';
 import { createLlmClientFromWikiConfig } from '../agent/llm.js';
 import { handleSlashCommand, printHelp, printVersion, refreshMcpRuntimeStatus } from '../commands/slash.js';
 import { runShell, runHeadlessChatTurn, sanitizeOpenWikiPages, chatInputBudgetChars } from '../shell/repl.js';
+import { sanitizeConversationChannel } from '../core/conversationChannel.js';
 import { runPreflightChecks, withRuntimePreflight } from '../core/startupCheck.js';
 import { refreshRunningContainers } from '../core/wikiSetup.js';
 import { applySessionWikircProfile, syncSessionWikirc, wikircSyncNotice } from '../core/sessionConfig.js';
@@ -2055,6 +2056,9 @@ async function runRuntime(argv, agent) {
     const openWikiPages = sanitizeOpenWikiPages(
       body.context?.openWikiPages ?? body.context?.openWikiPage,
     );
+    // A messaging thread (the Tchap bridge): Donna must know her replies are
+    // posted there and read on a phone. Both branches read it from the session.
+    ephemeral.conversationChannel = sanitizeConversationChannel(body.context?.channel);
     let response;
     const { meterModelCalls } = await import('../runtime/modelMeter.js');
     const finishModelMeter = meterModelCalls(ephemeral, { scope: 'turn', log: (message) => emitRuntimeLog(context.session, message) });
@@ -2376,14 +2380,14 @@ export async function runCli(argv) {
       // one MUST be shown — silence there is how a failed start reads as a
       // success. Boot silence applies to unrequested checks only.
       if (!ok && (pending || skipped) && !requested) return;
-      const labels = { docker: 'Docker', internet: 'Internet', agents: 'Agent containers', workspace: 'Workspaces', containers: 'Workspace containers', mcp: 'MCP' };
+      const labels = { proxy: 'Proxy', docker: 'Docker', internet: 'Internet', agents: 'Agent containers', workspace: 'Workspaces', containers: 'Workspace containers', mcp: 'MCP' };
       const label = labels[kind] ?? kind;
       const instruction = !ok && context?.command ? ` — command: ${context.command}` : '';
       // On success the detail is diagnostic only (the probe URL for Internet);
       // the label already says what passed.
       const suffix = ok ? '' : ` — ${detail || context?.error || context?.dockerError || 'waiting'}`;
       const color = ok ? '\x1b[32m' : '\x1b[33m';
-      const state = ok ? 'ready' : 'needs attention';
+      const state = ok ? 'ready' : kind === 'proxy' && context?.droppedProxy ? 'bypassed' : 'needs attention';
       const icon = ok ? '✓' : '✗';
       console.log(`${color}${icon} configuration: ${label} ${state}${suffix}${instruction}\x1b[0m`);
     };

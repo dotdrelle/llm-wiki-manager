@@ -14,6 +14,7 @@ import { markedTerminal } from 'marked-terminal';
 import { buildAgentSystemPrompt, formatLlmUnavailableMessage, isOrchestrationBypassTool } from '../agent/graph.js';
 import { summarizeToolArguments } from '../core/progressNotes.js';
 import { openWikiPagesPromptLine } from '../core/openWikiPages.js';
+import { conversationChannelPromptLine } from '../core/conversationChannel.js';
 import { handleSlashCommand, rawCommandAgentPrompt, refreshMcpRuntimeStatus } from '../commands/slash.js';
 import { serviceChoices as composeServiceChoices, serviceDescription } from '../core/compose.js';
 import { extractActivity, mergePolledActivity, parseJsonText, sessionActivities } from '../core/activity.js';
@@ -719,6 +720,7 @@ export function buildDirectChatSystemPrompt(session, rawOpenWikiPages, allowedTo
     ] : []),
     currentArtifactPromptLine(currentArtifactFor(session)),
     openWikiPagesPromptLine(openWikiPages),
+    conversationChannelPromptLine(session.conversationChannel),
     externalChatToolsLine(allowedTools),
   ].filter(Boolean).join('\n');
 }

@@ -65,6 +65,8 @@ workspace `.wikirc.yaml`.
 | `CONNECTORS_SEND_ENABLED` | no | enables the `communication.send-email` capability (default `true`). Set to `false` to remove any path from a task to an outbound email |
 | `CONNECTORS_SEND_ALLOWED_RECIPIENTS` | recommended | comma-separated allow-list of addresses or `@domain` suffixes; empty means unrestricted |
 | `CONNECTORS_SEND_MAX_RECIPIENTS` / `CONNECTORS_SEND_MAX_BODY_BYTES` | no | per-message ceilings (defaults `25` / `262144`) |
+| `CONNECTORS_BRIDGE_ENABLED` | no | Tchap bridge — talk to Donna from a Tchap forum (default `true`). Each workspace is still connected from the chat and activated from the forum; `false` forbids it for the deployment and removes the `connectors_tchap_*` tools. The service reaches the host runtime with `WIKI_MANAGER_RUNTIME_URL`/`WIKI_MANAGER_RUNTIME_TOKEN`, like `serve`. User view: `llm-wiki/help-doc/15-tchap-bridge.md` |
+| `CONNECTORS_BRIDGE_MAX_AGE_SECONDS` | no | a forum message older than this (sent while the workstation was off) is not relayed, and the bridge says how many it dropped (default `600`) |
 | `OAUTH_STATE_SECRET` / `OAUTH_START_TOKEN` | for Gmail OAuth | distinct generated secrets for signed state and protected OAuth start |
 | `DOCUMENT_LLM_BASE_URL` | for OCR | OpenAI-compatible vision endpoint for document OCR. No default: image OCR stays off until this, the model and the key are all set |
 | `DOCUMENT_LLM_MODEL` | for OCR | OCR model name, matching the endpoint above |

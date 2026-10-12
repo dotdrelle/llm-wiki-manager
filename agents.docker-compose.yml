@@ -156,6 +156,14 @@ services:
       - CONNECTORS_SEND_ALLOWED_RECIPIENTS=${CONNECTORS_SEND_ALLOWED_RECIPIENTS:-}
       - CONNECTORS_SEND_MAX_RECIPIENTS=${CONNECTORS_SEND_MAX_RECIPIENTS:-25}
       - CONNECTORS_SEND_MAX_BODY_BYTES=${CONNECTORS_SEND_MAX_BODY_BYTES:-262144}
+      # Tchap bridge (talk to Donna from a Tchap forum). On by default — each
+      # workspace is still connected from the chat and activated from the
+      # forum; `false` forbids it for this deployment. It reaches the host
+      # runtime exactly like `serve` does.
+      - CONNECTORS_BRIDGE_ENABLED=${CONNECTORS_BRIDGE_ENABLED:-true}
+      - CONNECTORS_BRIDGE_MAX_AGE_SECONDS=${CONNECTORS_BRIDGE_MAX_AGE_SECONDS:-600}
+      - WIKI_MANAGER_RUNTIME_URL=http://host.docker.internal:${WIKI_MANAGER_RUNTIME_PORT:-7788}
+      - WIKI_MANAGER_RUNTIME_TOKEN=${WIKI_MANAGER_RUNTIME_TOKEN:-}
       - NODE_USE_ENV_PROXY=${NODE_USE_ENV_PROXY:-}
       - HTTPS_PROXY=${HTTPS_PROXY:-}
       - HTTP_PROXY=${HTTP_PROXY:-}
@@ -163,6 +171,8 @@ services:
     volumes:
       - ${AGENTS_DATA_DIR:-./.agents-data}/connectors:/data
       - ${WORKSPACES_ROOT:?Set WORKSPACES_ROOT to the directory containing all workspace folders}:/workspaces
+    extra_hosts:
+      - host.docker.internal:host-gateway
     restart: unless-stopped
 
   # Agentic runtime gateway — the external Deep Agents service the manager

@@ -155,6 +155,15 @@ test('agent compose services run as the host uid and gid', async () => {
   assert.deepEqual(agentsCompose.services.connectors.profiles, ['connectors']);
   assert.equal(agentsCompose.services.connectors.environment.includes('GOOGLE_OAUTH_CALLBACK_URL=${GOOGLE_OAUTH_CALLBACK_URL:-}'), true);
   assert.equal(agentsCompose.services.connectors.volumes.includes('${AGENTS_DATA_DIR:-./.agents-data}/connectors:/data'), true);
+  // The Tchap bridge reaches the host runtime like serve does: same URL, same
+  // token, and a host-gateway alias Linux Docker does not provide by itself.
+  // NO_PROXY must keep that host out of the corporate proxy.
+  const connectorsEnv = agentsCompose.services.connectors.environment;
+  assert.ok(connectorsEnv.includes('WIKI_MANAGER_RUNTIME_URL=http://host.docker.internal:${WIKI_MANAGER_RUNTIME_PORT:-7788}'));
+  assert.ok(connectorsEnv.includes('WIKI_MANAGER_RUNTIME_TOKEN=${WIKI_MANAGER_RUNTIME_TOKEN:-}'));
+  assert.ok(connectorsEnv.includes('CONNECTORS_BRIDGE_ENABLED=${CONNECTORS_BRIDGE_ENABLED:-true}'));
+  assert.ok(connectorsEnv.some((entry) => entry.startsWith('NO_PROXY=') && entry.includes('host.docker.internal')));
+  assert.deepEqual(agentsCompose.services.connectors.extra_hosts, ['host.docker.internal:host-gateway']);
   // OCR endpoint, model and key carry no default — see the dedicated test.
   assert.equal(agentsCompose.services.documents.environment.includes('DOCUMENT_LLM_API_KEY=${DOCUMENT_LLM_API_KEY:-}'), true);
 });

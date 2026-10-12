@@ -10,6 +10,7 @@
 import { isTerminal } from '../orchestrator/taskStatuses.js';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { openAppWindowUrl, openExternalUrl } from '../shell/openExternal.js';
+import { TCHAP_ACTIONS, tchapConnectorCommand, tchapListLine } from './tchapConnector.js';
 import { classifyCommandFailure, failureHint, rawFailureText } from '../core/commandFailure.js';
 import { basename, join, relative } from 'node:path';
 import { composeServices, listServices, otherWorkspacesRunning, runWikiCli, serviceLogs, serviceNames, serviceStates, startService, stopService } from '../core/compose.js';
@@ -867,7 +868,7 @@ ${helpPair('/skills', 'List skills', '/skills show <n>', 'Show skill')}
 ${helpPair('/skills run <n>', 'Run skill guide', '/skills edit <n>', 'Edit skill')}
 ${helpPair('/mcp status', 'MCP status', '/mcp endpoints', 'MCP endpoints')}
 ${helpPair('/mcp tools [mcp]', 'MCP tools', '', '')}
-${helpPair('/connector list', 'Connector auth status', '/connector auth <n>', 'Authorize connector')}
+${helpPair('/connector list', 'Connector auth status', '/connector auth <n>', 'Authorize connector (google, tchap)')}
 ${helpPair('/upload <path>', 'Upload document', '/uploads', 'Uploaded docs')}
 ${helpPair('/upload convert pending', 'Convert pending', '/uploads clean', 'Clean uploads')}
 ${helpPair('/wiki', 'Run wiki index', '/wiki run <args>', 'Raw wiki CLI')}
@@ -1518,6 +1519,8 @@ export async function handleSlashCommand(line, context) {
       }
       if (subcommand === 'list') {
         if (args[2]) return connectorResult('The connector list request has invalid extra arguments.');
+        // Every connector the agent offers, one line each: Gmail, then Tchap.
+        const listResult = async (googleText) => connectorResult(`${googleText}\n${await tchapListLine(context.session)}`);
         try {
           const result = await callMcpTool(
             context.session.mcp,
@@ -1530,10 +1533,10 @@ export async function handleSlashCommand(line, context) {
             const reason = String(payload.reason ?? 'connection_check_failed');
             const repair = ['google_reauthorization_required', 'google_refresh_token_missing'].includes(reason)
               ? ' Run `/connector auth google` to renew the authorization.' : '';
-            return connectorResult(`google (Gmail): unavailable (${reason}).${repair}`);
+            return listResult(`google (Gmail): unavailable (${reason}).${repair}`);
           }
           if (payload?.status !== 'configured') {
-            return connectorResult('google (Gmail): not authorized. Run `/connector auth google` to authorize reading and sending.');
+            return listResult('google (Gmail): not authorized. Run `/connector auth google` to authorize reading and sending.');
           }
           // The label announced "read-only" whatever the scopes actually
           // granted — so it lied as soon as sending was authorised, and did
@@ -1549,10 +1552,14 @@ export async function handleSlashCommand(line, context) {
           if (missing.length > 0) {
             lines.push(`Run \`/connector auth google ${missing.join(' ')}\` to add the missing grant(s); existing ones are kept.`);
           }
-          return connectorResult(lines.join('\n'));
+          return listResult(lines.join('\n'));
         } catch (err) {
-          return connectorResult(`google (Gmail): unavailable (${err instanceof Error ? err.message : String(err)})`);
+          return listResult(`google (Gmail): unavailable (${err instanceof Error ? err.message : String(err)})`);
         }
+      }
+      if (TCHAP_ACTIONS.includes(subcommand) && String(args[2] ?? '').toLowerCase() === 'tchap') {
+        if (subcommand !== 'auth' && args[3]) return connectorResult(`Usage: /connector ${subcommand} tchap`);
+        return connectorResult(await tchapConnectorCommand(context.session, subcommand, args[3]));
       }
       if (subcommand === 'auth') {
         const connector = String(args[2] ?? '').toLowerCase();
@@ -1613,7 +1620,7 @@ export async function handleSlashCommand(line, context) {
           return connectorResult(`Google authorization could not start (${err instanceof Error ? err.message : String(err)}).`);
         }
       }
-      return connectorResult(`The requested connector action is unsupported. Available actions: list, and auth google [${GOOGLE_GRANTS.join('|')}].`);
+      return connectorResult(`The requested connector action is unsupported. Available actions: list, auth google [${GOOGLE_GRANTS.join('|')}], auth tchap [#forum:server], remove tchap, signout tchap.`);
     }
     case 'cancel': {
       // Alias of /run cancel — people type /cancel when they want out.

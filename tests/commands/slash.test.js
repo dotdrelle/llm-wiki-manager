@@ -306,10 +306,11 @@ test('/new without a name shows usage', async () => {
   assert.match(result.output ?? '', /Usage/i);
 });
 
-test('/connector completions expose list and Google authorization', () => {
+test('/connector completions expose list, Google and Tchap', () => {
   const session = { commands: ['connector'] };
-  assert.deepEqual(completionContext('/connector ', session)?.matches, ['auth', 'list']);
-  assert.deepEqual(completionContext('/connector auth ', session)?.matches, ['google']);
+  assert.deepEqual(completionContext('/connector ', session)?.matches, ['auth', 'list', 'remove', 'signout']);
+  assert.deepEqual(completionContext('/connector auth ', session)?.matches, ['google', 'tchap']);
+  assert.deepEqual(completionContext('/connector signout ', session)?.matches, ['tchap']);
 });
 
 test('/connector hands deterministic facts to Donna for localized natural-language output', async () => {

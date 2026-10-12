@@ -94,7 +94,7 @@ const COMMAND_COMPLETION_DESCRIPTIONS = {
   '/stop': 'Stop one service or the workspace service set.',
   '/logs': 'Show recent logs for a service.',
   '/mcp': 'Inspect or call workspace MCP servers.',
-  '/connector': 'List connectors, or authorize one with all its rights — /connector auth google.',
+  '/connector': 'List connectors, or authorize one — /connector auth google, /connector auth tchap [#forum:server].',
   '/wiki': 'Run llm-wiki commands for the active workspace.',
   '/skills': 'List workspace skills.',
   '/upload': 'Upload a document — /upload <path>',
@@ -340,8 +340,9 @@ function completionValuesFor(parts, inputBuffer, session) {
   if (command === '/mcp' && previousToken === 'tools') return mcpNames(session);
   if (command === '/mcp' && previousToken === 'call') return mcpNames(session);
   if (command === '/mcp' && parts[1] === 'call' && tokenIndex === 3) return mcpToolNames(session, parts[2]);
-  if (command === '/connector' && tokenIndex === 1) return ['auth', 'list'];
-  if (command === '/connector' && previousToken === 'auth') return ['google'];
+  if (command === '/connector' && tokenIndex === 1) return ['auth', 'list', 'remove', 'signout'];
+  if (command === '/connector' && previousToken === 'auth') return ['google', 'tchap'];
+  if (command === '/connector' && ['remove', 'signout'].includes(previousToken)) return ['tchap'];
   // No scope completion after the connector. `/connector auth google` already
   // asks for everything the agent can do, in one authorization: offering a
   // list suggested one had to choose, and turned a one-shot command into a

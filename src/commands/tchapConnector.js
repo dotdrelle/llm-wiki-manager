@@ -1,66 +1,81 @@
-import { parseJsonText } from '../core/activity.js';
-import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
+import { callMcpTool } from '../core/mcp.js';
+import { parseToolPayload, toolNameFor } from '../core/mcpPayload.js';
 import { openExternalUrl } from '../shell/openExternal.js';
 
 /**
  * `/connector … tchap` — the Tchap bridge of agent-connectors, as
  * deterministic shell commands. Same tools Donna calls
  * (`connectors_tchap_*`); the agent owns every rule (one sign-in for all
- * workspaces, one forum per workspace, activation from the forum). The
- * manager only renders the facts — it never decides who may speak.
+ * workspaces, one forum per workspace, activation from the forum) and sums
+ * the state up in `phase`. The manager only puts that phase into words — it
+ * never decides who may speak, nor reinterprets the raw fields.
  */
 
 export const TCHAP_ACTIONS = ['auth', 'remove', 'signout'];
 
+const DISABLED = 'tchap: not offered by the connectors agent in this deployment (CONNECTORS_BRIDGE_ENABLED=false).';
+
+/**
+ * Whether the connectors agent offers the Tchap tools, read from its
+ * discovered `tools/list` (refreshed just before `/connector` runs): with
+ * CONNECTORS_BRIDGE_ENABLED=false it registers none. `null` when the tool
+ * list is not known — then the call itself tells what is wrong.
+ */
+export function tchapOffered(session) {
+  const tools = session.mcp?.connectors?.tools ?? [];
+  if (tools.length === 0) return null;
+  return tools.some((tool) => /(^|__)connectors_tchap_status$/.test(String(tool?.name ?? '')));
+}
+
 async function callTchap(session, tool, args = {}) {
-  const result = await callMcpTool(session.mcp, 'connectors', tool, args);
-  return parseJsonText(formatMcpToolResult(result)) ?? {};
+  return parseToolPayload(await callMcpTool(session.mcp, 'connectors', toolNameFor(session, 'connectors', tool), args));
 }
 
-/**
- * Only the MCP refusal of a Tchap tool means "the bridge is not offered here"
- * (CONNECTORS_BRIDGE_ENABLED=false registers none). Any other not-found — an
- * HTTP 404 from a wrong endpoint, a proxy — is a real failure and is reported
- * as such, never passed off as a configuration choice.
- */
-export function isMissingTchapTool(error) {
-  const text = error instanceof Error ? error.message : String(error);
-  return /\btool\s+["'`]?connectors_tchap_\w+["'`]?\s+not found\b/i.test(text)
-    || /\bunknown tool\b[^\n]*connectors_tchap_/i.test(text);
+const BRIDGE_PHASE = {
+  awaiting_activation: 'awaiting /activate in the forum',
+  active: 'active',
+  paused: 'paused (/start in the forum)',
+  stopped: 'bridge stopped',
+};
+
+/** One line for `/connector list`, from the agent's `phase`. */
+export function tchapStatusLine(status) {
+  const error = status.lastError ? ` (${status.lastError})` : '';
+  switch (status.phase) {
+    case 'disabled':
+      return DISABLED;
+    case 'not_set_up':
+      return 'tchap: not connected. Run `/connector auth tchap #forum:server` to attach a forum to this workspace.';
+    case 'signin_pending':
+      return `tchap: sign-in pending — open ${status.pending?.verificationUri} and confirm the code ${status.pending?.userCode}.`;
+    case 'signin_failed':
+      return `tchap: sign-in failed (${status.pending?.error ?? status.lastError ?? 'unknown'}). Run \`/connector auth tchap\` again.`;
+    case 'signed_out':
+      return `tchap: signed out${error}${status.forum ? `; forum ${status.forum} kept, bridge stopped` : ''}. Run \`/connector auth tchap ${status.forum ? '<forum>' : '#forum:server'}\` to sign in again.`;
+    case 'no_forum':
+      return `tchap: account ${status.account}, no forum for this workspace. Run \`/connector auth tchap\` to list your forums.`;
+    default: {
+      const allowed = Array.isArray(status.allowedUsers) ? `; allowed: ${status.allowedUsers.join(', ')}` : '';
+      const phase = BRIDGE_PHASE[status.phase] ?? String(status.phase ?? 'unknown');
+      return `tchap: account ${status.account}, forum ${status.forum}, ${phase}${allowed}${status.phase === 'stopped' ? error : ''}.`;
+    }
+  }
 }
 
-/**
- * One line for `/connector list`. A deployment that forbids the bridge
- * (CONNECTORS_BRIDGE_ENABLED=false) offers no Tchap tool: said, not hidden.
- */
 export async function tchapListLine(session) {
-  let status;
+  if (tchapOffered(session) === false) return DISABLED;
   try {
-    status = await callTchap(session, 'connectors_tchap_status', { workspace: session.workspace });
+    const status = await callTchap(session, 'connectors_tchap_status', { workspace: session.workspace });
+    if (status.ok === false) return `tchap: unavailable (${status.error ?? 'status failed'}).`;
+    return tchapStatusLine(status);
   } catch (error) {
-    if (isMissingTchapTool(error)) return 'tchap: disabled in this deployment (CONNECTORS_BRIDGE_ENABLED=false).';
     return `tchap: unavailable (${error instanceof Error ? error.message : String(error)}).`;
   }
-  if (status.ok === false) return `tchap: unavailable (${status.error ?? 'status failed'}).`;
-  if (status.pending?.userCode) {
-    return `tchap: sign-in pending — open ${status.pending.verificationUri} and confirm the code ${status.pending.userCode}.`;
-  }
-  if (!status.connected) {
-    const cause = status.lastError ? ` (${status.lastError})` : '';
-    return `tchap: not connected${cause}. Run \`/connector auth tchap #forum:server\` to attach a forum to this workspace.`;
-  }
-  const account = `account ${status.account}`;
-  if (!status.forum) return `tchap: ${account}, no forum for this workspace. Run \`/connector auth tchap\` to list your forums.`;
-  const bridge = status.bridge === 'awaiting_activation'
-    ? 'awaiting /activate in the forum'
-    : status.bridge === 'paused' ? 'paused (/start in the forum)' : 'active';
-  const running = status.running ? '' : ` — bridge stopped${status.lastError ? ` (${status.lastError})` : ''}`;
-  const allowed = Array.isArray(status.allowedUsers) ? `; allowed: ${status.allowedUsers.join(', ')}` : '';
-  return `tchap: ${account}, forum ${status.forum}, ${bridge}${allowed}${running}.`;
 }
 
 /** `/connector auth tchap [forum]`, `/connector remove tchap`, `/connector signout tchap`. */
 export async function tchapConnectorCommand(session, action, forum) {
+  if (tchapOffered(session) === false) return DISABLED;
   try {
     if (action === 'remove') {
       const result = await callTchap(session, 'connectors_tchap_disconnect', { workspace: session.workspace });
@@ -101,10 +116,10 @@ export async function tchapConnectorCommand(session, action, forum) {
       return `Tchap sign-in ${opened} — confirm the code ${result.userCode} (valid ${Math.round((result.expiresInSeconds ?? 0) / 60)} min). This sign-in serves every workspace. Once confirmed, the forum is set up; then type /activate in it.`;
     }
     const report = result.report ?? {};
-    const closed = report.inviteOnly ? 'invitation only' : 'removed from the directory, history closed to non-members';
-    return `Tchap forum ${report.name ?? forum} attached to workspace ${session.workspace} (${closed}). Type /activate in the forum to switch the bridge on.`;
+    const access = report.inviteOnly ? 'invitation only' : 'still joinable by address';
+    const directory = report.directory === 'private' ? 'removed from the directory' : 'directory visibility unchanged';
+    return `Tchap forum ${report.name ?? forum} attached to workspace ${session.workspace} (${access}, ${directory}, history closed to non-members). Type /activate in the forum to switch the bridge on.`;
   } catch (error) {
-    if (isMissingTchapTool(error)) return 'Tchap bridge is disabled in this deployment (CONNECTORS_BRIDGE_ENABLED=false).';
     return `Tchap: ${error instanceof Error ? error.message : String(error)}.`;
   }
 }

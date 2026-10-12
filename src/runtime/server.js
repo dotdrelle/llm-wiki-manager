@@ -135,7 +135,7 @@ export function startRuntimeServer({
   const maintenanceDirty = new Set();
   let maintenanceFlushTimer;
   function sendMaintenance(workspace, update) {
-    for (const client of clients) if (client.workspace === workspace) client.response.write(`event: maintenance_update\ndata: ${JSON.stringify({ workspace, epoch: maintenanceEpoch, ...update })}\n\n`);
+    for (const client of clients) if (client.workspace === workspace && !client.agentEventsOnly) client.response.write(`event: maintenance_update\ndata: ${JSON.stringify({ workspace, epoch: maintenanceEpoch, ...update })}\n\n`);
   }
   function refreshMaintenance(workspace) {
     const snapshot = maintenance.status(workspace);
@@ -207,9 +207,14 @@ export function startRuntimeServer({
   }
 
   function publishState(workspace = null, context = null) {
+    // The projection replays the workspace's whole event log: build it once
+    // per publish, and only if some client actually reads state frames.
+    let frame = null;
     for (const client of clients) {
+      if (client.agentEventsOnly) continue;
       if (client.workspace && client.workspace !== workspace) continue;
-      client.response.write(`event: state\ndata: ${JSON.stringify(runtimeState(context, store, { workspace, session }))}\n\n`);
+      frame ??= `event: state\ndata: ${JSON.stringify(runtimeState(context, store, { workspace, session }))}\n\n`;
+      client.response.write(frame);
     }
   }
 
@@ -607,12 +612,19 @@ export function startRuntimeServer({
           Connection: 'keep-alive',
           'X-Accel-Buffering': 'no',
         });
-        response.write(`event: state\ndata: ${JSON.stringify(runtimeState(context, store, { workspace, session }))}\n\n`);
-        if (maintenance && workspace) {
-          const view = refreshMaintenance(workspace);
-          response.write(`event: maintenance_update\ndata: ${JSON.stringify({ kind: 'snapshot', workspace, epoch: maintenanceEpoch, revision: view.revision, snapshot: view.snapshot })}\n\n`);
+        // `?events=agent_event`: a client that only follows agent events (the
+        // connectors' messaging bridge) gets neither the state projection nor
+        // the maintenance frames — both are rebuilt per client and it would
+        // drop them unread.
+        const agentEventsOnly = url.searchParams.get('events') === 'agent_event';
+        if (!agentEventsOnly) {
+          response.write(`event: state\ndata: ${JSON.stringify(runtimeState(context, store, { workspace, session }))}\n\n`);
+          if (maintenance && workspace) {
+            const view = refreshMaintenance(workspace);
+            response.write(`event: maintenance_update\ndata: ${JSON.stringify({ kind: 'snapshot', workspace, epoch: maintenanceEpoch, revision: view.revision, snapshot: view.snapshot })}\n\n`);
+          }
         }
-        const client = { response, workspace };
+        const client = { response, workspace, agentEventsOnly };
         clients.add(client);
         request.on('close', () => { clients.delete(client); if (![...clients].some(other => other.workspace === workspace)) maintenanceViews.delete(workspace); });
         return;
@@ -1264,7 +1276,7 @@ export function startRuntimeServer({
   // still look established while nothing will ever arrive on it.
   const maintenanceHeartbeatTimer = setInterval(() => {
     for (const client of clients) {
-      if (maintenance && client.workspace) client.response.write(`event: maintenance_heartbeat\ndata: ${JSON.stringify({ workspace: client.workspace, epoch: maintenanceEpoch })}\n\n`);
+      if (maintenance && client.workspace && !client.agentEventsOnly) client.response.write(`event: maintenance_heartbeat\ndata: ${JSON.stringify({ workspace: client.workspace, epoch: maintenanceEpoch })}\n\n`);
       else client.response.write(': ping\n\n');
     }
   }, 15_000);

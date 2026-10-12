@@ -1,16 +1,24 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { isMissingTchapTool } from '../../src/commands/tchapConnector.js';
+import { tchapOffered, tchapStatusLine } from '../../src/commands/tchapConnector.js';
 
-// Only the MCP refusal of a Tchap tool means the bridge is not offered in this
-// deployment. A transport 404 or any other "not found" is a real failure, and
-// reporting it as "disabled (CONNECTORS_BRIDGE_ENABLED=false)" sent the user
-// to check a flag that was set to true.
-test('a missing Tchap tool is recognized, other not-found errors are not', () => {
-  assert.equal(isMissingTchapTool(new Error('Error [connectors.connectors_tchap_status]: MCP error -32602: Tool connectors_tchap_status not found')), true);
-  assert.equal(isMissingTchapTool(new Error('Unknown tool: connectors_tchap_forums')), true);
-  assert.equal(isMissingTchapTool(new Error('HTTP 404 Not Found')), false);
-  assert.equal(isMissingTchapTool(new Error('workspace "demo" not found')), false);
-  assert.equal(isMissingTchapTool(new Error('Tool connectors_google_status not found')), false);
+// "Disabled" is read from the agent's discovered tool list, not from error
+// text: an HTTP 404 or an SDK rewording must never pass for
+// CONNECTORS_BRIDGE_ENABLED=false.
+test('the Tchap bridge is offered when the agent lists its tools, unknown when no list is known', () => {
+  assert.equal(tchapOffered({ mcp: { connectors: { tools: [{ name: 'connectors_google_status' }, { name: 'connectors_tchap_status' }] } } }), true);
+  assert.equal(tchapOffered({ mcp: { connectors: { tools: [{ name: 'connectors__connectors_tchap_status' }] } } }), true);
+  assert.equal(tchapOffered({ mcp: { connectors: { tools: [{ name: 'connectors_google_status' }] } } }), false);
+  assert.equal(tchapOffered({ mcp: { connectors: { tools: [] } } }), null);
+  assert.equal(tchapOffered({}), null);
+});
+
+// The agent reads the raw fields once (`phase`); the shell only words it.
+test('each phase of the agent becomes one line', () => {
+  assert.match(tchapStatusLine({ phase: 'not_set_up' }), /not connected/);
+  assert.match(tchapStatusLine({ phase: 'signin_pending', pending: { userCode: 'AB-12', verificationUri: 'https://auth.example/link' } }), /confirm the code AB-12/);
+  assert.match(tchapStatusLine({ phase: 'signed_out', forum: 'Donna-demo', lastError: 'tchap_reauthorization_required' }), /signed out \(tchap_reauthorization_required\); forum Donna-demo kept/);
+  assert.match(tchapStatusLine({ phase: 'awaiting_activation', account: '@me:x', forum: 'Donna-demo', allowedUsers: ['@me:x'] }), /awaiting \/activate in the forum; allowed: @me:x/);
+  assert.match(tchapStatusLine({ phase: 'stopped', account: '@me:x', forum: 'Donna-demo', lastError: 'tchap_room_lost' }), /bridge stopped.*tchap_room_lost/);
 });

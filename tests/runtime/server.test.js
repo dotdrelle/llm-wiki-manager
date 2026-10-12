@@ -129,6 +129,52 @@ test('maintenance changes are pushed as deltas on the existing workspace event s
   }
 });
 
+test('an agent-events-only stream gets no state projection and no maintenance frames', async (t) => {
+  // The connectors' messaging bridge reads agent events only; the state frame
+  // replays the whole event log per client, and it used to drop it unread.
+  const db = new DatabaseSync(':memory:');
+  let handle;
+  let projections = 0;
+  try {
+    handle = await startRuntimeServer({ host: '127.0.0.1', port: 0, session: { workspace: 'demo' },
+      store: { db, getState: () => { projections += 1; return { status: 'idle' }; }, listEvents: () => [], getProjection: () => ({}) } });
+  } catch (error) {
+    db.close();
+    if (error.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw error;
+  }
+  const controller = new AbortController();
+  try {
+    const before = projections;
+    const response = await fetch(`http://127.0.0.1:${handle.port}/events/stream?workspace=demo&events=agent_event`, { signal: controller.signal });
+    assert.equal(response.status, 200);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    const drain = (async () => {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        text += decoder.decode(value);
+      }
+    })().catch(() => {});
+    await fetch(`http://127.0.0.1:${handle.port}/maintenance?workspace=demo`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ command: 'pause' }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.doesNotMatch(text, /event: state/);
+    assert.doesNotMatch(text, /event: maintenance_update/);
+    assert.equal(projections, before, 'no state projection was built for this client');
+    controller.abort();
+    await reader.cancel().catch(() => {});
+    await drain;
+  } finally {
+    controller.abort();
+    await handle.close();
+    db.close();
+  }
+});
+
 test('approval fallback derives classes from waiting tasks when the approval queue is missing', () => {
   const request = approvalRequestFromStatus({
     workspace: 'acme',

@@ -17,8 +17,16 @@ async function callTchap(session, tool, args = {}) {
   return parseJsonText(formatMcpToolResult(result)) ?? {};
 }
 
-function isMissingTool(error) {
-  return /unknown tool|not found|tool .* not/i.test(error instanceof Error ? error.message : String(error));
+/**
+ * Only the MCP refusal of a Tchap tool means "the bridge is not offered here"
+ * (CONNECTORS_BRIDGE_ENABLED=false registers none). Any other not-found — an
+ * HTTP 404 from a wrong endpoint, a proxy — is a real failure and is reported
+ * as such, never passed off as a configuration choice.
+ */
+export function isMissingTchapTool(error) {
+  const text = error instanceof Error ? error.message : String(error);
+  return /\btool\s+["'`]?connectors_tchap_\w+["'`]?\s+not found\b/i.test(text)
+    || /\bunknown tool\b[^\n]*connectors_tchap_/i.test(text);
 }
 
 /**
@@ -30,7 +38,7 @@ export async function tchapListLine(session) {
   try {
     status = await callTchap(session, 'connectors_tchap_status', { workspace: session.workspace });
   } catch (error) {
-    if (isMissingTool(error)) return 'tchap: disabled in this deployment (CONNECTORS_BRIDGE_ENABLED=false).';
+    if (isMissingTchapTool(error)) return 'tchap: disabled in this deployment (CONNECTORS_BRIDGE_ENABLED=false).';
     return `tchap: unavailable (${error instanceof Error ? error.message : String(error)}).`;
   }
   if (status.ok === false) return `tchap: unavailable (${status.error ?? 'status failed'}).`;
@@ -96,7 +104,7 @@ export async function tchapConnectorCommand(session, action, forum) {
     const closed = report.inviteOnly ? 'invitation only' : 'removed from the directory, history closed to non-members';
     return `Tchap forum ${report.name ?? forum} attached to workspace ${session.workspace} (${closed}). Type /activate in the forum to switch the bridge on.`;
   } catch (error) {
-    if (isMissingTool(error)) return 'Tchap bridge is disabled in this deployment (CONNECTORS_BRIDGE_ENABLED=false).';
+    if (isMissingTchapTool(error)) return 'Tchap bridge is disabled in this deployment (CONNECTORS_BRIDGE_ENABLED=false).';
     return `Tchap: ${error instanceof Error ? error.message : String(error)}.`;
   }
 }

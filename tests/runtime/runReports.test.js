@@ -62,3 +62,24 @@ test('a report is recognised by shape, and its title is its first heading', () =
   assert.equal(reportTitle('intro\n# **Titre** du rapport\nx', 'fallback'), 'Titre du rapport');
   assert.equal(reportTitle('pas de titre', 'fallback'), 'fallback');
 });
+
+test('a document-sized answer becomes a report and Donna\'s sentence; a detailed answer does not', async () => {
+  const { isLongAnswer } = await import('../../src/core/reports.js');
+  const { answerAsReport } = await import('../../src/runtime/runReports.js');
+  assert.equal(isLongAnswer('ligne\n'.repeat(20)), false);
+  assert.equal(isLongAnswer('ligne\n'.repeat(40)), true);
+  const said = [];
+  const session = {
+    language: 'fr-FR',
+    mcp: { wiki: { status: 'connected', tools: [{ name: 'report_write' }] } },
+    llm: { completeWithTools: async (request) => { said.push(request); return { content: 'Synthèse prête : trois décisions ; ouvre-la avec le bouton.' }; } },
+  };
+  const callTool = async (_mcp, _server, _tool, args) => ({ content: [{ type: 'text', text: JSON.stringify({ report: { path: 'raw/untracked/Donna/2026-10-13-synthese.md.lock', title: args.title } }) }] });
+  const answer = `# Synthèse du comité\n${'- point\n'.repeat(40)}`;
+  const replaced = await answerAsReport(session, { content: answer, request: 'résume le comité', callTool });
+  assert.equal(replaced.content, 'Synthèse prête : trois décisions ; ouvre-la avec le bouton.');
+  assert.deepEqual(replaced.attachments, [{ kind: 'report', target: 'raw/untracked/Donna/2026-10-13-synthese.md.lock', title: 'Synthèse du comité' }]);
+  assert.match(said[0].system, /Write in this language: fr-FR/);
+  // No report tool: null, and the caller keeps the answer.
+  assert.equal(await answerAsReport({ mcp: {} }, { content: answer }), null);
+});

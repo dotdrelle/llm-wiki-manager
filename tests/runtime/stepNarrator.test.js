@@ -90,7 +90,7 @@ test('an activity carries its facts to the model, and a failed call is announced
   assert.equal(h.calls.length, 0);
   h.narrator.observe(h.event('activity_upserted', { ...run, payload: { activity: { ...activity, status: 'done', progress: { ...activity.progress, percent: 100 } } } }), h.session);
   await h.flush();
-  assert.deepEqual(JSON.parse(h.calls[0].input).steps[0].facts, { sources: ['Réunions'], exported: 14 });
+  assert.equal(JSON.parse(h.calls[0].input).steps[0].facts, '{"sources":["Réunions"],"exported":14}');
   h.narrator.observe(h.event('run_done', { ...run, payload: {} }), h.session);
   await h.flush();
   const logs = h.published.filter((event) => event.type === 'runtime_log');

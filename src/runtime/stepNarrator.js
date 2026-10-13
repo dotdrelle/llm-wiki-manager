@@ -137,7 +137,10 @@ export function createStepNarrator({
         ...(previous?.verification ? { verification: previous.verification } : {}),
         id, kind: 'activity', label: bounded(activity.label, 160), state: activityState(activity.status),
         ...(Number.isFinite(percent) ? { percent: Math.round(percent / 10) * 10 } : {}),
-        ...(progress.facts && typeof progress.facts === 'object' ? { facts: progress.facts } : {}),
+        // Agent facts are useful context, but progress payloads can contain
+        // arbitrarily large arrays or text. Bound each step before it enters
+        // the batched model prompt.
+        ...(progress.facts && typeof progress.facts === 'object' ? { facts: bounded(progress.facts, 1200) } : {}),
         ...(activity.error ? { error: bounded(activity.error?.message ?? activity.error) } : {}),
       });
       scope.actionable = true;

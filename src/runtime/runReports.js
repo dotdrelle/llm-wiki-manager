@@ -17,6 +17,7 @@ import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { dispatchRuntimeLog } from '../core/agentEvents.js';
 import { isLongReport, reportFromToolResult, reportTitle } from '../core/reports.js';
 import { worktreeProposalOf } from '../orchestrator/resultAggregator.js';
+import { say } from './donnaVoice.js';
 
 const REPORT_TOOL = 'report_write';
 
@@ -42,6 +43,26 @@ async function writeRunReport(session, { title, content }, callTool = callMcpToo
     dispatchRuntimeLog(session, `report: writing the agent's report failed (${error instanceof Error ? error.message : String(error)})`);
     return null;
   }
+}
+
+/**
+ * An answer of Donna's long enough to be a document, asked for as one or not:
+ * saved as a locked report, and replaced in the thread by her sentence and a
+ * button. Null when it cannot be written — the caller then keeps the answer.
+ */
+export async function answerAsReport(session, { content, request = '', callTool = callMcpTool } = {}) {
+  const text = String(content ?? '').trim();
+  const title = reportTitle(text, String(request ?? '').replace(/\s+/g, ' ').slice(0, 80)) || 'Report';
+  const written = await writeRunReport(session, { title, content: text }, callTool);
+  if (!written) return null;
+  const sentence = await say(session, {
+    kind: 'answer_saved_as_report',
+    request,
+    facts: { savedAsDocument: true, documentTitle: written.title, lines: text.split(/\r?\n/).length, opening: text.slice(0, 600) },
+    rules: ['The answer was long, so it was saved as a document: give its gist in one sentence, then say it opens from the button under this message. Do not restate it.'],
+    sentences: 2,
+  });
+  return { content: sentence, attachments: [written] };
 }
 
 /** Facts (English data for Donna) and attachments for a finished plan. */

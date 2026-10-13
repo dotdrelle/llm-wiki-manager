@@ -141,11 +141,16 @@ export async function sayLines(session, {
       signal: AbortSignal.timeout(timeoutMs),
     });
     const parsed = JSON.parse(raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, ''));
-    const texts = new Map((Array.isArray(parsed?.lines) ? parsed.lines : [])
+    const returned = Array.isArray(parsed?.lines) ? parsed.lines : [];
+    const texts = new Map(returned
       .filter((line) => line && typeof line.text === 'string' && line.text.trim())
       .map((line) => [String(line.id), line.text.trim().slice(0, 300)]));
     const lines = steps.filter((step) => texts.has(step.id)).map((step) => ({ id: step.id, state: step.state, text: texts.get(step.id) }));
-    if (lines.length) return lines;
+    if (returned.length === steps.length && lines.length === steps.length) return lines;
+    if (lines.length) {
+      onDegrade(`the model returned ${lines.length} of ${steps.length} step lines`);
+      return null;
+    }
     onDegrade('the model returned no usable line');
   } catch (error) {
     onDegrade(`the model call failed (${boundedText(error instanceof Error ? error.message : error, 200)})`);

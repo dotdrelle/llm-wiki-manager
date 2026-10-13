@@ -54,10 +54,15 @@ test('a reply for a messaging thread carries the channel line', async () => {
   assert.match(system, /Tchap messaging thread/);
 });
 
-test('sayLines keeps only the lines of known steps, with their state', async () => {
+test('sayLines rejects an incomplete step account and announces the omitted step', async () => {
   const session = { language: 'de', llm: { complete: async () => '```json\n{"lines":[{"id":"a","text":"Quelle hinzugefügt"},{"id":"zz","text":"erfunden"}]}\n```' } };
-  const lines = await sayLines(session, { steps: [{ id: 'a', state: 'done' }, { id: 'b', state: 'running' }] });
-  assert.deepEqual(lines, [{ id: 'a', state: 'done', text: 'Quelle hinzugefügt' }]);
+  let degradation = '';
+  const lines = await sayLines(session, {
+    steps: [{ id: 'a', state: 'done' }, { id: 'b', state: 'running' }],
+    onDegrade: (reason) => { degradation = reason; },
+  });
+  assert.equal(lines, null);
+  assert.match(degradation, /returned 1 of 2 step lines/);
 });
 
 test('factsAsData never composes a sentence', () => {

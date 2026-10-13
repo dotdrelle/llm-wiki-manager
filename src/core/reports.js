@@ -18,6 +18,16 @@ export function isLongReport(text) {
   return value.length > LONG_REPORT_CHARS || value.split(/\r?\n/).length > LONG_REPORT_LINES;
 }
 
+// Donna's own answer turns into a report beyond twice her prompt's ceiling
+// (15-20 lines): only a document-sized reply, never a detailed answer.
+export const LONG_ANSWER_CHARS = 3000;
+export const LONG_ANSWER_LINES = 30;
+
+export function isLongAnswer(text) {
+  const value = String(text ?? '').trim();
+  return value.length > LONG_ANSWER_CHARS || value.split(/\r?\n/).length > LONG_ANSWER_LINES;
+}
+
 export function reportFromToolResult(text) {
   try {
     const parsed = JSON.parse(String(text ?? ''));

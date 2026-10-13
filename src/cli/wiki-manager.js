@@ -34,6 +34,8 @@ import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../core
 import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
 import { createDeltaCoalescer } from '../runtime/deltaCoalescer.js';
 import { createStepNarrator } from '../runtime/stepNarrator.js';
+import { answerAsReport } from '../runtime/runReports.js';
+import { isLongAnswer } from '../core/reports.js';
 import { containsSensitiveMemoryMaterial } from '../runtime/memoryExtract.js';
 import { TERMINAL_STATUS_SET } from '../orchestrator/taskStatuses.js';
 import { resolveCapabilityConcurrency } from '../orchestrator/scheduler.js';
@@ -1998,6 +2000,13 @@ async function runRuntime(argv, agent) {
         workspace: context.workspace ?? ephemeral.workspace ?? null,
         conversationId,
       };
+      // A document-sized answer is held until the turn ends: it becomes a
+      // report and Donna's sentence replaces it (runReports.answerAsReport).
+      if (interactiveEvent.type === 'assistant_message' && !interactiveEvent.payload?.attachments
+        && !ephemeral._heldLongAnswer && isLongAnswer(interactiveEvent.payload?.content)) {
+        ephemeral._heldLongAnswer = interactiveEvent;
+        return;
+      }
       store.persistEvent(interactiveEvent);
       serverHandle?.publish(interactiveEvent);
       stepNarrator.observe(interactiveEvent, context.session);
@@ -2125,6 +2134,21 @@ async function runRuntime(argv, agent) {
       turnId,
       workspace: context.workspace ?? null,
     });
+    const heldAnswer = ephemeral._heldLongAnswer;
+    if (heldAnswer) {
+      const replaced = await answerAsReport(ephemeral, { content: heldAnswer.payload?.content, request: displayInput });
+      if (replaced) {
+        dispatchAgentEvent(ephemeral, createAgentEvent('assistant_message', {
+          origin: 'runtime_turn', turnId, workspace: context.workspace ?? null, conversationId,
+          payload: { content: replaced.content, attachments: replaced.attachments },
+        }));
+      } else {
+        // No report tool, or it failed (said in the log): the answer stays.
+        store.persistEvent(heldAnswer);
+        serverHandle?.publish(heldAnswer);
+        stepNarrator.observe(heldAnswer, context.session);
+      }
+    }
     if (ephemeral._memoryExplicitlyChanged) {
       emitRuntimeLog(context.session, 'memory.extract-skipped: this turn already made an explicit memory change');
     } else if (body.extractMemory === false) {

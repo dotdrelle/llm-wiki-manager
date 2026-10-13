@@ -96,6 +96,11 @@ test('unknownSkillInvocation refuses a /name no skill carries, naming what exist
   assert.equal(unknownSkillInvocation(session, '/wiki-ingest'), null);
   assert.equal(unknownSkillInvocation(session, '/status'), null);
   assert.equal(unknownSkillInvocation(session, 'rebuild the wiki please'), null);
+  // A typo the strict name pattern cannot parse (macOS turns "--" into an em
+  // dash) is still a slash command: refused at once, never handed to the model.
+  assert.equal(unknownSkillInvocation(session, '/clearv\u2014all').name, 'clearv\u2014all');
+  // A path is not a command.
+  assert.equal(unknownSkillInvocation(session, '/Users/me/notes.md'), null);
 });
 
 test('unknownSkillInvocation says when the workspace has no skills at all', () => {

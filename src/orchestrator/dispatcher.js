@@ -1,3 +1,4 @@
+import { say } from '../runtime/donnaVoice.js';
 import { toolNameFor, parseToolPayload } from '../core/mcpPayload.js';
 import { admitExecution } from '../maintenance/admission.js';
 import { normalizeActivity } from '../core/activity.js';
@@ -291,6 +292,7 @@ async function executeExternalRuntime(task, assignment, {
   let deadline = Date.now() + taskTimeoutMs;
   let runtimeRunId = null;
   let unsubscribe = null;
+  let runtimeReport = '';
   let pendingApproval = null;
   try {
     emitRuntimeLog(session, taskLogPayload('runtime.execute', task, assignment, {
@@ -355,6 +357,17 @@ async function executeExternalRuntime(task, assignment, {
     if (typeof runtimeProvider.subscribe === 'function') {
       unsubscribe = runtimeProvider.subscribe(runtimeRunId, (event) => {
         for (const mapped of mapRuntimeEvent(event)) {
+          // The runtime's own prose (its final report, its streamed draft) is
+          // NOT a message of the thread: relayed as is, a curation pushed a
+          // 16 KB report into the chat and into every later model context. It
+          // is kept with the task result; the run outcome turns it into a
+          // report the reader opens beside the chat (runner.js).
+          if (mapped.type === 'assistant_message') {
+            const text = String(mapped.payload?.content ?? '').trim();
+            if (text) runtimeReport = text;
+            continue;
+          }
+          if (mapped.type === 'assistant_delta' || mapped.type === 'assistant_delta_reset') continue;
           if (mapped.type === 'subagent_started' || mapped.type === 'subagent_finished') {
             const role = String(mapped.payload?.subagent ?? '');
             if (!roleProgress.roles.includes(role)) roleProgress.roles.push(role);
@@ -376,17 +389,17 @@ async function executeExternalRuntime(task, assignment, {
                 : [],
             };
             const summary = String(mapped.payload?.proposal?.summary ?? mapped.payload?.reason ?? '').trim();
-            dispatchAgentEvent(session, createAgentEvent('assistant_message', {
+            // Donna's words, in the workspace language (runtime/donnaVoice.js).
+            void say(session, {
+              kind: 'approval_required',
+              facts: { approvalRequired: true, ...(summary ? { proposal: summary } : {}), approveWith: '/approve or the Approve button', abandonWith: 'cancel' },
+              rules: ['Say that nothing runs before the user approves, what is proposed, and how to approve or abandon.'],
+              sentences: 2,
+            }).then((content) => dispatchAgentEvent(session, createAgentEvent('assistant_message', {
               origin: 'runtime_provider',
               runId,
-              payload: {
-                content: [
-                  '⏸ Approval required before execution:',
-                  ...(summary ? [`  ${summary}`] : []),
-                  'Type /approve (or click "Approve") to proceed, "cancel" to abandon.',
-                ].filter(Boolean).join('\n'),
-              },
-            }));
+              payload: { content },
+            })));
           }
         }
       });
@@ -457,7 +470,8 @@ async function executeExternalRuntime(task, assignment, {
           detail: 'terminal status',
         }));
         dispatchExternalRuntimeActivity(session, task, assignment, runtimeRunId, lastStatus.status, runId);
-        return taskResultFromStatus(task, assignment, runtimeRunId, lastStatus, attempt);
+        const finished = taskResultFromStatus(task, assignment, runtimeRunId, lastStatus, attempt);
+        return runtimeReport ? { ...finished, runtimeReport } : finished;
       }
       await delay(pollIntervalMs, signal);
     }

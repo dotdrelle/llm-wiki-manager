@@ -313,8 +313,8 @@ function serviceChoices() {
  * Agents offered one by one, in addition to the `agents` shortcut.
  *
  * Only those behind a profile flag. Listing every agent had lengthened the
- * list by four entries, including `mailer` which does not even exist until
- * the operator uncomments it in their override.
+ * list by four entries, including `mailer`, which no shipped Compose file
+ * declares.
  */
 function togglableAgents() {
   return togglableAgentNames();

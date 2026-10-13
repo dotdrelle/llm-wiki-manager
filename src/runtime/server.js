@@ -30,6 +30,7 @@ import {
   readWikiPages,
   staleFingerprint,
 } from '../orchestrator/knowledgeSignals.js';
+import { say } from './donnaVoice.js';
 import { matchSkillInvocation, unknownSkillInvocation } from '../core/skillInvocation.js';
 import { reconcileControlQueue } from './controlDrain.js';
 import { cancelControlChain, cancelQueuedControlItem } from './controlCancellation.js';
@@ -679,9 +680,10 @@ export function startRuntimeServer({
               const explanation = await generateSkillAcknowledgment(context.session, result);
               sendJson(response, 202, { accepted: true, kind: 'skill_chain', explanation, ...result, ...controlStatus(context, store) });
             } catch (err) {
-              const error = skillInvocationErrorMessage(err);
+              const detail = skillInvocationErrorMessage(err);
+              const error = await phraseSkillInvocationFailure(context.session, input, err, detail, body.conversationId ?? null);
               publishSkillInvocationFailure(context, input, error, body.conversationId ?? null);
-              sendJson(response, skillInvocationErrorStatus(err), { error, code: err?.code ?? 'skill_compile_failed' });
+              sendJson(response, skillInvocationErrorStatus(err), { error, explanation: error, detail, code: err?.code ?? 'skill_compile_failed' });
             }
             return;
           }
@@ -780,9 +782,10 @@ export function startRuntimeServer({
             const explanation = await generateSkillAcknowledgment(context.session, result);
             sendJson(response, 202, { accepted: true, kind: 'skill_chain', explanation, ...result, ...controlStatus(context, store) });
           } catch (err) {
-            const error = skillInvocationErrorMessage(err);
+            const detail = skillInvocationErrorMessage(err);
+            const error = await phraseSkillInvocationFailure(context.session, input, err, detail, body.conversationId ?? null);
             publishSkillInvocationFailure(context, input, error, body.conversationId ?? null);
-            sendJson(response, skillInvocationErrorStatus(err), { error, code: err?.code ?? 'skill_compile_failed' });
+            sendJson(response, skillInvocationErrorStatus(err), { error, explanation: error, detail, code: err?.code ?? 'skill_compile_failed' });
           }
           return;
         }
@@ -790,8 +793,20 @@ export function startRuntimeServer({
         // prose: it would improvise from the history instead of saying so.
         const unknownSkill = unknownSkillInvocation(context.session, input);
         if (unknownSkill) {
-          publishSkillInvocationFailure(context, input, unknownSkill.message, body.conversationId ?? null);
-          sendJson(response, 404, { error: unknownSkill.message, code: 'skill_not_found', available: unknownSkill.available });
+          const message = await say(context.session, {
+            kind: 'unknown_command',
+            request: input,
+            conversationId: body.conversationId ?? null,
+            facts: {
+              command: `/${unknownSkill.name}`,
+              exists: false,
+              availableSkills: unknownSkill.available,
+              ...(unknownSkill.available.length ? {} : { skillsInstalled: false, restoreWith: '"wiki-workspace wiki <workspace> init" (never overwrites existing files)' }),
+            },
+            rules: ['Say this command does not exist, then name the available skills — or, when none is installed, how to restore them.'],
+          });
+          publishSkillInvocationFailure(context, input, message, body.conversationId ?? null);
+          sendJson(response, 404, { error: message, explanation: message, detail: unknownSkill.message, code: 'skill_not_found', available: unknownSkill.available });
           return;
         }
         // A run/job status question must NEVER surface the raw system text in
@@ -1097,6 +1112,42 @@ export function startRuntimeServer({
         }
         publishState(resolvedWorkspace, context);
         sendJson(response, 200, { truncated: true, index, removedEvents });
+        return;
+      }
+      // Delete ONE of Donna's answers from a thread (the served chat's delete
+      // button). Unlike truncate, what follows it stays: only that entry's
+      // assistant events go, so it leaves both the display and what Donna is
+      // told on later turns. The caller sends the text it shows, and a
+      // mismatch is refused rather than deleting a neighbour.
+      if (request.method === 'POST' && url.pathname === '/conversation/remove') {
+        const { body, workspace, context } = await resolveBodyContext(request, url);
+        const resolvedWorkspace = context?.workspace ?? workspace ?? null;
+        if (!resolvedWorkspace) { sendJson(response, 400, { removed: false, reason: 'workspace_required' }); return; }
+        const conversationId = String(body.conversationId ?? '').trim();
+        if (!isConversationId(conversationId)) { sendJson(response, 400, { removed: false, reason: 'invalid_conversation_id' }); return; }
+        const index = Number(body.index);
+        if (!Number.isInteger(index) || index < 0) { sendJson(response, 400, { removed: false, reason: 'invalid_index' }); return; }
+        const events = store.listEvents({ workspace: resolvedWorkspace, conversationId });
+        const entries = reduceAgentEvents(events).conversation ?? [];
+        const sequences = conversationEventSequences(events);
+        const entry = entries[index];
+        if (!entry || !Number.isFinite(sequences[index])) { sendJson(response, 400, { removed: false, reason: 'index_out_of_range' }); return; }
+        if (entry.role !== 'assistant') { sendJson(response, 400, { removed: false, reason: 'not_an_answer' }); return; }
+        if (typeof body.content === 'string' && body.content !== String(entry.content ?? '')) {
+          sendJson(response, 409, { removed: false, reason: 'entry_mismatch' });
+          return;
+        }
+        // The last answer may still be streaming under a live run.
+        if (context?.running && index === entries.length - 1) { sendJson(response, 409, { removed: false, reason: 'run_active' }); return; }
+        const next = sequences[index + 1];
+        const removedEvents = store.deleteConversationEntryEvents(sequences[index], Number.isFinite(next) ? next : null,
+          { workspace: resolvedWorkspace, conversationId });
+        if (context?.session) {
+          resetSessionProjection(context.session);
+          store.hydrateSession(context.session, { workspace: resolvedWorkspace });
+        }
+        publishState(resolvedWorkspace, context);
+        sendJson(response, 200, { removed: true, index, removedEvents });
         return;
       }
       // Compact: a deliberate "forget everything said so far in this
@@ -1819,6 +1870,18 @@ function skillResultErrorStatus(result) {
   return 422;
 }
 
+// A skill that cannot run is told by Donna, in the workspace language; the
+// English detail stays for the API caller and the log.
+async function phraseSkillInvocationFailure(session, input, error, detail, conversationId) {
+  return say(session, {
+    kind: 'skill_not_started',
+    request: input,
+    conversationId,
+    facts: { skill: String(input ?? '').trim().split(/\s+/)[0], started: false, reason: detail.replace(/^Skill invocation could not be compiled: /, ''), code: error?.code ?? 'skill_compile_failed' },
+    rules: ['Say the skill was not started and why, in plain words.'],
+  });
+}
+
 function skillInvocationErrorMessage(error) {
   const message = error instanceof Error ? error.message : String(error);
   return `Skill invocation could not be compiled: ${message}`;
@@ -2200,43 +2263,16 @@ async function handleControlMessage(context, store, input, { intent = null, conv
     : controlMessage(context?.session, 'converse_while_idle'));
 }
 
+// The control lane decides deterministically; what the user reads is Donna's
+// (donnaVoice.js), in the workspace language. Without a model the lane's own
+// facts are shown as data — the French/English catalog that stood here is gone.
 async function phraseControlResponse(session, input, body) {
   if (!body || typeof body !== 'object') return body;
-  const language = String(session?.language ?? 'en').trim().toLowerCase();
-  const isFrench = language.startsWith('fr');
-  const deterministic = typeof body.explanation === 'string' ? body.explanation.trim() : '';
-  const localized = body.kind === 'approve_patch'
-    ? (body.accepted
-      ? (isFrench ? 'La modification proposée a été approuvée et ajoutée au plan.' : 'The proposed change was approved and added to the plan.')
-      : (isFrench ? 'Je n’ai pas pu appliquer la modification proposée. Vérifie qu’elle est toujours en attente.' : 'I could not apply the proposed change. Check that it is still pending.'))
-    : body.kind === 'approve'
-      ? (body.accepted
-        ? (isFrench ? 'L’approbation est enregistrée; le run peut continuer.' : 'Approval is recorded; the run can continue.')
-        : (isFrench ? 'Je ne vois aucune approbation en attente pour ce run.' : 'I could not find a pending approval for this run.'))
-      : body.kind === 'modify_run'
-        ? (isFrench ? 'La modification est proposée. Elle ne sera ajoutée au plan qu’après approbation.' : 'The change is proposed. It will join the plan only after approval.')
-        : body.kind === 'enqueue_run'
-          ? (isFrench ? 'Ta demande est en file et démarrera après le run en cours.' : 'Your request is queued and will start after the current run.')
-          : body.kind === 'cancel'
-            ? (body.accepted
-              ? (isFrench ? 'L’annulation du run a été demandée.' : 'The run cancellation was requested.')
-              : (isFrench ? 'Aucun run actif à annuler.' : 'There is no active run to cancel.'))
-            : body.kind === 'observe'
-              ? (isFrench ? 'Je n’ai pas pu résumer l’état du run.' : 'I could not summarize the run status.')
-              : body.kind === 'ambiguous'
-                ? (isFrench ? 'Précise si tu veux consulter le run, modifier son plan ou mettre une nouvelle demande en file.' : 'Choose whether to inspect the run, change its plan, or queue a new request.')
-                : body.kind === 'converse'
-                  ? (isFrench ? 'Le run continue; ton message n’a déclenché aucune action.' : 'The run continues; your message did not trigger an action.')
-                  : (isFrench ? 'Donna n’a pas pu formuler le résultat du contrôle.' : 'Donna could not phrase the control result.');
-  // The deterministic facts the lane already produced (the run's plan and
-  // status for an observe, the queue acknowledgement, …) are the fallback —
-  // losing them to a generic sentence made a status question answer "I could
-  // not summarize the run status" with the facts right there.
-  const fallback = deterministic || localized;
-  const llm = session?.llm;
-  if (!llm || typeof llm.complete !== 'function') return { ...body, explanation: fallback };
-  try {
-    const facts = {
+  const detail = typeof body.explanation === 'string' ? body.explanation.trim() : '';
+  const explanation = await say(session, {
+    kind: `control_${body.kind ?? 'result'}`,
+    request: input,
+    facts: {
       kind: body.kind ?? 'control',
       accepted: body.accepted === true,
       running: body.running === true,
@@ -2244,20 +2280,11 @@ async function phraseControlResponse(session, input, body) {
       pendingApprovals: (body.approvals ?? []).filter((approval) => approval.status === 'pending_approval').length,
       requestQueued: body.kind === 'enqueue_run',
       changeAwaitingApproval: body.kind === 'modify_run' || body.kind === 'approve_patch',
-      ...(deterministic ? { detail: deterministic } : {}),
-    };
-    const reply = await llm.complete({
-      system: 'You are Donna, the workspace assistant. Explain this completed runtime control action to the user in their language. Use only the supplied facts. State clearly whether something is awaiting the user\'s approval. Never expose internal event names, API details, or raw system text. Return exactly one concise sentence.',
-      input: `User request: ${String(input ?? '').slice(0, 500)}\nControl result: ${JSON.stringify(facts)}\nReply in ${language}.`,
-      signal: AbortSignal.timeout(8_000),
-    });
-    const explanation = String(reply ?? '').trim();
-    if (explanation) return { ...body, explanation };
-    emitRuntimeLog(session, 'control-response: Donna returned an empty reply; using localized fallback');
-  } catch (err) {
-    emitRuntimeLog(session, `control-response: Donna could not phrase the result; using localized fallback — ${err instanceof Error ? err.message : String(err)}`);
-  }
-  return { ...body, explanation: fallback };
+      ...(detail ? { detail } : {}),
+    },
+    rules: ['State clearly whether something is awaiting the user\'s approval.'],
+  });
+  return { ...body, explanation };
 }
 
 /*
@@ -2266,41 +2293,16 @@ async function phraseControlResponse(session, input, body) {
  The control lane stays deterministic in its CLASSIFICATION and its actions,
  but the acknowledgement the user reads ("queued, will run after this one" /
  "the queued task is starting") is a conversational reply: it goes through a
- single bounded LLM completion, like the skill-launch acknowledgement, and
- falls back to the deterministic English catalog when no LLM is configured or
- the call fails. The fallback is what keeps the lane deterministic-under-failure.
+ single bounded LLM completion through donnaVoice.js, like the skill-launch
+ acknowledgement; without a model the facts are shown as data.
  */
 async function generateControlAcknowledgment(session, { kind, input }) {
-  const language = String(session?.language ?? '').trim().toLowerCase() || 'en';
-  const llm = session?.llm;
-  const fallback = kind === 'queued'
-    ? controlMessage(session, 'queued_for_future_run')
-    : controlMessage(session, 'control_run_started');
-  if (llm && typeof llm.complete === 'function') {
-    try {
-      const scenario = kind === 'queued'
-        ? 'The user requested a new task while a run is active. It was queued and will start automatically after the current run finishes.'
-        : 'A task the user queued earlier is now starting.';
-      const instruction = kind === 'queued'
-        ? 'their request is queued and will run after the current run finishes'
-        : 'the queued task is now starting';
-      const reply = await llm.complete({
-        system: 'You are Donna, the workspace assistant. You acknowledge a runtime queue event in the user\'s language. Be concise: exactly one short sentence.',
-        input: `${scenario}\n\nThe task is: ${input}\n\nWrite ONE short sentence in ${language} that tells the user ${instruction}. Return only that sentence, nothing else.`,
-        signal: AbortSignal.timeout(8_000),
-      });
-      const text = String(reply ?? '').trim();
-      if (text) return text;
-      emitRuntimeLog(session, 'control-acknowledgment: LLM returned an empty reply, using the deterministic fallback');
-    } catch (err) {
-      // A degradation must announce itself: silently falling through here
-      // hides the difference between "no LLM configured" (expected) and "the
-      // configured LLM is failing every call" (a real problem) — both would
-      // otherwise look identical from the Shell or serve UI.
-      emitRuntimeLog(session, `control-acknowledgment: LLM call failed, using the deterministic fallback — ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  return fallback;
+  return say(session, {
+    kind: kind === 'queued' ? 'request_queued' : 'queued_request_started',
+    facts: kind === 'queued'
+      ? { request: input, state: 'queued', startsAfter: 'the current run' }
+      : { request: input, state: 'starting', queuedEarlier: true },
+  });
 }
 
 function announceControlLaunch(session, input, workspace, conversationId = null) {

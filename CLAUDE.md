@@ -103,7 +103,7 @@ src/activity/               Aggregated activity: synthesis, weighted progress, d
 src/graph/                  Run/Task graph projection + visibility policy
 src/runtime/                Agentic runtime HTTP/SSE server + SQLite store
   store.js                  SQLite persistence (events, runs, queue_items, agents, tasks, task_groups, task_dependencies, task_assignments, task_attempts, task_results, approval_grants, plan_revisions)
-  server.js                 HTTP/SSE endpoints: /health /state /workspace/stats /events/stream /run /turn /cancel /kill /resume /approve /delegate /control /conversation/truncate /conversation/compact /memory/facts /memory/history /memory/workspace /config/profiles /config/use /mcp/endpoints (+ the public /login routes)
+  server.js                 HTTP/SSE endpoints: /health /state /workspace/stats /events/stream /run /turn /cancel /kill /resume /approve /delegate /control /conversation/truncate /conversation/remove /conversation/compact /memory/facts /memory/history /memory/workspace /config/profiles /config/use /mcp/endpoints (+ the public /login routes)
   runner.js                 runRuntimeAgenticWorkflow: loop → evaluate → replan; parallel plan execution delegates to the orchestrator dispatcher (no child LLM sessions)
   recoveryManager.js        Boot-time re-attachment of active tasks via agent_status
   approvals.js              Run-level and tool-level approval gate; POST /approve handler
@@ -113,6 +113,9 @@ src/runtime/                Agentic runtime HTTP/SSE server + SQLite store
   auth.js                   Bearer token resolution and validation
   client.js                 HTTP client for /run /cancel /resume /approve /state /events/stream
   queueStore.js             SQLite-backed QueueStore for runtime sessions
+  stepNarrator.js           Donna's wording of a run's / action turn's steps (tool calls that change something, activities with their `facts`) in the session language: batched model calls (quiet period, ≥10 s apart, ≤8 per scope, one at the end), `step_narrative` event → `stepNarratives` on the projection; only FINISHED steps are worded while the scope runs (a sentence about a step in progress went stale — the live line and run card follow it), read-only calls (status polls, searches) are never steps, read-only turns never narrated; no model / a failed call → one `voice: steps` runtime log per scope, the panels keep the data; replayed events (rehydration) ignored
+  runReports.js             A finished run's proposal (curation → fact + button to /agent-proposals/<id>) and an agent's final text (dispatcher.js keeps it as `runtimeReport` instead of relaying it into the thread): short → a fact Donna words; long (`core/reports.js`) → written through the engine's `report_write` as a locked report and attached to the outcome message; no report tool → said in the facts and the log
+  donnaVoice.js             THE place the runtime turns facts into words outside a chat answer: `say` (one or two sentences — run outcomes and supervisor notices via `userFacts.js`, control-lane replies, queue and skill-launch acknowledgements, an unknown command, a skill that cannot start, an answer the guard withheld) and `sayLines` (the step narration). Shared rules (only the facts, no internal identifier, data framed as data, `.wikirc` language, Tchap channel line); without a model or on failure the facts are returned AS DATA (`factsAsData`) and a `voice: <kind>` runtime log says why. No sentence for the user is written in code — add a `kind` and facts here instead
   memoryStore.js            Workspace-scoped memory in the runtime SQLite (facts, history, search, extraction neighbours)
   memoryExtract.js          One bounded extraction call after a completed turn/run; exact user-evidence quote required
   vectorMemory.js           Embeddings adapter for memory retrieval (errors never carry keys or URLs)
@@ -145,8 +148,7 @@ every Compose command. Merge order per stack: packaged file → user override �
 generated CA override (last, so a `--cacert` change always beats a stale
 hand-written CA path). They are the supported place for proxy passthrough
 (containers do not inherit the host environment; only `connectors` ships proxy
-variables), extra mounts, and optional external agents such as the MailerSend
-connector. Extending a service the packaged file does not declare creates a
+variables), extra mounts, and services of the operator's own. Extending a service the packaged file does not declare creates a
 phantom service — don't. See `docs/configuration.md` § "Compose overrides".
 
 ## Shell Model
@@ -474,7 +476,9 @@ Key modules in `src/runtime/`:
 - **`server.js`**: `GET /health`, `GET /state`, `GET /events/stream` (SSE),
   `GET /audit` (0.10.3, `listAuditTrail`, filterable by `workspace`/`runId`),
   `POST /run`, `POST /turn`, `POST /cancel`, `POST /kill`, `POST /resume`,
-  `POST /approve`, `POST /conversation/truncate`, `POST /conversation/compact`,
+  `POST /approve`, `POST /conversation/truncate`, `POST /conversation/remove`
+  (one assistant entry of a thread, its assistant events only),
+  `POST /conversation/compact`,
   `GET`/`POST /control`, `GET /config/profiles`, and `POST /config/use`.
   Memory routes (`GET`/`POST /memory/facts`, `GET /memory/history/:key`,
   `POST`/`DELETE /memory/facts/:key`, `DELETE /memory/workspace`) back the
@@ -656,7 +660,11 @@ question (`donne le status du job en cours`) is detected by a deliberately
 narrow rule — a status word AND a run/job noun — so it never hijacks an
 ordinary "explain how X works" question.
 
-**System facts are never pushed into the thread raw; they go through Donna.**
+**System facts are never pushed into the thread raw; they go through Donna** —
+through `runtime/donnaVoice.js`, the single module that words them (the
+control lane's former French/English fallback catalog is gone; its
+`controlMessages.js` English lines are now facts handed to Donna, and the
+Shell's deterministic `/control` output).
 On `/turn` (the serve chat) neither a detected status question nor an
 `observe` classification is answered by the runtime: the facts are collected
 server-side (`runtimeStatusFacts`), handed to Donna as a scoped prompt

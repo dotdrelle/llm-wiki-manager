@@ -280,6 +280,15 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   // it stops being active whenever it did not simply succeed: after /run cancel
   // the point is precisely to see the cancelled step and the skipped remainder,
   // which the plain active-only filter used to hide.
+  // Donna's wording of this conversation's latest runs and action turns
+  // (runtime/stepNarrator.js), newest first — the same lines serve shows.
+  const stepNarratives = createMemo(() => {
+    version();
+    const all = runtimeState()?.stepNarratives;
+    if (!Array.isArray(all)) return [] as any[];
+    const own = (session as any).conversationId ?? null;
+    return all.filter((entry: any) => !entry.conversationId || entry.conversationId === own).slice(-3).reverse();
+  });
   const chainByItemId = createMemo(() => {
     version();
     const chains = runtimeState()?.skillChains;
@@ -476,6 +485,13 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   // would miss that update entirely and leave the stale placeholder text
   // shown forever; tracking local entry references per index picks it up.
   const runtimeConversationRefsByWorkspace = new Map<string, any[]>();
+  // A message's attachments (a report, a curation proposal) have no button in
+  // a terminal: their location follows the sentence, as data.
+  function runtimeMessageText(message: any) {
+    const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+    const links = attachments.map((item: any) => `↳ ${String(item?.target ?? '')}`).filter((line: string) => line.length > 2);
+    return [String(message?.content ?? ''), ...links].join('\n');
+  }
   function mergeRuntimeConversation(state: any) {
     const workspace = (session as any).workspace || '__global__';
     const runtimeConversation = Array.isArray(state?.conversation) ? state.conversation : [];
@@ -502,13 +518,13 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     if (backed.length === 0 && target.length === 0 && !runtimeConversation.some((message: any) => message?._pending)) {
       backed.push(...runtimeConversation.map((message: any) => ({
         role: message.role === 'assistant' ? 'donna' : message.role,
-        content: String(message.content ?? ''),
+        content: runtimeMessageText(message),
       })));
       return;
     }
     for (let i = 0; i < runtimeConversation.length; i += 1) {
       const message = runtimeConversation[i];
-      const content = String(message.content ?? '');
+      const content = runtimeMessageText(message);
       const role = message.role === 'assistant' ? 'donna' : message.role;
       if (i < backed.length) {
         const entry = backed[i];
@@ -929,6 +945,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     selectRightTab,
     plan,
     runSummary,
+    stepNarratives,
     pendingApprovals,
     maintenance: () => runtimeState()?.maintenance ?? null,
     conversationScroll,

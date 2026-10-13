@@ -3,7 +3,7 @@ import { findSkill, listSkills } from './skills.js';
 const INVOCATION_RE = /^\/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/;
 // remember/forget/memory are memory requests Donna performs with her tools, not
 // skills: an unknown-skill refusal would stop them before she sees them.
-export const RESERVED_SLASH_COMMANDS = new Set(['status', 'stop', 'run', 'queue', 'skills', 'help', 'exit', 'quit', 'chat', 'agent', 'maintenance', 'remember', 'forget', 'memory', 'approve', 'cancel']);
+export const RESERVED_SLASH_COMMANDS = new Set(['status', 'stop', 'run', 'queue', 'skills', 'help', 'exit', 'quit', 'chat', 'agent', 'maintenance', 'remember', 'forget', 'memory', 'approve', 'cancel', 'clear']);
 
 export function explicitSkillReference(input, skillName, language = null) {
   const name = escapeRegExp(String(skillName ?? '').trim());
@@ -90,11 +90,18 @@ export function matchSkillInvocation(session, input, { allowReserved = false } =
  * `.wiki/skills/` made EVERY skill command take that path silently. The caller
  * refuses it instead, naming what does exist.
  */
+// Looser than INVOCATION_RE on purpose: a typo such as « /clearv—all » (macOS
+// turns "--" into an em dash) failed the strict name pattern, so it reached
+// the model as prose — a long reflection ending on a guard refusal. Any first
+// token that is a slash word (not a path: no second "/") and names neither a
+// built-in nor a skill is refused at once.
+const SLASH_TOKEN_RE = /^\/([A-Za-z0-9_-]+)([^\s/]*)(?:\s|$)/;
+
 export function unknownSkillInvocation(session, input) {
-  const match = INVOCATION_RE.exec(String(input ?? '').trim());
+  const match = SLASH_TOKEN_RE.exec(String(input ?? '').trim());
   if (!match) return null;
-  const name = match[1];
-  if (RESERVED_SLASH_COMMANDS.has(name.toLowerCase()) || findSkill(session, name)) return null;
+  if (RESERVED_SLASH_COMMANDS.has(match[1].toLowerCase()) || findSkill(session, match[1])) return null;
+  const name = match[1] + match[2];
   const available = listSkills(session).map((skill) => `/${skill.name}`);
   const message = available.length
     ? `Unknown skill /${name}. Skills available in this workspace: ${available.join(', ')}.`

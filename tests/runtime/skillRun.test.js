@@ -92,24 +92,24 @@ test('generateSkillAcknowledgment asks Donna in the session language and echoes 
   const reply = await generateSkillAcknowledgment(session, { publicInput: '/deliver deliverable="Informe"', objectives: 1 });
   assert.equal(reply, 'Lanzado /deliver deliverable="Informe" — 1 paso en cola.');
   assert.equal(calls.length, 1);
-  assert.match(calls[0].input, /es/);
-  assert.match(calls[0].input, /\/deliver deliverable="Informe"/);
+  assert.match(calls[0].system, /Write in this language: es/);
+  assert.match(calls[0].input, /\/deliver deliverable=\\"Informe\\"/);
   // The acknowledgement is not a decision point: it must not invite the user
   // into a dialog the runtime cannot act on, and it must not claim the work is
   // already executing — a mutating step waits for approval.
-  assert.match(calls[0].input, /Do not ask a question/);
-  assert.match(calls[0].input, /Do not claim the work is running/);
+  assert.match(calls[0].system, /Do not ask a question/);
+  assert.match(calls[0].system, /Do not claim the work is running/);
 });
 
-test('generateSkillAcknowledgment degrades to a neutral message without an LLM client', async () => {
+test('generateSkillAcknowledgment shows the launch facts as data without an LLM client', async () => {
   const reply = await generateSkillAcknowledgment({ language: 'fr' }, { publicInput: '/wiki-ingest docs', objectives: 2 });
-  assert.equal(reply, 'Started /wiki-ingest docs — 2 step(s) queued.');
+  assert.equal(reply, 'skill: /wiki-ingest docs · steps: 2 · state: queued');
 });
 
-test('generateSkillAcknowledgment falls back when the LLM call fails', async () => {
+test('generateSkillAcknowledgment falls back to the facts when the LLM call fails', async () => {
   const session = { language: 'en', llm: { complete: async () => { throw new Error('down'); } } };
   const reply = await generateSkillAcknowledgment(session, { publicInput: '/deliver', objectives: 1 });
-  assert.equal(reply, 'Started /deliver — 1 step(s) queued.');
+  assert.equal(reply, 'skill: /deliver · steps: 1 · state: queued');
 });
 
 test('generateSkillAcknowledgment announces an LLM failure instead of degrading silently', async () => {

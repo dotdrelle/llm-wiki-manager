@@ -28,6 +28,23 @@ export function toolStartNote(name, argsSummary = '') {
 
 const MAX_SPINNER_ARG_LENGTH = 96;
 
+// The argument a reader would recognise as the request itself — a delegated
+// objective, a search question — whole rather than cut at 36 characters. Chosen
+// by shape, not by tool (no catalogue): the first string argument written as a
+// phrase, at least three words. An id, a path or a key has no spaces, so a
+// token or a password is never chosen.
+export function toolArgumentSubject(rawArguments, limit = 200) {
+  try {
+    const parsed = JSON.parse(rawArguments || '{}');
+    for (const value of Object.values(parsed ?? {})) {
+      if (typeof value !== 'string') continue;
+      const text = value.replace(/\s+/g, ' ').trim();
+      if (text.split(' ').length >= 3) return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+    }
+  } catch { /* not JSON: no subject */ }
+  return '';
+}
+
 export function summarizeToolArguments(rawArguments) {
   if (!rawArguments || rawArguments === '{}') return '';
   try {

@@ -343,7 +343,7 @@ function persistDispatch(store, event) {
   store?.persistEvent?.(event);
 }
 
-function worktreeProposalOf(result) {
+export function worktreeProposalOf(result) {
   return result?.rawStatus?.result?.worktreeProposal
     ?? result?.result?.worktreeProposal
     ?? result?.worktreeProposal;

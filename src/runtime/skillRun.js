@@ -1,3 +1,4 @@
+import { say } from './donnaVoice.js';
 import { randomUUID } from 'node:crypto';
 import { applyLegacySkillPlaceholders, parseSkillArguments } from '../core/skillInvocation.js';
 import { compileSkillObjectives, createSkillCompilerFallback } from '../core/skillCompiler.js';
@@ -152,35 +153,19 @@ export function formatPublicSkillInvocation(name, args = {}) {
  * browser and the shell both read the resulting `explanation`, never a
  * language-specific string of their own.
  *
- * Degrades honestly: without an LLM client (no `.wikirc` LLM configured) there
- * is nothing to localize with, so it falls back to a neutral, language-free
- * acknowledgement instead of guessing a language.
+ * Degrades honestly (donnaVoice.js): without a model, or when it fails, the
+ * launch facts are shown as data and the runtime log says why.
  */
 export async function generateSkillAcknowledgment(session, { publicInput, objectives }) {
-  const count = Number(objectives) || 1;
-  const language = String(session?.language ?? '').trim().toLowerCase() || 'en';
-  const llm = session?.llm;
-  if (llm && typeof llm.complete === 'function') {
-    try {
-      // Same bound as compileSkillObjectives' llmFallback above: a hung or
-      // slow provider must not block the skill-launch HTTP response forever.
-      const reply = await llm.complete({
-        system: 'You are Donna, the workspace assistant. You acknowledge a launched workflow in the user\'s language. Be concise: exactly one short sentence.',
-        input: `The user just launched the workspace skill ${publicInput}. It was compiled into ${count} step(s) and has been queued.\n\nWrite ONE short sentence in ${language} that confirms the launch, echoes the skill and its arguments, and says progress will be reported. Do not claim the work is running, executing or done: a mutating step waits for the user's approval before it runs. Do not ask a question, do not propose options, and do not offer to check, monitor or cancel anything: the runtime reports progress on its own and this acknowledgement is not a decision point. Return only that sentence, nothing else.`,
-        signal: AbortSignal.timeout(8_000),
-      });
-      const text = String(reply ?? '').trim();
-      if (text) return text;
-      emitRuntimeLog(session, 'skill-acknowledgment: LLM returned an empty reply, using the neutral fallback');
-    } catch (err) {
-      // A degradation must announce itself: silently falling through here
-      // hides the difference between "no LLM configured" (expected) and "the
-      // configured LLM is failing every call" (a real problem) — both would
-      // otherwise look identical from the Shell or serve UI.
-      emitRuntimeLog(session, `skill-acknowledgment: LLM call failed, using the neutral fallback — ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  return `Started ${publicInput} — ${count} step(s) queued.`;
+  return say(session, {
+    kind: 'skill_launched',
+    facts: { skill: publicInput, steps: Number(objectives) || 1, state: 'queued' },
+    rules: [
+      'Confirm the launch, echo the skill and its arguments, and say progress will be reported.',
+      'Do not claim the work is running, executing or done: a mutating step waits for the user\'s approval before it runs.',
+      'Do not ask a question, do not propose options, and do not offer to check, monitor or cancel anything: the runtime reports progress on its own and this acknowledgement is not a decision point.',
+    ],
+  });
 }
 
 function argumentError(message) {

@@ -9,35 +9,14 @@
  supervisor's notices in English.
 
  Without a model (or when the call fails) the English fact line itself is the
- message: degraded, but never silent and never invented.
+ message — data, degraded but never silent and never invented (donnaVoice.js).
  */
-import { conversationChannelPromptLine } from '../core/conversationChannel.js';
+import { say } from './donnaVoice.js';
 
+// Kept as the entry point of runner.js and the supervisor; the wording, the
+// language and the degradation are donnaVoice.js's.
 export async function phraseFactsForUser(session, facts, { signal = null, rules = [] } = {}) {
   const factLine = String(facts ?? '').trim();
   if (!factLine) return '';
-  const llm = session?.llm;
-  if (!llm || typeof llm.completeWithTools !== 'function') return factLine;
-  const language = session.language ?? 'en-US';
-  try {
-    const result = await llm.completeWithTools({
-      system: [
-        'You are Donna, an orchestration assistant reporting runtime facts to the user.',
-        `Rephrase the facts in at most two short, natural sentences, in this reply language: ${language}.`,
-        'No lists, no headers, no raw job ids — just a concise human summary. Keep every number, every failure and every required intervention.',
-        'Never claim more than the facts: a pending, failed, refused or unverified item stays so in your sentence.',
-        ...rules,
-        // The run's thread may be a messaging channel (Tchap): say so here too.
-        conversationChannelPromptLine(session.conversationChannels?.get?.(session._currentRunIdentity?.conversationId)),
-      ].filter(Boolean).join('\n'),
-      tools: [],
-      messages: [{ role: 'user', content: `Facts:\n${factLine}` }],
-      signal,
-    });
-    const phrased = String(result?.content ?? '').trim();
-    return phrased || factLine;
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    return factLine;
-  }
+  return say(session, { kind: 'run_facts', facts: factLine, sentences: 2, rules, signal, timeoutMs: 20_000 });
 }

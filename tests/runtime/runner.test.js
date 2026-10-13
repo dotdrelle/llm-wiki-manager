@@ -1390,8 +1390,13 @@ test('structured evaluation distinguishes execution receipts from observed resul
   assert.equal(uncertain.ok, true);
   assert.equal(uncertain.verification.unavailable, 1);
   assert.equal(uncertain.verification.unreported, 1);
-  assert.match(uncertain.reason, /without any available verification/);
+  assert.match(uncertain.reason, /1 result\(s\) the agent could not verify/);
   assert.match(uncertain.reason, /simulation/);
+  // An agent that reports no verification at all is not an uncertainty to
+  // announce: the run outcome says nothing about verification then.
+  const silent = structuredPlanEvaluation([task('a'), task('b')]);
+  assert.equal(silent.ok, true);
+  assert.doesNotMatch(silent.reason, /verification/);
 });
 
 
@@ -1406,11 +1411,11 @@ test('the run outcome hands verification facts to Donna, in the session language
   const message = session.agentEvents.find((event) => event.type === 'assistant_message');
   // Donna's wording only: no French (or any) system line appended.
   assert.equal(message.payload.content, 'Erledigt, Ergebnis nicht überprüfbar.');
-  assert.match(request.system, /reply language: de-DE/);
+  assert.match(request.system, /Write in this language: de-DE/);
   assert.match(request.system, /state it: how many results were verified/);
   const facts = request.messages[0].content;
   assert.match(facts, /Post-action verification: 0 result\(s\) verified\./);
-  assert.match(facts, /1 result\(s\) without any available verification/);
+  assert.match(facts, /1 result\(s\) the agent could not verify/);
 });
 
 test('without a model, the outcome falls back to the English fact line, verification included', async () => {

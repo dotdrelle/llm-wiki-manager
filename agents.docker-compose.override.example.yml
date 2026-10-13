@@ -59,30 +59,4 @@
 # and the manager mounts it into every service with the right env variables
 # (NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE).
 #
-# ── Optional external agents ──────────────────────────────────────────────────
-#
-# The MailerSend agent is built and version-checked but not part of the default
-# delivery. Enable it by declaring it here (credentials stay in the container
-# environment; set MAILERSEND_API_KEY in the manager .env):
-#
-#     services:
-#       mailer:
-#         image: dotdrelle/agent-mailer-api:latest
-#         user: "${UID:-1000}:${GID:-1000}"
-#         read_only: true
-#         tmpfs:
-#           - /tmp
-#         cap_drop: [ALL]
-#         security_opt:
-#           - no-new-privileges:true
-#         ports:
-#           - "${MAILER_MCP_PORT:-3339}:8080"
-#         environment:
-#           - MCP_AUTH_TOKEN=${MAILER_MCP_AUTH_TOKEN:-}
-#           - MAILERSEND_API_KEY=${MAILERSEND_API_KEY:-}
-#         restart: unless-stopped
-#
-# Remember to declare the matching endpoint in mcp.endpoints.json, otherwise
-# Donna never discovers the agent.
-
 services: {}

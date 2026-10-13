@@ -149,11 +149,22 @@ function activityDetailText(activity: any) {
     batchProgress,
     progress.label,
     detail,
+    // An agent's facts (e.g. CME's sources and page counts) are data, shown
+    // raw as key/value: their wording belongs to Donna, in the workspace
+    // language (runtime/stepNarrator.js), not to a sentence written here.
+    activityFactsText(progress.facts),
     instructions,
     stabilize || null,
     progress.currentStep ?? progress.step ?? progress.phase,
   ].map((value) => String(value ?? '').trim()).filter(Boolean);
   return [...new Set(values)].join(' · ');
+}
+
+function activityFactsText(facts: any) {
+  if (!facts || typeof facts !== 'object') return null;
+  return Object.entries(facts)
+    .map(([key, value]) => `${key} ${Array.isArray(value) ? value.join(', ') : String(value)}`)
+    .join(' · ') || null;
 }
 
 function activityDisplayLabel(activity: any) {
@@ -307,6 +318,29 @@ export function PlanPanel(props: { plan: PlanStep[]; width: number; jobName?: st
           }}
         </Index>
       </scrollbox>
+    </box>
+  );
+}
+
+// Donna's lines, in the workspace language: the text is hers, so no heading
+// word is added here — only the same state marks as the Plan.
+export function NarrativePanel(props: { narratives: any[]; width: number; spinnerFrame?: string }) {
+  const lineWidth = () => Math.max(8, props.width - 2);
+  const rows = createMemo(() => props.narratives.flatMap((entry: any, index: number) => [
+    ...(index > 0 ? [{ text: '', color: '#4B5563' }] : []),
+    ...(entry.lines ?? []).flatMap((line: any) => {
+      const state = line.state === 'failed' ? 'failed' : line.state === 'running' && !entry.final ? 'running' : 'done';
+      const mark = state === 'failed' ? '[✗]' : state === 'running' ? `[${props.spinnerFrame ?? '…'}]` : '[✓]';
+      const color = state === 'failed' ? '#F38BA8' : state === 'running' ? '#89B4FA' : '#A6E3A1';
+      return wrapLine(`${mark} ${String(line.text ?? '')}`, lineWidth()).slice(0, 3)
+        .map((text, wrapped) => ({ text: wrapped ? `    ${text}` : text, color }));
+    }),
+  ]));
+  return (
+    <box flexShrink={0} flexDirection="column" paddingX={1} marginBottom={1}>
+      <Index each={rows()}>
+        {(row) => <text width={lineWidth()} fg={row().color} content={fit(row().text, lineWidth())} />}
+      </Index>
     </box>
   );
 }
@@ -637,6 +671,7 @@ export function RightPane(props: {
   logs: string[];
   plan: PlanStep[] | null;
   runSummary?: string | null;
+  stepNarratives?: any[];
   queueItems: QueueItem[];
   queueInfo: QueueInfo;
   activeTab: 'plan' | 'queue';
@@ -671,7 +706,7 @@ export function RightPane(props: {
             <text fg={props.maintenance?.mode === 'auto' ? '#A6E3A1' : '#FBBF24'} content=" Auto " onMouseUp={() => props.onMaintenance?.('/maintenance mode auto')} />
             <text fg={props.maintenance?.mode === 'human' ? '#FBBF24' : '#A6ADC8'} content=" Human " onMouseUp={() => props.onMaintenance?.('/maintenance mode human')} />
           </box>
-          <text content={`Build window: ${maintenanceBuildWindow(props.maintenance?.buildSchedule)}`} />
+          <text content={`Build Window: ${maintenanceBuildWindow(props.maintenance?.buildSchedule)}`} />
           <box flexDirection="row">
             <text content=" History " onMouseUp={() => props.onMaintenance?.('/maintenance status')} />
             <Show when={props.maintenance?.enabled} fallback={<text fg="#A6E3A1" content=" Enable " onMouseUp={() => props.onMaintenance?.('/maintenance enable')} />}>
@@ -704,6 +739,9 @@ export function RightPane(props: {
       </Show>
       <Show when={props.activeTab === 'queue'} fallback={(
         <>
+          <Show when={(props.stepNarratives?.length ?? 0) > 0}>
+            <NarrativePanel width={props.width} narratives={props.stepNarratives!} spinnerFrame={props.spinnerFrame} />
+          </Show>
           <Show when={props.plan && props.plan.length > 0}>
             <PlanPanel width={props.width} plan={props.plan!} jobName={planJobName()} summary={props.runSummary} spinnerFrame={props.spinnerFrame} />
           </Show>

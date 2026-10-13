@@ -209,7 +209,7 @@ Three origins are distinguished, and the UI labels each card:
 | origin | shown as | who owns it |
 | --- | --- | --- |
 | `wiki`, `production`, `llm-wiki`, `wiki-production` | `internal` | the workspace stack. Fields read-only, no delete — the runtime rejects any change to these names |
-| declared in `mcp.endpoints.json` by hand or by `agents up` | `global config` | the operator. CME, Documents, Mailer, Connectors, Exa… |
+| declared in `mcp.endpoints.json` by hand or by `agents up` | `global config` | the operator. CME, Documents, Connectors, Exa… |
 | added from the UI | `added here` | carries `"managedBy": "serve-ui"` in the file |
 
 Removing a `global config` connector is a workspace-wide act — it leaves every

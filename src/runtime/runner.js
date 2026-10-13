@@ -13,6 +13,7 @@ import { approvalCovered, approvalRequestForTask } from '../orchestrator/approva
 import { blockedByFailedDependency, tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
 import { isCancelled, isFailed, isPending, isSkipped, isSuccessful, isTerminal, isUnknownStatus } from '../orchestrator/taskStatuses.js';
 import { assertValidatedFragment } from '../orchestrator/planValidator.js';
+import { runOutcomeReports } from './runReports.js';
 import { createResultAggregator, nothingToCurateReasonOf, rebuildOwnedReasonOf } from '../orchestrator/resultAggregator.js';
 import { describePlanConcurrency, drainActive, startReadyTasks } from '../orchestrator/scheduler.js';
 import { emitRuntimeLog, pollActivitiesOnce } from './supervisor.js';
@@ -449,7 +450,10 @@ export async function announceRunOutcome(session, { runId, ok, signal = null } =
       `${cancelled ? `, ${cancelled} cancelled` : ''}` +
       `${skipped ? `, ${skipped} skipped because an earlier step did not succeed` : ''}.` +
       `${firstError ? ` First error: ${firstError}.` : ''}`) + statsLine + verificationLine + rebuildLine + noSourceLine;
-  const content = await phraseFactsForUser(session, factLine, { signal, rules: [
+  // A proposal or a long agent report is opened from a button, never pasted
+  // into the thread (runReports.js).
+  const reports = await runOutcomeReports(session, plan);
+  const content = await phraseFactsForUser(session, factLine + reports.facts, { signal, rules: [
     'If the facts say the plan is NOT finished, say so plainly and name what is still pending or failed: never claim the work was completed, published or successful.',
     'When the facts say a curation wrote no correction because its findings are generated pivots, say there is nothing to review and propose /wiki-rebuild; never call it a failure nor claim corrections were made.',
     'When the facts say curation stopped because no wiki/sources fiches exist, say to ingest source documents first; explain that no curation roles ran.',
@@ -458,7 +462,7 @@ export async function announceRunOutcome(session, { runId, ok, signal = null } =
   dispatchAgentEvent(session, createAgentEvent('assistant_message', {
     origin: 'runtime',
     runId,
-    payload: { content },
+    payload: { content, ...(reports.attachments.length ? { attachments: reports.attachments } : {}) },
   }));
 }
 
@@ -1403,10 +1407,13 @@ function verificationCounts(done) {
 }
 
 // Post-action verification as an English fact line (data for Donna and for
-// the evaluator), never pasted into the conversation as raw text.
+// the evaluator), never pasted into the conversation as raw text. Only what an
+// agent DECLARED counts: most agents (CME, documents, the gateway) report no
+// verification at all, and counting that silence as "without any available
+// verification" ended every one of their runs on an alarm about nothing.
 function verificationFacts(v) {
-  if (!Object.values(v).some(Boolean)) return '';
-  return ` Post-action verification: ${v.verified} result(s) verified.${v.notObserved ? ` ${v.notObserved} result(s) NOT observed; nothing was re-run automatically.` : ''}${v.unavailable + v.unreported ? ` ${v.unavailable + v.unreported} result(s) without any available verification.` : ''}${v.notApplicable ? ` ${v.notApplicable} simulation(s), no real action.` : ''}`;
+  if (!(v.verified || v.notObserved || v.unavailable || v.notApplicable)) return '';
+  return ` Post-action verification: ${v.verified} result(s) verified.${v.notObserved ? ` ${v.notObserved} result(s) NOT observed; nothing was re-run automatically.` : ''}${v.unavailable ? ` ${v.unavailable} result(s) the agent could not verify.` : ''}${v.notApplicable ? ` ${v.notApplicable} simulation(s), no real action.` : ''}`;
 }
 
 function transientRuntimeError(error) {

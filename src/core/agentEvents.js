@@ -9,6 +9,9 @@ import { compactLogLabel } from './logLabel.js';
 import { validateContractInDev } from '../contracts/schemas.js';
 import { isActive, isTerminal, isSuccessful, isUnknownStatus, normalizeTaskStatus } from '../orchestrator/taskStatuses.js';
 
+const MAX_NARRATIVES = 6;
+const MAX_NARRATIVE_LINES = 16;
+
 const SESSION_PROJECTION_EVENTS = new Set([
   'run_started',
   'plan_set',
@@ -99,6 +102,13 @@ export function dispatchAgentEvent(session, event) {
     event.id && event.ts ? event : createAgentEvent(event.type, event),
     session,
   );
+  // A report written during the turn (report_write) is attached to the answer
+  // that announces it, whichever path emits that answer.
+  if (normalized.type === 'assistant_message' && Array.isArray(session?._pendingAttachments) && session._pendingAttachments.length
+    && String(normalized.payload?.content ?? '').trim()) {
+    normalized.payload = { ...normalized.payload, attachments: [...(normalized.payload?.attachments ?? []), ...session._pendingAttachments] };
+    session._pendingAttachments = [];
+  }
   validateContractInDev('agentRunEvent', normalized);
   const tracksPlan = PLAN_MUTATING_EVENTS.has(normalized.type);
   const previousPlan = tracksPlan ? JSON.stringify(session.headlessPlan ?? null) : null;
@@ -243,6 +253,10 @@ function createProjectionState() {
     // never persisted, never in the conversation.
     lastHeartbeatAt: null,
     lastHeartbeatElapsedMs: 0,
+    // Donna's wording of the latest runs/action turns (runtime/stepNarrator.js),
+    // newest last. Kept across run_started: the previous run's account is what
+    // the reader looks for once it has ended.
+    stepNarratives: [],
   };
 }
 
@@ -277,6 +291,7 @@ function publicProjection(state) {
     status: state.status,
     lastHeartbeatAt: state.lastHeartbeatAt ?? null,
     lastHeartbeatElapsedMs: state.lastHeartbeatElapsedMs ?? 0,
+    stepNarratives: (state.stepNarratives ?? []).map((entry) => ({ ...entry, lines: entry.lines.map((line) => ({ ...line })) })),
   };
   return {
     ...projection,
@@ -351,6 +366,26 @@ function applyEvent(state, event) {
       state.lastHeartbeatElapsedMs = 0;
       pruneTerminalControlItems(state.controlQueue);
       return;
+    case 'step_narrative': {
+      const payload = event.payload ?? {};
+      const scope = String(payload.scope ?? '');
+      if (!scope || !Array.isArray(payload.lines)) return;
+      const entry = {
+        scope,
+        runId: payload.runId ?? null,
+        turnId: payload.turnId ?? null,
+        conversationId: payload.conversationId ?? null,
+        final: payload.final === true,
+        updatedAt: event.ts ?? null,
+        lines: payload.lines.slice(0, MAX_NARRATIVE_LINES).map((line) => ({
+          id: String(line?.id ?? ''),
+          state: String(line?.state ?? ''),
+          text: String(line?.text ?? '').slice(0, 300),
+        })),
+      };
+      state.stepNarratives = [...(state.stepNarratives ?? []).filter((item) => item.scope !== scope), entry].slice(-MAX_NARRATIVES);
+      return;
+    }
     case 'runtime_heartbeat':
       // Liveness only: the external runtime saying "still working" during a
       // long, tool-less phase. A timestamp the run strip reads; never a
@@ -390,7 +425,7 @@ function applyEvent(state, event) {
       }
       return;
     case 'assistant_message':
-      finalizeAssistantMessage(state, String(event.payload?.content ?? ''), event.conversationId);
+      finalizeAssistantMessage(state, String(event.payload?.content ?? ''), event.conversationId, event.payload?.attachments);
       return;
     case 'assistant_delta':
       appendAssistantDelta(state, String(event.payload?.delta ?? ''), event.conversationId);
@@ -949,15 +984,29 @@ function discardStreamingAssistantMessage(state) {
   if (last?.role === 'assistant' && last.streaming) last.content = '';
 }
 
-function finalizeAssistantMessage(state, content, conversationId = null) {
+// Attachments: what the message points to instead of carrying it — a report
+// or a curation proposal the reader opens beside the chat ({target, title}).
+// They ride on the entry for the UIs; the model's seed reads `content` only.
+function messageAttachments(attachments) {
+  if (!Array.isArray(attachments)) return null;
+  const list = attachments
+    .filter((item) => item && typeof item.target === 'string' && item.target)
+    .slice(0, 5)
+    .map((item) => ({ target: item.target, title: String(item.title ?? '').slice(0, 160), kind: String(item.kind ?? 'report') }));
+  return list.length ? list : null;
+}
+
+function finalizeAssistantMessage(state, content, conversationId = null, attachments = null) {
+  const attached = messageAttachments(attachments);
   const last = state.conversation.at(-1);
   if (last?.role === 'assistant' && last.streaming) {
     last.content = content || last.content;
     if (conversationId) last.conversationId = conversationId;
+    if (attached) last.attachments = attached;
     delete last.streaming;
     return;
   }
-  if (content) state.conversation.push({ role: 'assistant', content, ...(conversationId ? { conversationId } : {}) });
+  if (content) state.conversation.push({ role: 'assistant', content, ...(conversationId ? { conversationId } : {}), ...(attached ? { attachments: attached } : {}) });
 }
 
 function finishToolCall(state, payload = {}) {

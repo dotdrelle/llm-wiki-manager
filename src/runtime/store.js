@@ -766,6 +766,19 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       .run(workspace, conversationId, boundary).changes ?? 0);
   }
 
+  // Removes ONE assistant entry of a thread: the assistant events between the
+  // sequence that created it and the one that created the next entry. Only
+  // assistant text events go — a run event or a user turn recorded in that
+  // range belongs to something else and stays.
+  function deleteConversationEntryEvents(from, to = null, { workspace = null, conversationId = null } = {}) {
+    const start = Number(from);
+    const end = to == null ? null : Number(to);
+    if (!Number.isFinite(start) || (end !== null && !Number.isFinite(end)) || !workspace || !conversationId) return 0;
+    return Number(db.prepare(`DELETE FROM events WHERE workspace = ? AND conversation_id = ? AND sequence >= ?
+      AND (? IS NULL OR sequence < ?) AND type IN ('assistant_message', 'assistant_delta', 'assistant_delta_reset')`)
+      .run(workspace, conversationId, start, end, end).changes ?? 0);
+  }
+
   function deleteEventsAfter(sequence, { workspace = null } = {}) {
     const boundary = Number(sequence);
     if (!Number.isFinite(boundary) || !workspace) return 0;
@@ -1408,6 +1421,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     findSkillRun,
     deleteEventsAfter,
     deleteConversationEventsFrom,
+    deleteConversationEntryEvents,
     saveQueue,
     listQueue,
     listTasks,

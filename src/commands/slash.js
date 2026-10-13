@@ -1062,7 +1062,7 @@ export function maintenanceStatusText(status = {}) {
     `Maintenance: ${state}`,
     `Approval mode: ${mode}`,
     actions.length ? `Actions: ${actions.join(' · ')}` : 'Actions: unavailable',
-    `Build window: ${schedule ? `${schedule.start}–${schedule.end} (${schedule.timezone})` : 'none — automatic builds wait'}`,
+    `Build Window: ${schedule ? `${schedule.start}–${schedule.end} (${schedule.timezone})` : 'none — automatic builds wait'}`,
     `Pending decisions: ${pending.length ? pending.map((request) => `${request.candidate?.summary ?? request.action} [id ${request.id}, version ${request.version}]`).join('; ') : 'none'}`,
     cycles.length ? `Recent cycles: ${cycles.map((cycle) => `${cycle.status}${cycle.at ? ` (${formatLocalDateTime(cycle.at)})` : ''}`).join(', ')}` : 'Recent cycles: none',
     events.length ? `Latest activity: ${events.join(' | ')}` : 'Latest activity: none',

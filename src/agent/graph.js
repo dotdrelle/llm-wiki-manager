@@ -24,7 +24,9 @@ import { RESERVED_SLASH_COMMANDS, explicitSkillReference, objectiveNamesSkill } 
 import { handleSlashCommand } from '../commands/slash.js';
 import { extractActivity, formatActivitySummary, parseJsonText, sessionActivities } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
-import { summarizeToolArguments, toolResultNote, toolStartNote } from '../core/progressNotes.js';
+import { reportFromToolResult } from '../core/reports.js';
+import { say } from '../runtime/donnaVoice.js';
+import { summarizeToolArguments, toolArgumentSubject, toolResultNote, toolStartNote } from '../core/progressNotes.js';
 import { dsmlInvokedName, dsmlToolCalls, hasDsmlMarkup } from '../core/textArtifacts.js';
 import { openWikiPagesPromptLine } from '../core/openWikiPages.js';
 import { conversationChannelPromptLine } from '../core/conversationChannel.js';
@@ -386,8 +388,12 @@ function commandList(session) {
     .join(', ');
 }
 
-export function invalidSuggestedSlashCommands(content, session) {
+// A command the user typed in this very turn is not a suggestion: Donna naming
+// back « /clear --all » to someone who just typed it leaks nothing, and
+// rejecting it cost two forced retries before a dead-end refusal.
+export function invalidSuggestedSlashCommands(content, session, { userInput = '' } = {}) {
   const allowed = new Set((session?.commands ?? []).filter((command) => AGENT_SLASH_COMMANDS.has(command)));
+  for (const match of String(userInput ?? '').matchAll(/(?:^|\s)\/([a-z][\w-]*)\b/gi)) allowed.add(match[1].toLowerCase());
   const candidates = new Set();
   for (const line of String(content ?? '').split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -1373,6 +1379,7 @@ export function buildAgentSystemPrompt(state) {
     'You are in AGENT mode, so you can actually act. You MAY close with ONE short, natural follow-up — a single sentence phrased as an offer, and only when it genuinely helps and is an action you can perform right here (delegate it or call a tool), e.g. "Want me to start ingesting these pages?" (phrased in the reply language). This is what makes you feel like an assistant rather than a readout. Only offer what you can truly do in agent mode — never an offer that would require another mode. Keep it to that one line: never produce a "Next steps"/"Prochaines étapes"/"À suivre" list, a checklist, an options menu, or commands for the user to type. If nothing useful naturally follows, simply stop after the answer — do not pad.',
     'When calling a tool, emit no preliminary narration. Call it directly; the PLAN and Activity panels show progress. After completion, keep the final response concise and proportional to the result.',
     'Write the way a thoughtful colleague speaks: warm, plain, and to the point. For a simple factual question, 1 to 3 sentences is the sweet spot. Stay synthetic and information-dense — use only the lines needed, and never exceed roughly 15 to 20 short lines even for a detailed answer. Never expose internal reasoning, repeated checks, tool-selection commentary, or a chronological diary. Prioritize the result, essential facts, concrete errors, and actual outputs — but say them in human language, not as a field dump.',
+    'When the user asks for a document rather than an answer — a summary of a document, a report, an analysis to keep — and a tool to write a report is offered, write the document there and reply with ONE sentence saying it is ready: the user opens it from the button under your reply, and the conversation stays short. Never paste a long report into the chat.',
     'Call a matching direct tool when one is offered. Otherwise, for an action backed by a discovered agent capability, call runtime__delegate with the original objective. This applies to both planner agents and executor-only single-task agents. Never call an agent orchestration-contract or plan tool directly.',
     'Configuration is not a business run. When a connected server offers a setup or configuration tool, use it directly; never delegate configuration to an export, collect, send, build, or ingest capability. Read that server status first when existing non-secret values are needed, then ask only for required values that are still missing.',
     // Observed: « récupère le numéro de ticket depuis le wiki » delegated to
@@ -1974,12 +1981,15 @@ export function createAgentGraph(options = {}) {
         result.content = finalContent;
         result.message = { ...(result.message ?? { role: 'assistant' }), content: finalContent };
       }
-      const invalidCommands = invalidSuggestedSlashCommands(result.content, state.session);
+      const invalidCommands = invalidSuggestedSlashCommands(result.content, state.session, { userInput: state.input });
       const leakedTools = invalidUserFacingToolNames(result.content, state.session);
       if (invalidCommands.length > 0 || leakedTools.length > 0) {
         state.session._onStreamReset?.();
+        // One corrective retry: each one is a full model call (forced to
+        // delegate when it can), and a second rarely fixed what the first did
+        // not — it only made the user wait longer for the same refusal.
         const retries = Number(state.invalidResponseRetries ?? 0);
-        if (retries < 2) {
+        if (retries < 1) {
           const canDelegate = tools.some((item) => item?.function?.name === 'runtime__delegate');
           state.session._onStep?.('Agent: invalid user-facing implementation detail rejected; retrying…');
           return {
@@ -2004,7 +2014,18 @@ export function createAgentGraph(options = {}) {
             forceDelegation: canDelegate,
           };
         }
-        const failure = 'Response rejected: Donna exposed an internal instruction or an incorrect manual procedure.';
+        // Said by Donna in the workspace language (runtime/donnaVoice.js), never
+        // a fixed English sentence in the thread.
+        const failure = await say(state.session, {
+          kind: 'answer_withheld',
+          request: state.input,
+          facts: {
+            answerWithheld: true,
+            reason: 'the answer named internal identifiers or commands that do not exist, and a rewrite did not fix it',
+            ...(invalidCommands.length ? { unavailableCommands: invalidCommands.map((name) => `/${name}`) } : {}),
+          },
+          rules: ['Say you could not give a proper answer to this request and invite the user to rephrase it. Do not repeat the withheld answer.'],
+        });
         emitAgentEvent(state.session, 'assistant_message', 'agent_guard', { content: failure });
         return { response: failure, pendingToolCalls: null, readyToStream: false };
       }
@@ -2114,13 +2135,23 @@ export function createAgentGraph(options = {}) {
         name: toolName,
         args: call.function.arguments ?? '{}',
         summary: argsSummary || 'calling...',
+        // What the step narrator (runtime/stepNarrator.js) needs to tell work
+        // from consultation: plan bookkeeping is never a step, a read is not
+        // worth a narration, a runtime launch (skill, delegation) is.
+        internal: isInternalWikiTool,
+        readOnly: isInternalCall
+          ? server !== 'runtime' || /(?:^|_)(?:status|list|describe|read|search)(?:_|$)/.test(String(tool))
+          : isReadOnlyMcpCall(state.session, server, tool),
       });
       // The turn's own account of itself, in the conversation rather than in a
       // panel: an interactive turn publishes no plan and no activity, so this
       // is the only thing that tells the user what is running while it runs.
+      const subject = toolArgumentSubject(call.function.arguments);
       emitAgentEvent(state.session, 'assistant_progress', 'tool', {
         callId: call.id,
         message: toolStartNote(toolName, argsSummary),
+        tool: toolName,
+        ...(subject ? { subject } : {}),
       });
       // A plan represents work, never observation. Read-only inventory/status
       // calls stay out of Plan even when Donna uses them to answer a question.
@@ -2351,6 +2382,10 @@ export function createAgentGraph(options = {}) {
       // The full resultText above was already used for payload parsing and
       // _activity extraction, which must never see a truncated document.
       const boundedResult = truncateToolResult(resultText);
+      // A report the tool wrote is attached to the answer that announces it:
+      // the thread carries one sentence and a button, never the report.
+      const writtenReport = ok ? reportFromToolResult(resultText) : null;
+      if (writtenReport) (state.session._pendingAttachments ??= []).push(writtenReport);
       emitAgentEvent(state.session, 'tool_call_result', 'tool', {
         callId: call.id,
         name: toolName,

@@ -182,7 +182,7 @@ test('supervisor notices are worded by Donna in the session language, never past
   const { session, failure } = fixture();
   const phrasings = [];
   session.llm = { completeWithTools: async ({ system, messages }) => {
-    if (system.includes('reporting runtime facts')) {
+    if (system.includes('telling the user what the system did or found')) {
       phrasings.push({ system, facts: messages[0].content });
       return { content: 'Échec : le service ne répond pas, rien n’a été relancé.' };
     }
@@ -192,7 +192,7 @@ test('supervisor notices are worded by Donna in the session language, never past
   const notices = session.agentEvents.filter((event) => event.type === 'assistant_message' && event.origin === 'objective_supervisor');
   assert.equal(notices.length, 1);
   assert.equal(notices[0].payload.content, 'Échec : le service ne répond pas, rien n’a été relancé.');
-  assert.match(phrasings[0].system, /reply language: fr-FR/);
+  assert.match(phrasings[0].system, /Write in this language: fr-FR/);
   assert.match(phrasings[0].facts, /Diagnosis: The provider is unavailable\./);
 });
 

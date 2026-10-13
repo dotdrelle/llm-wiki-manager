@@ -22,7 +22,7 @@ test('/maintenance status reads as sentences, never as the raw policy object', (
   assert.match(output, /Maintenance: active/);
   assert.match(output, /Approval mode: human/);
   assert.match(output, /Actions: sync: waits for approval · ingest: waits for approval · build: waits for approval \(templates\/a\.md\)/);
-  assert.match(output, /Build window: 02:00–05:00 \(Europe\/Paris\)/);
+  assert.match(output, /Build Window: 02:00–05:00 \(Europe\/Paris\)/);
   assert.match(output, /Ingest 2 new sources \[id req-1, version v1\]/);
   assert.match(output, /Recent cycles: completed/);
   assert.match(output, /Latest activity: Done: Sync Acme/);

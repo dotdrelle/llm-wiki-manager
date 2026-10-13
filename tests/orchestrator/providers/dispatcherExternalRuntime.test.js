@@ -73,21 +73,21 @@ test('dispatcher cancels the external run through the provider when the signal a
   assert.equal(cancelledRunIds.length, 1, 'the external run was cancelled via the provider');
 });
 
-test('dispatcher maps runtime message events into assistant_message', async () => {
+test('the runtime\'s own prose is kept with the task result, never pushed into the thread', async () => {
   const provider = createFakeRuntimeProvider({ capabilities: [{ name: 'agent.echo', operations: ['run'] }] });
   const { agents } = await discoverRuntimeProviderAgents([{ id: 'fake', provider }]);
   const session = { workspace: 'test', mcp: {}, activities: {} };
   const dispatcher = createDispatcher({ session, pollIntervalMs: 1 });
 
-  await dispatcher.execute(
+  const result = await dispatcher.execute(
     { id: 'echo-c', label: 'Echo C', requiredCapability: 'agent.echo', operation: 'run', arguments: {} },
     externalAssignment(provider, agents[0].agentInstanceId),
     { runId: 'run-donna-2', attempt: { attemptId: 'echo-c:attempt-1', locks: [], release() {} } },
   );
 
-  const message = session.agentEvents?.find((event) => event.type === 'assistant_message');
-  assert.ok(message, 'an assistant_message was dispatched');
-  assert.match(String(message.payload?.content ?? ''), /completed/);
+  // A 16 KB curation report used to land in the chat this way.
+  assert.equal(session.agentEvents?.some((event) => event.type === 'assistant_message' || event.type === 'assistant_delta'), false);
+  assert.match(String(result?.runtimeReport ?? ''), /completed/);
 });
 
 test('dispatcher propagates a planExpansionRequest from the external runtime result (agent -> DAG)', async () => {
@@ -222,11 +222,9 @@ test("end-user dry-run: 'plan' completes without any approval; 'run' pauses with
     !(drySession.agentEvents ?? []).some((event) => event.type === 'approval.requested'),
     'a dry-run never asks for approval',
   );
-  assert.ok(
-    (drySession.agentEvents ?? []).some((event) => event.type === 'assistant_message'
-      && /completed/.test(String(event.payload?.content ?? ''))),
-    'the proposal is reported back to the user',
-  );
+  // The proposal reaches the user through the run outcome (runReports.js),
+  // never as the runtime's raw prose in the thread.
+  assert.match(String(dry.runtimeReport ?? ''), /completed/);
 
   // Live path: operation 'run'
   const liveSession = { workspace: 'test', mcp: {}, activities: {} };
@@ -239,9 +237,11 @@ test("end-user dry-run: 'plan' completes without any approval; 'run' pauses with
   );
 
   await waitFor(() => (liveSession.agentEvents ?? []).some((event) => event.type === 'approval.requested'));
-  const banner = (liveSession.agentEvents ?? []).find((event) => event.type === 'assistant_message'
-    && /Approval required/.test(String(event.payload?.content ?? '')));
-  assert.ok(banner, 'the ⏸ banner is shown before anything runs');
+  // Worded by Donna (donnaVoice.js); without a model here, its facts as data.
+  await waitFor(() => (liveSession.agentEvents ?? []).some((event) => event.type === 'assistant_message'));
+  const banner = (liveSession.agentEvents ?? []).find((event) => event.type === 'assistant_message');
+  assert.match(String(banner.payload?.content ?? ''), /approvalRequired: true/);
+  assert.match(String(banner.payload?.content ?? ''), /\/approve/);
 
   dispatchAgentEvent(liveSession, createAgentEvent('approval.granted', {
     origin: 'test',

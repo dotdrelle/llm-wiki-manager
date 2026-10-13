@@ -3,6 +3,7 @@ import test from 'node:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { toolArgumentSubject } from '../../src/core/progressNotes.js';
 import { bareToolCallJson, buildAgentSystemPrompt, connectorConfigurationTarget, createAgentGraph, invalidSuggestedSlashCommands, invalidUserFacingToolNames, isOrchestrationBypassTool, knownCapabilityIds, narratedToolCallText, normalizeToolArgumentsFromSchema, nothingToDoForDonna } from '../../src/agent/graph.js';
 
 test('user-facing response guard hides MCP identifiers generically', () => {
@@ -614,6 +615,8 @@ test('an explicitly selected skill runs through the intra-runtime path with name
         if (tools.some((tool) => tool.function?.name === 'classify_action_request')) {
           return { content: null, message: { role: 'assistant', content: null }, tool_calls: [{ id: 'classify', type: 'function', function: { name: 'classify_action_request', arguments: '{"action":true}' } }] };
         }
+        // The launch acknowledgement: Donna's voice, a tool-less call.
+        if (tools.length === 0) return { content: 'Lancement de /deliver mis en file.' };
         mainCalls += 1;
         if (mainCalls === 1) return {
           content: null, message: { role: 'assistant', content: null },
@@ -626,7 +629,7 @@ test('an explicitly selected skill runs through the intra-runtime path with name
   const result = await createAgentGraph().invoke({ input: 'lance le skill deliver avec le template Quarterly report', session });
   // Launching a skill ends the turn: the acknowledgement is generated once and
   // the model is not given a second chance to re-delegate or contradict it.
-  assert.equal(result.response, 'Started /deliver deliverable="Quarterly report" — 1 step(s) queued.');
+  assert.equal(result.response, 'Lancement de /deliver mis en file.');
   assert.equal(mainCalls, 1);
   // `skillStack` accompagne désormais la demande : le run imbriqué démarre après
   // le nettoyage de celui-ci, et c'est le seul canal par lequel il peut savoir
@@ -1511,6 +1514,12 @@ test('slash-command output guard rejects commands outside the real agent command
     ['wiki'],
   );
   assert.deepEqual(invalidSuggestedSlashCommands('Le résultat est disponible dans `/openui`.', session), []);
+});
+
+test('slash-command output guard accepts a command the user typed this turn', () => {
+  const session = sessionBase({ commands: ['status'] });
+  assert.deepEqual(invalidSuggestedSlashCommands('`/clear --all` vide l’interface.', session, { userInput: '/clear --all' }), []);
+  assert.deepEqual(invalidSuggestedSlashCommands('`/clear --all` vide l’interface.', session), ['clear']);
 });
 
 test('Donna retries instead of displaying an invented slash command', async () => {
@@ -2948,4 +2957,11 @@ test('an incomplete DSML call is refused and retried, never shown', async () => 
   const result = await createAgentGraph().invoke({ input: 'go', session });
   assert.doesNotMatch(String(result.response ?? ''), /DSML/);
   assert.match(String(result.response ?? ''), /printed an internal tool request/);
+});
+
+test('a tool note carries the argument written as a sentence, never an id or a secret', () => {
+  assert.equal(toolArgumentSubject('{"objective":"Ingérer les fichiers Markdown en attente"}'), 'Ingérer les fichiers Markdown en attente');
+  assert.equal(toolArgumentSubject('{"workspace":"juno","pat":"abc123def","url":"http://conf/x"}'), '');
+  assert.equal(toolArgumentSubject('not json'), '');
+  assert.equal(toolArgumentSubject(JSON.stringify({ question: 'mot '.repeat(100) })).length, 200);
 });

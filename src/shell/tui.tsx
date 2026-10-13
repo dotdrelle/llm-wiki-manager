@@ -429,6 +429,7 @@ function App(props: {
             logs={state.logs()}
             plan={state.plan()}
             runSummary={state.runSummary()}
+            stepNarratives={state.stepNarratives()}
             queueItems={state.queueItems()}
             queueInfo={state.queueInfo()}
             activeTab={state.rightTab()}

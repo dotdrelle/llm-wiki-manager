@@ -330,7 +330,7 @@ export async function serviceStates(session) {
 /**
  * Names of OTHER registered workspaces that still have containers running.
  *
- * The external agents (cme, documents, connectors, mailer) are a single
+ * The external agents (cme, documents, connectors, gateway) are a single
  * stack shared by every workspace — one Compose project, one set of
  * containers. `/stop all` took them down unconditionally, so stopping one
  * workspace silently cut the agents out from under all the others.

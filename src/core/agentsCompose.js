@@ -21,9 +21,8 @@ export const PROFILE_FLAGS = Object.freeze({
  * Services actually declared in the agents stack, override included.
  *
  * Read from the file rather than hardcoded: a frozen list ended up announcing
- * `mailer`, which only lives in the override example and therefore does not
- * exist until the operator uncomments it. Offering an absent service is
- * promising a "no such service".
+ * `mailer`, which no shipped Compose file declares. Offering an absent
+ * service is promising a "no such service".
  *
  * Used for ROUTING: the agents stack is a Compose project distinct from the
  * workspace's, so `/start <name>` must go to `wiki-workspace agents`.

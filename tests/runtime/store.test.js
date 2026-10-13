@@ -1233,6 +1233,27 @@ test('a thread-scoped redo deletes only that thread, from the boundary on', () =
   store.close();
 });
 
+test('removing one answer deletes its assistant events only, in its thread only', () => {
+  const store = openRuntimeStore({ stateDir: runtimeStateDir() });
+  const save = (type, conversationId, payload) => store.persistEvent(createAgentEvent(type, {
+    origin: 'test', workspace: 'alpha', conversationId, payload,
+  }));
+  save('user_message', 'conv_alpha_1', { content: 'Q1' });
+  const answer = save('assistant_delta', 'conv_alpha_1', { delta: 'A' });
+  save('assistant_message', 'conv_alpha_1', { content: 'A1' });
+  save('run_started', 'conv_alpha_1', { input: 'x' });
+  save('assistant_message', 'conv_alpha_2', { content: 'other thread' });
+  const next = save('user_message', 'conv_alpha_1', { content: 'Q2' });
+  save('assistant_message', 'conv_alpha_1', { content: 'A2' });
+
+  assert.equal(store.deleteConversationEntryEvents(answer.sequence, next.sequence, { workspace: 'alpha', conversationId: 'conv_alpha_1' }), 2);
+  assert.deepEqual(store.listEvents({ workspace: 'alpha', conversationId: 'conv_alpha_1' }).map((event) => event.type),
+    ['user_message', 'run_started', 'user_message', 'assistant_message']);
+  assert.equal(store.listEvents({ workspace: 'alpha', conversationId: 'conv_alpha_2' }).length, 1);
+  assert.equal(store.deleteConversationEntryEvents(answer.sequence, null, { workspace: 'alpha' }), 0);
+  store.close();
+});
+
 test('orchestration memory survives restart, is bounded and cannot cross workspaces', () => {
   const stateDir = runtimeStateDir();
   const store = openRuntimeStore({ stateDir });

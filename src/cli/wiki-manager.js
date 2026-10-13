@@ -33,6 +33,7 @@ import { syncActivitiesToPlan, formatPlanStatus } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../core/agentEvents.js';
 import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
 import { createDeltaCoalescer } from '../runtime/deltaCoalescer.js';
+import { createStepNarrator } from '../runtime/stepNarrator.js';
 import { containsSensitiveMemoryMaterial } from '../runtime/memoryExtract.js';
 import { TERMINAL_STATUS_SET } from '../orchestrator/taskStatuses.js';
 import { resolveCapabilityConcurrency } from '../orchestrator/scheduler.js';
@@ -1076,6 +1077,9 @@ async function runRuntime(argv, agent) {
   let memoryFallbackAnnounced = false;
   let serverHandle = null;
   const contexts = new Map();
+  // Donna's wording of runs and action turns, in the workspace language
+  // (runtime/stepNarrator.js), with bounded model calls.
+  const stepNarrator = createStepNarrator();
 
   async function refreshAllMcpContexts() {
     const resolved = await Promise.all([...new Set(contexts.values())].map((value) => Promise.resolve(value)));
@@ -1117,6 +1121,7 @@ async function runRuntime(argv, agent) {
       session._onAgentEvent = (event) => {
         store.persistEvent(event);
         serverHandle?.publish(event);
+        stepNarrator.observe(event, session);
       };
       // Control requests queued in a PREVIOUS runtime process must not
       // auto-run at boot: a "stop le job" typed last night starting hours
@@ -1995,6 +2000,7 @@ async function runRuntime(argv, agent) {
       };
       store.persistEvent(interactiveEvent);
       serverHandle?.publish(interactiveEvent);
+      stepNarrator.observe(interactiveEvent, context.session);
     };
     ephemeral._onStep = (message) => dispatchAgentEvent(ephemeral, createAgentEvent('runtime_log', {
       origin: 'runtime_turn',

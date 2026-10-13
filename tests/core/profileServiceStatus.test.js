@@ -114,12 +114,11 @@ test('the addressable agents are read from the compose file, never hard-coded', 
   const { agentServiceNames, togglableAgentNames } = await import('../../src/core/agentsCompose.js');
   const declared = agentServiceNames();
 
-  // Une liste figée annonçait `mailer`, qui ne vit que dans l'exemple
-  // d'override : proposer un service absent, c'est promettre un
-  // « no such service ».
+  // Une liste figée annonçait `mailer`, qu'aucun Compose livré ne déclare :
+  // proposer un service absent, c'est promettre un « no such service ».
   assert.ok(declared.includes('connectors'));
   assert.ok(declared.includes('cme'));
-  assert.ok(!declared.includes('mailer'), 'mailer is not declared until the operator uncomments it');
+  assert.ok(!declared.includes('mailer'), 'mailer is declared by no shipped Compose file');
 
   // Et seuls les agents à drapeau se proposent un par un dans l'interface.
   assert.deepEqual(togglableAgentNames(), ['connectors']);

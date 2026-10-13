@@ -1821,7 +1821,9 @@ test('runtime server drains queued control requests when idle', async (t) => {
     assert.match(receivedBody.runId, /^[0-9a-f-]{36}$/);
     assert.equal(session.controlQueue[0].status, 'running');
     assert.equal(session.controlQueue[0].runId, receivedBody.runId);
-    assert.deepEqual(events.map((event) => event.type), ['control_enqueued', 'control_started', 'assistant_message']);
+    // Without a model the acknowledgement is the facts as data, and the
+    // runtime log says so (donnaVoice.js).
+    assert.deepEqual(events.map((event) => event.type), ['control_enqueued', 'control_started', 'runtime_log', 'assistant_message']);
   } finally {
     await handle.close();
   }
@@ -2872,6 +2874,90 @@ test('redo truncation with a conversationId counts and deletes within that threa
     const legacy = await post({ index: 0, conversationId: 'legacy:demo' });
     assert.equal(legacy.status, 200);
     assert.deepEqual(scoped, { sequence: 5, workspace: 'demo', conversationId: 'legacy:demo' });
+  } finally {
+    await handle.close();
+  }
+});
+
+test('a mistyped command is refused at once in Donna\'s words, never sent to the model as a request', async (t) => {
+  const seen = [];
+  const session = {
+    workspace: 'demo', language: 'fr-FR', workspacePath: '/nonexistent-workspace',
+    llm: { completeWithTools: async (request) => { seen.push(request); return { content: 'La commande /clearv—all n’existe pas.' }; } },
+  };
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1', port: 0,
+      store: { dbPath: ':memory:', getState: () => ({ status: 'idle' }), listEvents: () => [] },
+      getContext: async () => ({ workspace: 'demo', session, running: false }),
+      run: async () => assert.fail('no run'),
+      turn: async () => assert.fail('a mistyped command must not reach a turn'),
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw err;
+  }
+  try {
+    const response = await fetch(`http://127.0.0.1:${handle.port}/turn`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: '/clearv\u2014all', conversationId: 'conv-mine01', mode: 'agent' }),
+    });
+    assert.equal(response.status, 404);
+    const body = await response.json();
+    assert.equal(body.code, 'skill_not_found');
+    assert.equal(body.explanation, 'La commande /clearv—all n’existe pas.');
+    assert.match(body.detail, /Unknown skill \/clearv—all/);
+    assert.equal(seen.length, 1);
+    assert.match(seen[0].system, /Write in this language: fr-FR/);
+  } finally {
+    await handle.close();
+  }
+});
+
+test('removing one answer targets that entry of the thread and refuses a mismatch or a question', async (t) => {
+  const thread = [
+    { ...createAgentEvent('user_message', { origin: 'user', conversationId: 'conv-mine01', payload: { content: 'q1' } }), sequence: 5 },
+    { ...createAgentEvent('assistant_message', { origin: 'runtime', conversationId: 'conv-mine01', payload: { content: 'a1' } }), sequence: 9 },
+    { ...createAgentEvent('user_message', { origin: 'user', conversationId: 'conv-mine01', payload: { content: 'q2' } }), sequence: 12 },
+    { ...createAgentEvent('assistant_message', { origin: 'runtime', conversationId: 'conv-mine01', payload: { content: 'a2' } }), sequence: 14 },
+  ];
+  const calls = [];
+  const store = {
+    dbPath: ':memory:',
+    getState: () => ({ status: 'idle' }),
+    listEvents: () => thread,
+    deleteConversationEntryEvents: (from, to, options) => { calls.push({ from, to, ...options }); return 1; },
+    hydrateSession: () => {},
+  };
+  let running = false;
+  let handle;
+  try {
+    handle = await startRuntimeServer({
+      host: '127.0.0.1', port: 0, store, session: {},
+      getContext: async () => ({ workspace: 'demo', session: {}, running }),
+      run: async () => {},
+    });
+  } catch (err) {
+    if (err?.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
+    throw err;
+  }
+  try {
+    const post = (body) => fetch(`http://127.0.0.1:${handle.port}/conversation/remove`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const middle = await post({ index: 1, conversationId: 'conv-mine01', content: 'a1' });
+    assert.equal(middle.status, 200);
+    assert.deepEqual(calls.at(-1), { from: 9, to: 12, workspace: 'demo', conversationId: 'conv-mine01' });
+    const last = await post({ index: 3, conversationId: 'conv-mine01' });
+    assert.equal(last.status, 200);
+    assert.deepEqual(calls.at(-1), { from: 14, to: null, workspace: 'demo', conversationId: 'conv-mine01' });
+    assert.equal((await (await post({ index: 0, conversationId: 'conv-mine01' })).json()).reason, 'not_an_answer');
+    const mismatch = await post({ index: 1, conversationId: 'conv-mine01', content: 'something else' });
+    assert.equal(mismatch.status, 409);
+    running = true;
+    assert.equal((await (await post({ index: 3, conversationId: 'conv-mine01' })).json()).reason, 'run_active');
+    assert.equal(calls.length, 2);
   } finally {
     await handle.close();
   }

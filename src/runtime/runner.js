@@ -74,7 +74,7 @@ export function conversationSeed(session, currentInput, { limit = 12, maxChars =
   const seedStart = Math.max(0, Number(session.agentProjection?.conversationSeedStart) || 0);
   const seed = conversation
     .slice(seedStart)
-    .filter((message) => ['user', 'assistant'].includes(message?.role) && String(message?.content ?? '').trim())
+    .filter((message) => ['user', 'assistant'].includes(message?.role) && message?.progress !== true && String(message?.content ?? '').trim())
     .slice(-limit)
     .map((message) => ({ role: message.role, content: String(message.content).slice(0, maxChars) }));
   // The run's own triggering user message is appended by the loop itself —
@@ -106,7 +106,7 @@ export function conversationCompactionPlan(projection, { limit = 12, keepLast = 
   const conversation = Array.isArray(projection?.conversation) ? projection.conversation : [];
   const seedStart = Math.max(0, Number(projection?.conversationSeedStart) || 0);
   const live = conversation.slice(seedStart)
-    .filter((message) => ['user', 'assistant'].includes(message?.role) && String(message?.content ?? '').trim());
+    .filter((message) => ['user', 'assistant'].includes(message?.role) && message?.progress !== true && String(message?.content ?? '').trim());
   const seedChars = live.slice(-limit).reduce((total, message) => total + Math.min(maxChars, String(message.content).length), 0)
     + String(projection?.conversationSummary ?? '').length;
   const overflow = live.length > limit;
@@ -118,7 +118,7 @@ export function conversationCompactionPlan(projection, { limit = 12, keepLast = 
   // held an answer without its question and asked what to search for.
   let cut = Math.max(seedStart, conversation.length - keepLast);
   while (cut > seedStart && conversation[cut]?.role !== 'user') cut -= 1;
-  const segment = conversation.slice(seedStart, cut);
+  const segment = conversation.slice(seedStart, cut).filter((message) => message?.progress !== true);
   if (!segment.some((message) => ['user', 'assistant'].includes(message?.role) && String(message?.content ?? '').trim())) return null;
   return { segment, keepLast: conversation.length - cut, reason: overflow ? 'window' : 'budget', previousSummary: projection?.conversationSummary ?? null };
 }

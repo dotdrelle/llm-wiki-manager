@@ -74,21 +74,22 @@ function degrade(session, kind, reason) {
     if (session?._voiceNoModelAnnounced) return;
     if (session) session._voiceNoModelAnnounced = true;
   }
-  dispatchRuntimeLog(session, `voice: ${kind} — ${reason}; the facts are shown as data`);
+  dispatchRuntimeLog(session, `voice: ${kind} — ${reason}; the caller keeps its fallback`);
 }
 
 /**
  * One reply in the session language: `sentences` short sentences at most.
  * `rules` adds what this kind of reply must say or avoid. Returns the facts as
- * data when it cannot phrase them.
+ * data when it cannot phrase them, unless `nullOnFailure` asks the caller to
+ * keep its own complete content instead.
  */
 export async function say(session, {
   kind = 'facts', facts, request = null, rules = [], sentences = 1, conversationId = null,
-  signal = null, timeoutMs = 8_000,
+  signal = null, timeoutMs = 8_000, nullOnFailure = false,
 } = {}) {
   const fallback = factsAsData(facts);
   const llm = modelOf(session);
-  if (!llm) { degrade(session, kind, 'no model configured'); return fallback; }
+  if (!llm) { degrade(session, kind, 'no model configured'); return nullOnFailure ? null : fallback; }
   const language = session.language ?? 'en-US';
   try {
     const text = (await callModel(llm, {
@@ -111,7 +112,7 @@ export async function say(session, {
     if (signal?.aborted) throw error;
     degrade(session, kind, `the model call failed (${boundedText(error instanceof Error ? error.message : error, 200)})`);
   }
-  return fallback;
+  return nullOnFailure ? null : fallback;
 }
 
 /**

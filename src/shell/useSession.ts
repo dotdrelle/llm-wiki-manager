@@ -519,6 +519,8 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
       backed.push(...runtimeConversation.map((message: any) => ({
         role: message.role === 'assistant' ? 'donna' : message.role,
         content: runtimeMessageText(message),
+        hidden: message.progressHidden === true,
+        progress: message.progress === true,
       })));
       return;
     }
@@ -530,6 +532,8 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
         const entry = backed[i];
         if (entry.content !== content) entry.content = content;
         if (entry.role !== role) entry.role = role;
+        entry.hidden = message.progressHidden === true;
+        entry.progress = message.progress === true;
         continue;
       }
       if (role === 'user') {
@@ -551,7 +555,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
           continue;
         }
       }
-      const entry = { role, content };
+      const entry = { role, content, hidden: message.progressHidden === true, progress: message.progress === true };
       target.push(entry);
       backed.push(entry);
     }

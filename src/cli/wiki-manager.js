@@ -35,7 +35,7 @@ import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
 import { createDeltaCoalescer } from '../runtime/deltaCoalescer.js';
 import { createStepNarrator } from '../runtime/stepNarrator.js';
 import { answerAsReport } from '../runtime/runReports.js';
-import { isLongAnswer } from '../core/reports.js';
+import { isLongAnswer, requestsReportDocument } from '../core/reports.js';
 import { containsSensitiveMemoryMaterial } from '../runtime/memoryExtract.js';
 import { TERMINAL_STATUS_SET } from '../orchestrator/taskStatuses.js';
 import { resolveCapabilityConcurrency } from '../orchestrator/scheduler.js';
@@ -1915,6 +1915,7 @@ async function runRuntime(argv, agent) {
     // put a raw English dump in their bubble and seeded every later turn with
     // it.
     const displayInput = String(body.displayInput ?? '').trim() || input;
+    const reportRequested = requestsReportDocument(displayInput);
     // Another surface may have switched the profile, or its file was edited.
     // Never under an active run: the run keeps the client it planned with.
     if (!context.running) syncRuntimeWikirc(context.session);
@@ -1992,6 +1993,9 @@ async function runRuntime(argv, agent) {
       // Never let a final message (or any other event) overtake the buffered
       // fragments that precede it: flush them first, in order.
       if (event.type !== 'assistant_delta' && event.type !== 'assistant_delta_reset') deltaCoalescer.flush();
+      // A requested report is shown only after the whole answer has been
+      // summarized and saved; its raw streamed body never replaces Thinking.
+      if (reportRequested && ['assistant_delta', 'assistant_delta_reset'].includes(event.type)) return;
       const interactiveEvent = {
         ...event,
         origin: 'runtime_turn',
@@ -2003,7 +2007,7 @@ async function runRuntime(argv, agent) {
       // A document-sized answer is held until the turn ends: it becomes a
       // report and Donna's sentence replaces it (runReports.answerAsReport).
       if (interactiveEvent.type === 'assistant_message' && !interactiveEvent.payload?.attachments
-        && !ephemeral._heldLongAnswer && isLongAnswer(interactiveEvent.payload?.content)) {
+        && !ephemeral._heldLongAnswer && (reportRequested || isLongAnswer(interactiveEvent.payload?.content))) {
         ephemeral._heldLongAnswer = interactiveEvent;
         return;
       }
@@ -2098,7 +2102,10 @@ async function runRuntime(argv, agent) {
           // conversation entry (`assistant_delta`), which `assistant_message`
           // then freezes: both interfaces see the answer being written without
           // one SQLite insert per token blocking the stream.
-          onTextDelta: (delta) => deltaCoalescer.push(delta),
+          // An explicit report request has no useful partial document to read
+          // in the thread. Keep the live Thinking/progress status visible,
+          // then publish the complete answer as a summary plus report button.
+          onTextDelta: (delta) => { if (!reportRequested) deltaCoalescer.push(delta); },
           onTextReset: () => {
             deltaCoalescer.reset();
             dispatchAgentEvent(ephemeral, createAgentEvent('assistant_delta_reset', {

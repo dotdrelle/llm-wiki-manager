@@ -28,6 +28,15 @@ export function isLongAnswer(text) {
   return value.length > LONG_ANSWER_CHARS || value.split(/\r?\n/).length > LONG_ANSWER_LINES;
 }
 
+// An explicit request for a saved report is independent of the answer's
+// eventual streamed length. The answer is collected first, then summarized
+// and written once its complete contents are known.
+export function requestsReportDocument(text) {
+  const value = String(text ?? '').normalize('NFKC').toLowerCase();
+  return /\b(?:rapport|report)\b/.test(value)
+    && /\b(?:faire|fais|fait|rédige|redige|prépare|prepare|crée|cree|génère|genere|produis|écris|ecris|dans|sous forme|as|write|create|make|prepare|generate|draft|produce)\b/.test(value);
+}
+
 export function reportFromToolResult(text) {
   try {
     const parsed = JSON.parse(String(text ?? ''));

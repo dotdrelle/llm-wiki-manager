@@ -383,6 +383,26 @@ function applyEvent(state, event) {
           text: String(line?.text ?? '').slice(0, 300),
         })),
       };
+      const previous = (state.stepNarratives ?? []).find((item) => item.scope === scope);
+      const seen = new Set((previous?.lines ?? []).map((line) => line.id));
+      const answerAlreadyVisible = entry.final && state.conversation.some((message) =>
+        !message.progress && message.role === 'assistant' && message.streaming !== true
+        && (!entry.conversationId || message.conversationId === entry.conversationId)
+        && (!entry.turnId || message.turnId === entry.turnId)
+        && (!entry.runId || message.runId === entry.runId));
+      if (entry.final && answerAlreadyVisible) hideProgressEntries(state, entry);
+      // Completed Donna-authored progress is part of the visible conversation
+      // history while the work is running. The final answer replaces these
+      // transient entries in the chat; the activity panel keeps its own log.
+      for (const line of entry.lines) {
+        if (answerAlreadyVisible || !line.id || seen.has(line.id) || !['done', 'failed'].includes(line.state) || !line.text.trim()) continue;
+        state.conversation.push({
+          role: 'assistant', content: line.text, progress: true,
+          ...(entry.conversationId ? { conversationId: entry.conversationId } : {}),
+          ...(entry.turnId ? { turnId: entry.turnId } : {}),
+          ...(entry.runId ? { runId: entry.runId } : {}),
+        });
+      }
       state.stepNarratives = [...(state.stepNarratives ?? []).filter((item) => item.scope !== scope), entry].slice(-MAX_NARRATIVES);
       return;
     }
@@ -425,13 +445,13 @@ function applyEvent(state, event) {
       }
       return;
     case 'assistant_message':
-      finalizeAssistantMessage(state, String(event.payload?.content ?? ''), event.conversationId, event.payload?.attachments);
+      finalizeAssistantMessage(state, String(event.payload?.content ?? ''), event.conversationId, event.payload?.attachments, event.turnId, event.runId);
       return;
     case 'assistant_delta':
-      appendAssistantDelta(state, String(event.payload?.delta ?? ''), event.conversationId);
+      appendAssistantDelta(state, String(event.payload?.delta ?? ''), event.conversationId, event.turnId, event.runId);
       return;
     case 'assistant_delta_reset':
-      discardStreamingAssistantMessage(state);
+      discardStreamingAssistantMessage(state, event.conversationId, event.turnId, event.runId);
       return;
     case 'tool_call_started':
       state.chain.push({
@@ -956,13 +976,26 @@ function pruneTerminalControlItems(queue) {
   }
 }
 
-function appendAssistantDelta(state, delta, conversationId = null) {
+function matchingStreamingAssistant(state, conversationId = null, turnId = null, runId = null) {
+  for (let i = state.conversation.length - 1; i >= 0; i -= 1) {
+    const entry = state.conversation[i];
+    if (entry?.role !== 'assistant' || !entry.streaming) continue;
+    if (turnId && entry.turnId !== turnId) continue;
+    if (runId && entry.runId !== runId) continue;
+    if (conversationId && entry.conversationId !== conversationId) continue;
+    return entry;
+  }
+  return null;
+}
+
+function appendAssistantDelta(state, delta, conversationId = null, turnId = null, runId = null) {
   if (!delta) return;
-  const last = state.conversation.at(-1);
-  if (last?.role === 'assistant' && last.streaming) {
-    last.content += delta;
+  const streaming = matchingStreamingAssistant(state, conversationId, turnId, runId);
+  if (streaming) {
+    streaming.content += delta;
   } else {
-    state.conversation.push({ role: 'assistant', content: delta, streaming: true, ...(conversationId ? { conversationId } : {}) });
+    state.conversation.push({ role: 'assistant', content: delta, streaming: true,
+      ...(conversationId ? { conversationId } : {}), ...(turnId ? { turnId } : {}), ...(runId ? { runId } : {}) });
   }
 }
 
@@ -979,9 +1012,12 @@ function appendAssistantDelta(state, delta, conversationId = null) {
  references: the extra DOM element would stay displayed with the very text we
  wanted to erase, and every following message would shift by one.
 */
-function discardStreamingAssistantMessage(state) {
-  const last = state.conversation.at(-1);
-  if (last?.role === 'assistant' && last.streaming) last.content = '';
+function discardStreamingAssistantMessage(state, conversationId = null, turnId = null, runId = null) {
+  const streaming = matchingStreamingAssistant(state, conversationId, turnId, runId);
+  if (streaming) {
+    streaming.content = '';
+    delete streaming.streaming;
+  }
 }
 
 // Attachments: what the message points to instead of carrying it — a report
@@ -996,17 +1032,32 @@ function messageAttachments(attachments) {
   return list.length ? list : null;
 }
 
-function finalizeAssistantMessage(state, content, conversationId = null, attachments = null) {
+function hideProgressEntries(state, identity = {}) {
+  if (!identity.turnId && !identity.runId) return;
+  for (const message of state.conversation) {
+    if (!message.progress) continue;
+    if (identity.conversationId && message.conversationId !== identity.conversationId) continue;
+    if (identity.turnId && message.turnId !== identity.turnId) continue;
+    if (identity.runId && message.runId !== identity.runId) continue;
+    message.content = '';
+    message.progressHidden = true;
+  }
+}
+
+function finalizeAssistantMessage(state, content, conversationId = null, attachments = null, turnId = null, runId = null) {
+  hideProgressEntries(state, { conversationId, turnId, runId });
   const attached = messageAttachments(attachments);
-  const last = state.conversation.at(-1);
-  if (last?.role === 'assistant' && last.streaming) {
-    last.content = content || last.content;
-    if (conversationId) last.conversationId = conversationId;
-    if (attached) last.attachments = attached;
-    delete last.streaming;
+  const streaming = matchingStreamingAssistant(state, conversationId, turnId, runId);
+  if (streaming) {
+    streaming.content = content || streaming.content;
+    if (conversationId) streaming.conversationId = conversationId;
+    if (turnId) streaming.turnId = turnId;
+    if (runId) streaming.runId = runId;
+    if (attached) streaming.attachments = attached;
+    delete streaming.streaming;
     return;
   }
-  if (content) state.conversation.push({ role: 'assistant', content, ...(conversationId ? { conversationId } : {}), ...(attached ? { attachments: attached } : {}) });
+  if (content) state.conversation.push({ role: 'assistant', content, ...(conversationId ? { conversationId } : {}), ...(turnId ? { turnId } : {}), ...(runId ? { runId } : {}), ...(attached ? { attachments: attached } : {}) });
 }
 
 function finishToolCall(state, payload = {}) {

@@ -1470,6 +1470,7 @@ function renderScreen({ packageJson, session, messages, inputBuffer, busy = fals
   const divider = '─'.repeat(columns);
 
   const bodyLines = messages.flatMap((message, index) => {
+    if (message.hidden === true) return [];
     const label =
       message.role === 'user'
         ? `${styles.cyan}You${styles.reset}`
@@ -1763,16 +1764,30 @@ async function runChatToolLoop({ input, session, history, donnaMessage, onUpdate
         ? `Refused: "${rawName}" is not an authorized tool in chat mode. Use agent mode (/agent) for capabilities that are not explicitly available here.`
         : `Unknown tool "${rawName}": it does not exist. Use only the tools offered for this turn: ${[...allowed].join(', ')}.`;
     }
+    let args = {};
+    try { args = call.function?.arguments ? JSON.parse(call.function.arguments) : {}; } catch { args = {}; }
+    const publishChatStep = (result, ok = true) => dispatchAgentEvent(session, createAgentEvent('chat_step', {
+      origin: 'tool',
+      payload: {
+        callId: String(call.id ?? qualified),
+        name: tool,
+        arguments: JSON.stringify(args).slice(0, 1200),
+        result: (typeof result === 'string' ? result : JSON.stringify(result ?? '')).slice(0, 1800),
+        ok,
+      },
+    }));
     try {
-      let args = {};
-      try { args = call.function?.arguments ? JSON.parse(call.function.arguments) : {}; } catch { args = {}; }
       if (server === 'memory') {
         onStep?.(`Chat: ${tool} workspace memory…`);
-        return await session.memoryActions[tool](args);
+        const result = await session.memoryActions[tool](args);
+        publishChatStep(result);
+        return result;
       }
       if (server === 'conversation') {
         onStep?.(`Chat: ${tool} same-workspace conversation…`);
-        return await session.conversationActions[tool](args);
+        const result = await session.conversationActions[tool](args);
+        publishChatStep(result);
+        return result;
       }
       // Same shape as the agent loop's tool note: the main arguments say what
       // the connector is looking for (serve's >_ line shows them).
@@ -1781,10 +1796,14 @@ async function runChatToolLoop({ input, session, history, donnaMessage, onUpdate
       const res = await callMcpTool(session.mcp, server, tool, args, session._abortSignal);
       const artifact = artifactFromToolCall(tool, args);
       if (artifact) rememberArtifact(session, artifact);
-      return formatMcpToolResult(res);
+      const result = formatMcpToolResult(res);
+      publishChatStep(result);
+      return result;
     } catch (err) {
       if (err.name === 'AbortError' && session._abortSignal?.aborted) throw err;
-      return `Error [${qualified}]: ${err instanceof Error ? err.message : String(err)}`;
+      const result = ['Error [', qualified, ']: ', err instanceof Error ? err.message : String(err)].join('');
+      publishChatStep(result, false);
+      return result;
     }
   };
   const batchReader = allowedTools.find((item) => parseToolCallName(item.function.name).tool === 'wiki_read_pages');

@@ -13,15 +13,16 @@
  keeps that bargain by batching: a scope (a run, or an interactive turn that
  changed something) is narrated after a short quiet period, at most once per
  `minIntervalMs`, at most `maxCalls` times, and once more when it ends. A pure
- consultation (only read tools) is never narrated. Without a model, or when the
- call fails, nothing is invented: the panels keep showing the data, and the
+ completed chat reads and agent actions can both be narrated; repeated status
+ polls remain out. Without a model, or when the call fails, nothing is
+ invented: the panels keep showing the data, and the
  runtime log says why — once per scope.
 */
 import { createAgentEvent, dispatchAgentEvent, dispatchRuntimeLog } from '../core/agentEvents.js';
 import { sayLines } from './donnaVoice.js';
 import { isSuccessful, isUnsuccessfulTerminal } from '../orchestrator/taskStatuses.js';
 
-const OBSERVED = new Set(['user_message', 'tool_call_started', 'tool_call_result', 'activity_upserted',
+const OBSERVED = new Set(['user_message', 'tool_call_started', 'tool_call_result', 'chat_step', 'activity_upserted',
   'task.completed', 'task.failed', 'run_done', 'run_error', 'run_cancelled', 'assistant_message']);
 const DECLARED_VERIFICATIONS = new Set(['verified', 'not_observed', 'unavailable', 'not_applicable']);
 
@@ -104,7 +105,7 @@ export function createStepNarrator({
     // run_done/run_error/run_cancelled).
     if (event.type === 'assistant_message' && (key.startsWith('run:') || !String(payload.content ?? '').trim())) return;
     if (event.type === 'user_message' && key.startsWith('run:')) return;
-    const scope = scopes.get(key) ?? (['user_message', 'tool_call_started', 'activity_upserted', 'task.completed', 'task.failed'].includes(event.type)
+    const scope = scopes.get(key) ?? (['user_message', 'tool_call_started', 'chat_step', 'activity_upserted', 'task.completed', 'task.failed'].includes(event.type)
       ? scopeFor(key, event, session) : null);
     if (!scope) return;
     if (event.type === 'user_message') {
@@ -120,6 +121,14 @@ export function createStepNarrator({
         arguments: bounded(payload.args), state: 'running',
       });
       if (payload.readOnly !== true) scope.actionable = true;
+    } else if (event.type === 'chat_step') {
+      const id = String(payload.callId ?? scope.steps.size);
+      scope.steps.set(id, {
+        id, kind: 'tool', tool: String(payload.name ?? ''),
+        arguments: bounded(payload.arguments), state: payload.ok === false ? 'failed' : 'done',
+        result: bounded(payload.result),
+      });
+      scope.actionable = true;
     } else if (event.type === 'tool_call_result') {
       const step = scope.steps.get(String(payload.callId ?? ''));
       if (!step) return;

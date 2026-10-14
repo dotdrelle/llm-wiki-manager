@@ -3,6 +3,7 @@ import {
   RuntimeProviderUnavailableError,
   normalizeRuntimeEvent,
 } from './runtimeProvider.js';
+import { describeFetchError } from '../../core/modelFetch.js';
 
 // The gateway closes the stream when one of these arrives; the client stops
 // reconnecting on it too, so a finished run never leaves a retry loop behind.
@@ -66,7 +67,7 @@ export function createDeepAgentsProvider({
       return await response.json();
     } catch (error) {
       if (error instanceof RuntimeProviderUnavailableError) throw error;
-      throw new RuntimeProviderUnavailableError(id, error instanceof Error ? error.message : String(error));
+      throw new RuntimeProviderUnavailableError(id, describeFetchError(error, { url: `${base}${path}` }));
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener?.('abort', onAbort);

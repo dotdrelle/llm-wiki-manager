@@ -8,7 +8,9 @@
  they must be read in the journal, not guessed. Content-free by design: no
  prompt, no answer, only counts and timings.
 */
-const METERED = ['complete', 'completeWithTools', 'streamWithTools'];
+import { fetchFailureReason } from '../core/modelFetch.js';
+
+const METERED =['complete', 'completeWithTools', 'streamWithTools'];
 
 export function meterModelCalls(session, { scope = 'run', log } = {}) {
   // A turn may start from the workspace client while a run meters it: it
@@ -25,7 +27,7 @@ export function meterModelCalls(session, { scope = 'run', log } = {}) {
     metered[method] = async function meteredCall(args = {}) {
       const startedAt = Date.now();
       let usage = null;
-      const record = (ok, result) => {
+      const record = (ok, result, error = null) => {
         const call = {
           index: calls.length + 1,
           method,
@@ -38,14 +40,14 @@ export function meterModelCalls(session, { scope = 'run', log } = {}) {
         calls.push(call);
         emit(`model: ${scope} call ${call.index} · ${formatSeconds(call.ms)} · ${method === 'complete' ? 'text' : 'with tools'}`
           + `${call.inputTokens != null ? ` · in ${call.inputTokens} / out ${call.outputTokens ?? '?'} tokens` : ''}`
-          + `${call.toolCalls ? ` · asked ${call.toolCalls} tool call(s)` : ''}${ok ? '' : ' · failed'}`);
+          + `${call.toolCalls ? ` · asked ${call.toolCalls} tool call(s)` : ''}${ok ? '' : ` · failed: ${fetchFailureReason(error)}`}`);
       };
       try {
         const result = await base[method].call(this, { ...args, onUsage: (value) => { usage = value; args.onUsage?.(value); } });
         record(true, result);
         return result;
       } catch (error) {
-        record(false, null);
+        record(false, null, error);
         throw error;
       }
     };

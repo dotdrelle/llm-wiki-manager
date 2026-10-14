@@ -56,7 +56,13 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
   const policy=(workspace)=>maintenancePolicy(readDocument(),workspace);
   const log=(w,kind,message,extra={})=>{let version;try{version=policy(w).version;}catch{version='invalid-policy';}const event=store.event(w,{kind,message:`Maintenance: ${message}`,origin:'maintenance',policyVersion:version,author:`maintenance:${version}`,...extra});try{onEvent?.(w,event);}catch{/* the Logs mirror never breaks the durable history */}return event;};
   // A lasting degradation is announced once, not at every scan.
-  function degradedOnce(workspace,message){const text=describeError(message);const last=store.events(workspace).filter((e)=>e.kind==='degraded').at(-1);if(last?.message!==`Maintenance: ${text}`)log(workspace,'degraded',text,{detail:message});}
+  function degradedOnce(workspace,message){const text=describeError(message);const last=store.events(workspace).filter((e)=>e.kind==='degraded'||e.kind==='recovered').at(-1);if(last?.message!==`Maintenance: ${text}`)log(workspace,'degraded',text,{detail:message});}
+  // The gateway's absence names its cause (the probe's error, or a gateway
+  // that answers without agent.maintain), and its return is announced: the
+  // bare "not available" line stayed the last word in the panel long after
+  // the gateway was back, while everything was running.
+  function gatewayUnavailable(workspace,session){const down=(session?.runtimeProviderUnreachable??[]).find((r)=>(r.capabilities??[]).some((c)=>c.name==='agent.maintain'));degradedOnce(workspace,`maintenance_gateway_unavailable${down?.error?`: ${down.error}`:''}`);}
+  function gatewayBack(workspace){const last=store.events(workspace).filter((e)=>e.kind==='degraded'||e.kind==='recovered').at(-1);if(last?.kind==='degraded'&&/^maintenance_gateway_unavailable/.test(String(last.detail??'')))log(workspace,'recovered','the agentic runtime (gateway) answers again; maintenance cycles can run');}
   async function context(workspace){const ctx=await getContext(workspace);if(!ctx?.session?.workspace)throw new Error('maintenance_workspace_unavailable');return ctx;}
   function providerFor(session,action,operation) {
     const spec=MAINTENANCE_ACTIONS[action];if(!spec)throw new Error('maintenance_unknown_action');
@@ -386,13 +392,20 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       const ctx=await context(workspace);enableMaintenanceAdmission(workspace);
       // A context created by this very scan has not finished its first runtime
       // discovery yet: wait for it rather than report a missing gateway.
-      if(ctx.session&&ctx.session.runtimeProviderAgents===undefined){try{await discover(ctx.session);}catch{/* announced below as unavailable */}}
-      const host=capabilityRegistryForSession(ctx.session).providersFor('agent.maintain').find((p)=>p.runtimeProvider);
+      const fresh=Boolean(ctx.session&&ctx.session.runtimeProviderAgents===undefined);
+      if(fresh){try{await discover(ctx.session);}catch{/* announced below as unavailable */}}
+      const findHost=()=>capabilityRegistryForSession(ctx.session).providersFor('agent.maintain').find((p)=>p.runtimeProvider);
+      let host=findHost();
+      // The runtime boots before the containers and re-scans once a minute: a
+      // cached "no gateway" may predate the gateway's start. Probe again before
+      // concluding it is down.
+      if(!host&&!fresh){try{await discover(ctx.session);}catch{/* announced below as unavailable */}host=findHost();}
+      if(host)gatewayBack(workspace);
       const jobsSettled=await reconcile(workspace,ctx);
       const previous=store.cycles(workspace).find((c)=>['running','recovering'].includes(c.status));
       // An interrupted cycle is re-attached before anything new starts; without
       // the gateway it simply waits (announced below), routine work included.
-      if(previous&&!host){degradedOnce(workspace,'maintenance_gateway_unavailable');return;}
+      if(previous&&!host){gatewayUnavailable(workspace,ctx.session);return;}
       if(previous){
         if(previous.runId){active.set(workspace,{cycle:previous,provider:host.runtimeProvider});void monitor(workspace,previous,host.runtimeProvider);return;}
         const accepted=await host.runtimeProvider.execute({capability:'agent.maintain',operation:'run',workspace:{name:workspace},model:activeProfileModel(ctx.session),language:ctx.session.language,mcp:activeProfileMcp(ctx.session),maintenance:{cycleId:previous.id,endpoint:baseUrl,token:previous.secret,policy:p}});previous.runId=accepted.runId;store.cycle(previous);active.set(workspace,{cycle:previous,provider:host.runtimeProvider});void monitor(workspace,previous,host.runtimeProvider);return;
@@ -423,7 +436,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       if(filed)view=await state(workspace);
       const actionable=view.candidates.filter((c)=>!ROUTINE.has(c.action)&&c.mode!=='off'&&!c.outsideWindow&&!decided(view,c));
       if(!actionable.length)return;
-      if(!host){degradedOnce(workspace,'maintenance_gateway_unavailable');return;}
+      if(!host){gatewayUnavailable(workspace,ctx.session);return;}
       // Every model call of a gateway cycle is admitted by the manager. When the
       // day's model-call budget is used up, starting one can only produce a
       // failed cycle: wait for tomorrow, announced once, instead of retrying

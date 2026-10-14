@@ -4,6 +4,7 @@ import {
   DISCOVERY_TIMEOUT_MS,
   classifyModelEntry,
   describeFetchError,
+  fetchFailureReason,
   fetchServerCatalog,
   fallbackModels,
   fetchGatewayCatalog,
@@ -325,4 +326,12 @@ test('requiresBaseUrl follows the engine, and the gateway always needs one', () 
   // qui exige une baseUrl explicite.
   assert.equal(requiresBaseUrl('openai-compatible', 'anthropic'), true);
   assert.equal(requiresBaseUrl('ai-gateway', 'openai'), true);
+});
+
+test('fetchFailureReason keeps the network cause a bare "fetch failed" hides', () => {
+  const refused = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:4000'), { code: 'ECONNREFUSED' }) });
+  assert.equal(fetchFailureReason(refused), 'fetch failed (ECONNREFUSED)');
+  const socket = Object.assign(new TypeError('fetch failed'), { cause: new Error('other side closed') });
+  assert.equal(fetchFailureReason(socket), 'fetch failed (other side closed)');
+  assert.equal(fetchFailureReason(new Error('HTTP 429 slow down')), 'HTTP 429 slow down');
 });

@@ -21,7 +21,7 @@ test('every model call is journaled with its time and tokens, then one summary',
   assert.equal(lines.length, 4);
   assert.match(lines[0], /^model: run call 1 · \d+\.\d s · with tools · in 4120 \/ out 2310 tokens · asked 1 tool call\(s\)$/);
   assert.match(lines[1], /call 2 .* · text · in 100 \/ out 20 tokens$/);
-  assert.match(lines[2], /call 3 .* · failed$/);
+  assert.match(lines[2], /call 3 .* · failed: HTTP 429$/, 'a failed call says why');
   assert.match(lines[3], /^model: run total 3 call\(s\) · \d+\.\d s · longest call \d \(\d+\.\d s\) · in 4220 \/ out 2330 tokens$/);
   assert.deepEqual([summary.calls, summary.inputTokens, summary.outputTokens], [3, 4220, 2330]);
 });

@@ -273,6 +273,19 @@ export function describeFetchError(err, { url, timeoutMs } = {}) {
 }
 
 /**
+ * Short, URL-free reason for a failed call, for a log line: "fetch failed"
+ * alone hid whether the endpoint refused, timed out or was unreachable after
+ * a sleep, so the next occurrence could not diagnose itself.
+ */
+export function fetchFailureReason(err) {
+  if (!err) return 'unknown error';
+  const message = String(err instanceof Error ? err.message : err).split('\n')[0].slice(0, 160);
+  const code = err?.cause?.code ?? err?.code ?? null;
+  const detail = !code && err?.cause instanceof Error ? err.cause.message.split('\n')[0].slice(0, 120) : '';
+  return code ? `${message} (${code})` : detail ? `${message} (${detail})` : message;
+}
+
+/**
  * Local transport state, displayed next to a discovery error.
  *
  * A declared but inactive proxy (`NODE_USE_ENV_PROXY` absent) is the most

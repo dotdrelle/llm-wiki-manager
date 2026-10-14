@@ -1,3 +1,5 @@
+import { fetchFailureReason } from '../core/modelFetch.js';
+
 /** Small OpenAI-compatible embeddings adapter; keys/URLs are never returned in errors. */
 export async function embedMemoryTexts(texts, vectorConfig, { fetchImpl = fetch, timeoutMs = 12_000 } = {}) {
   const items = (Array.isArray(texts) ? texts : [texts]).map((text) => String(text ?? '').slice(0, 1200));
@@ -33,7 +35,7 @@ export async function embedMemoryTexts(texts, vectorConfig, { fetchImpl = fetch,
     return vectors;
   } catch (error) {
     if (error?.name === 'AbortError') throw new Error('memory.vector-unavailable: embedding request timed out');
-    throw new Error(`memory.vector-unavailable: ${error instanceof Error ? error.message : 'embedding request failed'}`);
+    throw new Error(`memory.vector-unavailable: ${error instanceof Error ? fetchFailureReason(error) : 'embedding request failed'}`);
   } finally {
     clearTimeout(timer);
   }

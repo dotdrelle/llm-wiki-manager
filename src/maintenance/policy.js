@@ -87,7 +87,7 @@ const ERRORS = [
   [/^maintenance_policy_changed/,'the maintenance settings changed during the cycle'],
   [/^maintenance_disabled_or_paused/,'maintenance is disabled or paused'],
   [/^maintenance_capability_unavailable: (.+)/,(m)=>`no connected agent currently offers ${m[1]}`],
-  [/^maintenance_gateway_unavailable/,'the agentic runtime (gateway) is not available, so no maintenance cycle can run'],
+  [/^maintenance_gateway_unavailable(?:: (.+))?/,(m)=>`the agentic runtime (gateway) is not available${m[1]?` (${m[1]})`:''}, so no maintenance cycle can run`],
   [/^maintenance_state_tool_unavailable/,'the wiki engine is not reachable, so the workspace state cannot be read'],
   [/^maintenance_arguments_invalid/,'the agent refused the request format'],
   [/^maintenance_execution_receipt_missing/,'the agent accepted the job without returning its identifier'],

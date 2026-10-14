@@ -24,6 +24,28 @@ export function isProductHelpQuestion(input) {
 // tools offered for the turn: no search tool offered, no pre-search. A failure is
 // announced on the step line and the turn continues with its normal tools.
 const WIKI_PRESEARCH_TOOL = 'wiki_search_context';
+const SERVICE_NAME_NOISE = new Set([
+  'agent', 'auth', 'authorize', 'check', 'connect', 'connector', 'connectors',
+  'create', 'delete', 'disconnect', 'get', 'list', 'login', 'read', 'remove',
+  'search', 'send', 'signout', 'status', 'update', 'wiki', 'write',
+]);
+
+function mentionsAvailableExternalService(input, allowedTools) {
+  const words = new Set(String(input ?? '')
+    .normalize('NFKD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+    .split(/[^\p{Letter}\p{Number}]+/u)
+    .filter(Boolean));
+  for (const item of allowedTools ?? []) {
+    const qualified = String(item?.function?.name ?? '');
+    const { server, tool } = parseToolCallName(qualified);
+    if (!server || ['wiki', 'production', 'memory', 'conversation'].includes(server)) continue;
+    const terms = [server, ...String(tool ?? '').split(/[_-]+/)];
+    if (terms.some((term) => term.length >= 3 && !SERVICE_NAME_NOISE.has(term) && words.has(term))) return true;
+  }
+  return false;
+}
 
 // What the pre-search found, for the step line: the user otherwise sees
 // "Searching" and then a long silence while the model reads the results.
@@ -43,7 +65,12 @@ export function presearchFoundNote(text) {
 export async function wikiSearchContextMessages(input, session, allowedTools, onStep) {
   const text = String(input ?? '').trim();
   // A greeting or a one-word reply is no question to search for.
-  if (text.split(/\s+/).length < 3 || isProductHelpQuestion(text)) return [];
+  // A named external service is routed to that service's offered tools first.
+  // Running this search before the model chooses a tool added a full serial
+  // network call to requests such as "connecte-toi à Tchap" without helping
+  // the connector action.
+  if (text.split(/\s+/).length < 3 || isProductHelpQuestion(text)
+    || mentionsAvailableExternalService(text, allowedTools)) return [];
   const qualified = (allowedTools ?? [])
     .map((item) => item?.function?.name ?? '')
     .find((name) => parseToolCallName(name).tool === WIKI_PRESEARCH_TOOL);

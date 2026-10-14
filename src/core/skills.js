@@ -7,6 +7,8 @@ const DANGEROUS_PARAM_NAMES = new Set(['__proto__', 'prototype', 'constructor'])
 const DEFAULT_UI_SKILL_DIR = '.wiki/skills';
 const SKILL_CAPABILITY_RE = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9_-]*)+$/;
 const SKILL_OPERATION_RE = /^[a-z][a-z0-9_-]{0,63}$/;
+const LEGACY_CURATE_DESCRIPTION = 'Curate the wiki — find duplicate, disagreeing, outdated or unsourced pages and propose corrections on a branch a human merges or discards';
+const LEGACY_CURATE_INTRO = 'Curate the wiki: find duplicate pages, pages that disagree or repeat each other, outdated or superseded pages, and claims with no cited source, then write the corrections on a dedicated branch.';
 // The CSI branch must come FIRST. `[` is 0x5B, inside the `[@-_]` range, so the
 // two-character alternative would otherwise consume `ESC [` alone and leave the
 // parameter bytes behind as literal text: "\x1B[31m" would become "31m".
@@ -86,11 +88,19 @@ function inspectSkillFile(filePath, fallbackName, scope, root) {
   // the body stays a business intention naming no agent, tool or server
   // (skillCompiler's FORBIDDEN_FIELDS still enforces that), while routing
   // targets a capability — the same abstraction plans already target.
-  const capability = String(meta.capability || '').trim();
+  // Existing workspaces keep their copied skill files when the packaged
+  // scaffold changes. Recognize only the original packaged curation skill by
+  // its exact description and opening objective, so old copies get the same
+  // deterministic capability route as the updated frontmatter without
+  // rewriting any workspace-owned file.
+  const legacyCurate = name === 'curate'
+    && description.value === LEGACY_CURATE_DESCRIPTION
+    && body.startsWith(LEGACY_CURATE_INTRO);
+  const capability = String(meta.capability || (legacyCurate ? 'agent.curate' : '')).trim();
   if (capability && !SKILL_CAPABILITY_RE.test(capability)) {
     return { rejected: { relativePath, name, reason: 'invalid_capability' } };
   }
-  const operation = String(meta.operation || '').trim();
+  const operation = String(meta.operation || (legacyCurate ? 'run' : '')).trim();
   if (operation && !SKILL_OPERATION_RE.test(operation)) {
     return { rejected: { relativePath, name, reason: 'invalid_operation' } };
   }

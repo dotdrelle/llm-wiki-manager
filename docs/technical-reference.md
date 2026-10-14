@@ -674,8 +674,11 @@ The TUI uses a two-pane layout:
   `/mcp status`.
 
 In the served browser Activity panel, `Clear` is a per-tab display cleanup and
-`Clear all` applies it to Plan, Local activity, Runtime activity, and Logs. It
-does not delete a plan. **Reset plan** is the confirmed destructive operation:
+`Clear all` applies it to Plan, Local activity, Runtime activity, and Logs. The
+Memory tab is the exception: its `Clear` permanently deletes the workspace's
+saved facts and their history, after confirmation. It does not clear
+conversations or maintenance data. Clearing other tabs does not delete a plan.
+**Reset plan** is the confirmed destructive operation:
 it stops active work and purges the workspace runtime plan, activities, logs,
 queue, and persisted runtime state. Donna can perform the same operation when
 the user explicitly asks to delete, reset, abandon, or replace the current

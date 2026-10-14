@@ -325,6 +325,7 @@ Environment, manager side:
 
 | variable | default | meaning |
 | --- | --- | --- |
+| `WIKI_MANAGER_AGENT_REGISTRY_INTERVAL_MS` | `60000` | how often the supervisor refreshes MCP and external runtime capabilities |
 | `WIKI_MANAGER_MAINTENANCE_INTERVAL_MS` | `300000` | how often enabled workspaces are scanned (min 30 s); each scan reads the engine's `wiki_maintenance_state` |
 | `WIKI_MANAGER_MAINTENANCE_URL` | runtime URL as seen from containers | the bridge URL the gateway calls back (`/maintenance/bridge`) |
 

@@ -20,12 +20,9 @@ import { markPersistedAgentsStale } from '../orchestrator/agentRegistry.js';
 
 export { defaultRuntimeStateDir };
 
-// `assistant_progress` joins runtime_log here for a reason of its own: every
-// persisted event feeds the conversation projection, which seeds the next
-// turn's LLM context. A persisted progress note would be re-read by the model
-// on every later turn as if it were something the user said or Donna answered,
-// growing the context with commentary about work already finished.
-const NON_PERSISTED_EVENT_TYPES = new Set(['runtime_log', 'assistant_progress', 'runtime_heartbeat']);
+// Progress notes are stored in their own journal below. They must not enter
+// the conversation projection, which seeds the next turn's LLM context.
+const NON_PERSISTED_EVENT_TYPES = new Set(['runtime_log', 'runtime_heartbeat']);
 export const RUNTIME_STORE_SCHEMA_VERSION = 1;
 const RUNTIME_RETENTION_DAYS = 30;
 const TERMINAL_RUN_STATUSES = ['done', 'error', 'cancelled', 'interrupted'];
@@ -71,6 +68,17 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     );
     CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
     CREATE INDEX IF NOT EXISTS idx_events_run_id ON events(run_id);
+    CREATE TABLE IF NOT EXISTS progress_events (
+      id TEXT PRIMARY KEY,
+      ts TEXT NOT NULL,
+      run_id TEXT,
+      turn_id TEXT,
+      workspace TEXT,
+      conversation_id TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_progress_workspace_conversation_ts
+      ON progress_events(workspace, conversation_id, ts);
     CREATE TABLE IF NOT EXISTS runs (
       id TEXT PRIMARY KEY,
       workspace TEXT,
@@ -254,6 +262,26 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     INSERT OR IGNORE INTO events (sequence, id, ts, type, run_id, turn_id, task_id, workspace, conversation_id, origin, payload)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const insertProgressEvent = db.prepare(`
+    INSERT OR IGNORE INTO progress_events (id, ts, run_id, turn_id, workspace, conversation_id, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  const trimProgressEvents = db.prepare(`
+    DELETE FROM progress_events WHERE rowid IN (
+      SELECT rowid FROM progress_events
+      WHERE workspace IS ? AND conversation_id IS ?
+      ORDER BY ts DESC, id DESC LIMIT -1 OFFSET 200
+    )
+  `);
+  const listProgressEventsByConversation = db.prepare(`
+    SELECT id, ts, run_id, turn_id, workspace, conversation_id, payload
+    FROM progress_events WHERE workspace IS ? AND conversation_id = ?
+    ORDER BY ts ASC, id ASC
+  `);
+  const purgeOldProgressEvents = db.prepare(`
+    DELETE FROM progress_events WHERE ts < ?
+  `);
+  purgeOldProgressEvents.run(new Date(Date.now() - RUNTIME_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString());
   // A sequence is a CURSOR clients hold ("events after N"): it must never be
   // handed out twice. MAX(sequence)+1 alone reused the numbers a purge or a
   // truncation had just deleted — observed: after a purge the next run's
@@ -607,6 +635,22 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   `);
 
   function persistEvent(event) {
+    if (event.type === 'assistant_progress') {
+      const conversationId = event.conversationId ?? null;
+      if (!conversationId) return event;
+      const ws = event.workspace ?? event.payload?.workspace ?? null;
+      insertProgressEvent.run(
+        event.id,
+        event.ts,
+        event.runId ?? null,
+        event.turnId ?? null,
+        ws,
+        conversationId,
+        JSON.stringify(event.payload ?? {}),
+      );
+      trimProgressEvents.run(ws, conversationId);
+      return event;
+    }
     if (NON_PERSISTED_EVENT_TYPES.has(event.type)) return event;
     const ws = event.workspace ?? event.payload?.workspace ?? null;
     const sequence = nextEventSequenceStatement.get().next_sequence;
@@ -670,6 +714,30 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     return rows.map(rowToEvent).filter((event) => !conversationId
       || event.conversationId === conversationId
       || (conversationId.startsWith('legacy:') && event.conversationId === null));
+  }
+
+  function listProgressEvents({ workspace = null, conversationId = null } = {}) {
+    if (!conversationId) return [];
+    return listProgressEventsByConversation.all(workspace, conversationId).map((row) => ({
+      id: row.id,
+      ts: row.ts,
+      runId: row.run_id,
+      turnId: row.turn_id,
+      workspace: row.workspace,
+      conversationId: row.conversation_id,
+      payload: JSON.parse(row.payload),
+    }));
+  }
+
+  function removeProgressEventsForTurns(turnIds, { workspace = null, conversationId = null } = {}) {
+    const uniqueTurnIds = [...new Set(turnIds.map(String).filter(Boolean))];
+    if (!workspace || !uniqueTurnIds.length) return 0;
+    const statement = conversationId
+      ? db.prepare('DELETE FROM progress_events WHERE workspace = ? AND conversation_id = ? AND turn_id = ?')
+      : db.prepare('DELETE FROM progress_events WHERE workspace = ? AND turn_id = ?');
+    return uniqueTurnIds.reduce((count, turnId) => count + Number((conversationId
+      ? statement.run(workspace, conversationId, turnId)
+      : statement.run(workspace, turnId)).changes ?? 0), 0);
   }
 
   function listAuditTrail({ workspace = null, runId = null } = {}) {
@@ -762,6 +830,9 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   function deleteConversationEventsFrom(sequence, { workspace = null, conversationId = null } = {}) {
     const boundary = Number(sequence);
     if (!Number.isFinite(boundary) || !workspace || !conversationId) return 0;
+    const turns = db.prepare('SELECT DISTINCT turn_id FROM events WHERE workspace = ? AND conversation_id = ? AND sequence >= ? AND turn_id IS NOT NULL')
+      .all(workspace, conversationId, boundary).map((row) => row.turn_id);
+    removeProgressEventsForTurns(turns, { workspace, conversationId });
     return Number(db.prepare('DELETE FROM events WHERE workspace = ? AND conversation_id = ? AND sequence >= ?')
       .run(workspace, conversationId, boundary).changes ?? 0);
   }
@@ -774,6 +845,10 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     const start = Number(from);
     const end = to == null ? null : Number(to);
     if (!Number.isFinite(start) || (end !== null && !Number.isFinite(end)) || !workspace || !conversationId) return 0;
+    const turns = db.prepare(`SELECT DISTINCT turn_id FROM events WHERE workspace = ? AND conversation_id = ? AND sequence >= ?
+      AND (? IS NULL OR sequence < ?) AND type IN ('assistant_message', 'assistant_delta', 'assistant_delta_reset') AND turn_id IS NOT NULL`)
+      .all(workspace, conversationId, start, end, end).map((row) => row.turn_id);
+    removeProgressEventsForTurns(turns, { workspace, conversationId });
     return Number(db.prepare(`DELETE FROM events WHERE workspace = ? AND conversation_id = ? AND sequence >= ?
       AND (? IS NULL OR sequence < ?) AND type IN ('assistant_message', 'assistant_delta', 'assistant_delta_reset')`)
       .run(workspace, conversationId, start, end, end).changes ?? 0);
@@ -782,6 +857,8 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
   function deleteEventsAfter(sequence, { workspace = null } = {}) {
     const boundary = Number(sequence);
     if (!Number.isFinite(boundary) || !workspace) return 0;
+    const turns = db.prepare('SELECT DISTINCT turn_id FROM events WHERE sequence > ? AND workspace = ? AND turn_id IS NOT NULL')
+      .all(boundary, workspace).map((row) => row.turn_id);
     const orphanedRunIds = db.prepare(`
       SELECT DISTINCT run_id FROM events
       WHERE sequence > ? AND workspace = ? AND run_id IS NOT NULL
@@ -791,6 +868,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     `).all(boundary, workspace, boundary, workspace).map((row) => row.run_id);
     db.exec('BEGIN');
     try {
+      removeProgressEventsForTurns(turns, { workspace });
       const delResults = db.prepare('DELETE FROM task_results WHERE task_id IN (SELECT id FROM tasks WHERE run_id = ?)');
       const delAssignments = db.prepare('DELETE FROM task_assignments WHERE task_id IN (SELECT id FROM tasks WHERE run_id = ?)');
       const delAttempts = db.prepare('DELETE FROM task_attempts WHERE run_id = ?');
@@ -839,6 +917,8 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
       const events = (workspace
         ? db.prepare('DELETE FROM events WHERE workspace = ?').run(workspace)
         : db.prepare('DELETE FROM events').run()).changes ?? 0;
+      if (workspace) db.prepare('DELETE FROM progress_events WHERE workspace = ?').run(workspace);
+      else db.prepare('DELETE FROM progress_events').run();
       const queue = (workspace
         ? db.prepare('DELETE FROM queue_items WHERE workspace = ?').run(workspace)
         : db.prepare('DELETE FROM queue_items').run()).changes ?? 0;
@@ -1410,6 +1490,7 @@ export function openRuntimeStore({ stateDir = defaultRuntimeStateDir(), fileName
     persistEvent,
     persistRun,
     listEvents,
+    listProgressEvents,
     listAuditTrail,
     listRuns,
     listRecoverableRuns,

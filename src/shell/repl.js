@@ -2206,7 +2206,7 @@ async function runTuiShell({ agent, packageJson, session, runtime = null }) {
 
   function syncRuntimeState() {
     if (!runtime?.url) return;
-    void fetchRuntimeState({ url: runtime.url, workspace: session.workspace ?? null })
+    void fetchRuntimeState({ url: runtime.url, workspace: session.workspace ?? null, conversationId: session.conversationId ?? null })
       .then((state) => {
         runtimePollingActive = true;
         applyRuntimeStateToShellSession(session, state);

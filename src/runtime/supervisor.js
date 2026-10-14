@@ -6,6 +6,7 @@ import { callMcpTool, formatMcpToolResult } from '../core/mcp.js';
 import { startNextQueuedJob, syncQueueWithActivity } from '../core/jobQueue.js';
 import { createAgentRegistry } from '../orchestrator/agentRegistry.js';
 import { discoverRuntimeProvidersOnce } from '../orchestrator/providers/runtimeProviders.js';
+import { DEFAULT_RUNTIME_DISCOVERY_INTERVAL_MS } from '../orchestrator/providers/runtimeTiming.js';
 
 export function startActivitySupervisor(session, {
   intervalMs = 1000,
@@ -206,7 +207,7 @@ export function emitRuntimeLog(session, message) {
 
 function registryIntervalFromEnv() {
   const value = Number(process.env.WIKI_MANAGER_AGENT_REGISTRY_INTERVAL_MS);
-  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 60000;
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : DEFAULT_RUNTIME_DISCOVERY_INTERVAL_MS;
 }
 
 // Cancelling a runtime run must also cancel the asynchronous jobs it started:

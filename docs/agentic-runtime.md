@@ -67,6 +67,7 @@ runtime:
     "type": "deepagents",
     "endpoint": "http://localhost:7789",
     "enabled": true,
+    "timeoutMs": 30000,
     "capabilities": [
       { "name": "agent.review",
         "operations": ["run"],
@@ -85,6 +86,17 @@ runtime:
     ] }
 ] }
 ```
+
+`timeoutMs` bounds each HTTP request to the runtime. It defaults to 30 seconds
+so a slow host can finish its health and capability checks; set a higher value
+for a consistently slower gateway. Maintenance uses that timeout as its retry
+backoff base, so a retry does not start before the configured probe can finish.
+Discovery requests from the supervisor and Maintenance share one in-flight
+probe per workspace session. The supervisor
+refreshes runtime discovery every minute by default. Maintenance scans every
+five minutes by default; when its gateway probe fails, it retries after 30 s,
+1 min, 2 min, then 4 min, capped by the configured scan interval (and at five
+minutes). The regular scan remains the fallback if the gateway stays down.
 
 Capability fields: `name`, `operations`, `description` (the general, language-
 agnostic route: the LLM resolver matches any-language objectives against it),

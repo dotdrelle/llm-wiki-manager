@@ -1,4 +1,8 @@
 import { effectiveToolChoice, reasoningEffortParam, supportsTemperature } from '../core/llmCapabilities.js';
+import { describeFetchError } from '../core/modelFetch.js';
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 100_000;
+const MAX_REQUEST_TIMEOUT_MS = 105_000;
 
 function trimTrailingSlash(value) {
   return value.replace(/\/+$/, '');
@@ -38,14 +42,47 @@ export function createLlmClientFromWikiConfig(config) {
     // The thinking-mode knob (`llm.reasoningEffort`), sent on every call.
     ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
   };
+  const configuredTimeout = Number(llmConfig.timeoutMs);
+  const requestTimeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
+    ? Math.min(configuredTimeout, MAX_REQUEST_TIMEOUT_MS)
+    : DEFAULT_REQUEST_TIMEOUT_MS;
+
+  // A stale keep-alive socket after the machine or proxy has been idle can
+  // fail before the provider receives anything. Retry that one connection
+  // failure, but never retry an HTTP response or a request that has started
+  // streaming. The same deadline covers the retry and reading the response.
+  async function request(url, init, { signal, onRetry } = {}) {
+    const timeoutSignal = AbortSignal.timeout(requestTimeoutMs);
+    const requestSignal = signal
+      ? AbortSignal.any([signal, timeoutSignal])
+      : timeoutSignal;
+    const requestInit = { ...init, signal: requestSignal };
+    try {
+      return await fetch(url, requestInit);
+    } catch (error) {
+      if (timeoutSignal.aborted) {
+        throw new Error(`LLM request timed out after ${Math.round(requestTimeoutMs / 1000)} seconds`, { cause: error });
+      }
+      if (signal?.aborted || !isRetryableConnectionFailure(error)) throw error;
+      onRetry?.(error);
+      try {
+        return await fetch(url, requestInit);
+      } catch (retryError) {
+        if (timeoutSignal.aborted) {
+          throw new Error(`LLM request timed out after ${Math.round(requestTimeoutMs / 1000)} seconds`, { cause: retryError });
+        }
+        if (signal?.aborted) throw retryError;
+        throw new Error(`LLM connection failed after reconnect: ${describeFetchError(retryError, { url, timeoutMs: requestTimeoutMs })}`, { cause: retryError });
+      }
+    }
+  }
 
   return {
     // `onUsage` receives the provider's token usage of this one call (the run's
     // model meter, runtime/modelMeter.js); absent, nothing changes.
-    async complete({ system, input, signal, onUsage }) {
-      const response = await fetch(`${baseUrl}/chat/completions`, {
+    async complete({ system, input, signal, onUsage, onRetry }) {
+      const response = await request(`${baseUrl}/chat/completions`, {
         method: 'POST',
-        signal,
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
@@ -58,7 +95,7 @@ export function createLlmClientFromWikiConfig(config) {
           ],
           ...temperatureBody,
         }),
-      });
+      }, { signal, onRetry });
 
       if (!response.ok) {
         const body = await response.text();
@@ -73,7 +110,7 @@ export function createLlmClientFromWikiConfig(config) {
       }
       return content;
     },
-    async completeWithTools({ system, tools = [], messages = [], toolChoice = 'auto', signal, onUsage }) {
+    async completeWithTools({ system, tools = [], messages = [], toolChoice = 'auto', signal, onUsage, onRetry }) {
       const allMessages = [
         { role: 'system', content: system },
         ...messages,
@@ -87,15 +124,14 @@ export function createLlmClientFromWikiConfig(config) {
         body.tools = tools;
         body.tool_choice = effectiveToolChoice(llmConfig, toolChoice);
       }
-      const response = await fetch(`${baseUrl}/chat/completions`, {
+      const response = await request(`${baseUrl}/chat/completions`, {
         method: 'POST',
-        signal,
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
-      });
+      }, { signal, onRetry });
       if (!response.ok) {
         const text = await response.text();
         throw new Error(`HTTP ${response.status} ${text.slice(0, 240)}`);
@@ -109,7 +145,7 @@ export function createLlmClientFromWikiConfig(config) {
         message: { role: 'assistant', content: msg?.content ?? null, tool_calls: msg?.tool_calls },
       };
     },
-    async streamWithTools({ system, tools = [], messages = [], toolChoice = 'auto', onTextDelta, signal }) {
+    async streamWithTools({ system, tools = [], messages = [], toolChoice = 'auto', onTextDelta, signal, onRetry }) {
       const allMessages = [
         { role: 'system', content: system },
         ...messages,
@@ -124,21 +160,20 @@ export function createLlmClientFromWikiConfig(config) {
         body.tools = tools;
         body.tool_choice = effectiveToolChoice(llmConfig, toolChoice);
       }
-      const response = await fetch(`${baseUrl}/chat/completions`, {
+      const response = await request(`${baseUrl}/chat/completions`, {
         method: 'POST',
-        signal,
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
-      });
+      }, { signal, onRetry });
       if (!response.ok) {
         const text = await response.text();
         throw new Error(`HTTP ${response.status} ${text.slice(0, 240)}`);
       }
       if (!response.body) {
-        const result = await this.completeWithTools({ system, tools, messages, toolChoice, signal });
+        const result = await this.completeWithTools({ system, tools, messages, toolChoice, signal, onRetry });
         if (result.content) onTextDelta?.(result.content);
         return result;
       }
@@ -198,14 +233,13 @@ export function createLlmClientFromWikiConfig(config) {
         message,
       };
     },
-    async *stream({ system, messages = [], signal }) {
+    async *stream({ system, messages = [], signal, onRetry }) {
       const allMessages = [
         { role: 'system', content: system },
         ...messages,
       ];
-      const response = await fetch(`${baseUrl}/chat/completions`, {
+      const response = await request(`${baseUrl}/chat/completions`, {
         method: 'POST',
-        signal,
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
@@ -216,7 +250,7 @@ export function createLlmClientFromWikiConfig(config) {
           ...temperatureBody,
           stream: true,
         }),
-      });
+      }, { signal, onRetry });
 
       if (!response.ok) {
         const body = await response.text();
@@ -224,7 +258,7 @@ export function createLlmClientFromWikiConfig(config) {
       }
 
       if (!response.body) {
-        const fallback = await this.completeWithTools({ system, messages });
+        const fallback = await this.completeWithTools({ system, messages, signal, onRetry });
         yield fallback.content ?? '';
         return;
       }
@@ -255,4 +289,11 @@ export function createLlmClientFromWikiConfig(config) {
       }
     },
   };
+}
+
+function isRetryableConnectionFailure(error) {
+  if (error?.name === 'AbortError' || error?.name === 'TimeoutError') return false;
+  const code = error?.cause?.code ?? error?.code;
+  if (['ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT'].includes(code)) return true;
+  return !code && error instanceof TypeError && /fetch failed/i.test(error.message ?? '');
 }

@@ -43,7 +43,14 @@ export function meterModelCalls(session, { scope = 'run', log } = {}) {
           + `${call.toolCalls ? ` · asked ${call.toolCalls} tool call(s)` : ''}${ok ? '' : ` · failed: ${fetchFailureReason(error)}`}`);
       };
       try {
-        const result = await base[method].call(this, { ...args, onUsage: (value) => { usage = value; args.onUsage?.(value); } });
+        const result = await base[method].call(this, {
+          ...args,
+          onUsage: (value) => { usage = value; args.onUsage?.(value); },
+          onRetry: (error) => {
+            emit(`model: ${scope} call ${calls.length + 1} reconnecting after a transient connection failure: ${fetchFailureReason(error)}`);
+            args.onRetry?.(error);
+          },
+        });
         record(true, result);
         return result;
       } catch (error) {

@@ -114,7 +114,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     if (type !== 'assistant_progress') return;
     const message = String(event.data?.payload?.message ?? '').trim();
     noteTurnStep(message);
-    if (message) addLog(`Agent: ${message}`);
+    if (message) addLog(event.data?.payload?.kind === 'model_meter' ? message : `Agent: ${message}`);
   };
   const runtimeUnavailableReason = createMemo(() => {
     if (props.runtime?.url) return null;
@@ -463,11 +463,22 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
   });
   const visibleLogs = createMemo(() => {
     version();
-    const runtimeLogs = runtimeState()?.logs;
-    if (!Array.isArray(runtimeLogs) || runtimeLogs.length === 0) return logs();
+    const runtimeLogs = Array.isArray(runtimeState()?.logs) ? runtimeState().logs : [];
+    const progressEvents = Array.isArray(runtimeState()?.progressEvents) ? runtimeState().progressEvents : [];
+    const liveProgressMessages = new Set(logs().map((line) => line.replace(/^\d{2}:\d{2}:\d{2}\s*/, '').replace(/^Agent:\s*/, '').trim()));
+    const restoredProgress = progressEvents.flatMap((event: any) => {
+      const message = String(event?.payload?.message ?? '').trim();
+      if (!message || liveProgressMessages.has(message)) return [];
+      const date = new Date(event.ts);
+      return [`${formatLocalTime(date)} ${event?.payload?.kind === 'model_meter' ? '' : 'Agent: '}${message}`];
+    });
+    if (runtimeLogs.length === 0 && restoredProgress.length === 0) return logs();
     const filter = String((session as any).runtimeLogFilter ?? '').trim();
     // The runtime stores its log clocks in UTC; show them in local time.
-    const tagged = filterRuntimeLogs(runtimeLogs.map((line: any) => `runtime ${localizeLogLine(line)}`), filter);
+    const tagged = filterRuntimeLogs([
+      ...runtimeLogs.map((line: any) => `runtime ${localizeLogLine(line)}`),
+      ...restoredProgress.map((line) => `runtime ${line}`),
+    ], filter);
     return [...logs(), ...tagged];
   });
   const pendingApprovals = createMemo(() => {
@@ -566,7 +577,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
     const workspaceKey = workspace ?? '__global__';
     if (runtimeSyncInFlight.has(workspaceKey)) return;
     runtimeSyncInFlight.add(workspaceKey);
-    void fetchRuntimeState({ url: props.runtime.url, workspace })
+    void fetchRuntimeState({ url: props.runtime.url, workspace, conversationId: (session as any).conversationId ?? null })
       .then((state) => {
         if (((session as any).workspace ?? null) !== workspace) return;
         const displayState = sanitizeRuntimeStateForDisplay(state);

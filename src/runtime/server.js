@@ -401,8 +401,9 @@ export function startRuntimeServer({
       }
       if (request.method === 'GET' && url.pathname === '/state') {
         const workspace = workspaceFromUrl(url);
+        const conversationId = String(url.searchParams.get('conversationId') ?? '').trim() || null;
         const context = workspace ? await resolveContext({ workspace }) : null;
-        sendJson(response, 200, { ...runtimeState(context, store, { workspace, session }), ...(maintenance && workspace ? { maintenance: maintenanceView(workspace) } : {}) });
+        sendJson(response, 200, { ...runtimeState(context, store, { workspace, session, conversationId }), ...(maintenance && workspace ? { maintenance: maintenanceView(workspace) } : {}) });
         return;
       }
       if (request.method === 'GET' && url.pathname === '/events') {
@@ -905,12 +906,18 @@ export function startRuntimeServer({
         });
         context.interactiveTurn = current;
         void current.catch((err) => {
-          publish(createAgentEvent('assistant_message', {
+          const failureEvent = createAgentEvent('assistant_message', {
             origin: 'runtime_turn',
             turnId,
             workspace: context.workspace ?? null,
+            conversationId: body.conversationId ?? null,
             payload: { content: `Runtime turn failed: ${err instanceof Error ? err.message : String(err)}` },
-          }));
+          });
+          // An SSE disconnect or page reload must not erase the only answer
+          // explaining why Donna stopped. Persist it in the same conversation
+          // before broadcasting it to currently connected clients.
+          store.persistEvent(failureEvent);
+          publish(failureEvent);
         }).finally(() => {
           if (context.interactiveTurn === current) context.interactiveTurn = null;
         });
@@ -1200,6 +1207,16 @@ export function startRuntimeServer({
         }
         publishState(resolvedWorkspace, context);
         sendJson(response, 200, { compacted: true, summary });
+        return;
+      }
+      if (url.pathname === '/memory/facts' && request.method === 'DELETE') {
+        const workspace = workspaceFromUrl(url);
+        if (!workspace) { sendJson(response, 400, { error: 'workspace_required' }); return; }
+        if (!memoryStore) { sendJson(response, 503, { error: 'Memory store unavailable.' }); return; }
+        const cleared = memoryStore.clearWorkspace(workspace);
+        const context = await resolveContext({ workspace });
+        if (context?.session) emitRuntimeLog(context.session, `memory: cleared workspace memory (${cleared.items} fact(s), ${cleared.versions} history record(s))`);
+        sendJson(response, 200, { cleared, workspace });
         return;
       }
       if (url.pathname === '/memory/facts' && request.method === 'GET') {
@@ -1923,7 +1940,7 @@ function controlStatus(context, store) {
   };
 }
 
-export function runtimeState(context, store, { workspace = null, session = null } = {}) {
+export function runtimeState(context, store, { workspace = null, session = null, conversationId = null } = {}) {
   const state = store.getState(context?.session ?? session ?? null, { workspace });
   return {
     ...state,
@@ -1936,6 +1953,7 @@ export function runtimeState(context, store, { workspace = null, session = null 
     // own history) so those replies surface. The log is a superset of the
     // canonical run conversation, so run rendering is unaffected.
     conversation: reduceAgentEvents(store.listEvents({ workspace })).conversation,
+    ...(conversationId ? { progressEvents: store.listProgressEvents({ workspace, conversationId }) } : {}),
     // `context.running` keeps the process alive while the scheduler waits for an
     // approval, but the run is then NOT running — the reducer already says
     // `pending_approval`. Prefer it over the blanket override.

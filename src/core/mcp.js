@@ -424,7 +424,15 @@ export async function callMcpTool(mcpStatus, serverName, toolName, args = {}, si
     ...args,
     ...(shouldInjectConfigPath ? { configPath: endpoint.activeConfigPath } : {}),
   };
-  const timeoutMs = serverName === 'documents' && toolName === 'documents_convert_to_markdown' ? 600_000 : 8000;
+  // Confluence search has its own 15 s HTTP deadline in agent-cme. Give that
+  // bounded read a small transport margin so the manager does not abort it at
+  // 8 s before CME can return its stable `unreachable` result. The default
+  // retry policy can then make one fresh, idempotent search attempt.
+  const timeoutMs = serverName === 'documents' && toolName === 'documents_convert_to_markdown'
+    ? 600_000
+    : serverName === 'cme' && toolName === 'cme_confluence_search'
+      ? 20_000
+      : 8000;
   const retry = resolveRetryPolicy(endpoint, toolName, options.retry);
   return withRetry(async () => {
     await throttleMcpRequestStart(endpoint, signal);

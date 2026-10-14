@@ -16,6 +16,11 @@ import { activeProfileMcp, activeProfileModel, acceptsArgument, externalRoleProg
 import { validateJsonSchema } from '../orchestrator/planValidator.js';
 import { admitExecution, enableMaintenanceAdmission } from './admission.js';
 import { listWorkspaces } from '../core/workspaces.js';
+import {
+  DEFAULT_MAINTENANCE_SCAN_INTERVAL_MS,
+  MIN_MAINTENANCE_SCAN_INTERVAL_MS,
+  maintenanceGatewayRetryDelay,
+} from '../orchestrator/providers/runtimeTiming.js';
 
 // The collective's roles in their order, each pending, running or done — what
 // the served run graph draws under a maintenance action.
@@ -47,8 +52,8 @@ const parse=(r)=>{if(r?.content){const text=formatMcpToolResult(r);try{return JS
 const lostJob=(r)=>r?.error?.code==='unknown_job'||(r?.ok===false&&/unknown jobid/i.test(String(r.error?.message??r.error??'')));
 const jobState=(r)=>lostJob(r)?{status:'failed',lost:true,error:'the agent no longer knows this job (restarted, or its record was removed)'}:r;
 const wait=(signal,ms=500)=>new Promise((resolve,reject)=>{const abort=()=>{clearTimeout(timer);reject(signal.reason??new Error('aborted'));};const timer=setTimeout(()=>{signal?.removeEventListener('abort',abort);resolve();},ms);if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});});
-export function createMaintenanceService({db,getContext,baseUrl,readDocument=readMaintenanceAccessDocument,callTool=callMcpTool,now=()=>new Date(),onEvent=null,onChange=null,discover=discoverRuntimeProvidersOnce,writeEnabled=setMaintenanceEnabled,writeMode=setMaintenanceMode,intervalMs=Number(process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_MS??300_000)}) {
-  const store=createMaintenanceStore(db,{onChange:(workspace)=>onChange?.(workspace)});const active=new Map();const scans=new Set();const inflight=new Map();const sourceConfigFailures=new Set();let timer;
+export function createMaintenanceService({db,getContext,baseUrl,readDocument=readMaintenanceAccessDocument,callTool=callMcpTool,now=()=>new Date(),onEvent=null,onChange=null,discover=discoverRuntimeProvidersOnce,writeEnabled=setMaintenanceEnabled,writeMode=setMaintenanceMode,intervalMs=Number(process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_MS??DEFAULT_MAINTENANCE_SCAN_INTERVAL_MS)}) {
+  const store=createMaintenanceStore(db,{onChange:(workspace)=>onChange?.(workspace)});const active=new Map();const scans=new Set();const inflight=new Map();const sourceConfigFailures=new Set();const gatewayRetryTimers=new Map();const gatewayRetryAttempts=new Map();let timer;
   // The actions executing right now, with their agent's last progress: the
   // served run graph draws them, so maintenance work is seen, not only logged.
   const live=new Map();
@@ -61,8 +66,10 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
   // that answers without agent.maintain), and its return is announced: the
   // bare "not available" line stayed the last word in the panel long after
   // the gateway was back, while everything was running.
-  function gatewayUnavailable(workspace,session){const down=(session?.runtimeProviderUnreachable??[]).find((r)=>(r.capabilities??[]).some((c)=>c.name==='agent.maintain'));degradedOnce(workspace,`maintenance_gateway_unavailable${down?.error?`: ${down.error}`:''}`);}
-  function gatewayBack(workspace){const last=store.events(workspace).filter((e)=>e.kind==='degraded'||e.kind==='recovered').at(-1);if(last?.kind==='degraded'&&/^maintenance_gateway_unavailable/.test(String(last.detail??'')))log(workspace,'recovered','the agentic runtime (gateway) answers again; maintenance cycles can run');}
+  function scheduleGatewayRetry(workspace,probeTimeoutMs){if(gatewayRetryTimers.has(workspace))return;const attempt=gatewayRetryAttempts.get(workspace)??0;gatewayRetryAttempts.set(workspace,attempt+1);const delay=maintenanceGatewayRetryDelay(attempt,intervalMs,probeTimeoutMs);const retry=setTimeout(()=>{gatewayRetryTimers.delete(workspace);void tick(workspace);},delay);retry.unref?.();gatewayRetryTimers.set(workspace,retry);}
+  function clearGatewayRetry(workspace){const retry=gatewayRetryTimers.get(workspace);if(retry)clearTimeout(retry);gatewayRetryTimers.delete(workspace);gatewayRetryAttempts.delete(workspace);}
+  function gatewayUnavailable(workspace,session,cause=null){const down=(session?.runtimeProviderUnreachable??[]).find((r)=>(r.capabilities??[]).some((c)=>c.name==='agent.maintain'));const reason=down?.error??(cause instanceof Error?cause.message:cause?String(cause):null)??'agent.maintain is absent from the manager declaration or the gateway capabilities';degradedOnce(workspace,`maintenance_gateway_unavailable: ${reason}`);scheduleGatewayRetry(workspace,down?.probeTimeoutMs);}
+  function gatewayBack(workspace){clearGatewayRetry(workspace);const last=store.events(workspace).filter((e)=>e.kind==='degraded'||e.kind==='recovered').at(-1);if(last?.kind==='degraded'&&/^maintenance_gateway_unavailable/.test(String(last.detail??'')))log(workspace,'recovered','the agentic runtime (gateway) answers again; maintenance cycles can run');}
   async function context(workspace){const ctx=await getContext(workspace);if(!ctx?.session?.workspace)throw new Error('maintenance_workspace_unavailable');return ctx;}
   function providerFor(session,action,operation) {
     const spec=MAINTENANCE_ACTIONS[action];if(!spec)throw new Error('maintenance_unknown_action');
@@ -393,19 +400,20 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       // A context created by this very scan has not finished its first runtime
       // discovery yet: wait for it rather than report a missing gateway.
       const fresh=Boolean(ctx.session&&ctx.session.runtimeProviderAgents===undefined);
-      if(fresh){try{await discover(ctx.session);}catch{/* announced below as unavailable */}}
+      let discoveryError=null;
+      if(fresh){try{await discover(ctx.session);}catch(error){discoveryError=error;}}
       const findHost=()=>capabilityRegistryForSession(ctx.session).providersFor('agent.maintain').find((p)=>p.runtimeProvider);
       let host=findHost();
       // The runtime boots before the containers and re-scans once a minute: a
       // cached "no gateway" may predate the gateway's start. Probe again before
       // concluding it is down.
-      if(!host&&!fresh){try{await discover(ctx.session);}catch{/* announced below as unavailable */}host=findHost();}
+      if(!host&&!fresh){try{await discover(ctx.session);}catch(error){discoveryError=error;}host=findHost();}
       if(host)gatewayBack(workspace);
       const jobsSettled=await reconcile(workspace,ctx);
       const previous=store.cycles(workspace).find((c)=>['running','recovering'].includes(c.status));
       // An interrupted cycle is re-attached before anything new starts; without
       // the gateway it simply waits (announced below), routine work included.
-      if(previous&&!host){gatewayUnavailable(workspace,ctx.session);return;}
+      if(previous&&!host){gatewayUnavailable(workspace,ctx.session,discoveryError);return;}
       if(previous){
         if(previous.runId){active.set(workspace,{cycle:previous,provider:host.runtimeProvider});void monitor(workspace,previous,host.runtimeProvider);return;}
         const accepted=await host.runtimeProvider.execute({capability:'agent.maintain',operation:'run',workspace:{name:workspace},model:activeProfileModel(ctx.session),language:ctx.session.language,mcp:activeProfileMcp(ctx.session),maintenance:{cycleId:previous.id,endpoint:baseUrl,token:previous.secret,policy:p}});previous.runId=accepted.runId;store.cycle(previous);active.set(workspace,{cycle:previous,provider:host.runtimeProvider});void monitor(workspace,previous,host.runtimeProvider);return;
@@ -436,7 +444,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       if(filed)view=await state(workspace);
       const actionable=view.candidates.filter((c)=>!ROUTINE.has(c.action)&&c.mode!=='off'&&!c.outsideWindow&&!decided(view,c));
       if(!actionable.length)return;
-      if(!host){gatewayUnavailable(workspace,ctx.session);return;}
+      if(!host){gatewayUnavailable(workspace,ctx.session,discoveryError);return;}
       // Every model call of a gateway cycle is admitted by the manager. When the
       // day's model-call budget is used up, starting one can only produce a
       // failed cycle: wait for tomorrow, announced once, instead of retrying
@@ -570,9 +578,9 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
   return {store,state,tick,status,control,authorizeBridge,runCandidate,startCandidate,candidateTicket,modelAdmission,isActive,activeRuns,setEnabled,setMode,
     modelDone:(cycleId,call)=>{store.settle(`${cycleId}:model:${call}`);return {ok:true};},
     decide:async(w,id,v,approved)=>{if(approved){const requested=store.request(w,id);if(!requested)throw new Error('maintenance_request_unknown');const view=await state(w);const current=view.candidates.find((c)=>c.action===requested.action&&c.target===requested.target&&c.operation===requested.candidate.operation);const clean=current?Object.fromEntries(Object.entries(current).filter(([k])=>!['mode','outsideWindow'].includes(k))):null;if(!clean||fingerprint(clean)!==v){if(clean)store.propose(w,clean);throw new Error('maintenance_request_replaced_or_target_changed');}}const request=store.decide(w,id,v,approved);if(approved)void tick(w);return request;},
-    start(){timer=setInterval(()=>{try{store.pruneLogs();}catch(e){console.error('Maintenance: log retention cleanup failed — '+e.message);}let doc;try{doc=readDocument();}catch{return;}for(const w of listWorkspaces()){try{if(maintenancePolicy(doc,w.name).enabled)void tick(w.name);}catch(e){log(w.name,'degraded',e.message);}}},Math.max(30_000,intervalMs||300_000));timer.unref?.();},
+    start(){timer=setInterval(()=>{try{store.pruneLogs();}catch(e){console.error('Maintenance: log retention cleanup failed — '+e.message);}let doc;try{doc=readDocument();}catch{return;}for(const w of listWorkspaces()){try{if(maintenancePolicy(doc,w.name).enabled)void tick(w.name);}catch(e){log(w.name,'degraded',e.message);}}},Math.max(MIN_MAINTENANCE_SCAN_INTERVAL_MS,intervalMs||DEFAULT_MAINTENANCE_SCAN_INTERVAL_MS));timer.unref?.();},
     // A runtime shutdown is not a user's Stop: it neither cancels the running jobs
     // nor pauses maintenance. The cycle is re-attached at the next boot (tick).
-    async close(){clearInterval(timer);shutdown.abort();await Promise.allSettled([...ticking]);for(const item of active.values())item.unsubscribe?.();active.clear();},
+    async close(){clearInterval(timer);shutdown.abort();await Promise.allSettled([...ticking]);for(const retry of gatewayRetryTimers.values())clearTimeout(retry);gatewayRetryTimers.clear();gatewayRetryAttempts.clear();for(const item of active.values())item.unsubscribe?.();active.clear();},
   };
 }

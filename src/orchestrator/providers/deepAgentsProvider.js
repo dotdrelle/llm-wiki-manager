@@ -4,6 +4,7 @@ import {
   normalizeRuntimeEvent,
 } from './runtimeProvider.js';
 import { describeFetchError } from '../../core/modelFetch.js';
+import { DEFAULT_RUNTIME_PROBE_TIMEOUT_MS } from './runtimeTiming.js';
 
 // The gateway closes the stream when one of these arrives; the client stops
 // reconnecting on it too, so a finished run never leaves a retry loop behind.
@@ -43,7 +44,10 @@ export function createDeepAgentsProvider({
   fetchImpl = globalThis.fetch,
   headers = {},
   version = null,
-  timeoutMs = 10_000,
+  // Discovery is used as a readiness gate by Maintenance. Ten seconds was
+  // too short on low-resource hosts where the container is running but still
+  // initializing its HTTP workers and capability registry.
+  timeoutMs = DEFAULT_RUNTIME_PROBE_TIMEOUT_MS,
   streamRetries = Number(process.env.WIKI_MANAGER_RUNTIME_STREAM_RETRIES ?? 5),
   streamBackoffMs = Number(process.env.WIKI_MANAGER_RUNTIME_STREAM_BACKOFF_MS ?? 250),
 } = {}) {
@@ -75,6 +79,7 @@ export function createDeepAgentsProvider({
   }
 
   const provider = {
+    requestTimeoutMs: timeoutMs,
     // Filled by discoverCapabilities: what the gateway served vs what the
     // config declares. `null` until the first discovery.
     lastDiscovery: null,

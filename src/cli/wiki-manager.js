@@ -2086,7 +2086,25 @@ async function runRuntime(argv, agent) {
     }
     let response;
     const { meterModelCalls } = await import('../runtime/modelMeter.js');
-    const finishModelMeter = meterModelCalls(ephemeral, { scope: 'turn', log: (message) => emitRuntimeLog(context.session, message) });
+    const finishModelMeter = meterModelCalls(ephemeral, { scope: 'turn', log: (message) => dispatchAgentEvent(ephemeral, createAgentEvent('assistant_progress', {
+      origin: 'runtime_turn',
+      turnId,
+      workspace: context.workspace ?? null,
+      conversationId,
+      payload: { message, kind: 'model_meter' },
+    })) });
+    // Interactive turns can spend longer than the served chat's 120 s safety
+    // window inside a model call, with no tokens or tool events to publish.
+    // Keep the waiting bubble alive while that call is genuinely in flight;
+    // the heartbeat carries no user content and is not persisted.
+    const heartbeatTimer = setInterval(() => dispatchAgentEvent(ephemeral, createAgentEvent('runtime_heartbeat', {
+      origin: 'runtime_turn',
+      turnId,
+      workspace: context.workspace ?? null,
+      conversationId,
+      payload: {},
+    })), 20_000);
+    heartbeatTimer.unref?.();
     try {
       if (chatMode) {
         ephemeral.chatMode = true;
@@ -2122,6 +2140,7 @@ async function runRuntime(argv, agent) {
         response = await runAgentTurn(agent, ephemeral, input, { messages, signal });
       }
     } finally {
+      clearInterval(heartbeatTimer);
       finishModelMeter();
       // In a `finally`, not after the await: a throwing or aborted turn left
       // the 80 ms timer armed, so a stray assistant_delta fired AFTER the

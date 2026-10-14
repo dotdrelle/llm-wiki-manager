@@ -5,6 +5,13 @@ import { managerEnvFile, managerStateDir, readEnvFile } from '../../core/env.js'
 import { createDeepAgentsProvider } from './deepAgentsProvider.js';
 import { createFakeRuntimeProvider } from './fakeRuntimeProvider.js';
 import { assertRuntimeProvider } from './runtimeProvider.js';
+import { DEFAULT_RUNTIME_PROBE_TIMEOUT_MS } from './runtimeTiming.js';
+
+// The supervisor, runtime turns and Maintenance can all ask for discovery on
+// the same workspace session. Share the in-flight probe: parallel /health and
+// /capabilities requests made the gateway compete with itself on small hosts,
+// and an older failure could overwrite a newer successful result.
+const RUNTIME_DISCOVERY_INFLIGHT = new WeakMap();
 
 /**
  * Discovery of external agentic runtimes and projection into synthetic
@@ -266,6 +273,21 @@ export async function discoverRuntimeProvidersOnce(session, {
   config = null,
 } = {}) {
   if (!session || typeof session !== 'object') return [];
+  const existing = RUNTIME_DISCOVERY_INFLIGHT.get(session);
+  if (existing) return existing;
+  const discovery = discoverRuntimeProviders(session, { signal, config });
+  RUNTIME_DISCOVERY_INFLIGHT.set(session, discovery);
+  try {
+    return await discovery;
+  } finally {
+    if (RUNTIME_DISCOVERY_INFLIGHT.get(session) === discovery) RUNTIME_DISCOVERY_INFLIGHT.delete(session);
+  }
+}
+
+async function discoverRuntimeProviders(session, {
+  signal = null,
+  config = null,
+} = {}) {
   void signal;
   let impliedGatewayOverride = false;
   const entries = config ?? loadAgentRuntimesConfig({
@@ -325,13 +347,18 @@ export async function discoverRuntimeProvidersOnce(session, {
     operations: Array.isArray(capability?.operations) ? capability.operations.map(String) : ['run'],
     aliases: Array.isArray(capability?.aliases) ? capability.aliases.map(String) : [],
   });
+  const probeTimeoutByRuntime = new Map(resolved.providers.map(({ id, provider }) => [
+    String(id ?? provider?.runtime ?? 'external-runtime'),
+    Number(provider?.requestTimeoutMs) || DEFAULT_RUNTIME_PROBE_TIMEOUT_MS,
+  ]));
   session.runtimeProviderUnreachable = [
     ...unavailable
       .filter((item) => !answeredIds.has(item.runtimeId) && !preservedByRuntime.has(item.runtimeId))
-      .map((item) => ({ runtimeId: item.runtimeId, error: String(item.error ?? 'not reachable'), capabilities: declaredCapabilities(item.runtimeId).map(describeDeclared) })),
+      .map((item) => ({ runtimeId: item.runtimeId, error: String(item.error ?? 'not reachable'), probeTimeoutMs: probeTimeoutByRuntime.get(item.runtimeId) ?? 30_000, capabilities: declaredCapabilities(item.runtimeId).map(describeDeclared) })),
     ...drift.map((item) => ({
       runtimeId: item.runtimeId,
       error: 'it answers but does not serve this capability',
+      probeTimeoutMs: probeTimeoutByRuntime.get(item.runtimeId) ?? DEFAULT_RUNTIME_PROBE_TIMEOUT_MS,
       capabilities: declaredCapabilities(item.runtimeId).filter((capability) => item.missing.includes(String(capability?.name ?? ''))).map(describeDeclared),
     })),
   ].filter((item) => item.capabilities.length > 0);

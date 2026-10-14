@@ -32,11 +32,12 @@ export async function fetchRuntimeState({
   url = runtimeUrlFromEnv(),
   token = runtimeToken(),
   workspace = null,
+  conversationId = null,
   timeoutMs = RUNTIME_STATE_TIMEOUT_MS,
 } = {}) {
   // Bounded: callers guard this with an in-flight flag, so a request left
   // hanging on a socket killed by a machine sleep would block every later sync.
-  const response = await fetch(runtimeEndpoint(url, '/state', workspace), {
+  const response = await fetch(runtimeEndpointWithParams(url, '/state', { workspace, conversationId }), {
     headers: runtimeHeaders(token),
     signal: AbortSignal.timeout(timeoutMs),
   });

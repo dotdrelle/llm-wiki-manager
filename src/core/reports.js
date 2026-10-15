@@ -33,8 +33,12 @@ export function isLongAnswer(text) {
 // and written once its complete contents are known.
 export function requestsReportDocument(text) {
   const value = String(text ?? '').normalize('NFKC').toLowerCase();
-  return /\b(?:rapport|report)\b/.test(value)
-    && /\b(?:faire|fais|fait|rédige|redige|prépare|prepare|crée|cree|génère|genere|produis|écris|ecris|dans|sous forme|as|write|create|make|prepare|generate|draft|produce)\b/.test(value);
+  if (!/\b(?:rapport|report|restitution|document)\b/.test(value)) return false;
+  if (/\b(?:faire|fais|fait|rédige|redige|prépare|prepare|crée|cree|génère|genere|produis|écris|ecris|write|create|make|prepare|generate|draft|produce)\b/.test(value)) return true;
+  // Placement or form must introduce an INDEFINITE report — "dans un rapport",
+  // "as a report", "sous forme de rapport". "dans le document" references an
+  // existing one: a question, not a request to write a document.
+  return /\b(?:dans|as|sous forme(?: de)?)\s+(?:un|une|a|an)?\s*(?:rapport|report|restitution|document)\b/.test(value);
 }
 
 export function reportFromToolResult(text) {

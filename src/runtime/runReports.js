@@ -33,7 +33,7 @@ function reportToolServer(session) {
 async function writeRunReport(session, { title, content }, callTool = callMcpTool) {
   const server = reportToolServer(session);
   if (!server) {
-    dispatchRuntimeLog(session, 'report: no connected server offers report_write — the agent\'s report stays in the task result only');
+    dispatchRuntimeLog(session, 'report: no connected server offers report_write — the full report stays with its answer in the conversation or task result');
     return null;
   }
   try {
@@ -65,7 +65,10 @@ export async function answerAsReport(session, { content, request = '', callTool 
   });
   // If Donna cannot summarize the whole answer, keep the full answer in the
   // conversation. Never replace it with an opening excerpt or raw fallback.
-  if (!sentence) return null;
+  if (!sentence) {
+    dispatchRuntimeLog(session, 'report: the complete answer could not be summarized for the report; it stays in the conversation');
+    return null;
+  }
   const written = await writeRunReport(session, { title, content: text }, callTool);
   if (!written) return null;
   return { content: sentence, attachments: [written] };

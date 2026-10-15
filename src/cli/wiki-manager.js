@@ -32,7 +32,6 @@ import { extractActivity, mergePolledActivity, parseJsonText, sessionActivities,
 import { syncActivitiesToPlan, formatPlanStatus } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../core/agentEvents.js';
 import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
-import { createDeltaCoalescer } from '../runtime/deltaCoalescer.js';
 import { createStepNarrator } from '../runtime/stepNarrator.js';
 import { answerAsReport } from '../runtime/runReports.js';
 import { isLongAnswer, requestsReportDocument } from '../core/reports.js';
@@ -1915,7 +1914,9 @@ async function runRuntime(argv, agent) {
     // put a raw English dump in their bubble and seeded every later turn with
     // it.
     const displayInput = String(body.displayInput ?? '').trim() || input;
-    const reportRequested = requestsReportDocument(displayInput);
+    // Composed UI requests can explicitly ask for the full answer as a saved
+    // report even when their visible label is only a short maintenance title.
+    const reportRequested = body.saveAsReport === true || requestsReportDocument(displayInput);
     // Another surface may have switched the profile, or its file was edited.
     // Never under an active run: the run keeps the client it planned with.
     if (!context.running) syncRuntimeWikirc(context.session);
@@ -1977,25 +1978,17 @@ async function runRuntime(argv, agent) {
       conversationId,
     }));
     let messages = conversationSeed({ agentProjection: persistedProjection }, input);
-    // Streaming fragments are coalesced before they are persisted and pushed —
-    // one synchronous SQLite insert (plus one SSE write) per token stalled the
-    // event loop, freezing both chats (serve and ShellUI) while a long answer
-    // was still being produced. Flushed before any non-delta event so ordering
-    // and the final tail are preserved.
-    const deltaCoalescer = createDeltaCoalescer((delta) => dispatchAgentEvent(ephemeral, createAgentEvent('assistant_delta', {
-      origin: 'runtime_turn',
-      turnId,
-      workspace: context.workspace ?? null,
-      conversationId,
-      payload: { delta },
-    })), { intervalMs: 80 });
+    const announceReportPreparation = () => {
+      dispatchAgentEvent(ephemeral, createAgentEvent('assistant_progress', {
+        origin: 'runtime_turn', turnId, workspace: context.workspace ?? null, conversationId,
+        payload: { kind: 'report_preparation', message: 'Preparing the full report…' },
+      }));
+    };
     ephemeral._onAgentEvent = (event) => {
-      // Never let a final message (or any other event) overtake the buffered
-      // fragments that precede it: flush them first, in order.
-      if (event.type !== 'assistant_delta' && event.type !== 'assistant_delta_reset') deltaCoalescer.flush();
-      // A requested report is shown only after the whole answer has been
-      // summarized and saved; its raw streamed body never replaces Thinking.
-      if (reportRequested && ['assistant_delta', 'assistant_delta_reset'].includes(event.type)) return;
+      // Keep generated text out of the thread until Donna has completed her
+      // step narration. In particular, a report body must never flash in the
+      // chat before it is replaced by its summary and attachment.
+      if (event.type === 'assistant_delta' || event.type === 'assistant_delta_reset') return;
       const interactiveEvent = {
         ...event,
         origin: 'runtime_turn',
@@ -2004,11 +1997,10 @@ async function runRuntime(argv, agent) {
         workspace: context.workspace ?? ephemeral.workspace ?? null,
         conversationId,
       };
-      // A document-sized answer is held until the turn ends: it becomes a
-      // report and Donna's sentence replaces it (runReports.answerAsReport).
-      if (interactiveEvent.type === 'assistant_message' && !interactiveEvent.payload?.attachments
-        && !ephemeral._heldLongAnswer && (reportRequested || isLongAnswer(interactiveEvent.payload?.content))) {
-        ephemeral._heldLongAnswer = interactiveEvent;
+      if (interactiveEvent.type === 'assistant_message' && ephemeral._publishAssistantNow !== true
+        && String(interactiveEvent.payload?.content ?? '').trim()) {
+        ephemeral._heldInteractiveFinal = interactiveEvent;
+        ephemeral._narrationReady = stepNarrator.flush(interactiveEvent, context.session);
         return;
       }
       store.persistEvent(interactiveEvent);
@@ -2115,24 +2107,6 @@ async function runRuntime(argv, agent) {
         response = await runHeadlessChatTurn(ephemeral, input, {
           history,
           onStep: ephemeral._onStep,
-          // Answer fragments published as they go, coalesced (see
-          // deltaCoalescer above). The reducer aggregates them into the last
-          // conversation entry (`assistant_delta`), which `assistant_message`
-          // then freezes: both interfaces see the answer being written without
-          // one SQLite insert per token blocking the stream.
-          // An explicit report request has no useful partial document to read
-          // in the thread. Keep the live Thinking/progress status visible,
-          // then publish the complete answer as a summary plus report button.
-          onTextDelta: (delta) => { if (!reportRequested) deltaCoalescer.push(delta); },
-          onTextReset: () => {
-            deltaCoalescer.reset();
-            dispatchAgentEvent(ephemeral, createAgentEvent('assistant_delta_reset', {
-              origin: 'runtime_turn',
-              turnId,
-              workspace: context.workspace ?? null,
-              payload: {},
-            }));
-          },
           openWikiPages,
         });
       } else {
@@ -2142,13 +2116,6 @@ async function runRuntime(argv, agent) {
     } finally {
       clearInterval(heartbeatTimer);
       finishModelMeter();
-      // In a `finally`, not after the await: a throwing or aborted turn left
-      // the 80 ms timer armed, so a stray assistant_delta fired AFTER the
-      // "Runtime turn failed" message and appended orphan fragments to the
-      // wrong conversation entry — and the handle kept the session closure
-      // alive. Flush the tail first so ordering survives either way.
-      deltaCoalescer.flush();
-      deltaCoalescer.dispose();
     }
     // Persist the artifact the turn may have opened/edited (template_write,
     // template_read, …) back onto the long-lived session, so the next /turn —
@@ -2160,19 +2127,28 @@ async function runRuntime(argv, agent) {
       turnId,
       workspace: context.workspace ?? null,
     });
-    const heldAnswer = ephemeral._heldLongAnswer;
+    const heldAnswer = ephemeral._heldInteractiveFinal;
     if (heldAnswer) {
-      const replaced = await answerAsReport(ephemeral, { content: heldAnswer.payload?.content, request: displayInput });
+      await ephemeral._narrationReady;
+      const shouldSaveAsReport = reportRequested || isLongAnswer(heldAnswer.payload?.content);
+      if (shouldSaveAsReport) announceReportPreparation();
+      const replaced = shouldSaveAsReport
+        ? await answerAsReport(ephemeral, { content: heldAnswer.payload?.content, request: displayInput })
+        : null;
       if (replaced) {
-        dispatchAgentEvent(ephemeral, createAgentEvent('assistant_message', {
-          origin: 'runtime_turn', turnId, workspace: context.workspace ?? null, conversationId,
-          payload: { content: replaced.content, attachments: replaced.attachments },
-        }));
+        ephemeral._publishAssistantNow = true;
+        try {
+          dispatchAgentEvent(ephemeral, createAgentEvent('assistant_message', {
+            origin: 'runtime_turn', turnId, workspace: context.workspace ?? null, conversationId,
+            payload: { content: replaced.content, attachments: replaced.attachments },
+          }));
+        } finally {
+          ephemeral._publishAssistantNow = false;
+        }
       } else {
-        // No report tool, or it failed (said in the log): the answer stays.
+        // No report tool, or it failed (said in the log): the full answer stays.
         store.persistEvent(heldAnswer);
         serverHandle?.publish(heldAnswer);
-        stepNarrator.observe(heldAnswer, context.session);
       }
     }
     if (ephemeral._memoryExplicitlyChanged) {

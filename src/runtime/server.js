@@ -1132,11 +1132,28 @@ export function startRuntimeServer({
         if (!resolvedWorkspace) { sendJson(response, 400, { removed: false, reason: 'workspace_required' }); return; }
         const conversationId = String(body.conversationId ?? '').trim();
         if (!isConversationId(conversationId)) { sendJson(response, 400, { removed: false, reason: 'invalid_conversation_id' }); return; }
-        const index = Number(body.index);
-        if (!Number.isInteger(index) || index < 0) { sendJson(response, 400, { removed: false, reason: 'invalid_index' }); return; }
+        const requestedIndex = Number(body.index);
+        if ((!Number.isInteger(requestedIndex) || requestedIndex < 0) && !String(body.turnId ?? '').trim()) { sendJson(response, 400, { removed: false, reason: 'invalid_index' }); return; }
         const events = store.listEvents({ workspace: resolvedWorkspace, conversationId });
         const entries = reduceAgentEvents(events).conversation ?? [];
         const sequences = conversationEventSequences(events);
+        const turnId = String(body.turnId ?? '').trim();
+        let index = Number.isInteger(requestedIndex) && requestedIndex >= 0 ? requestedIndex : -1;
+        if (turnId) {
+          const byTurn = entries.map((entry, entryIndex) => entry?.role === 'assistant'
+            && String(entry?.turnId ?? '') === turnId
+            && (typeof body.content !== 'string' || String(entry?.content ?? '') === body.content) ? entryIndex : -1).filter((entryIndex) => entryIndex >= 0);
+          if (byTurn.length === 1) index = byTurn[0];
+          else if (byTurn.length > 1) { sendJson(response, 409, { removed: false, reason: 'ambiguous_turn' }); return; }
+        }
+        // A stale browser may have the old positional index after another
+        // conversation entry was inserted. Exact content is a safe recovery
+        // only when it identifies one assistant answer in this thread.
+        if (typeof body.content === 'string' && entries[index]?.content !== body.content) {
+          const exact = entries.map((entry, entryIndex) => entry?.role === 'assistant'
+            && String(entry?.content ?? '') === body.content ? entryIndex : -1).filter((entryIndex) => entryIndex >= 0);
+          if (exact.length === 1) index = exact[0];
+        }
         const entry = entries[index];
         if (!entry || !Number.isFinite(sequences[index])) { sendJson(response, 400, { removed: false, reason: 'index_out_of_range' }); return; }
         if (entry.role !== 'assistant') { sendJson(response, 400, { removed: false, reason: 'not_an_answer' }); return; }
@@ -1144,8 +1161,9 @@ export function startRuntimeServer({
           sendJson(response, 409, { removed: false, reason: 'entry_mismatch' });
           return;
         }
-        // The last answer may still be streaming under a live run.
-        if (context?.running && index === entries.length - 1) { sendJson(response, 409, { removed: false, reason: 'run_active' }); return; }
+        // Refuse only a live streaming answer. An unrelated active run must
+        // not make an already completed report impossible to remove.
+        if (entry.streaming === true) { sendJson(response, 409, { removed: false, reason: 'run_active' }); return; }
         const next = sequences[index + 1];
         const removedEvents = store.deleteConversationEntryEvents(sequences[index], Number.isFinite(next) ? next : null,
           { workspace: resolvedWorkspace, conversationId });

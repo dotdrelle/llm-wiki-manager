@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../../src/core/agentEvents.js';
-import { reportFromToolResult, reportTitle } from '../../src/core/reports.js';
+import { reportFromToolResult, reportTitle, requestsReportDocument } from '../../src/core/reports.js';
 import { runOutcomeReports } from '../../src/runtime/runReports.js';
 
 const longReport = `## Curation juno — résultat de la passe\n\n${'- une ligne du rapport\n'.repeat(40)}`;
@@ -82,4 +82,20 @@ test('a document-sized answer becomes a report and Donna\'s sentence; a detailed
   assert.match(said[0].system, /Write in this language: fr-FR/);
   // No report tool: null, and the caller keeps the answer.
   assert.equal(await answerAsReport({ mcp: {} }, { content: answer }), null);
+});
+
+test('an explicit report request is a creation intent, never a reference to an existing document', () => {
+  // Creation verb + noun, in French and English.
+  assert.equal(requestsReportDocument('fais-moi un rapport sur le projet'), true);
+  assert.equal(requestsReportDocument('rédige une restitution de la réunion'), true);
+  assert.equal(requestsReportDocument('fais un document de synthèse'), true);
+  assert.equal(requestsReportDocument('write a report on the migration'), true);
+  // Placement or form, only with an indefinite document.
+  assert.equal(requestsReportDocument('mets ça dans un document'), true);
+  assert.equal(requestsReportDocument('je veux ça sous forme de rapport'), true);
+  assert.equal(requestsReportDocument('give it to me as a report'), true);
+  // A reference to an existing document is a question, not a request.
+  assert.equal(requestsReportDocument('que dit le document fournisseur ?'), false);
+  assert.equal(requestsReportDocument('explique ce qu’il y a dans le rapport'), false);
+  assert.equal(requestsReportDocument('résume ce document'), false);
 });

@@ -28,7 +28,7 @@ test('without a model the facts are shown as data, and that is said once per ses
   const session = { language: 'fr' };
   assert.equal(await say(session, { kind: 'a', facts: { skill: '/x', steps: 2, empty: null, list: [] } }), 'skill: /x · steps: 2');
   assert.equal(await say(session, { kind: 'b', facts: 'fact line' }), 'fact line');
-  assert.deepEqual(logs(session), ['voice: a — no model configured; the facts are shown as data']);
+  assert.deepEqual(logs(session), ['voice: a — no model configured; the caller keeps its fallback']);
 });
 
 test('a failing or silent model is announced each time, and the facts are kept', async () => {
@@ -38,8 +38,8 @@ test('a failing or silent model is announced each time, and the facts are kept',
   fail = false;
   assert.equal(await say(session, { kind: 'k', facts: { n: 3 } }), 'n: 3');
   assert.deepEqual(logs(session), [
-    'voice: k — the model call failed (HTTP 503); the facts are shown as data',
-    'voice: k — the model returned nothing; the facts are shown as data',
+    'voice: k — the model call failed (HTTP 503); the caller keeps its fallback',
+    'voice: k — the model returned nothing; the caller keeps its fallback',
   ]);
 });
 

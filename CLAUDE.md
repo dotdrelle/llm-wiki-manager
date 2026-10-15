@@ -589,14 +589,13 @@ content must be obtained through the normal allow-listed read tools. Do not add
 a direct file-read/content-injection shortcut or a second mutable session field
 for this context.
 
-Interactive turns publish streamed fragments as `assistant_delta` events, but
-**coalesced** (`src/runtime/deltaCoalescer.js`, flushed every 80 ms and before
-any non-delta event) rather than one event per token. Persisting one synchronous
-SQLite row per token was a buffer problem: when a tool pulled a lot of content
-into the thread, the long answer stalled the event loop and both chats (serve
-and ShellUI) froze mid-stream. The durable event carries the buffered text; the
-reducer still aggregates it into the last conversation entry, so both UIs stream
-exactly as before.
+Interactive turns no longer stream generated text into the thread: their
+`assistant_delta` events are dropped, a non-empty `assistant_message` is held
+(`ephemeral._heldInteractiveFinal`) until Donna's final step narration has been
+emitted (`stepNarrator.flush`), and the answer is published whole — as a report
+summary plus attachment when it is document-sized. This is what keeps a report
+body from flashing in the chat before the report itself is ready; the `>_`
+bubble shows the completed step narrations, never raw tool notes.
 
 Donna exposes `runtime__kill({runId?, purge?})`. Set `purge: true` only for an
 explicit request to delete, reset, abandon, or replace the current plan; it
@@ -1209,7 +1208,7 @@ Common commands:
 wiki-workspace config <workspace> [path]
 wiki-workspace start [--open]
 wiki-workspace up <workspace>
-wiki-workspace refresh                  # pull the images even when nothing runs (cold stack after a reboot)
+wiki-workspace refresh                  # remove Compose images for a cold rebuild
 wiki-workspace wiki <workspace> doctor
 wiki-workspace wiki <workspace> reset [--dry-run] [--yes]
 wiki-workspace agents status

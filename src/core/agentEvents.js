@@ -385,23 +385,25 @@ function applyEvent(state, event) {
       };
       const previous = (state.stepNarratives ?? []).find((item) => item.scope === scope);
       const seen = new Set((previous?.lines ?? []).map((line) => line.id));
-      const answerAlreadyVisible = entry.final && state.conversation.some((message) =>
+      const answerIndex = entry.final && !entry.turnId ? state.conversation.findIndex((message) =>
         !message.progress && message.role === 'assistant' && message.streaming !== true
         && (!entry.conversationId || message.conversationId === entry.conversationId)
         && (!entry.turnId || message.turnId === entry.turnId)
-        && (!entry.runId || message.runId === entry.runId));
-      if (entry.final && answerAlreadyVisible) hideProgressEntries(state, entry);
-      // Completed Donna-authored progress is part of the visible conversation
-      // history while the work is running. The final answer replaces these
-      // transient entries in the chat; the activity panel keeps its own log.
-      for (const line of entry.lines) {
-        if (answerAlreadyVisible || !line.id || seen.has(line.id) || !['done', 'failed'].includes(line.state) || !line.text.trim()) continue;
-        state.conversation.push({
+        && (!entry.runId || message.runId === entry.runId)) : -1;
+      let insertedBeforeAnswer = 0;
+      // Run narrations remain in the thread history. Interactive-turn
+      // narrations are transient: the served chat displays them in the live
+      // Thinking bubble, in order, and they are not saved as extra answers.
+      for (const line of entry.turnId ? [] : entry.lines) {
+        if (!line.id || seen.has(line.id) || !['done', 'failed'].includes(line.state) || !line.text.trim()) continue;
+        const message = {
           role: 'assistant', content: line.text, progress: true,
           ...(entry.conversationId ? { conversationId: entry.conversationId } : {}),
           ...(entry.turnId ? { turnId: entry.turnId } : {}),
           ...(entry.runId ? { runId: entry.runId } : {}),
-        });
+        };
+        if (answerIndex >= 0) state.conversation.splice(answerIndex + insertedBeforeAnswer++, 0, message);
+        else state.conversation.push(message);
       }
       state.stepNarratives = [...(state.stepNarratives ?? []).filter((item) => item.scope !== scope), entry].slice(-MAX_NARRATIVES);
       return;
@@ -1005,6 +1007,10 @@ function appendAssistantDelta(state, delta, conversationId = null, turnId = null
  A tool-loop iteration may produce text then decide to call a tool: that text
  is intermediate reasoning the next turn replaces, it must not stay on screen.
 
+ The emptied entry KEEPS `streaming`, so resumed deltas land in the same slot
+ (`matchingStreamingAssistant`) instead of appending a second entry, and the
+ final `assistant_message` freezes that same entry in place.
+
  The entry is emptied, never popped. `serve`'s reconciliation (`chatHtml.ts`)
  assumes an append-only conversation — "the server only mutates the last
  entry, everything before is settled" — and indexes the loop only on the
@@ -1014,10 +1020,7 @@ function appendAssistantDelta(state, delta, conversationId = null, turnId = null
 */
 function discardStreamingAssistantMessage(state, conversationId = null, turnId = null, runId = null) {
   const streaming = matchingStreamingAssistant(state, conversationId, turnId, runId);
-  if (streaming) {
-    streaming.content = '';
-    delete streaming.streaming;
-  }
+  if (streaming) streaming.content = '';
 }
 
 // Attachments: what the message points to instead of carrying it — a report
@@ -1032,20 +1035,7 @@ function messageAttachments(attachments) {
   return list.length ? list : null;
 }
 
-function hideProgressEntries(state, identity = {}) {
-  if (!identity.turnId && !identity.runId) return;
-  for (const message of state.conversation) {
-    if (!message.progress) continue;
-    if (identity.conversationId && message.conversationId !== identity.conversationId) continue;
-    if (identity.turnId && message.turnId !== identity.turnId) continue;
-    if (identity.runId && message.runId !== identity.runId) continue;
-    message.content = '';
-    message.progressHidden = true;
-  }
-}
-
 function finalizeAssistantMessage(state, content, conversationId = null, attachments = null, turnId = null, runId = null) {
-  hideProgressEntries(state, { conversationId, turnId, runId });
   const attached = messageAttachments(attachments);
   const streaming = matchingStreamingAssistant(state, conversationId, turnId, runId);
   if (streaming) {

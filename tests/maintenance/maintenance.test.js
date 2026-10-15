@@ -35,6 +35,26 @@ test('source refusal suppresses unchanged bytes but allows changed content',asyn
 test('revoking policy prevents a previously approved action',async()=>{const h=harness();try{const pending=await h.service.runCandidate('x','cycle',{action:'ingest',target:'raw/untracked'});await h.service.decide('x',pending.request.id,pending.request.version,true);h.policy({maintenanceAccess:{defaults:{enabled:false}}});await assert.rejects(h.service.runCandidate('x','cycle2',{action:'ingest',target:'raw/untracked'}),/disabled/);assert.equal(h.executions.length,0);}finally{await h.service.close();h.db.close();}});
 
 test('routine sync/doctor run without a model; no gateway cycle when nothing else is due',async()=>{let launches=0;const runtime={execute:async()=>{launches++;return {runId:'r'};},status:async()=>({status:'completed'}),cancel:async()=>{}};const h=harness({facts:{pending:[],proposals:['p.json']},runtime});try{await h.service.tick('x');assert.deepEqual(h.executions.map(e=>e.operation),['doctor']);assert.equal(launches,0);}finally{await h.service.close();h.db.close();}});
+test('a gateway recovery records the actual resume date on the maintenance cycle',async()=>{
+  const startedAt='2026-10-08T12:46:20.667Z',resumedAt='2026-10-15T07:45:06.000Z';
+  let statusCalls=0,executeCalls=0;
+  const runtime={
+    execute:async()=>({runId:`gateway-${++executeCalls}`}),
+    status:async()=>++statusCalls===1?{status:'recovering'}:{status:'completed'},
+    cancel:async()=>{},
+  };
+  const h=harness({facts:{pending:[],proposals:[]},runtime,now:()=>new Date(statusCalls===0?startedAt:resumedAt)});
+  try{
+    await h.service.tick('x');
+    for(let i=0;i<1200&&(h.service.status('x').cycles[0]?.status!=='completed'||h.service.isActive('x'));i++)await new Promise(resolve=>setTimeout(resolve,0));
+    const resumed=h.service.status('x').cycles[0];
+    assert.equal(h.service.isActive('x'),false,'the monitor settles before the test closes its database');
+    assert.equal(resumed.at,startedAt);
+    assert.equal(resumed.resumedAt,resumedAt);
+    assert.equal(resumed.runId,'gateway-2');
+    assert.ok(h.service.store.events('x').some(e=>e.kind==='cycle_resumed'&&e.cycleId===resumed.id));
+  }finally{await h.service.close();h.db.close();}
+});
 test('the agent view never contains routine work',async()=>{const h=harness({facts:{pending:[],proposals:['p.json']}});try{assert.ok((await h.service.state('x')).candidates.some(c=>c.action==='doctor'));assert.ok(!(await h.service.state('x',{forAgent:true})).candidates.some(c=>c.action==='doctor'));}finally{await h.service.close();h.db.close();}});
 test('maintenance only updates an export that already exists, never a first one',async()=>{const d={template:'templates/a.md',output:'deliverables/a.md',version:'v',fresh:true,reasons:[]};const none=harness({facts:{pending:[],deliverables:[{...d,artifacts:{export:false,polish:false}}]}});const some=harness({facts:{pending:[],deliverables:[{...d,artifacts:{export:true,polish:false}}]}});try{assert.ok(!(await none.service.state('x')).candidates.some(c=>c.action==='deliver'));const c=(await some.service.state('x')).candidates.find(c=>c.action==='deliver');assert.equal(c.operation,'export');assert.match(c.summary,/existing export/);}finally{for(const h of [none,some]){await h.service.close();h.db.close();}}});
 test('a stale deliverable is explained in words, not reason codes',async()=>{const h=harness({facts:{pending:[],deliverables:[{template:'templates/a.md',output:'deliverables/a.md',version:'v',fresh:false,reasons:['knowledge_changed','output_modified'],artifacts:{}}]}});try{const c=(await h.service.state('x')).candidates.find(c=>c.action==='build');assert.match(c.summary,/the wiki content changed/);assert.doesNotMatch(c.summary,/knowledge_changed/);assert.match(describeError('maintenance_budget_exhausted'),/budget/);}finally{await h.service.close();h.db.close();}});

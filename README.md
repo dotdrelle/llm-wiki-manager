@@ -345,8 +345,9 @@ One command starts the whole deployment — agent-runtime, agents and every
 configured workspace — and is safe to repeat while things are already up:
 
 ```bash
-wiki-workspace start            # runtime + agents + all workspaces
+wiki-workspace start            # local images, then runtime + agents + workspaces
 wiki-workspace start --open     # …and open the first workspace chat
+wiki-workspace start --pull     # fetch published images before starting
 ```
 
 **Step 4 — Move to `wiki-manager` or `serve`.**

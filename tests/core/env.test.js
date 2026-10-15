@@ -272,7 +272,7 @@ test('an existing packaged gateway entry gains agent.maintain once, a foreign en
   withTempManagerDir((dir) => {
     const file = join(dir, 'agent-runtimes.json');
     writeFileSync(file, JSON.stringify({ runtimes: [
-      { id: 'deepagents', capabilities: [{ name: 'agent.curate' }] },
+      { id: 'deepagents', type: 'deepagents', capabilities: [{ name: 'agent.curate' }] },
       { id: 'other', capabilities: [{ name: 'agent.curate' }] },
     ] }));
     const created = ensureManagerScaffold();

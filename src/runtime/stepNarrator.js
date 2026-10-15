@@ -83,11 +83,18 @@ export function createStepNarrator({
         conversationId: event.conversationId ?? null, workspace: event.workspace ?? session?.workspace ?? null,
         request: '', steps: new Map(), taskSteps: new Map(), actionable: false, ended: false, calls: 0, lastCallAt: 0,
         digest: '', narratedDigest: '', timer: null, inFlight: false, finalSent: false, announced: false,
+        waiters: [],
       };
       scopes.set(key, scope);
       while (scopes.size > maxScopes) {
         const [oldest] = scopes.keys();
-        clearTimer(scopes.get(oldest)?.timer);
+        const evicted = scopes.get(oldest);
+        clearTimer(evicted?.timer);
+        // A dropped scope must never leave flush() waiting: the interactive
+        // chat holds its answer on that promise, and a silent hang would only
+        // end at the chat's 120 s watchdog. Say it, then release the waiter.
+        if (evicted?.waiters?.length) announce(evicted, 'scope evicted before its final narration');
+        for (const resolve of evicted?.waiters?.splice(0) ?? []) resolve();
         scopes.delete(oldest);
       }
     }
@@ -232,6 +239,8 @@ export function createStepNarrator({
           payload: { scope: scope.key, runId: scope.runId, turnId: scope.turnId, conversationId: scope.conversationId, final, lines },
         }));
       }
+    } catch (error) {
+      announce(scope, `narration unavailable (${error instanceof Error ? error.message : String(error)})`);
     } finally {
       scope.inFlight = false;
     }
@@ -244,6 +253,7 @@ export function createStepNarrator({
       scopes.delete(scope.key);
       finished.add(scope.key);
       if (finished.size > 200) finished.delete(finished.values().next().value);
+      for (const resolve of scope.waiters.splice(0)) resolve();
       return;
     }
     // Retry only on something new: a step changed during the call, or the
@@ -256,8 +266,36 @@ export function createStepNarrator({
 
   return {
     observe,
+    // Interactive chat holds its final answer until Donna's final step
+    // narration has been emitted. This keeps the narration visible before the
+    // answer, including when that answer is saved as a report.
+    flush(event, session) {
+      observe(event, session);
+      const key = narrativeScopeKey(event);
+      const scope = key ? scopes.get(key) : null;
+      if (!scope) return Promise.resolve();
+      scope.ended = true;
+      clearTimer(scope.timer);
+      scope.timer = null;
+      return new Promise((resolve) => {
+        scope.waiters.push(resolve);
+        if (scope.inFlight) {
+          scope.pending = true;
+        } else if (!scope.actionable) {
+          finish(scope, true);
+        } else {
+          void narrate(scope);
+        }
+      });
+    },
     // Test and shutdown hook.
     size: () => scopes.size,
-    stop: () => { for (const scope of scopes.values()) clearTimer(scope.timer); scopes.clear(); },
+    stop: () => {
+      for (const scope of scopes.values()) {
+        clearTimer(scope.timer);
+        for (const resolve of scope.waiters.splice(0)) resolve();
+      }
+      scopes.clear();
+    },
   };
 }

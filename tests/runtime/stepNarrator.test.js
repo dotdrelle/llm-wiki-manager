@@ -4,10 +4,11 @@ import test from 'node:test';
 import { createAgentEvent, reduceAgentEvents } from '../../src/core/agentEvents.js';
 import { createStepNarrator } from '../../src/runtime/stepNarrator.js';
 
-function harness({ reply = null, fail = null, llm = true } = {}) {
+function harness({ reply = null, fail = null, llm = true, deferred = false, narratorOptions = {} } = {}) {
   const timers = [];
   const calls = [];
   const published = [];
+  const held = [];
   let clock = Date.parse('2026-10-13T10:00:00Z');
   const session = {
     workspace: 'juno',
@@ -19,7 +20,11 @@ function harness({ reply = null, fail = null, llm = true } = {}) {
           calls.push(request);
           if (fail) throw new Error(fail);
           const { steps } = JSON.parse(request.input);
-          return reply ?? JSON.stringify({ lines: steps.map((step) => ({ id: step.id, text: `ligne ${step.id}` })) });
+          const lines = reply ?? JSON.stringify({ lines: steps.map((step) => ({ id: step.id, text: `ligne ${step.id}` })) });
+          // A call that does not answer on its own: the test decides when the
+          // narration returns, so a scope can be held while it is in flight.
+          if (deferred) return new Promise((resolve) => held.push(() => resolve(lines)));
+          return lines;
         },
       },
     } : {}),
@@ -29,6 +34,7 @@ function harness({ reply = null, fail = null, llm = true } = {}) {
     setTimer: (fn) => { timers.push(fn); return timers.length; },
     clearTimer: () => {},
     now: () => clock,
+    ...narratorOptions,
   });
   const event = (type, fields) => ({ ...createAgentEvent(type, { origin: 'test', workspace: 'juno', ...fields }), ts: new Date(clock).toISOString() });
   // A timer starts narrate() without awaiting it: let every pending call settle.
@@ -38,7 +44,7 @@ function harness({ reply = null, fail = null, llm = true } = {}) {
       await new Promise((resolve) => setImmediate(resolve));
     }
   };
-  return { narrator, session, calls, published, event, flush, advance: (ms) => { clock += ms; } };
+  return { narrator, session, calls, published, event, flush, advance: (ms) => { clock += ms; }, release: () => { for (const fn of held.splice(0)) fn(); } };
 }
 
 test('an action turn is narrated in the session language, from data, once per change and once at the end', async () => {
@@ -133,4 +139,35 @@ test('a task\'s declared verification joins the step that shows it; silence adds
   assert.equal(silent.state, 'done');
   assert.equal('verification' in silent, false);
   assert.match(h.calls.at(-1).system, /A step without it was not checked: say nothing about verification there/);
+});
+
+test('flush resolves without a model when the turn produced no narrated step', async () => {
+  const h = harness();
+  const turn = { turnId: 'turn-flush' };
+  h.narrator.observe(h.event('user_message', { ...turn, payload: { content: 'bonjour' } }), h.session);
+  await h.narrator.flush(h.event('assistant_message', { ...turn, payload: { content: 'Bonjour.' } }), h.session);
+  await h.flush();
+  assert.equal(h.calls.length, 0);
+  assert.equal(h.narrator.size(), 0);
+});
+
+test('flush waits for the final narration, and an evicted scope releases it, announced', async () => {
+  const h = harness({ deferred: true, narratorOptions: { maxScopes: 1 } });
+  const turnA = { turnId: 'turn-evicted' };
+  h.narrator.observe(h.event('user_message', { ...turnA, payload: { content: 'ajoute la source' } }), h.session);
+  h.narrator.observe(h.event('tool_call_started', { ...turnA, payload: { callId: 'c1', name: 'cme.cme_source_add', readOnly: false } }), h.session);
+  h.narrator.observe(h.event('tool_call_result', { ...turnA, payload: { callId: 'c1', ok: true } }), h.session);
+  let settled = false;
+  const waiting = h.narrator
+    .flush(h.event('assistant_message', { ...turnA, payload: { content: 'Fait.' } }), h.session)
+    .then(() => { settled = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, 'the answer waits for the final line');
+  // A second scope evicts the first (maxScopes: 1) while its call is in flight.
+  h.narrator.observe(h.event('user_message', { turnId: 'turn-next', payload: { content: 'autre demande' } }), h.session);
+  await waiting;
+  assert.equal(settled, true, 'eviction releases the waiter instead of hanging');
+  assert.ok(h.published.some((event) => event.type === 'runtime_log' && /evicted before its final narration/.test(event.payload.message)));
+  h.release();
+  await h.flush();
 });

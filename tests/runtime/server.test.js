@@ -2955,9 +2955,15 @@ test('removing one answer targets that entry of the thread and refuses a mismatc
     assert.equal((await (await post({ index: 0, conversationId: 'conv-mine01' })).json()).reason, 'not_an_answer');
     const mismatch = await post({ index: 1, conversationId: 'conv-mine01', content: 'something else' });
     assert.equal(mismatch.status, 409);
+    // An unrelated active run no longer blocks a settled answer; only an
+    // answer still streaming under it is refused.
     running = true;
-    assert.equal((await (await post({ index: 3, conversationId: 'conv-mine01' })).json()).reason, 'run_active');
-    assert.equal(calls.length, 2);
+    assert.equal((await post({ index: 3, conversationId: 'conv-mine01' })).status, 200);
+    assert.deepEqual(calls.at(-1), { from: 14, to: null, workspace: 'demo', conversationId: 'conv-mine01' });
+    thread.push({ ...createAgentEvent('assistant_delta', { origin: 'runtime', conversationId: 'conv-mine01', payload: { delta: 'a3 partielle' } }), sequence: 16 });
+    const streaming = await post({ index: 4, conversationId: 'conv-mine01', content: 'a3 partielle' });
+    assert.equal((await streaming.json()).reason, 'run_active');
+    assert.equal(calls.length, 3);
   } finally {
     await handle.close();
   }

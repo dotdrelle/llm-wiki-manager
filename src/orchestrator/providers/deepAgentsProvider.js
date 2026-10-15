@@ -157,11 +157,35 @@ export function createDeepAgentsProvider({
       return { runId, status: String(accepted?.status ?? 'running') };
     },
     async status(runId) {
-      const state = await httpJson(`/runs/${encodeURIComponent(String(runId))}`);
+      const idValue = String(runId);
+      const path = `/runs/${encodeURIComponent(idValue)}`;
+      let state;
+      try {
+        state = await httpJson(path);
+      } catch (error) {
+        // The gateway keeps run records in memory. After a container restart,
+        // a persisted manager receipt can outlive the run and GET /runs/:id
+        // returns 404 forever. Treat that exact response as a terminal lost
+        // run so reconciliation settles the receipt instead of retrying it on
+        // every maintenance scan. Other 404s and transport failures still
+        // surface as provider errors.
+        if (error instanceof RuntimeProviderUnavailableError
+          && error.runtime === id
+          && error.reason === `HTTP 404 on GET ${path}`) {
+          return {
+            runId: idValue,
+            status: 'failed',
+            lost: true,
+            error: 'the runtime no longer knows this run (it may have restarted or purged it); no replay was attempted',
+          };
+        }
+        throw error;
+      }
       return {
-        runId: String(state?.runId ?? runId),
+        runId: String(state?.runId ?? idValue),
         status: String(state?.status ?? 'running'),
         ...(state?.result ? { result: state.result } : {}),
+        ...(state?.lost ? { lost: true } : {}),
         // The gateway reports its failure at the TOP level; dropping it here
         // swallowed the only actionable sentence ("Unable to infer model
         // provider…") and left the manager to invent a cause.

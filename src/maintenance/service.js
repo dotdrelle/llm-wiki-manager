@@ -354,7 +354,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       // The gateway reports `error` as a string (CME as a string too); reading
       // only `.message` silently dropped the reason and left a bare "Failed:".
       const rawError=typeof result.error==='string'?result.error:result.error?.message??result.result?.error;
-      log(workspace,outcome==='done'?'action_done':outcome==='cancelled'?'interrupted':'failure',`${outcome==='done'?'Done':outcome==='cancelled'?'Cancelled':'Failed'}: ${candidate.summary}${outcome==='failed'&&rawError?` — ${describeError(rawError)}`:''}`,{cycleId,action:candidate.action,target:candidate.target,jobId:reservation.jobId,...(outcome==='failed'&&rawError?{detail:String(rawError)}:{})});
+      log(workspace,outcome==='done'?'action_done':outcome==='cancelled'?'interrupted':'failure',`${outcome==='done'?'Done':outcome==='cancelled'?'Cancelled':'Failed'}: ${candidate.summary}${outcome==='failed'&&rawError?` — ${describeError(rawError)}`:''}${result.lost?'; its credit is settled and it was not replayed':''}`,{cycleId,action:candidate.action,target:candidate.target,jobId:reservation.jobId,...(outcome==='failed'&&rawError?{detail:String(rawError)}:{})});
     }
     return outcome;
   }
@@ -375,7 +375,6 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
           if(!provider)throw new Error('maintenance_gateway_unavailable');
           result=await provider.status(r.jobId);
         }else result=jobState(parse(await callTool(ctx.session.mcp,r.provider,'agent_status',{jobId:r.jobId},shutdown.signal)));
-        if(result.lost)log(workspace,'failure',`${r.candidate?.summary??r.candidate?.action??'action'} — ${result.error}; its credit is settled`,{action:r.candidate?.action,jobId:r.jobId});
         if(terminal(result.status??result.result?.status))completeJob(workspace,ctx,r.id,result,r.cycle);
         else settled=false;
       }catch(error){degradedOnce(workspace,`job reconciliation interrupted: ${error.message}`);settled=false;}
@@ -415,8 +414,12 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       // the gateway it simply waits (announced below), routine work included.
       if(previous&&!host){gatewayUnavailable(workspace,ctx.session,discoveryError);return;}
       if(previous){
-        if(previous.runId){active.set(workspace,{cycle:previous,provider:host.runtimeProvider});void monitor(workspace,previous,host.runtimeProvider);return;}
-        const accepted=await host.runtimeProvider.execute({capability:'agent.maintain',operation:'run',workspace:{name:workspace},model:activeProfileModel(ctx.session),language:ctx.session.language,mcp:activeProfileMcp(ctx.session),maintenance:{cycleId:previous.id,endpoint:baseUrl,token:previous.secret,policy:p}});previous.runId=accepted.runId;store.cycle(previous);active.set(workspace,{cycle:previous,provider:host.runtimeProvider});void monitor(workspace,previous,host.runtimeProvider);return;
+        if(previous.runId){
+          previous.status='running';previous.resumedAt=now().toISOString();store.cycle(previous);
+          log(workspace,'cycle_resumed','cycle resumed after manager restart',{cycleId:previous.id});
+          active.set(workspace,{cycle:previous,provider:host.runtimeProvider});void monitor(workspace,previous,host.runtimeProvider);return;
+        }
+        const accepted=await host.runtimeProvider.execute({capability:'agent.maintain',operation:'run',workspace:{name:workspace},model:activeProfileModel(ctx.session),language:ctx.session.language,mcp:activeProfileMcp(ctx.session),maintenance:{cycleId:previous.id,endpoint:baseUrl,token:previous.secret,policy:p}});previous.runId=accepted.runId;previous.status='running';previous.resumedAt=now().toISOString();store.cycle(previous);log(workspace,'cycle_resumed','cycle resumed after manager restart',{cycleId:previous.id});active.set(workspace,{cycle:previous,provider:host.runtimeProvider});void monitor(workspace,previous,host.runtimeProvider);return;
       }
       if(!jobsSettled)return;
       const clean=(c)=>Object.fromEntries(Object.entries(c).filter(([k])=>!['mode','outsideWindow'].includes(k)));
@@ -477,7 +480,15 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     try {
       for(;;){
         const result=await provider.status(cycle.runId);
-        if(result.status==='recovering'){const ctx=await context(workspace);await provider.execute({capability:'agent.maintain',operation:'run',workspace:{name:workspace},model:activeProfileModel(ctx.session),language:ctx.session.language,mcp:activeProfileMcp(ctx.session),maintenance:{cycleId:cycle.id,endpoint:baseUrl,token:cycle.secret,policy:policy(workspace)}});}
+        if(result.status==='recovering'){
+          const ctx=await context(workspace);
+          const resumed=await provider.execute({capability:'agent.maintain',operation:'run',workspace:{name:workspace},model:activeProfileModel(ctx.session),language:ctx.session.language,mcp:activeProfileMcp(ctx.session),maintenance:{cycleId:cycle.id,endpoint:baseUrl,token:cycle.secret,policy:policy(workspace)}});
+          cycle.runId=String(resumed?.runId??cycle.runId);
+          cycle.status='running';
+          cycle.resumedAt=now().toISOString();
+          store.cycle(cycle);
+          log(workspace,'cycle_resumed','cycle resumed after gateway recovery',{cycleId:cycle.id,runId:cycle.runId});
+        }
         if(['completed','failed','cancelled'].includes(result.status)){
           cycle.status=result.status;cycle.result=result.result;store.cycle(cycle);store.settle(cycle.id);
           for(const r of store.reserved(workspace,{cycle:cycle.id,kind:'modelCalls'}))store.settle(r.id);

@@ -322,24 +322,30 @@ configured workspace, safe to repeat:
 wiki-workspace start [--pull] [--open]
 ```
 
-By default, `start` reuses images already present locally. Add `--pull` to fetch
-the images tagged in Compose before starting the external agents and each
-workspace stack. Compose then recreates services whose image changed:
+`start` uses the images already available locally. Add `--pull` to fetch the
+current images tagged in Compose before starting external agents and each
+workspace stack; Compose recreates services whose image changed:
 
 ```bash
 wiki-workspace start --pull
 ```
 
 This pulls the published Docker images; it does not update the host-side Node.js
-manager runtime. The shipped service images currently use the `latest` tag. Use
-`--pull` when a startup should check for new image versions.
+manager runtime. The shipped service images currently use the `latest` tag, so
+`--pull` checks the configured registry for current images. Without it, Compose
+is explicitly told `--pull never` on each `up`; this matters because Compose
+may pull `latest` even under its default `missing` policy. A missing local image
+therefore fails with its name instead of silently replacing the local build.
+It starts the external agents before the host runtime and waits for the local
+gateway health endpoint when that runtime is enabled.
 
 #### Start after reboot with systemd (Linux)
 
 The Docker containers have a restart policy, but the manager runtime is a host
 process outside Docker. To restart both the runtime and all configured stacks
 after a Linux reboot, install a systemd unit that runs `wiki-workspace start`.
-Use `--pull` if each boot should also fetch newer images.
+Each boot uses locally available Docker images; use
+`wiki-workspace start --pull` when the service should fetch current images.
 
 Create `/etc/systemd/system/wikillm.service`, replacing the example paths and
 user. `MANAGER_STATE` is the directory containing the manager `.env`,
@@ -361,7 +367,7 @@ WorkingDirectory=/srv/wiki-manager
 Environment="WIKI_MANAGER_ENV_FILE=/srv/wiki-manager/.env"
 Environment="WIKI_WORKSPACES_DIR=/srv/wiki-manager/workspaces"
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-ExecStart=/opt/wiki-manager/wiki-workspace start --pull
+ExecStart=/opt/wiki-manager/wiki-workspace start
 RemainAfterExit=yes
 TimeoutStartSec=0
 Restart=on-failure

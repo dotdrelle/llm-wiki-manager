@@ -97,8 +97,8 @@ Usage:
 Commands:
   config <workspace> [path]         Create workspace folder, auto-select ports, run wiki init
   up <workspace> [--open]           Start workspace stack: wiki + production
-  start [--pull] [--open]           Start everything: agent-runtime, agents and every
-                                    workspace (--pull updates images; --open opens chat)
+  start [--pull] [--open]           Start everything with local images;
+                                    --pull fetches published images first
   list                              List configured workspaces
   refresh                           Stop runtime/stacks and remove their Compose images
 
@@ -336,6 +336,11 @@ agents_compose() {
       # sans relancer toute la pile. Sans argument, tout monte comme avant.
       local only_services=("$@")
       ensure_agent_tokens
+      local configured_gateway_enabled
+      configured_gateway_enabled="$(env_value "$MANAGER_ENV_FILE" GATEWAY_ENABLED "${GATEWAY_ENABLED:-true}")"
+      if [[ ! "$configured_gateway_enabled" =~ ^(1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn])$ ]] && gateway_config_requires_local; then
+        printf 'Starting local gateway because agent-runtimes.json explicitly enables deepagents at localhost:%s.\n' "$(gateway_port)"
+      fi
       if [[ -z "$(env_value "$MANAGER_ENV_FILE" AGENTS_DATA_DIR "")" ]]; then
         # Pin the resolved absolute store once, so every later launch — manual
         # or through the app — mounts the same /data and the agents' durable
@@ -354,7 +359,11 @@ agents_compose() {
       gateway_enabled && mkdir -p "$agents_data_dir/gateway"
       mkdir -p "$workspaces_root"
       $do_pull && _agents_dc pull
-      local up_args=(up -d)
+      # Compose treats `:latest` as pull-worthy even with its default
+      # `missing` policy. The command-level --pull above is the explicit fetch
+      # path; the subsequent up must use that local image without checking the
+      # registry again (or replacing a just-built development image).
+      local up_args=(up -d --pull never)
       if [[ -n "$CACERT_PATH" ]]; then
         up_args+=(--force-recreate)
       fi
@@ -372,19 +381,22 @@ agents_compose() {
         gateway_container_running=true
       fi
       if gateway_enabled && ! $gateway_container_running && ! [[ " $requested_list " == *" gateway "* ]] && gateway_serving; then
-        printf 'Agentic gateway: already serving on :%s — reusing the existing runner (no container started).\n' "${GATEWAY_PORT:-7789}"
+        printf 'Agentic gateway: already serving on :%s — reusing the existing runner (no container started).\n' "$(gateway_port)"
         gateway_scale=(--scale gateway=0)
       fi
       up_args+=(${gateway_scale[@]+"${gateway_scale[@]}"})
       up_args+=(${only_services[@]+"${only_services[@]}"})
       _agents_dc "${up_args[@]}"
+      if gateway_enabled && { [[ ${#only_services[@]} -eq 0 ]] || [[ " $requested_list " == *" gateway "* ]]; }; then
+        wait_for_gateway
+      fi
       printf 'Workspaces root: %s\n' "$workspaces_root"
       printf 'Agents data:     %s\n' "$agents_data_dir"
       [[ -z "$CACERT_PATH" ]] || printf 'CA cert:         %s -> /wiki-manager-ca.pem\n' "$CACERT_PATH"
       printf 'Agents: cme=:%s  documents=:%s' \
         "${CME_MCP_PORT:-3336}" "${DOCUMENTS_MCP_PORT:-3337}"
       connectors_enabled && printf '  connectors=:%s' "${CONNECTORS_MCP_PORT:-3338}"
-      gateway_enabled && printf '  gateway=:%s' "${GATEWAY_PORT:-7789}"
+      gateway_enabled && printf '  gateway=:%s' "$(gateway_port)"
       printf '\n'
       [[ ! -f "$MANAGER_COMPOSE_DIR/agents.docker-compose.override.yml" ]] || printf 'User override: %s\n' "$MANAGER_COMPOSE_DIR/agents.docker-compose.override.yml"
       ;;
@@ -603,8 +615,41 @@ gateway_enabled() {
   enabled="$(env_value "$MANAGER_ENV_FILE" GATEWAY_ENABLED "${GATEWAY_ENABLED:-true}")"
   case "$enabled" in
     1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) return 0 ;;
-    *) return 1 ;;
+    *) gateway_config_requires_local ;;
   esac
+}
+
+gateway_port() {
+  env_value "$MANAGER_ENV_FILE" GATEWAY_PORT "${GATEWAY_PORT:-7789}"
+}
+
+gateway_config_requires_local() {
+  # Runtime discovery honors an explicitly enabled local deepagents entry even
+  # when GATEWAY_ENABLED is false. Keep Compose aligned with that provider
+  # declaration instead of starting a manager guaranteed to get connection
+  # refused. A remote endpoint remains under its own lifecycle.
+  local config_file="$(dirname "$MANAGER_ENV_FILE")/agent-runtimes.json"
+  local port
+  port="$(gateway_port)"
+  [[ -f "$config_file" ]] || return 1
+  node - "$config_file" "$port" <<'NODE'
+const fs = require('node:fs');
+try {
+  const raw = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+  const entries = Array.isArray(raw) ? raw : (raw?.runtimes ?? []);
+  const port = String(process.argv[3]);
+  const local = new Set(['localhost', '127.0.0.1', '::1', '[::1]', 'host.docker.internal']);
+  const enabled = entries.some((entry) => {
+    if (entry?.type !== 'deepagents' || entry?.enabled === false) return false;
+    if (!entry.endpoint) return true;
+    try {
+      const url = new URL(String(entry.endpoint));
+      return local.has(url.hostname) && (url.port || (url.protocol === 'https:' ? '443' : '80')) === port;
+    } catch { return false; }
+  });
+  process.exit(enabled ? 0 : 1);
+} catch { process.exit(1); }
+NODE
 }
 
 # Same lifecycle discipline as the 7788 runtime: an agentic gateway ALREADY
@@ -613,14 +658,25 @@ gateway_enabled() {
 # (dev); a token-configured gateway (the container, or a native one with
 # GATEWAY_AUTH_TOKEN) answers only to the Bearer — probe both.
 gateway_serving() {
-  local port="${GATEWAY_PORT:-7789}"
+  local port
   local token url
+  port="$(gateway_port)"
   url="http://localhost:${port}/health"
   token="$(env_value "$MANAGER_ENV_FILE" GATEWAY_AUTH_TOKEN "")"
   if [[ -n "$token" ]]; then
     curl -fsS -m 3 -H "Authorization: Bearer $token" "$url" >/dev/null 2>&1 && return 0
   fi
   curl -fsS -m 3 "$url" >/dev/null 2>&1
+}
+
+wait_for_gateway() {
+  local max_attempts=30 attempt port
+  port="$(gateway_port)"
+  for ((attempt=1; attempt<=max_attempts; attempt++)); do
+    gateway_serving && return 0
+    sleep 2
+  done
+  die "agentic gateway did not become ready at localhost:${port}/health after 60s; check wiki-workspace agents logs gateway and GATEWAY_ENABLED in $MANAGER_ENV_FILE"
 }
 
 ensure_endpoints_file() {
@@ -989,7 +1045,9 @@ ensure_runtime_up() {
 
 start_workspace_services() {
   ensure_runtime_up
-  compose_for_workspace "$1" up -d serve mcp-http production-mcp
+  # Keep the same local-image contract as the agents stack. In particular,
+  # Compose otherwise pulls `:latest` during `up`, even when it is cached.
+  compose_for_workspace "$1" up -d --pull never serve mcp-http production-mcp
 }
 
 ensure_compose_override() {
@@ -1463,19 +1521,13 @@ wait_and_open() {
   open_app_mode "${url}"
 }
 
-# `start` — the whole deployment in one command: the host agent-runtime, the
-# external agents, then every configured workspace stack. Each step is the
-# same idempotent command the operator would run by hand, so `start` is safe
-# to repeat while things are already up. With pull_images=1, update published
-# images before starting each stack. A workspace failure stops the run — the
-# failing compose command already says why.
+  # `start` — optionally refresh published images, bring up external agents and wait for
+# the gateway health endpoint, then start the host runtime and workspace
+# stacks. It is safe to repeat; starting providers first avoids boot-time
+# discovery against a gateway whose container exists but is not listening yet.
 start_all() {
   local open_browser="${1:-0}"
   local pull_images="${2:-0}"
-
-  printf -- '── agent-runtime ──\n'
-  runtime_command up
-  printf '\n'
 
   printf -- '── external agents ──\n'
   if [[ "$pull_images" == "1" ]]; then
@@ -1483,6 +1535,10 @@ start_all() {
   else
     agents_compose up
   fi
+  printf '\n'
+
+  printf -- '── agent-runtime ──\n'
+  runtime_command up
   printf '\n'
 
   mkdir -p "$WORKSPACES_DIR"
@@ -1654,7 +1710,7 @@ main() {
     exit 0
   fi
 
-  # start [--pull] [--open] — everything: runtime, agents, every workspace
+  # start [--pull] [--open] — everything, local images by default
   if [[ $# -ge 1 && "$1" == "start" ]]; then
     shift
     local start_open=0

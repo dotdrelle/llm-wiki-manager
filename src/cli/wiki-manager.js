@@ -45,6 +45,7 @@ import { listWorkspaces } from '../core/workspaces.js';
 import { findSkill } from '../core/skills.js';
 import { rememberArtifact } from '../core/currentArtifact.js';
 import { loadWorkspaceHelpIndex, memoryListResult, readConversationEvents, searchConversationEvents } from '../core/workspaceMemory.js';
+import { isSimpleWorkspaceFactQuestion } from '../core/wikiPresearch.js';
 // Runtime modules use node:sqlite (Node.js built-in unavailable in Bun).
 // They are imported dynamically so the shell / TUI path never loads them.
 
@@ -1951,14 +1952,23 @@ async function runRuntime(argv, agent) {
     } else try {
       const vectorConfig = context.session.wikircConfig?.retrieval?.vector;
       let queryEmbedding = null;
-      if (vectorConfig?.enabled) {
+      const hasSelectedWikiContext = Boolean(body.context?.openWikiPage)
+        || (Array.isArray(body.context?.openWikiPages) && body.context.openWikiPages.length > 0);
+      const hasFastWikiTool = Object.values(ephemeral.mcp ?? {}).some((endpoint) =>
+        endpoint?.status === 'connected'
+        && (endpoint.tools ?? []).some((tool) => String(tool?.name ?? '').split('__').at(-1) === 'wiki_collect_context'));
+      const skipVectorForFastFact = isSimpleWorkspaceFactQuestion(input)
+        && hasFastWikiTool && !context.running && !hasSelectedWikiContext;
+      if (vectorConfig?.enabled && !skipVectorForFastFact) {
         try { queryEmbedding = (await embedMemoryTexts([input], vectorConfig))?.[0] ?? null; }
         catch (error) { emitRuntimeLog(context.session, error instanceof Error ? error.message : 'memory.vector-unavailable: embedding request failed'); }
+      } else if (vectorConfig?.enabled && skipVectorForFastFact) {
+        emitRuntimeLog(context.session, 'memory.vector-skipped: short factual question; local lexical memory retrieval used');
       }
       ephemeral.workspaceMemoryFacts = memoryStore.search({ workspace: context.workspace, query: input, queryEmbedding,
         limit: Math.max(1, Math.min(20, Number(process.env.WIKI_MANAGER_MEMORY_TOP_K) || 8)) });
       const vectorBacked = ephemeral.workspaceMemoryFacts.length > 0 && ephemeral.workspaceMemoryFacts.every((fact) => Number.isFinite(fact.vectorScore));
-      if ((!queryEmbedding || !vectorBacked) && !memoryFallbackAnnounced) {
+      if ((!queryEmbedding || !vectorBacked) && !skipVectorForFastFact && !memoryFallbackAnnounced) {
         emitRuntimeLog(context.session, 'memory.vector-unavailable: lexical workspace-memory retrieval is active');
         memoryFallbackAnnounced = true;
       }

@@ -1199,6 +1199,50 @@ test('an agent turn searches the wiki before its first model call', async () => 
   assert.equal(first[index + 1].content, 'compare les options A et B');
 });
 
+test('a short factual wiki question uses one bounded local lookup and one tool-less model call', async () => {
+  const originalFetch = globalThis.fetch;
+  const mcpCalls = [];
+  const modelCalls = [];
+  const evidence = {
+    coverage: { readPageCount: 1, truncatedPageCount: 0 },
+    readPagePaths: ['wiki/sources/meeting-6.md'],
+    readPages: [{ path: 'wiki/sources/meeting-6.md', content: '# Meeting 6\nDate: 12 October 2026', truncated: false }],
+    candidateResults: [],
+    notReadRawSources: [],
+  };
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init?.body ?? '{}');
+    if (body.method === 'tools/call') mcpCalls.push(body);
+    const result = body.method === 'tools/call'
+      ? { content: [{ type: 'text', text: JSON.stringify(evidence) }] }
+      : { protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'wiki', version: 'test' } };
+    const text = JSON.stringify({ jsonrpc: '2.0', id: body.id ?? 1, result });
+    return { ok: true, status: 200, headers: { get: () => null }, text: async () => text };
+  };
+  try {
+    const session = sessionBase({
+      mcp: { wiki: { status: 'connected', url: `http://agent-fast-fact-${Math.random()}.test/mcp`, tools: [
+        { name: 'wiki_collect_context', inputSchema: { type: 'object', properties: { question: { type: 'string' } } } },
+        { name: 'wiki_search_context', inputSchema: { type: 'object', properties: { question: { type: 'string' } } } },
+      ] } },
+      llm: { async completeWithTools(args) {
+        modelCalls.push(args);
+        return { tool_calls: [], content: 'La réunion 6 a eu lieu le 12 octobre 2026, selon wiki/sources/meeting-6.md.' };
+      } },
+    });
+    const result = await createAgentGraph().invoke({ input: 'c quoi la date du dernier copil', session });
+    assert.equal(mcpCalls.length, 1);
+    assert.equal(mcpCalls[0].params.name, 'wiki_collect_context');
+    assert.equal(modelCalls.length, 1);
+    assert.deepEqual(modelCalls[0].tools, []);
+    assert.ok(modelCalls[0].system.length < 1000);
+    assert.ok(modelCalls[0].messages[0].content.includes('complete pages'));
+    assert.equal(result.response, 'La réunion 6 a eu lieu le 12 octobre 2026, selon wiki/sources/meeting-6.md.');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('an agent turn never pre-searches a skill objective or a later run turn', async () => {
   const skill = await agentFirstCallMessages({ _skillStack: ['pipeline'] });
   assert.deepEqual(skill.searched, []);

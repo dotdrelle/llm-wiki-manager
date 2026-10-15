@@ -87,7 +87,11 @@ configured workspace — and is safe to repeat while things are already up:
 ```bash
 wiki-workspace start              # runtime + agents + all workspaces
 wiki-workspace start --open       # …and open the first workspace chat
+wiki-workspace start --pull       # also fetch the current Compose images
 ```
+
+For unattended startup after a Linux reboot, see
+[Start after reboot with systemd](technical-reference.md#start-after-reboot-with-systemd-linux).
 
 From the `donna` shell you can confirm the same from the orchestrator's side:
 

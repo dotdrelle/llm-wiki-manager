@@ -319,8 +319,113 @@ Or start the whole deployment at once — agent-runtime, agents and every
 configured workspace, safe to repeat:
 
 ```bash
-wiki-workspace start [--open]
+wiki-workspace start [--pull] [--open]
 ```
+
+By default, `start` reuses images already present locally. Add `--pull` to fetch
+the images tagged in Compose before starting the external agents and each
+workspace stack. Compose then recreates services whose image changed:
+
+```bash
+wiki-workspace start --pull
+```
+
+This pulls the published Docker images; it does not update the host-side Node.js
+manager runtime. The shipped service images currently use the `latest` tag. Use
+`--pull` when a startup should check for new image versions.
+
+#### Start after reboot with systemd (Linux)
+
+The Docker containers have a restart policy, but the manager runtime is a host
+process outside Docker. To restart both the runtime and all configured stacks
+after a Linux reboot, install a systemd unit that runs `wiki-workspace start`.
+Use `--pull` if each boot should also fetch newer images.
+
+Create `/etc/systemd/system/wikillm.service`, replacing the example paths and
+user. `MANAGER_STATE` is the directory containing the manager `.env`,
+`mcp.endpoints.json`, and `workspaces/`; `WIKI_WORKSPACE_SCRIPT` is the installed
+`wiki-workspace` executable. The service account must be allowed to use Docker
+and Node.js 22 or newer must be on its `PATH`.
+
+```ini
+[Unit]
+Description=wikiLLM workspace and manager runtime
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=wiki
+WorkingDirectory=/srv/wiki-manager
+Environment="WIKI_MANAGER_ENV_FILE=/srv/wiki-manager/.env"
+Environment="WIKI_WORKSPACES_DIR=/srv/wiki-manager/workspaces"
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/opt/wiki-manager/wiki-workspace start --pull
+RemainAfterExit=yes
+TimeoutStartSec=0
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now wikillm.service
+sudo systemctl status wikillm.service
+```
+
+The unit runs once at boot; it does not supervise a runtime that crashes later.
+The runtime log is in the manager state directory at
+`.wiki/runtime/runtime.log`.
+
+#### Start at login with launchd (macOS)
+
+On macOS, install a LaunchAgent instead of a systemd unit. It runs when the
+manager user's session logs in, so configure Docker Desktop to start at login
+as well. Replace the paths with the installed `wiki-workspace` executable and
+the manager state directory:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>fr.wikillm.start</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/wiki-workspace</string>
+    <string>start</string>
+    <string>--pull</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/wiki/wiki-manager</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>WIKI_MANAGER_ENV_FILE</key><string>/Users/wiki/wiki-manager/.env</string>
+    <key>WIKI_WORKSPACES_DIR</key><string>/Users/wiki/wiki-manager/workspaces</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><false/>
+  <key>StandardOutPath</key><string>/Users/wiki/wiki-manager/autostart.log</string>
+  <key>StandardErrorPath</key><string>/Users/wiki/wiki-manager/autostart.log</string>
+</dict>
+</plist>
+```
+
+Save it as `~/Library/LaunchAgents/fr.wikillm.start.plist`, then load it:
+
+```bash
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/fr.wikillm.start.plist"
+launchctl kickstart -k "gui/$(id -u)/fr.wikillm.start"
+```
+
+Like the systemd unit, this runs the startup command at login; it does not
+supervise the manager runtime if that process crashes later.
 
 This uses the packaged `agents.docker-compose.yml` (it lives inside the npm
 package — never edit it, updates overwrite it). On first run, `agents up`
@@ -493,7 +598,7 @@ and every configured workspace; safe to repeat):
 
 ```bash
 wiki-workspace up my-project
-wiki-workspace start [--open]
+wiki-workspace start [--pull] [--open]
 ```
 
 Run wiki commands:

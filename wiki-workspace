@@ -97,8 +97,8 @@ Usage:
 Commands:
   config <workspace> [path]         Create workspace folder, auto-select ports, run wiki init
   up <workspace> [--open]           Start workspace stack: wiki + production
-  start [--open]                    Start everything: agent-runtime, agents and every
-                                    configured workspace (--open opens the first chat)
+  start [--pull] [--open]           Start everything: agent-runtime, agents and every
+                                    workspace (--pull updates images; --open opens chat)
   list                              List configured workspaces
   refresh                           Stop runtime/stacks and remove their Compose images
 
@@ -1466,17 +1466,23 @@ wait_and_open() {
 # `start` — the whole deployment in one command: the host agent-runtime, the
 # external agents, then every configured workspace stack. Each step is the
 # same idempotent command the operator would run by hand, so `start` is safe
-# to repeat while things are already up. A workspace failure stops the run —
-# the failing compose command already says why.
+# to repeat while things are already up. With pull_images=1, update published
+# images before starting each stack. A workspace failure stops the run — the
+# failing compose command already says why.
 start_all() {
   local open_browser="${1:-0}"
+  local pull_images="${2:-0}"
 
   printf -- '── agent-runtime ──\n'
   runtime_command up
   printf '\n'
 
   printf -- '── external agents ──\n'
-  agents_compose up
+  if [[ "$pull_images" == "1" ]]; then
+    agents_compose up --pull
+  else
+    agents_compose up
+  fi
   printf '\n'
 
   mkdir -p "$WORKSPACES_DIR"
@@ -1489,7 +1495,7 @@ start_all() {
     found=1
     [[ -n "$first_name" ]] || first_name="$name"
     printf -- '── workspace: %s ──\n' "$name"
-    up_workspace "$name"
+    up_workspace "$name" 0 "$pull_images"
     printf '\n'
   done
 
@@ -1595,10 +1601,15 @@ config_workspace() {
 up_workspace() {
   local workspace="$1"
   local open_browser="${2:-0}"
+  local pull_images="${3:-0}"
   need_workspace_env "$workspace"
   local ws_path
   ws_path="$(normalize_path "$(workspace_value "$workspace" WIKI_WORKSPACE_PATH)")"
   ensure_workspace_dirs "$ws_path"
+  if [[ "$pull_images" == "1" ]]; then
+    printf 'Pulling workspace images: %s\n' "$workspace"
+    compose_for_workspace "$workspace" pull serve mcp-http production-mcp
+  fi
   start_workspace_services "$workspace"
 
   local serve_port prod_port
@@ -1643,13 +1654,20 @@ main() {
     exit 0
   fi
 
-  # start [--open] — everything: runtime, agents, every configured workspace
+  # start [--pull] [--open] — everything: runtime, agents, every workspace
   if [[ $# -ge 1 && "$1" == "start" ]]; then
-    [[ $# -le 2 ]] || die "start takes at most --open"
-    [[ "${2:-}" == "" || "${2:-}" == "--open" ]] || die "start takes at most --open"
+    shift
     local start_open=0
-    [[ "${2:-}" == "--open" ]] && start_open=1
-    start_all "$start_open"
+    local start_pull=0
+    local option
+    for option in "$@"; do
+      case "$option" in
+        --open) start_open=1 ;;
+        --pull) start_pull=1 ;;
+        *) die "start accepts only --pull and --open" ;;
+      esac
+    done
+    start_all "$start_open" "$start_pull"
     exit 0
   fi
 

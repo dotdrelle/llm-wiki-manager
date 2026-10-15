@@ -7,17 +7,19 @@ const script = readFileSync(fileURLToPath(new URL('../../wiki-workspace', import
 
 test('wiki-workspace start advertises itself in the usage text', () => {
   const usage = script.slice(script.indexOf('Commands:'), script.indexOf('Configuration:'));
-  assert.match(usage, /start \[--open\]\s+Start everything: agent-runtime, agents and every/);
+  assert.match(usage, /start \[--pull\] \[--open\]\s+Start everything: agent-runtime, agents and every/);
   assert.match(usage, /configured workspace/);
 });
 
 test('wiki-workspace start routes to a start_all that composes the three idempotent steps', () => {
   const fn = script.slice(script.indexOf("# `start` — the whole deployment"), script.indexOf('ensure_workspace_dirs()'));
+  const workspaceStart = script.slice(script.indexOf('up_workspace() {'), script.indexOf('\nmain() {'));
   // The whole deployment is the same three commands an operator runs by hand,
   // in the boot order the runtime expects: runtime, agents, then workspaces.
   assert.match(fn, /runtime_command up/);
-  assert.match(fn, /agents_compose up/);
-  assert.match(fn, /up_workspace "\$name"/);
+  assert.match(fn, /if \[\[ "\$pull_images" == "1" \]\]; then\n    agents_compose up --pull/);
+  assert.match(fn, /up_workspace "\$name" 0 "\$pull_images"/);
+  assert.match(workspaceStart, /compose_for_workspace "\$workspace" pull serve mcp-http production-mcp/);
   // Every configured workspace joins, discovered exactly like list_workspaces:
   // a directory under WORKSPACES_DIR carrying a .env.
   assert.match(fn, /for entry in "\$WORKSPACES_DIR"\/\*/);
@@ -29,8 +31,10 @@ test('wiki-workspace start routes to a start_all that composes the three idempot
   assert.match(fn, /idempotent/);
 });
 
-test('the start dispatch accepts only an optional --open', () => {
-  const dispatch = script.slice(script.indexOf('# start [--open]'), script.indexOf('# up <workspace> [--open]'));
-  assert.match(dispatch, /\[\[ "\$\{2:-\}" == "" \|\| "\$\{2:-\}" == "--open" \]\]/);
-  assert.match(dispatch, /start_all "\$start_open"/);
+test('the start dispatch accepts --pull and --open in either order', () => {
+  const dispatch = script.slice(script.indexOf('# start [--pull] [--open]'), script.indexOf('# up <workspace> [--open]'));
+  assert.match(dispatch, /for option in "\$@"/);
+  assert.match(dispatch, /--open\) start_open=1/);
+  assert.match(dispatch, /--pull\) start_pull=1/);
+  assert.match(dispatch, /start_all "\$start_open" "\$start_pull"/);
 });

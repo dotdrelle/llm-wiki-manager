@@ -1535,30 +1535,6 @@ async function runRuntime(argv, agent) {
       }
       context.workspace = session.workspace ?? workspace ?? context.workspace ?? null;
       syncRuntimeWikirc(session);
-      await loadWorkspaceHelpIndex(session, { onNotice: (message) => emitRuntimeLog(session, message) });
-      if (context.workspace && memoryStore) {
-        try {
-          const query = String(body.publicInput ?? input).slice(0, 5000);
-          const vectorConfig = session.wikircConfig?.retrieval?.vector;
-          let queryEmbedding = null;
-          if (vectorConfig?.enabled) {
-            try { queryEmbedding = (await embedMemoryTexts([query], vectorConfig))?.[0] ?? null; }
-            catch { emitRuntimeLog(session, 'memory.vector-unavailable: agent-run projection uses lexical workspace-memory search'); }
-          }
-          session.workspaceMemoryFacts = memoryStore.search({ workspace: context.workspace, query, queryEmbedding,
-            limit: Math.max(1, Math.min(20, Number(process.env.WIKI_MANAGER_MEMORY_TOP_K) || 8)) });
-          if (vectorConfig?.enabled && session.workspaceMemoryFacts.length
-            && !session.workspaceMemoryFacts.every((fact) => Number.isFinite(fact.vectorScore))) {
-            emitRuntimeLog(session, 'memory.vector-unavailable: agent-run projection uses lexical workspace-memory search');
-          }
-        } catch (error) {
-          session.workspaceMemoryFacts = [];
-          emitRuntimeLog(session, `memory.search-degraded: agent-run projection unavailable (${error instanceof Error ? error.message : String(error)})`);
-        }
-      } else {
-        session.workspaceMemoryFacts = [];
-        emitRuntimeLog(session, 'memory.unavailable: agent run has no resolved workspace; shared memory was not consulted');
-      }
       /*
        Stack of the skills currently executing.
 
@@ -1619,6 +1595,33 @@ async function runRuntime(argv, agent) {
       // Approve at launch, before any model call (runtime/launchApproval.js).
       const { requestLaunchApproval } = await import('../runtime/launchApproval.js');
       await requestLaunchApproval(session, { runId, publicInput: body.publicInput ?? input });
+      await loadWorkspaceHelpIndex(session, { onNotice: (message) => emitRuntimeLog(session, message) });
+      // Vectorizing the run's memory query is an embedding-model call. Keep it
+      // behind the same launch gate as the agent's first completion: an
+      // unapproved run must not spend tokens or contact the model provider.
+      if (context.workspace && memoryStore) {
+        try {
+          const query = String(body.publicInput ?? input).slice(0, 5000);
+          const vectorConfig = session.wikircConfig?.retrieval?.vector;
+          let queryEmbedding = null;
+          if (vectorConfig?.enabled) {
+            try { queryEmbedding = (await embedMemoryTexts([query], vectorConfig))?.[0] ?? null; }
+            catch { emitRuntimeLog(session, 'memory.vector-unavailable: agent-run projection uses lexical workspace-memory search'); }
+          }
+          session.workspaceMemoryFacts = memoryStore.search({ workspace: context.workspace, query, queryEmbedding,
+            limit: Math.max(1, Math.min(20, Number(process.env.WIKI_MANAGER_MEMORY_TOP_K) || 8)) });
+          if (vectorConfig?.enabled && session.workspaceMemoryFacts.length
+            && !session.workspaceMemoryFacts.every((fact) => Number.isFinite(fact.vectorScore))) {
+            emitRuntimeLog(session, 'memory.vector-unavailable: agent-run projection uses lexical workspace-memory search');
+          }
+        } catch (error) {
+          session.workspaceMemoryFacts = [];
+          emitRuntimeLog(session, `memory.search-degraded: agent-run projection unavailable (${error instanceof Error ? error.message : String(error)})`);
+        }
+      } else {
+        session.workspaceMemoryFacts = [];
+        emitRuntimeLog(session, 'memory.unavailable: agent run has no resolved workspace; shared memory was not consulted');
+      }
       // Every model call of the run, then one summary (runtime/modelMeter.js).
       const { meterModelCalls } = await import('../runtime/modelMeter.js');
       session._finishModelMeter = meterModelCalls(session, { scope: 'run', log: (message) => emitRuntimeLog(session, message) });
@@ -2201,7 +2204,6 @@ async function runRuntime(argv, agent) {
       .map((context) => ({ workspace: context.workspace ?? null, runId: context.currentRunId ?? null })),
     run: executeRun,
     turn: executeInteractiveTurn,
-    delegate: prepareDelegation,
     cancel: (context) => emitRuntimeLog(context.session, 'runtime: cancel requested'),
     resume: ({ workspace }) => recoverRuntime({ workspace, manual: true }),
     approve: (request) => forwardRuntimeApproval(getWorkspaceContext, request),

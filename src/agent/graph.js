@@ -1007,11 +1007,15 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
       */
       if (typeof session?._delegateWithinRun === 'function') {
         const inRun = await session._delegateWithinRun(objective);
+        const awaitingApproval = inRun.awaitingApproval === true;
         return JSON.stringify({
           delegated: true,
           runId: inRun.runId,
           summary: inRun.summary ?? null,
-          message: `Action started (${String(inRun.runId).slice(0, 8)}) after real-plan validation: ${inRun.summary?.tasks ?? 0} task(s), ${inRun.summary?.agent ?? 'resolved agent'}. Execution in progress.`,
+          awaitingApproval,
+          message: awaitingApproval
+            ? `Plan validated (${inRun.summary?.tasks ?? 0} task(s)); waiting for human approval before execution.`
+            : `Action started (${String(inRun.runId).slice(0, 8)}) after real-plan validation: ${inRun.summary?.tasks ?? 0} task(s), ${inRun.summary?.agent ?? 'resolved agent'}. Execution in progress.`,
         });
       }
       const result = await postRuntimeDelegate(objective, { url, workspace, conversationId: session.conversationId ?? null });
@@ -1020,7 +1024,12 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
           delegated: true,
           runId: result.runId,
           summary: result.delegation ?? null,
-          message: `Action started (${String(result.runId).slice(0, 8)}) after real-plan validation: ${result.delegation?.tasks ?? 0} task(s), ${result.delegation?.agent ?? 'resolved agent'}. Execution in progress.`,
+          awaitingApproval: result.awaitingApproval === true,
+          message: result.awaitingApproval === true
+            ? 'Run created; waiting for human approval before planning or execution.'
+            : result.awaitingApproval === false
+              ? `Action started (${String(result.runId).slice(0, 8)}) after real-plan validation: ${result.delegation?.tasks ?? 0} task(s), ${result.delegation?.agent ?? 'resolved agent'}. Execution in progress.`
+              : 'Run submitted; its execution state has not yet been confirmed.',
         });
       }
       const refused = String(result?.error ?? JSON.stringify(result));

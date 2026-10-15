@@ -111,7 +111,6 @@ export function startRuntimeServer({
   getContext,
   run,
   turn,
-  delegate,
   cancel,
   resume,
   approve,
@@ -940,10 +939,6 @@ export function startRuntimeServer({
           sendJson(response, 409, { error: 'A runtime run is already active.' });
           return;
         }
-        if (typeof delegate !== 'function') {
-          sendJson(response, 501, { error: 'Runtime delegation is unavailable.' });
-          return;
-        }
         try {
           const rawConversationId = String(body.conversationId ?? '').trim();
           if (rawConversationId && !isConversationId(rawConversationId)) {
@@ -952,17 +947,25 @@ export function startRuntimeServer({
           }
           const runConversationId = rawConversationId || `legacy:${context.workspace ?? randomUUID()}`;
           if (!rawConversationId) emitRuntimeLog(context.session, `conversation.legacy-id: delegation request omitted conversationId; using ${runConversationId}`);
-          const prepared = await delegate(context, { objective, workspace: body.workspace ?? context.workspace ?? null });
           const started = startRuntimeRun(context, {
             input: objective,
+            publicInput: objective,
             workspace: body.workspace ?? context.workspace ?? null,
             conversationId: runConversationId,
-            preparedDelegation: prepared,
+            // A delegation is a run too. Ask for its launch approval before
+            // objective resolution or agent_plan can make a model call; the
+            // old path prepared the whole plan first and only then showed the
+            // approval banner.
+            requireApproval: true,
             extractMemory: false,
             evaluate: true,
-          }, { waitForPlan: true });
-          await started.ready;
-          sendJson(response, 202, { accepted: true, runId: started.runId, workspace: started.workspace, delegation: prepared.summary ?? null });
+          });
+          sendJson(response, 202, {
+            accepted: true,
+            runId: started.runId,
+            workspace: started.workspace,
+            awaitingApproval: true,
+          });
         } catch (err) {
           sendJson(response, 422, { error: err instanceof Error ? err.message : String(err) });
         }

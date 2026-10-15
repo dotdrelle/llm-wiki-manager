@@ -93,9 +93,14 @@ export function integratePreparedDelegation({
     session,
     approval.approved
       ? `approval: run ${runId} auto-approved (autoApprove opt-in)`
-      : `approval: run ${runId} awaiting explicit approval before mutations (/approve)`,
+      : integrated.plan.some((task) => task?.requiresApproval === true
+        && ['waiting_approval', 'pending_approval'].includes(String(task.status ?? '').toLowerCase()))
+        ? `approval: run ${runId} awaiting explicit approval before task execution (/approve)`
+        : `approval: run ${runId} has no task awaiting approval`,
   );
-  return { integrated, approval };
+  const awaitingApproval = !approval.approved && integrated.plan.some((task) => task?.requiresApproval === true
+    && ['waiting_approval', 'pending_approval'].includes(String(task.status ?? '').toLowerCase()));
+  return { integrated, approval: { ...approval, awaitingApproval }, awaitingApproval };
 }
 
 /**
@@ -127,7 +132,7 @@ export async function delegateWithinRun(session, objective, {
     throw new Error('This run already carries a validated plan: it is executing, not deciding.');
   }
   const prepared = await prepare({ session, objective });
-  const { approval } = integratePreparedDelegation({
+  const { awaitingApproval } = integratePreparedDelegation({
     session,
     store,
     runId,
@@ -141,12 +146,14 @@ export async function delegateWithinRun(session, objective, {
   dispatchAgentEvent(session, createAgentEvent('runtime_log', {
     origin: 'runtime',
     runId,
-    payload: { message: `delegation: run ${runId} switched from decision to execution` },
+    payload: { message: awaitingApproval
+      ? `delegation: run ${runId} has a validated plan and is waiting for approval before task execution`
+      : `delegation: run ${runId} switched from decision to execution` },
   }));
   return {
     delegated: true,
     runId,
-    awaitingApproval: approval.awaitingApproval === true,
+    awaitingApproval,
     summary: prepared.summary ?? {
       agent: prepared.provider?.serverName ?? null,
       capability: prepared.capability ?? null,

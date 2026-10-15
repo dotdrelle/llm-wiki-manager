@@ -39,6 +39,7 @@ const PREEMPTIBLE=new Set(['sync','ingest','index','rebuild','build']);
 // on an unreachable host kept raw/untracked for 20+ minutes on lyra while the
 // user's ingest sat at 0%. Fixed ceilings, in minutes — not a setting.
 const ACTION_CEILING_MINUTES={sync:30,ingest:120,index:60,rebuild:180,build:60,deliver:30,doctor:15,curate:90,mail:5};
+const CURATE_SUMMARY='Review the wiki for duplicates, contradictions and unsourced claims, and prepare corrections';
 // After a stop request, how long the agent has to confirm the job ended.
 const CANCEL_CONFIRM_MS=120_000;
 const modeFor=(p,c)=>{const mode=actionMode(p,c.action,c.target);return c.humanEdit&&mode==='auto'?'ask':mode;};
@@ -81,6 +82,34 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     if(!server)throw new Error('maintenance_state_tool_unavailable');
     return parse(await callTool(ctx.session.mcp,server,'wiki_maintenance_state',{quietMinutes:p.limits.sourceQuietMinutes}));
   }
+  async function mergeCurationProposal(ctx,proposalId,signal){
+    const server=Object.entries(ctx.session.mcp??{}).find(([,entry])=>(entry.tools??[]).some((tool)=>tool.name==='wiki_maintenance_merge_proposal'))?.[0];
+    if(!server)throw new Error('maintenance_auto_merge_tool_unavailable: wiki_maintenance_merge_proposal');
+    const result=parse(await callTool(ctx.session.mcp,server,'wiki_maintenance_merge_proposal',{proposalId,confirm:true},signal,{retry:false}));
+    if(result?.ok!==true)throw new Error(result?.error??'maintenance_auto_merge_refused');
+    return result;
+  }
+  async function autoMergePendingProposals(workspace,ctx,view,signal){
+    if(modeFor(view.policy,{action:'curate',target:'wiki'})!=='auto'||!(view.facts.proposals??[]).length)return {blocked:false};
+    if(!Array.isArray(view.facts.autoMergeProposalIds)){
+      const version=fingerprint([view.facts.wikiHash,view.facts.proposals]);
+      if(!store.hasEvent(workspace,'failure',{version,target:'curation-auto-merge'}))log(workspace,'failure','Automatic curation approval is waiting: the engine does not identify maintenance proposals eligible for automatic merge',{action:'curate',target:'curation-auto-merge',version,detail:'auto_merge_proposal_ids_unavailable'});
+      return {blocked:false};
+    }
+    const proposalIds=view.facts.autoMergeProposalIds;
+    if(!proposalIds.length)return {blocked:false};
+    for(const proposalId of proposalIds){
+      const version=fingerprint([proposalId,view.facts.wikiHash]);
+      try{
+        const merged=await mergeCurationProposal(ctx,proposalId,signal);
+        log(workspace,'action_done',`Automatically approved and merged curation proposal ${proposalId} (${merged.merged??0} page(s)); curation will check the updated wiki before builds or exports`,{action:'curate',target:'wiki',proposalId,version});
+      }catch(error){
+        if(!store.hasEvent(workspace,'failure',{version,target:'curation-auto-merge'}))log(workspace,'failure',`Automatic merge of curation proposal ${proposalId} failed — ${describeError(error.message)}`,{action:'curate',target:'curation-auto-merge',proposalId,version,detail:String(error.message)});
+        return {blocked:true};
+      }
+    }
+    return {blocked:false,merged:true};
+  }
   async function state(workspace,{forAgent=false}={}) {
     const ctx=await context(workspace);const p=policy(workspace);const facts=await physical(ctx,p);
     const candidates=[];
@@ -107,7 +136,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     }
     const conflicts=detectTaxoConflicts(await readTaxoConceptPagesAsync(ctx.session.workspacePath));
     if(conflicts.total>0||store.hasEvent(workspace,'rebuild_owned',{version:facts.wikiHash}))add('rebuild','wiki',fingerprint(conflicts),{},`Rebuild the TAXO fiches and tag pages: ${conflicts.total} inconsistency(ies) found (a tag filed in several families, or a tag page citing no fiche)`);
-    if(!facts.proposals?.length)add('curate','wiki',facts.wikiHash,{},'Review the wiki for duplicates, contradictions and unsourced claims, and prepare corrections for your review');
+    if(!facts.proposals?.length)add('curate','wiki',facts.wikiHash,{},CURATE_SUMMARY);
     const day=now().toISOString().slice(0,10);
     add('doctor','workspace',day,{},'Daily check of the workspace configuration and services');
     // Sync source names come from the connector's read-only configuration, never the model.
@@ -116,12 +145,13 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       // ONE sync for every configured source: in human mode each source used to
       // be its own approval, so a sync of N pages asked N times. The connector
       // exports all the workspace's sources when no source_name is given.
-      if(server){const raw=parse(await callTool(ctx.session.mcp,server,'cme_sources_list',{workspace}));const names=(raw.sources??(Array.isArray(raw)?raw:[])).map((source)=>source.name??source.source_name).filter(Boolean).map(String);if(names.length)add('sync','confluence',fingerprint([Math.floor(now().getTime()/7_200_000),[...names].sort()]),{},'Synchronize Confluence sources');}
+      if(!server)throw new Error('Confluence connector is not connected');
+      const raw=parse(await callTool(ctx.session.mcp,server,'cme_sources_list',{workspace},undefined,{retry:false}));const names=(raw.sources??(Array.isArray(raw)?raw:[])).map((source)=>source.name??source.source_name).filter(Boolean).map(String);if(names.length)add('sync','confluence',fingerprint([Math.floor(now().getTime()/7_200_000),[...names].sort()]),{},'Synchronize Confluence sources');
       if(sourceConfigFailures.delete(workspace))log(workspace,'recovered','source configuration is available again; synchronization can resume');
-    }catch{
+    }catch(error){
       if(!sourceConfigFailures.has(workspace)){
         sourceConfigFailures.add(workspace);
-        log(workspace,'degraded','source configuration unavailable; synchronization skipped');
+        log(workspace,'degraded','source configuration unavailable; synchronization skipped',{detail:String(error?.message??error)});
       }
     }
     for(const f of facts.pending??[]){if(f.protected&&!store.hasEvent(workspace,'protected_source',{version:f.hash,target:f.path}))log(workspace,'protected_source',`${f.path} is waiting for human resolution (${f.reason})`,{version:f.hash,target:f.path});}
@@ -158,6 +188,27 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     // retried by the agent at every cycle (maintenance_target_not_current).
     return {policy:p,paused:store.paused(workspace),facts,candidates:available.filter((c)=>!forAgent||!ROUTINE.has(c.action)).map((c)=>({...c,mode:modeFor(p,c),outsideWindow:c.action==='build'&&!inBuildWindow(p,now())})),requests:forAgent?requests.filter((r)=>!ROUTINE.has(r.action)):requests,reservations,cycles:store.cycles(workspace).map(({secret,...c})=>c),events:store.events(workspace)};
   }
+  function curationBarrier(workspace,view){
+    if((view.facts.proposals??[]).length){
+      if(modeFor(view.policy,{action:'curate',target:'wiki'})!=='auto')return `${view.facts.proposals.length} curation proposal(s) await human review; merge or discard them before building or exporting deliverables`;
+      const eligible=(view.facts.autoMergeProposalIds??[]).length;
+      return eligible
+        ?`${eligible} maintenance curation proposal(s) await automatic merge; merge them and recheck the updated wiki before building or exporting deliverables`
+        :`${view.facts.proposals.length} curation proposal(s) are not eligible for automatic maintenance approval and await human review before building or exporting deliverables`;
+    }
+    const current=view.candidates.find((item)=>item.action==='curate');
+    if(current){
+      if(current.mode==='off')return null;
+      const candidate=Object.fromEntries(Object.entries(current).filter(([key])=>!['mode','outsideWindow'].includes(key)));
+      const request=store.latestRequest(workspace,'curate','wiki');
+      if(request?.version===fingerprint(candidate)&&request.status==='refused')return null;
+      return 'curation is still due; complete it before building or exporting deliverables';
+    }
+    const identity=fingerprint({action:'curate',target:'wiki',version:view.facts.wikiHash,args:{},summary:CURATE_SUMMARY});
+    const failed=store.relevantEvents(workspace,{kinds:['failure'],since:now().toISOString().slice(0,10)})
+      .some((event)=>event.action==='curate'&&event.identity===identity);
+    return failed?'curation failed; resolve it before building or exporting deliverables':null;
+  }
   function authorizeBridge(cycleId,token) {
     const cycle=db.prepare('SELECT payload FROM maintenance_cycles WHERE id=?').get(cycleId);
     if(!cycle)return null;const data=JSON.parse(cycle.payload);const a=Buffer.from(String(data.secret??''));const b=Buffer.from(String(token??''));
@@ -173,6 +224,14 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     if(!p.enabled||store.paused(workspace))throw new Error('maintenance_disabled_or_paused');
     if(mode==='off'){log(workspace,'recommendation',`Suggested, not done (this action is turned off in maintenanceAccess): ${candidate.summary}`);return {status:'off'};}
     if(outsideWindow){log(workspace,'waiting',`${candidate.summary} — scheduled for the next build window`);return {status:'waiting'};}
+    if(candidate.action==='build'||candidate.action==='deliver'){
+      const barrier=curationBarrier(workspace,view);
+      if(barrier){
+        const version=fingerprint([view.facts.wikiHash,[...(view.facts.proposals??[])].sort(),barrier]);
+        if(!store.hasEvent(workspace,'waiting',{version,target:candidate.target}))log(workspace,'waiting',`${candidate.summary} — ${barrier}`,{cycleId,action:candidate.action,target:candidate.target,version});
+        return {status:'waiting',reason:'curation_pending'};
+      }
+    }
     const identity=fingerprint(candidate);
     const held=store.reserved(workspace,{kind:'actions',identity})[0];
     // One identity per candidate and day; a Stop that cancelled it opens a new
@@ -312,7 +371,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
         log(workspace,'failure',`${candidate.summary} — stopped after ${ACTION_CEILING_MINUTES[candidate.action]??60} min without finishing (maintenance time limit)`,{cycleId,action:candidate.action,target:candidate.target,jobId:job});
         return {status:'failed',result};
       }
-      const outcome=completeJob(workspace,ctx,id,result,cycleId,view.facts.wikiHash);
+      const outcome=await completeJob(workspace,ctx,id,result,cycleId,view.facts.wikiHash,signal);
       return {status:outcome,result};
     }catch(error){
       if(reserved&&!started){store.settle(id,{started:false});store.settle(id+':build',{started:false});}
@@ -332,7 +391,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       throw error;
     }finally{unfollowRoles?.();setLive(workspace,id,null);release();const left=(inflight.get(workspace)??1)-1;if(left>0)inflight.set(workspace,left);else inflight.delete(workspace);}
   }
-  function completeJob(workspace,ctx,id,result,cycleId,wikiHash) {
+  async function completeJob(workspace,ctx,id,result,cycleId,wikiHash,signal) {
     const reservation=store.reservation(workspace,id);
     if(!reservation)throw new Error('unknown_reservation');
     if(reservation.status!=='reserved')return reservation.outcome;
@@ -344,7 +403,21 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     // review: say what did not happen instead of reporting "Done".
     const nothingToCurate=result.result?.curationOutcome?.kind==='nothing_to_curate'
       ?(String(result.result.curationOutcome.reason??'').trim()||'no eligible wiki/sources fiches exist yet'):null;
-    if(result.result?.worktreeProposal){const persisted=persistWorktreeProposal(ctx.session,result,{runId:cycleId,taskId:id});if(persisted.error)throw new Error(persisted.error);}
+    let autoMerged=null;
+    let autoMergeFailure=null;
+    if(candidate.action==='curate'){
+      const automaticApproval=modeFor(policy(workspace),candidate)==='auto';
+      const persisted=persistWorktreeProposal(ctx.session,result,{runId:cycleId,taskId:id,automaticApproval});
+      if(persisted.error)throw new Error(persisted.error);
+      if(persisted.path&&outcome==='done'&&automaticApproval){
+        try{autoMerged=await mergeCurationProposal(ctx,id,signal);}
+        catch(error){
+          autoMergeFailure=describeError(error.message);
+          const version=fingerprint([id,wikiHash]);
+          if(!store.hasEvent(workspace,'failure',{version,target:'curation-auto-merge'}))log(workspace,'failure','Automatic merge of curation proposal '+id+' failed — '+autoMergeFailure+'; the proposal remains pending and builds or exports are blocked',{cycleId,action:'curate',target:'curation-auto-merge',identity:reservation.identity,proposalId:id,version,detail:String(error.message)});
+        }
+      }
+    }
     if(result.result?.curationOutcome?.kind==='rebuild_owned')log(workspace,'rebuild_owned','curation findings belong to a TAXO rebuild',{version:wikiHash??candidate.version});
     store.updateReservation(id,{outcome,result});store.settle(id);
     if(candidate.action==='build')store.settle(id+':build');
@@ -354,7 +427,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       // The gateway reports `error` as a string (CME as a string too); reading
       // only `.message` silently dropped the reason and left a bare "Failed:".
       const rawError=typeof result.error==='string'?result.error:result.error?.message??result.result?.error;
-      log(workspace,outcome==='done'?'action_done':outcome==='cancelled'?'interrupted':'failure',`${outcome==='done'?'Done':outcome==='cancelled'?'Cancelled':'Failed'}: ${candidate.summary}${outcome==='failed'&&rawError?` — ${describeError(rawError)}`:''}${result.lost?'; its credit is settled and it was not replayed':''}`,{cycleId,action:candidate.action,target:candidate.target,jobId:reservation.jobId,...(outcome==='failed'&&rawError?{detail:String(rawError)}:{})});
+      log(workspace,outcome==='done'?'action_done':outcome==='cancelled'?'interrupted':'failure',`${outcome==='done'?'Done':outcome==='cancelled'?'Cancelled':'Failed'}: ${candidate.summary}${autoMerged?`; automatically approved and merged ${autoMerged.merged??0} page(s); curation will recheck the updated wiki before builds or exports`:''}${outcome==='failed'&&rawError?` — ${describeError(rawError)}`:''}${result.lost?'; its credit is settled and it was not replayed':''}`,{cycleId,action:candidate.action,target:candidate.target,identity:reservation.identity,jobId:reservation.jobId,...(outcome==='failed'&&rawError?{detail:String(rawError)}:{})});
     }
     return outcome;
   }
@@ -375,7 +448,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
           if(!provider)throw new Error('maintenance_gateway_unavailable');
           result=await provider.status(r.jobId);
         }else result=jobState(parse(await callTool(ctx.session.mcp,r.provider,'agent_status',{jobId:r.jobId},shutdown.signal)));
-        if(terminal(result.status??result.result?.status))completeJob(workspace,ctx,r.id,result,r.cycle);
+        if(terminal(result.status??result.result?.status))await completeJob(workspace,ctx,r.id,result,r.cycle,shutdown.signal);
         else settled=false;
       }catch(error){degradedOnce(workspace,`job reconciliation interrupted: ${error.message}`);settled=false;}
     }
@@ -433,6 +506,9 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
         catch{/* already logged in plain words by runCandidate */}
       }
       view=ROUTINE.size?await state(workspace):view;
+      const mergedProposals=await autoMergePendingProposals(workspace,ctx,view,shutdown.signal);
+      if(mergedProposals.blocked)return;
+      if(mergedProposals.merged)view=await state(workspace);
       // An `ask` candidate waits on a human, not on a model: its decision is
       // filed here (idempotent), so no gateway cycle starts for work the agent
       // must not do. On lyra, four rebuilds read as hand-edited started a model

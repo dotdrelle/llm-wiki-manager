@@ -352,6 +352,8 @@ after an ingest/rebuild completes):
 1. An interrupted cycle is re-attached first.
 2. Routine work — `sync`, `doctor`, `mail` — is run by the manager itself
    through `runCandidate`, with no model call and no gateway.
+   A missing or disconnected Confluence connector degrades and skips only
+   `sync`; it does not stop the scan or curation of the existing wiki.
 3. Only if other work remains is a gateway cycle started
    (`agent.maintain`, operation `run`), with a per-cycle bearer secret and the
    bridge URL. The gateway reads `state` (routine work filtered out) and calls
@@ -370,6 +372,18 @@ after an ingest/rebuild completes):
    timeout — a 44-source ingest read "fetch failed" while it went on, and the
    closed connection aborted the manager's own follow-up. A gateway that omits
    `async` still gets the former synchronous answer.
+
+**Curation before outputs.** Build and export candidates are held while
+curation is due or a curation proposal is pending. In Human mode the proposal
+remains for a person to merge or discard. In Auto mode, the manager marks a
+proposal as auto-merge eligible only when it came from that maintenance
+curation; the engine then merges it through the same path checks, atomic wiki
+write, provenance validation and history recording as the human review route.
+If the manager restarts before the merge, the next scan recovers only these
+marked proposals. Proposals created elsewhere are never auto-approved by this
+path. After a merge changes the wiki, maintenance runs curation again against
+the new wiki before any build or export. A rejected or failed merge leaves the
+proposal available and outputs blocked.
 
 **Admission** (`src/maintenance/admission.js`) is shared with Donna's
 dispatcher (`dispatcher.execute`). Maintenance actions take scopes derived from

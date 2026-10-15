@@ -397,7 +397,7 @@ function failEmptyWorktreeProposal(result) {
  * review surface reads it; the MERGE happens there, through the engine's own
  * write machinery — this function only records, it never touches wiki content.
  */
-export function persistWorktreeProposal(session, result, { runId, taskId }) {
+export function persistWorktreeProposal(session, result, { runId, taskId, automaticApproval = false }) {
   // The dispatcher wraps the agent's status payload under `rawStatus`
   // (`taskResultFromStatus`), so the gateway's proposal lives at
   // `rawStatus.result.worktreeProposal`. Reading only `result.result`/
@@ -423,6 +423,10 @@ export function persistWorktreeProposal(session, result, { runId, taskId }) {
     worktreePath: String(proposal.worktreePath ?? ''),
     worktreeRelativePath: String(proposal.worktreeRelativePath ?? ''),
     createdAt: new Date().toISOString(),
+    // Only proposals produced by a maintenance curation whose effective
+    // approval mode was auto may be recovered and merged automatically after
+    // a manager restart. Ordinary chat proposals remain human-reviewed.
+    automaticApproval: automaticApproval === true,
     justification: String(proposal.justification ?? ''),
     ...(Array.isArray(proposal.objections) && proposal.objections.length > 0
       ? { objections: proposal.objections }

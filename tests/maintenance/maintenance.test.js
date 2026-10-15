@@ -2,6 +2,9 @@ import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { maintenancePolicy,actionMode,inBuildWindow,MAINTENANCE_ACTIONS,describeError,fingerprint } from '../../src/maintenance/policy.js';
 import { createMaintenanceStore } from '../../src/maintenance/store.js';
 import { admitExecution,enableMaintenanceAdmission } from '../../src/maintenance/admission.js';
@@ -21,13 +24,13 @@ test('foreground pending before background admission wins the resource',async()=
 test('aborted waiter does not steal or leak admission',async()=>{enableMaintenanceAdmission('abort');const held=await admitExecution('abort',{},{background:true});const c=new AbortController();const pending=admitExecution('abort',{},{background:true,signal:c.signal});c.abort();await assert.rejects(pending);held();(await admitExecution('abort',{},{background:true}))();});
 test('disabled maintenance does not call tools or a model; scoped authority cannot approve',async()=>{const {db}=setup();let calls=0;const service=createMaintenanceService({db,getContext:async()=>{calls++;},readDocument:()=>({}),baseUrl:'http://localhost'});await service.tick('x');assert.equal(calls,0);assert.equal(service.authorizeBridge('unknown','token'),null);assert.equal(service.status('x').enabled,false);await service.close();db.close();});
 
-function harness({facts:override={},runtime=null,gate=null,statuses=[],curate=null,onStatus=null,now=undefined,refuseExecute=null,cmeSources=null}={}){
-  const {db}=setup();let version='a';let executions=[];const statusChecks=[];const cancels=[];let access={maintenanceAccess:{defaults:{enabled:true,limits:{sourceQuietMinutes:0}}}};
-  const facts=()=>({wikiHash:'wiki',pending:[{path:'raw/untracked/a.md',hash:version,stable:true,protected:false}],index:{enabled:false,fresh:true},deliverables:[],publications:[],proposals:[],...override});
+function harness({facts:override={},runtime=null,gate=null,statuses=[],curate=null,onStatus=null,now=undefined,refuseExecute=null,refuseOperation=null,cmeSources=null,cmeError=null,mergeError=null,workspacePath='/private/tmp/nonexistent-maintenance-test'}={}){
+  const {db}=setup();let version='a';let executions=[];const statusChecks=[];const cancels=[];const merges=[];let access={maintenanceAccess:{defaults:{enabled:true,limits:{sourceQuietMinutes:0}}}};
+  const facts=()=>({wikiHash:'wiki',pending:[{path:'raw/untracked/a.md',hash:version,stable:true,protected:false}],index:{enabled:false,fresh:true},deliverables:[],publications:[],proposals:[],proposalIds:[],autoMergeProposalIds:[],...override});
   const provider={serverName:'production',health:'available',capability:{supportedOperations:['ingest','doctor','index','ingest_rebuild','build','export','polish','send'],inputSchema:{type:'object',additionalProperties:true}}};
-  const session={workspace:'x',workspacePath:'/private/tmp/nonexistent-maintenance-test',mcp:{wiki:{tools:[{name:'wiki_maintenance_state'}]},...(cmeSources?{cme:{tools:[{name:'cme_sources_list'}]}}:{})},capabilityRegistry:{providersFor:(capability)=>capability==='agent.maintain'?(runtime?[{runtimeProvider:runtime,runtimeId:'gw',health:'available',capability:{supportedOperations:['run']}}]:[]):capability==='agent.curate'&&curate?[{runtimeProvider:curate,runtimeId:'gw-curate',health:'available',capability:{supportedOperations:['run'],inputSchema:{type:'object',additionalProperties:true}}}]:[provider]}};
-  const service=createMaintenanceService({db,baseUrl:'http://localhost',discover:async(session)=>{session.runtimeProviderAgents=[];},getContext:async()=>({session}),readDocument:()=>access,callTool:async(_mcp,_server,tool,args)=>{if(tool==='wiki_maintenance_state')return facts();if(tool==='cme_sources_list')return {sources:cmeSources.map((name)=>({name}))};if(tool==='agent_execute'){executions.push(args);if(refuseExecute)return {accepted:false,error:refuseExecute};return {accepted:true,jobId:'job-'+executions.length};}if(tool==='agent_status'){statusChecks.push(args.jobId);if(gate)await gate;if(onStatus)return onStatus(args.jobId,cancels);return {status:statuses.shift()??'done',result:{}};}if(tool==='agent_cancel'){cancels.push(args.jobId);return {ok:true};}throw new Error(tool);},...(now?{now}:{})});
-  return {db,service,executions,statusChecks,cancels,provider,session,change:(v)=>{version=v;},policy:(p)=>{access=p;}};
+  const session={workspace:'x',workspacePath,mcp:{wiki:{tools:[{name:'wiki_maintenance_state'},{name:'wiki_maintenance_merge_proposal'}]},...(cmeSources?{cme:{tools:[{name:'cme_sources_list'}]}}:{})},capabilityRegistry:{providersFor:(capability)=>capability==='agent.maintain'?(runtime?[{runtimeProvider:runtime,runtimeId:'gw',health:'available',capability:{supportedOperations:['run']}}]:[]):capability==='agent.curate'&&curate?[{runtimeProvider:curate,runtimeId:'gw-curate',health:'available',capability:{supportedOperations:['run'],inputSchema:{type:'object',additionalProperties:true}}}]:[provider]}};
+  const service=createMaintenanceService({db,baseUrl:'http://localhost',discover:async(session)=>{session.runtimeProviderAgents=[];},getContext:async()=>({session}),readDocument:()=>access,callTool:async(_mcp,_server,tool,args)=>{if(tool==='wiki_maintenance_state')return facts();if(tool==='wiki_maintenance_merge_proposal'){merges.push(args);if(mergeError){override.proposals=['curation.json'];override.proposalIds=[args.proposalId];override.autoMergeProposalIds=[args.proposalId];throw new Error(mergeError);}override.proposals=[];override.proposalIds=[];override.autoMergeProposalIds=[];override.wikiHash='merged-'+(override.wikiHash??'wiki');return {ok:true,merged:1,files:['wiki/sources/a.md']};}if(tool==='cme_sources_list'){if(cmeError)throw new Error(cmeError);return {sources:cmeSources.map((name)=>({name}))};}if(tool==='agent_execute'){executions.push(args);if(refuseExecute&&(!refuseOperation||args.operation===refuseOperation))return {accepted:false,error:refuseExecute};return {accepted:true,jobId:'job-'+executions.length};}if(tool==='agent_status'){statusChecks.push(args.jobId);if(gate)await gate;if(onStatus)return onStatus(args.jobId,cancels);return {status:statuses.shift()??'done',result:{}};}if(tool==='agent_cancel'){cancels.push(args.jobId);return {ok:true};}throw new Error(tool);},...(now?{now}:{})});
+  return {db,service,executions,statusChecks,cancels,merges,provider,session,change:(v)=>{version=v;},policy:(p)=>{access=p;}};
 }
 test('pending ingestion does not prevent an independent diagnostic; approval is exact and dispatch reserves',async()=>{const h=harness();try{const pending=await h.service.runCandidate('x','cycle',{action:'ingest',target:'raw/untracked'});assert.equal(pending.status,'pending');assert.equal(h.executions.length,0);const doctor=await h.service.runCandidate('x','cycle',{action:'doctor',target:'workspace'});assert.equal(doctor.status,'done');await h.service.decide('x',pending.request.id,pending.request.version,true);const result=await h.service.runCandidate('x','cycle2',{action:'ingest',target:'raw/untracked'});assert.equal(result.status,'done');assert.equal(h.executions.length,2);assert.deepEqual(h.executions[1].arguments.maintenanceSelection,[{path:'raw/untracked/a.md',hash:'a'}]);assert.ok(h.service.store.reservations('x').every(r=>r.status==='consumed'));}finally{await h.service.close();h.db.close();}});
 test('stale approval is rejected at decision time and replaced by current content',async()=>{const h=harness();try{const pending=await h.service.runCandidate('x','cycle',{action:'ingest',target:'raw/untracked'});h.change('b');await assert.rejects(h.service.decide('x',pending.request.id,pending.request.version,true),/replaced/);assert.equal(h.service.status('x').requests.filter(r=>r.status==='pending').length,1);assert.equal(h.executions.length,0);}finally{await h.service.close();h.db.close();}});
@@ -35,6 +38,10 @@ test('source refusal suppresses unchanged bytes but allows changed content',asyn
 test('revoking policy prevents a previously approved action',async()=>{const h=harness();try{const pending=await h.service.runCandidate('x','cycle',{action:'ingest',target:'raw/untracked'});await h.service.decide('x',pending.request.id,pending.request.version,true);h.policy({maintenanceAccess:{defaults:{enabled:false}}});await assert.rejects(h.service.runCandidate('x','cycle2',{action:'ingest',target:'raw/untracked'}),/disabled/);assert.equal(h.executions.length,0);}finally{await h.service.close();h.db.close();}});
 
 test('routine sync/doctor run without a model; no gateway cycle when nothing else is due',async()=>{let launches=0;const runtime={execute:async()=>{launches++;return {runId:'r'};},status:async()=>({status:'completed'}),cancel:async()=>{}};const h=harness({facts:{pending:[],proposals:['p.json']},runtime});try{await h.service.tick('x');assert.deepEqual(h.executions.map(e=>e.operation),['doctor']);assert.equal(launches,0);}finally{await h.service.close();h.db.close();}});
+test('a refused Confluence export settles the maintenance scan',async()=>{const h=harness({facts:{pending:[],proposals:['p.json']},cmeSources:['page-a'],refuseExecute:'Confluence unreachable, export not started: page-a',refuseOperation:'export'});try{h.policy({maintenanceAccess:{defaults:{enabled:true,actions:{sync:'auto',doctor:'auto'},limits:{sourceQuietMinutes:0}}}});await h.service.tick('x');assert.deepEqual(h.executions.map(e=>e.operation).sort(),['doctor','export']);assert.match(h.service.status('x').events.find(e=>e.kind==='failure'&&e.action==='sync').message,/Confluence unreachable/);assert.equal(h.service.isActive('x'),false,'the failed export does not leave maintenance active');assert.ok(!(await h.service.state('x')).candidates.some(c=>c.action==='sync'),'the unchanged source set is not retried in the same two-hour sync window');}finally{await h.service.close();h.db.close();}});
+test('a disconnected Confluence MCP skips sync, announces it, and still runs the doctor',async()=>{const h=harness({facts:{pending:[],proposals:['p.json']},cmeSources:['page-a'],cmeError:'MCP is not connected: cme'});try{await h.service.tick('x');assert.deepEqual(h.executions.map(e=>e.operation),['doctor']);const unavailable=h.service.status('x').events.find(e=>e.kind==='degraded');assert.match(unavailable.message,/source configuration unavailable; synchronization skipped/);assert.match(unavailable.detail,/MCP is not connected: cme/);}finally{await h.service.close();h.db.close();}});
+test('a missing Confluence connector skips sync, announces it, and still runs the doctor',async()=>{const h=harness({facts:{pending:[],proposals:['p.json']}});try{await h.service.tick('x');assert.deepEqual(h.executions.map(e=>e.operation),['doctor']);const unavailable=h.service.status('x').events.find(e=>e.kind==='degraded');assert.match(unavailable.message,/source configuration unavailable; synchronization skipped/);assert.match(unavailable.detail,/Confluence connector is not connected/);}finally{await h.service.close();h.db.close();}});
+test('curation remains executable when Confluence is disconnected',async()=>{let runs=0;const curate={execute:async()=>({runId:`curate-${++runs}`}),status:async()=>({status:'completed',result:{content:'curation complete'}}),cancel:async()=>{}};const h=harness({facts:{pending:[],proposals:[]},cmeSources:['page-a'],cmeError:'MCP is not connected: cme',curate});try{h.policy({maintenanceAccess:{defaults:{enabled:true,actions:{curate:'auto'},limits:{sourceQuietMinutes:0}}}});const state=await h.service.state('x');assert.ok(state.candidates.some(c=>c.action==='curate'));assert.equal(await h.service.runCandidate('x','cycle',{action:'curate',target:'wiki'}).then(r=>r.status),'done');assert.equal(runs,1);assert.ok(h.service.status('x').events.some(e=>e.kind==='degraded'&&/synchronization skipped/.test(e.message)));}finally{await h.service.close();h.db.close();}});
 test('a gateway recovery records the actual resume date on the maintenance cycle',async()=>{
   const startedAt='2026-10-08T12:46:20.667Z',resumedAt='2026-10-15T07:45:06.000Z';
   let statusCalls=0,executeCalls=0;
@@ -67,7 +74,7 @@ test('maintenance error descriptions extract structured errors instead of printi
 test('a runtime shutdown neither pauses maintenance nor cancels jobs',async()=>{const h=harness();await h.service.close();try{assert.equal(h.service.status('x').paused,false);}finally{h.db.close();}});
 test('reads, worktree curation and mail never hold a user task',()=>{for(const a of ['doctor','curate','mail'])assert.equal(MAINTENANCE_ACTIONS[a].scopes,null);assert.deepEqual(MAINTENANCE_ACTIONS.sync.scopes('x'),['raw/untracked']);});
 test('a foreground task waiting behind maintenance is announced with the holder',async()=>{const w='announce';enableMaintenanceAdmission(w);const held=await admitExecution(w,{locks:['workspace-write']},{background:true,label:'maintenance: Ingest 2 new source(s)'});const heard=[];const fore=admitExecution(w,{locks:['deliverable:a']},{onWait:(names)=>heard.push(names)});await new Promise(r=>setTimeout(r,150));held();(await fore)();assert.deepEqual(heard,['maintenance: Ingest 2 new source(s)']);});
-test('a hand-edited deliverable is never rebuilt without a decision, even with build: auto',async()=>{const h=harness({facts:{pending:[],deliverables:[{template:'templates/a.md',output:'deliverables/a.md',version:'v',fresh:false,reasons:['output_modified'],artifacts:{}}]}});try{h.policy({maintenanceAccess:{defaults:{enabled:true,actions:{build:'auto'},buildSchedule:{mode:'window',start:'00:00',end:'23:59',timezone:'UTC'},limits:{sourceQuietMinutes:0}}}});const c=(await h.service.state('x')).candidates.find(c=>c.action==='build');assert.equal(c.mode,'ask');const r=await h.service.runCandidate('x','cycle',{action:'build',target:'templates/a.md'});assert.equal(r.status,'pending');assert.equal(h.executions.length,0);}finally{await h.service.close();h.db.close();}});
+test('a hand-edited deliverable is never rebuilt without a decision, even with build: auto',async()=>{const h=harness({facts:{pending:[],deliverables:[{template:'templates/a.md',output:'deliverables/a.md',version:'v',fresh:false,reasons:['output_modified'],artifacts:{}}]}});try{h.policy({maintenanceAccess:{defaults:{enabled:true,actions:{curate:'off',build:'auto'},buildSchedule:{mode:'window',start:'00:00',end:'23:59',timezone:'UTC'},limits:{sourceQuietMinutes:0}}}});const c=(await h.service.state('x')).candidates.find(c=>c.action==='build');assert.equal(c.mode,'ask');const r=await h.service.runCandidate('x','cycle',{action:'build',target:'templates/a.md'});assert.equal(r.status,'pending');assert.equal(h.executions.length,0);}finally{await h.service.close();h.db.close();}});
 test('mail is routine: one alert per new failure batch, recipients only from the policy',async()=>{const h=harness({facts:{pending:[],proposals:['p.json']}});try{h.policy({maintenanceAccess:{defaults:{enabled:true,mail:{to:['ops@example.org'],on:['failure']},limits:{sourceQuietMinutes:0}}}});h.service.store.event('x',{kind:'failure',message:'Maintenance: Failed: export'});const mails=(await h.service.state('x')).candidates.filter(c=>c.action==='mail');assert.equal(mails.length,1);assert.equal(mails[0].target,'ops@example.org');assert.ok(!(await h.service.state('x',{forAgent:true})).candidates.some(c=>c.action==='mail'));await h.service.tick('x');assert.ok(h.executions.some(e=>e.operation==='send'&&e.arguments.to==='ops@example.org'));assert.ok(!(await h.service.state('x')).candidates.some(c=>c.action==='mail'),'the same alert is not sent twice');}finally{await h.service.close();h.db.close();}});
 test('an executing maintenance action counts as an active run',async()=>{let release;const gate=new Promise(r=>{release=r;});const h=harness({facts:{pending:[],proposals:['p.json']},gate});try{assert.equal(h.service.isActive('x'),false);const running=h.service.runCandidate('x','cycle',{action:'doctor',target:'workspace'});for(let i=0;i<50&&!h.service.isActive('x');i++)await new Promise(r=>setTimeout(r,10));assert.equal(h.service.isActive('x'),true);assert.deepEqual(h.service.activeRuns().map(r=>r.kind),['maintenance']);release();await running;assert.equal(h.service.isActive('x'),false);}finally{await h.service.close();h.db.close();}});
 test('a scan on a fresh context waits for the first runtime discovery',async()=>{let discovered=0;const {db}=setup();const session={workspace:'x',mcp:{wiki:{tools:[{name:'wiki_maintenance_state'}]}},capabilityRegistry:{providersFor:()=>[]}};const service=createMaintenanceService({db,baseUrl:'http://localhost',discover:async(s)=>{discovered++;s.runtimeProviderAgents=[];},getContext:async()=>({session}),readDocument:()=>({maintenanceAccess:{defaults:{enabled:true}}}),callTool:async()=>({wikiHash:'w',pending:[],deliverables:[],publications:[],proposals:['p']})});try{await service.tick('x');assert.equal(discovered,1,'the first scan awaits the first discovery');await service.tick('x');assert.equal(discovered,2,'a later scan re-probes instead of trusting a cached absence');}finally{await service.close();db.close();}});
@@ -92,9 +99,10 @@ test('alert watermark stays internal with the closed communication.send-email sc
   }finally{await h.service.close();h.db.close();}
 });
 test('successive export settings changes create distinct work and replace outdated approvals',async()=>{
-  const facts={pending:[],proposals:['p'],deliverables:[{template:'templates/a.md',output:'deliverables/a.md',version:'unchanged-source',fresh:true,reasons:[],artifacts:{export:true}}],publications:[{source:'deliverables/a.md',operation:'export',fresh:false,reason:'settings_changed'}],publicationTransforms:{export:'fr-v1'}};
+  const facts={pending:[],proposals:[],deliverables:[{template:'templates/a.md',output:'deliverables/a.md',version:'unchanged-source',fresh:true,reasons:[],artifacts:{export:true}}],publications:[{source:'deliverables/a.md',operation:'export',fresh:false,reason:'settings_changed'}],publicationTransforms:{export:'fr-v1'}};
   const h=harness({facts});
   try {
+    h.policy({maintenanceAccess:{defaults:{enabled:true,actions:{curate:'off'},limits:{sourceQuietMinutes:0}}}});
     const first=await h.service.runCandidate('x','c1',{action:'deliver',target:'deliverables/a.md',operation:'export'});
     facts.publicationTransforms.export='en-v1';
     await assert.rejects(h.service.decide('x',first.request.id,first.request.version,true),/replaced/);
@@ -437,6 +445,88 @@ test('a failed action shows the gateway reason even when the agent reports a pla
   }finally{await h.service.close();h.db.close();}
 });
 test('human mode asks once for a sync, never once per Confluence source',async()=>{const h=harness({facts:{pending:[],proposals:['p.json']},cmeSources:['page-a','page-b','page-c']});try{h.policy({maintenanceAccess:{defaults:{enabled:true,mode:'human',limits:{sourceQuietMinutes:0}}}});const syncs=(await h.service.state('x')).candidates.filter(c=>c.action==='sync');assert.equal(syncs.length,1);assert.equal(syncs[0].mode,'ask');assert.equal(syncs[0].summary,'Synchronize Confluence sources');assert.deepEqual(syncs[0].args,{},'no source_name: the connector exports every source');await h.service.tick('x');const asked=h.service.status('x').requests.filter(r=>r.status==='pending'&&r.action==='sync');assert.equal(asked.length,1);assert.ok(!h.executions.some(e=>e.operation==='export'));}finally{await h.service.close();h.db.close();}});
+test('a human-mode curation proposal blocks build and export until its decision',async()=>{
+  const facts={wikiHash:'wiki-before',pending:[],index:{enabled:false,fresh:true},proposals:['curation.json'],deliverables:[
+    {template:'templates/build.md',output:'deliverables/build.md',version:'build-v1',fresh:false,reasons:['knowledge_changed'],artifacts:{export:false,polish:false}},
+    {template:'templates/publish.md',output:'deliverables/publish.md',version:'publish-v1',fresh:true,reasons:[],artifacts:{export:true,polish:false}},
+  ],publications:[{source:'deliverables/publish.md',operation:'export',fresh:false,reason:'settings_changed',output:'deliverables/publish.export.md',outputHash:'old'}],publicationTransforms:{export:'new'}};
+  const h=harness({facts});
+  const build=()=>h.service.runCandidate('x','cycle',{action:'build',target:'templates/build.md'});
+  const publish=()=>h.service.runCandidate('x','cycle',{action:'deliver',target:'deliverables/publish.md',operation:'export'});
+  try{
+    h.policy({maintenanceAccess:{defaults:{enabled:true,mode:'human',actions:{build:'auto',deliver:'auto',curate:'auto'},buildSchedule:{mode:'window',start:'00:00',end:'23:59',timezone:'UTC'},limits:{sourceQuietMinutes:0}}}});
+    assert.equal((await build()).status,'waiting','build waits for the human proposal decision');
+    assert.equal((await publish()).status,'waiting','export waits for the human proposal decision');
+    assert.deepEqual(h.executions,[]);
+  }finally{await h.service.close();h.db.close();}
+});
+test('auto mode merges a curation proposal, rechecks the changed wiki, then builds and exports',async()=>{
+  const workspacePath=mkdtempSync(join(tmpdir(),'maintenance-auto-curation-'));
+  const facts={wikiHash:'wiki-before',pending:[],index:{enabled:false,fresh:true},proposals:[],proposalIds:[],autoMergeProposalIds:[],deliverables:[
+    {template:'templates/build.md',output:'deliverables/build.md',version:'build-v1',fresh:false,reasons:['knowledge_changed'],artifacts:{export:false,polish:false}},
+    {template:'templates/publish.md',output:'deliverables/publish.md',version:'publish-v1',fresh:true,reasons:[],artifacts:{export:true,polish:false}},
+  ],publications:[{source:'deliverables/publish.md',operation:'export',fresh:false,reason:'settings_changed',output:'deliverables/publish.export.md',outputHash:'old'}],publicationTransforms:{export:'new'}};
+  let curateRuns=0;
+  const curate={execute:async()=>({runId:`curate-${++curateRuns}`}),status:async()=>{
+    if(curateRuns===1)return {status:'completed',result:{worktreeProposal:{
+      workspace:'x',branch:'agent/curation',worktreePath:join(workspacePath,'.wiki/agent-worktrees/curation'),
+      worktreeRelativePath:'.wiki/agent-worktrees/curation',justification:'Corrected the wiki',changedFiles:[{status:'M',path:'wiki/sources/a.md'}],
+      changes:[{status:'M',path:'wiki/sources/a.md',content:'# A\nCorrected source-backed fiche\n'}],diff:'diff',
+    }}};
+    return {status:'completed',result:{content:'updated wiki reviewed'}};
+  },cancel:async()=>{}};
+  const h=harness({facts,curate,workspacePath});
+  const build=()=>h.service.runCandidate('x','cycle',{action:'build',target:'templates/build.md'});
+  const publish=()=>h.service.runCandidate('x','cycle',{action:'deliver',target:'deliverables/publish.md',operation:'export'});
+  try{
+    h.policy({maintenanceAccess:{defaults:{enabled:true,mode:'auto',actions:{build:'auto',deliver:'auto',curate:'auto'},buildSchedule:{mode:'window',start:'00:00',end:'23:59',timezone:'UTC'},limits:{sourceQuietMinutes:0}}}});
+    assert.equal((await build()).status,'waiting','curation is the first prerequisite');
+    assert.equal((await publish()).status,'waiting','exports also wait for curation');
+    assert.equal((await h.service.runCandidate('x','cycle',{action:'curate',target:'wiki'})).status,'done');
+    assert.equal(h.merges.length,1,'auto mode merges the generated proposal');
+    assert.equal(h.merges[0].confirm,true);
+    assert.ok(String(h.merges[0].proposalId).length>0);
+    const proposalRecord=JSON.parse(readFileSync(join(workspacePath,'.wiki','agent-proposals',`${h.merges[0].proposalId}.json`),'utf8'));
+    assert.equal(proposalRecord.automaticApproval,true,'the manager can safely recover this merge if it restarts');
+    assert.equal((await build()).status,'waiting','the merged wiki gets a fresh curation pass');
+    assert.equal((await publish()).status,'waiting','no output is produced from the pre-merge wiki');
+    assert.equal((await h.service.runCandidate('x','cycle',{action:'curate',target:'wiki'})).status,'done');
+    assert.equal((await build()).status,'done');
+    assert.equal((await publish()).status,'done');
+    assert.deepEqual(h.executions.map((item)=>item.operation).sort(),['build','export']);
+    assert.ok(h.service.status('x').events.some((event)=>/automatically approved and merged/.test(event.message)));
+  }finally{await h.service.close();h.db.close();rmSync(workspacePath,{recursive:true,force:true});}
+});
+test('auto maintenance never merges a proposal created outside an automatic maintenance curation',async()=>{
+  const h=harness({facts:{pending:[],proposals:['manual.json'],proposalIds:['manual'],autoMergeProposalIds:[],deliverables:[
+    {template:'templates/build.md',output:'deliverables/build.md',version:'build-v1',fresh:false,reasons:['knowledge_changed'],artifacts:{export:false,polish:false}},
+  ]}});
+  try{
+    h.policy({maintenanceAccess:{defaults:{enabled:true,mode:'auto',actions:{build:'auto',curate:'auto'},limits:{sourceQuietMinutes:0}}}});
+    await h.service.tick('x');
+    assert.deepEqual(h.merges,[],'an unrelated pending proposal is not automatically approved');
+    assert.equal((await h.service.runCandidate('x','cycle',{action:'build',target:'templates/build.md'})).status,'waiting','the unrelated proposal remains a human review barrier');
+    assert.deepEqual(h.executions.map((item)=>item.operation),['doctor'],'routine diagnostics may still run; no build starts');
+  }finally{await h.service.close();h.db.close();}
+});
+test('a refused automatic merge settles curation and leaves build blocked',async()=>{
+  const workspacePath=mkdtempSync(join(tmpdir(),'maintenance-refused-merge-'));
+  const curate={execute:async()=>({runId:'curate-refused'}),status:async()=>({status:'completed',result:{worktreeProposal:{
+    workspace:'x',branch:'agent/curation',worktreePath:join(workspacePath,'.wiki/agent-worktrees/curation'),
+    worktreeRelativePath:'.wiki/agent-worktrees/curation',justification:'Curation changes',changedFiles:[{status:'M',path:'wiki/sources/a.md'}],
+    changes:[{status:'M',path:'wiki/sources/a.md',content:'# A\nCorrected fiche\n'}],diff:'diff',
+  }}}),cancel:async()=>{}};
+  const h=harness({workspacePath,curate,mergeError:'provenance_invalid',facts:{pending:[],proposals:[],proposalIds:[],autoMergeProposalIds:[],deliverables:[
+    {template:'templates/build.md',output:'deliverables/build.md',version:'build-v1',fresh:false,reasons:['knowledge_changed'],artifacts:{export:false,polish:false}},
+  ]}});
+  try{
+    h.policy({maintenanceAccess:{defaults:{enabled:true,mode:'auto',actions:{build:'auto',curate:'auto'},limits:{sourceQuietMinutes:0}}}});
+    assert.equal((await h.service.runCandidate('x','cycle',{action:'curate',target:'wiki'})).status,'done');
+    assert.equal(h.service.store.reservations('x').at(-1).status,'consumed');
+    assert.equal((await h.service.runCandidate('x','cycle',{action:'build',target:'templates/build.md'})).status,'waiting');
+    assert.ok(h.service.status('x').events.some((event)=>event.kind==='failure'&&/provenance_invalid/.test(event.message)));
+  }finally{await h.service.close();h.db.close();rmSync(workspacePath,{recursive:true,force:true});}
+});
 test('a running maintenance action is published with its agent progress, then removed',async()=>{let release;const gate=new Promise(r=>{release=r;});let calls=0;const h=harness({facts:{pending:[],proposals:['p.json']},onStatus:async()=>{calls++;if(calls===1)return {status:'running',progress:{label:'Doctor',percent:40}};await gate;return {status:'done',result:{}};}});try{const running=h.service.runCandidate('x','cycle',{action:'doctor',target:'workspace'});let live=[];for(let i=0;i<100&&!(live[0]?.progress);i++){await new Promise(r=>setTimeout(r,10));live=h.service.status('x').running;}assert.equal(live.length,1);assert.equal(live[0].action,'doctor');assert.equal(live[0].agent,'production');assert.ok(live[0].jobId);assert.deepEqual(live[0].progress,{label:'Doctor',percent:40});release();await running;assert.deepEqual(h.service.status('x').running,[]);}finally{await h.service.close();h.db.close();}});
 test('a bridge action runs on a ticket, independent of the request that started it',async()=>{let release;const gate=new Promise(r=>{release=r;});const h=harness({facts:{pending:[],proposals:['p.json']},gate});try{const started=h.service.startCandidate('x','cycle',{action:'doctor',target:'workspace'});assert.equal(started.status,'running');assert.ok(started.ticket);assert.equal(h.service.candidateTicket('other-cycle',started.ticket).status,'unknown_ticket');assert.equal(h.service.candidateTicket('cycle',started.ticket).status,'running');release();let state;for(let i=0;i<100;i++){state=h.service.candidateTicket('cycle',started.ticket);if(state.status!=='running')break;await new Promise(r=>setTimeout(r,10));}assert.equal(state.status,'settled');assert.equal(state.result.status,'done');assert.equal(h.service.candidateTicket('cycle',started.ticket).status,'unknown_ticket','a settled ticket is read once');}finally{await h.service.close();h.db.close();}});
 test('a job its agent no longer knows ends the stop and the reconciliation instead of polling forever',async()=>{

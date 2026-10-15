@@ -81,16 +81,16 @@ export function mapRuntimeEvent(event) {
     // Donna enough context for a short, generic progress narration.
     case 'phase_started':
       return [
-        ...log(`phase ${phaseLabel(event)} started`),
+        ...log(`phase ${phaseLogLabel(event)} started`),
         { type: 'runtime_phase_started', payload: { phase: phaseLabel(event) } },
       ];
     case 'phase_finished': {
       const counters = phaseCounters(event);
       const outcome = event?.ok === false ? 'interrupted' : 'done';
-      return log(`phase ${phaseLabel(event)} ${outcome}${counters}`);
+      return log(`phase ${phaseLogLabel(event)} ${outcome}${counters}`);
     }
     case 'progress': {
-      const label = String(event?.label ?? event?.phase ?? '').trim();
+      const label = phaseLogLabel(event, String(event?.label ?? event?.phase ?? '').trim());
       return label ? log(`progress ${label}${phaseCounters(event)}`) : [];
     }
     // A heartbeat is liveness, not history: it proves the run is alive to
@@ -153,12 +153,25 @@ function phaseLabel(event) {
   return String(event?.phase ?? event?.label ?? 'unnamed');
 }
 
+function phaseLogLabel(event, fallback = phaseLabel(event)) {
+  const role = String(event?.role ?? '').trim();
+  const phase = phaseLabel(event);
+  return role && role !== phase ? `${fallback} [${role}]` : fallback;
+}
+
 function phaseCounters(event) {
   const parts = [];
   const tools = Number(event?.tools);
   const pages = Number(event?.pages);
   if (Number.isFinite(tools) && tools > 0) parts.push(`${tools} tool(s)`);
   if (Number.isFinite(pages) && pages > 0) parts.push(`${pages} page(s) read`);
+  // A finished phase also says what its agent spent (the gateway's role meter):
+  // the line that tells which role used the token budget. Counts only.
+  const spend = (key) => Number(event?.[key]);
+  if (spend('modelCalls') > 0) parts.push(`${spend('modelCalls')} model call(s)`);
+  if (spend('tokensEstimated') > 0) parts.push(`~${spend('tokensEstimated')} tokens (largest call ${spend('maxCallTokens') || 0})`);
+  if (spend('distinctPages') > 0) parts.push(`${spend('distinctPages')} distinct page(s)`);
+  if (spend('rereads') > 0) parts.push(`${spend('rereads')} re-read(s)`);
   return parts.length > 0 ? ` — ${parts.join(', ')}` : '';
 }
 

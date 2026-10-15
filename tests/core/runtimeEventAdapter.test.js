@@ -82,6 +82,21 @@ test('phase and progress events enrich the journal with bounded counters', () =>
   });
   assert.match(finished.payload.message, /phase discover done — 7 tool\(s\), 4 page\(s\) read/);
 
+  // The role meter's counters say where the budget went.
+  const [spent] = mapRuntimeEvent({
+    type: 'phase_finished', phase: 'discover', ok: true, tools: 3, pages: 3,
+    modelCalls: 6, tokensEstimated: 326000, maxCallTokens: 82000, distinctPages: 85, rereads: 2,
+  });
+  assert.match(spent.payload.message, /6 model call\(s\), ~326000 tokens \(largest call 82000\), 85 distinct page\(s\), 2 re-read\(s\)/);
+
+  // Two agents share phase "assemble": the role names which one spoke.
+  const [archivist] = mapRuntimeEvent({ type: 'phase_finished', phase: 'assemble', role: 'archivist', ok: true, modelCalls: 2 });
+  assert.match(archivist.payload.message, /^phase assemble \[archivist\] done — 2 model call\(s\)/);
+  const [assembly] = mapRuntimeEvent({ type: 'phase_finished', phase: 'assemble', role: 'assemble', ok: true });
+  assert.equal(assembly.payload.message, 'phase assemble done');
+  const [started] = mapRuntimeEvent({ type: 'phase_started', phase: 'discover', role: 'scout' });
+  assert.equal(started.payload.message, 'phase discover [scout] started');
+
   const [interrupted] = mapRuntimeEvent({ type: 'phase_finished', phase: 'critique', ok: false });
   assert.match(interrupted.payload.message, /phase critique interrupted/);
 });

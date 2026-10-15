@@ -216,8 +216,10 @@ them to the manager's vocabulary; `runtime_log` and `runtime_heartbeat` are
 SSE-only and never persisted:
 
 - `phase_started` / `phase_finished` — bounded, carrying the tool/page counters
-  the phase used. They enrich the EXISTING business activity line and its
-  `projectWorkflow`, never a second axis of "phases".
+  the phase used and, when supplied, the responsible `role`. Logs show both
+  when they differ; the short narration still uses the workflow phase. They
+  enrich the EXISTING business activity line and its `projectWorkflow`, never
+  a second axis of "phases".
 - `progress` — coalesced by the gateway (one frame per window, not one per
   tool); the phase close always carries the final counts.
 - `heartbeat` — liveness while a long, tool-less phase runs. It becomes a
@@ -487,7 +489,10 @@ stream would accelerate one phase, not the run.
 
   Gateway-side ceilings for the hands (all optional, defaults in
   parentheses): `GATEWAY_RECURSION_LIMIT` (200) graph steps, `GATEWAY_TOKEN_BUDGET`
-  (2 000 000) estimated tokens, `GATEWAY_WORKTREE_MAX_FILES` (40) /
+  (2 000 000) estimated tokens per agent — each role and the assembly has its
+  own; an overrun names the role and its counters, and every `phase ... done`
+  log line carries that role's model calls, estimated tokens (with the largest
+  call), distinct pages and re-reads — `GATEWAY_WORKTREE_MAX_FILES` (40) /
   `GATEWAY_WORKTREE_MAX_DIFF_CHARS` (300 000) — beyond them the run fails
   loudly and discards the branch instead of queueing an unreadable review —
   and `GATEWAY_WORKTREE_MAX_AGE_MS` (7 days), after which a startup prune

@@ -380,6 +380,8 @@ const runtimeEventSchema = {
     // the schema must let it see one.
     type: { type: 'string' },
     runId: { type: 'string' },
+    phase: { type: 'string' },
+    role: { type: 'string' },
     tool: { type: 'string' },
     durationMs: { type: 'number' },
     resultSummary: { type: 'string' },

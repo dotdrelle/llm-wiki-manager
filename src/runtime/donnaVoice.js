@@ -134,6 +134,7 @@ export async function sayLines(session, {
         'Return JSON only: {"lines":[{"id":"<step id>","text":"<one sentence>"}]} — one entry per step, same ids, same order.',
         'Each text is at most 15 words: what is being done or was done, with the names, counts and outcome the data gives (a source name, a number of pages, a failure cause).',
         'A step whose state is "running" is in progress; "failed" is a failure and must be said.',
+        'For a step whose kind is "phase", give a brief progress update in Donna\'s voice from the broad activity only. Do not mention findings, files, evidence, tools, or internal phase names.',
         'A step\'s "verification" is what the agent observed after acting: "verified" means the result was seen, "not_observed" means it was NOT seen (say so), "unavailable" means the agent could not check, "not_applicable" means a simulation. A step without it was not checked: say nothing about verification there.',
         ...COMMON_RULES,
         channelLine(session, conversationId),

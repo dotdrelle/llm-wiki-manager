@@ -70,7 +70,12 @@ test('private reasoning and terminal events are never re-emitted', () => {
 test('phase and progress events enrich the journal with bounded counters', () => {
   assert.deepEqual(
     mapRuntimeEvent({ type: 'phase_started', phase: 'discover' }),
-    [{ type: 'runtime_log', payload: { message: 'phase discover started' } }],
+    [
+      { type: 'runtime_log', payload: { message: 'phase discover started' } },
+      // The detailed line stays in Logs; the small phase event gives the
+      // narrator enough context for a short progress sentence.
+      { type: 'runtime_phase_started', payload: { phase: 'discover' } },
+    ],
   );
   const [finished] = mapRuntimeEvent({
     type: 'phase_finished', phase: 'discover', ok: true, tools: 7, pages: 4,

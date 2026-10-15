@@ -77,10 +77,13 @@ export function mapRuntimeEvent(event) {
     //
     // The runtime's phases enrich the EXISTING business activity line; they do
     // not open a second axis of "phases" beside `projectWorkflow`. That is why
-    // they travel as runtime_log here and are aggregated downstream, rather
-    // than minting a new event type the reducer would have to reconcile.
+    // the detailed phase stays in Logs, while a small phase label also gives
+    // Donna enough context for a short, generic progress narration.
     case 'phase_started':
-      return log(`phase ${phaseLabel(event)} started`);
+      return [
+        ...log(`phase ${phaseLabel(event)} started`),
+        { type: 'runtime_phase_started', payload: { phase: phaseLabel(event) } },
+      ];
     case 'phase_finished': {
       const counters = phaseCounters(event);
       const outcome = event?.ok === false ? 'interrupted' : 'done';

@@ -22,7 +22,7 @@ import { createAgentEvent, dispatchAgentEvent, dispatchRuntimeLog } from '../cor
 import { sayLines } from './donnaVoice.js';
 import { isSuccessful, isUnsuccessfulTerminal } from '../orchestrator/taskStatuses.js';
 
-const OBSERVED = new Set(['user_message', 'tool_call_started', 'tool_call_result', 'chat_step', 'activity_upserted',
+const OBSERVED = new Set(['user_message', 'tool_call_started', 'tool_call_result', 'chat_step', 'activity_upserted', 'runtime_phase_started',
   'task.completed', 'task.failed', 'run_done', 'run_error', 'run_cancelled', 'assistant_message']);
 const DECLARED_VERIFICATIONS = new Set(['verified', 'not_observed', 'unavailable', 'not_applicable']);
 
@@ -35,6 +35,14 @@ function declaredVerification(result) {
 const RUN_END = new Set(['run_done', 'run_error', 'run_cancelled']);
 const MAX_STEPS = 12;
 const MAX_FIELD = 240;
+const PHASE_ACTIVITY = new Map([
+  ['discover', 'exploring the workspace'],
+  ['analyse', 'reviewing the relevant material'],
+  ['critique', 'checking the review for consistency'],
+  ['redteam', 'making a second review pass'],
+  ['redact', 'preparing proposed changes'],
+  ['assemble', 'putting the result together'],
+]);
 
 function bounded(value, limit = MAX_FIELD) {
   const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
@@ -81,7 +89,8 @@ export function createStepNarrator({
       scope = {
         key, session, runId: event.runId ?? null, turnId: event.runId ? null : event.turnId ?? null,
         conversationId: event.conversationId ?? null, workspace: event.workspace ?? session?.workspace ?? null,
-        request: '', steps: new Map(), taskSteps: new Map(), actionable: false, ended: false, calls: 0, lastCallAt: 0,
+        request: '', steps: new Map(), taskSteps: new Map(), phaseCount: 0,
+        actionable: false, ended: false, calls: 0, lastCallAt: 0,
         digest: '', narratedDigest: '', timer: null, inFlight: false, finalSent: false, announced: false,
         waiters: [],
       };
@@ -112,7 +121,7 @@ export function createStepNarrator({
     // run_done/run_error/run_cancelled).
     if (event.type === 'assistant_message' && (key.startsWith('run:') || !String(payload.content ?? '').trim())) return;
     if (event.type === 'user_message' && key.startsWith('run:')) return;
-    const scope = scopes.get(key) ?? (['user_message', 'tool_call_started', 'chat_step', 'activity_upserted', 'task.completed', 'task.failed'].includes(event.type)
+    const scope = scopes.get(key) ?? (['user_message', 'tool_call_started', 'chat_step', 'activity_upserted', 'runtime_phase_started', 'task.completed', 'task.failed'].includes(event.type)
       ? scopeFor(key, event, session) : null);
     if (!scope) return;
     if (event.type === 'user_message') {
@@ -141,6 +150,15 @@ export function createStepNarrator({
       if (!step) return;
       step.state = payload.ok === false ? 'failed' : 'done';
       step.result = bounded(payload.result);
+    } else if (event.type === 'runtime_phase_started') {
+      const phase = bounded(payload.phase, 40);
+      if (!phase) return;
+      const id = `phase:${++scope.phaseCount}`;
+      scope.steps.set(id, {
+        id, kind: 'phase', label: 'review progress', state: 'done',
+        facts: { activity: PHASE_ACTIVITY.get(phase.toLowerCase()) ?? 'working through the requested review' },
+      });
+      scope.actionable = true;
     } else if (event.type === 'activity_upserted') {
       const activity = payload.activity ?? {};
       const id = `activity:${activity.key ?? activity.id ?? scope.steps.size}`;

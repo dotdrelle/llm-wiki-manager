@@ -16,15 +16,13 @@ function startRuntimeServer(options) {
   return startRuntimeServerImpl({ token: '', ...options });
 }
 
-test('chat delegation enables evaluation and retains the prepared structured plan', async (t) => {
+test('chat delegation starts a run behind launch approval, with evaluation', async (t) => {
   let received;
-  const prepared = { fragment: { tasks: [] }, summary: { tasks: 0 } };
   let handle;
   try {
     handle = await startRuntimeServer({ host: '127.0.0.1', port: 0,
       store: { getState: () => ({ status: 'idle' }), listEvents: () => [] }, session: {},
-      delegate: async () => prepared,
-      run: async (_context, body) => { received = body; body._planReady.resolve(); },
+      run: async (_context, body) => { received = body; },
     });
   } catch (error) {
     if (error.code === 'EPERM') { t.skip('network listen is not permitted in this sandbox'); return; }
@@ -36,8 +34,13 @@ test('chat delegation enables evaluation and retains the prepared structured pla
       body: JSON.stringify({ objective: 'Perform the requested task', workspace: 'demo', conversationId: 'conv_test' }),
     });
     assert.equal(response.status, 202);
+    const accepted = await response.json();
+    assert.equal(accepted.awaitingApproval, true);
     assert.equal(received.evaluate, true);
-    assert.equal(received.preparedDelegation, prepared);
+    // The plan is prepared inside the run, after the launch approval — never
+    // before it (the old path prepared everything, then asked).
+    assert.equal(received.requireApproval, true);
+    assert.equal(received.preparedDelegation, undefined);
   } finally { await handle.close(); }
 });
 

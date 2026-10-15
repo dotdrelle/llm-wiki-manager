@@ -20,9 +20,9 @@ import { markPersistedAgentsStale } from '../orchestrator/agentRegistry.js';
 
 export { defaultRuntimeStateDir };
 
-// Progress notes are stored in their own journal below. They must not enter
-// the conversation projection, which seeds the next turn's LLM context.
-const NON_PERSISTED_EVENT_TYPES = new Set(['runtime_log', 'runtime_heartbeat']);
+// Progress notes are stored in their own journal below. Heartbeats and phase
+// starts are transient inputs to the live UI/narrator, not durable events.
+const NON_PERSISTED_EVENT_TYPES = new Set(['runtime_log', 'runtime_heartbeat', 'runtime_phase_started']);
 export const RUNTIME_STORE_SCHEMA_VERSION = 1;
 const RUNTIME_RETENTION_DAYS = 30;
 const TERMINAL_RUN_STATUSES = ['done', 'error', 'cancelled', 'interrupted'];

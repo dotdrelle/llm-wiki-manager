@@ -116,7 +116,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       // ONE sync for every configured source: in human mode each source used to
       // be its own approval, so a sync of N pages asked N times. The connector
       // exports all the workspace's sources when no source_name is given.
-      if(server){const raw=parse(await callTool(ctx.session.mcp,server,'cme_sources_list',{workspace}));const names=(raw.sources??(Array.isArray(raw)?raw:[])).map((source)=>source.name??source.source_name).filter(Boolean).map(String);if(names.length)add('sync','confluence',fingerprint([Math.floor(now().getTime()/7_200_000),[...names].sort()]),{},`Synchronize ${names.length} Confluence source(s): ${names.slice(0,5).join(', ')}${names.length>5?` +${names.length-5}`:''}`);}
+      if(server){const raw=parse(await callTool(ctx.session.mcp,server,'cme_sources_list',{workspace}));const names=(raw.sources??(Array.isArray(raw)?raw:[])).map((source)=>source.name??source.source_name).filter(Boolean).map(String);if(names.length)add('sync','confluence',fingerprint([Math.floor(now().getTime()/7_200_000),[...names].sort()]),{},'Synchronize Confluence sources');}
       if(sourceConfigFailures.delete(workspace))log(workspace,'recovered','source configuration is available again; synchronization can resume');
     }catch{
       if(!sourceConfigFailures.has(workspace)){

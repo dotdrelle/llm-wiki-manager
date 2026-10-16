@@ -219,6 +219,7 @@ test('startActivitySupervisor periodically re-scans the agent registry', async (
     activities: {},
     headlessPlan: null,
     jobQueue: [],
+    workspacePath: '/tmp/supervisor-ws',
   };
   let discoveries = 0;
   const registry = {
@@ -258,6 +259,7 @@ test('startActivitySupervisor refreshes MCP before each periodic re-scan', async
     activities: {},
     headlessPlan: null,
     jobQueue: [],
+    workspacePath: '/tmp/supervisor-ws',
   };
   let refreshes = 0;
   let discoveries = 0;
@@ -297,9 +299,24 @@ test('discoverAgentsOnce uses the session registry and returns discovered agents
       return expected;
     },
   };
-  const session = { workspace: 'docs', agentRegistry: registry };
+  const session = { workspace: 'docs', workspacePath: '/tmp/docs', agentRegistry: registry };
 
   assert.equal(await discoverAgentsOnce(session), expected);
+});
+
+test('discoverAgentsOnce skips discovery without a workspace and says why once', async () => {
+  let discovered = 0;
+  const registry = {
+    async discover() {
+      discovered += 1;
+      return [{ agentInstanceId: 'a' }];
+    },
+  };
+  const session = { workspace: 'docs', agentRegistry: registry };
+
+  assert.deepEqual(await discoverAgentsOnce(session), []);
+  assert.deepEqual(await discoverAgentsOnce(session), []);
+  assert.equal(discovered, 0, 'the placeholder context never probes its empty MCP map');
 });
 
 test('pollActivitiesOnce fires _onActivitiesTerminal when last activity becomes terminal', async () => {

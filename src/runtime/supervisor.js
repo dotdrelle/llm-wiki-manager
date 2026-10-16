@@ -83,8 +83,24 @@ export async function discoverAgentsOnce(session, {
 } = {}) {
   if (!session) return [];
   session.agentRegistry ??= registry;
+  // The runtime's default context has no workspace: its MCP map holds only
+  // the configured placeholders, and probing them registered every agent as
+  // unavailable under no workspace at each re-scan. Skip discovery there —
+  // every caller (supervisor re-scan, delegation, recovery, connector writes)
+  // goes through here — and say so once. A later `/use` gives the session a
+  // workspacePath, and the next call discovers normally.
+  if (!session.workspacePath) {
+    if (!DISCOVERY_SKIP_ANNOUNCED.has(session)) {
+      DISCOVERY_SKIP_ANNOUNCED.add(session);
+      emitRuntimeLog(session, 'agents: discovery skipped — no workspace is loaded in this context; it runs once a workspace is selected');
+    }
+    return [];
+  }
+  DISCOVERY_SKIP_ANNOUNCED.delete(session);
   return registry.discover(session, { signal });
 }
+
+const DISCOVERY_SKIP_ANNOUNCED = new WeakSet();
 
 export async function pollActivitiesOnce(session, {
   pollBusy = new Set(),

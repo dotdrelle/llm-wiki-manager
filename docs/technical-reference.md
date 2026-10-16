@@ -607,6 +607,14 @@ wiki-workspace up my-project
 wiki-workspace start [--pull] [--open]
 ```
 
+Before removing old images, `wiki-workspace refresh` checks the manager's MCP,
+agent-runtime and Compose configuration. It applies narrowly scoped packaged
+compatibility migrations (including newly packaged capabilities on an
+existing matching runtime), reports each change, and stops before teardown if a
+configuration is invalid. Existing capability entries, user Compose overrides,
+and disabled servers remain operator-owned. The refreshed configuration takes
+effect when the runtime and agent stacks are started again.
+
 Run wiki commands:
 
 ```bash

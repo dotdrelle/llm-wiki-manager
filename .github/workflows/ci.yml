@@ -46,3 +46,5 @@ jobs:
         working-directory: llm-wiki-manager
       - run: npm run check-versions
         working-directory: llm-wiki-manager
+      - run: npm run check-file-sizes
+        working-directory: llm-wiki-manager

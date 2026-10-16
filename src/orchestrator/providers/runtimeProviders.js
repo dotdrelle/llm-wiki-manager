@@ -354,9 +354,10 @@ async function discoverRuntimeProviders(session, {
   session.runtimeProviderUnreachable = [
     ...unavailable
       .filter((item) => !answeredIds.has(item.runtimeId) && !preservedByRuntime.has(item.runtimeId))
-      .map((item) => ({ runtimeId: item.runtimeId, error: String(item.error ?? 'not reachable'), probeTimeoutMs: probeTimeoutByRuntime.get(item.runtimeId) ?? 30_000, capabilities: declaredCapabilities(item.runtimeId).map(describeDeclared) })),
+      .map((item) => ({ runtimeId: item.runtimeId, reachable: false, error: String(item.error ?? 'not reachable'), probeTimeoutMs: probeTimeoutByRuntime.get(item.runtimeId) ?? 30_000, capabilities: declaredCapabilities(item.runtimeId).map(describeDeclared) })),
     ...drift.map((item) => ({
       runtimeId: item.runtimeId,
+      reachable: true,
       error: 'it answers but does not serve this capability',
       probeTimeoutMs: probeTimeoutByRuntime.get(item.runtimeId) ?? DEFAULT_RUNTIME_PROBE_TIMEOUT_MS,
       capabilities: declaredCapabilities(item.runtimeId).filter((capability) => item.missing.includes(String(capability?.name ?? ''))).map(describeDeclared),

@@ -8,7 +8,7 @@ import { createMaintenanceService } from '../../src/maintenance/service.js';
 // nothing to explain (lyra: an unreachable Confluence, an exhausted budget).
 function service({ execute, runtime = null }) {
   const db = new DatabaseSync(':memory:');
-  const provider = { serverName: 'cme', health: 'available', capability: { supportedOperations: ['export', 'doctor'], inputSchema: { type: 'object', additionalProperties: true } } };
+  const provider = { serverName: 'cme', health: 'available', capability: { supportedOperations: ['export', 'doctor', 'index'], inputSchema: { type: 'object', additionalProperties: true } } };
   const session = {
     workspace: 'x',
     workspacePath: '/private/tmp/nonexistent-maintenance-test',

@@ -94,7 +94,7 @@ backoff base, so a retry does not start before the configured probe can finish.
 Discovery requests from the supervisor and Maintenance share one in-flight
 probe per workspace session. The supervisor
 refreshes runtime discovery every minute by default. Maintenance scans every
-five minutes by default; when its gateway probe fails, it retries after 30 s,
+15 minutes by default; when its gateway probe fails, it retries after 30 s,
 1 min, 2 min, then 4 min, capped by the configured scan interval (and at five
 minutes). The regular scan remains the fallback if the gateway stays down.
 
@@ -346,7 +346,7 @@ owns the facts (`wiki_maintenance_state`: pending sources and their
 protection, deliverable/publication freshness, index freshness) and never
 stores a decision or a budget.
 
-**How a scan runs** (`tick`, every `WIKI_MANAGER_MAINTENANCE_INTERVAL_MS` and
+**How a scan runs** (`tick`, every `WIKI_MANAGER_MAINTENANCE_INTERVAL_SECONDS` and
 after an ingest/rebuild completes):
 
 1. An interrupted cycle is re-attached first.

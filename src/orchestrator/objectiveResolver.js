@@ -115,7 +115,13 @@ function assertNotUnreachable(objective, session, candidates) {
   const hits = declared.filter((item) => item.aliases.some((alias) => phraseIn(normalizePhrase(alias), words, text)));
   if (hits.length !== 1) return;
   const [match] = hits;
-  throw new Error(`No healthy agent provides ${match.id}/${match.operations[0]}: the agentic runtime ${match.runtime.runtimeId} is not reachable (${match.runtime.error}).`);
+  const condition = match.runtime.reachable === true
+    ? `is reachable but does not serve ${match.id}`
+    : `is not reachable (${match.runtime.error})`;
+  const correction = match.runtime.reachable === true
+    ? ' Check agent-runtimes.json and the gateway config mount.'
+    : '';
+  throw new Error(`No healthy agent provides ${match.id}/${match.operations[0]}: the agentic runtime ${match.runtime.runtimeId} ${condition}.${correction}`);
 }
 
 // Deterministic fast path, safe by construction:

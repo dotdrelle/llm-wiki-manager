@@ -30,9 +30,21 @@ test('wiki-workspace checks runtime pid command before killing', async () => {
 
 test('project refresh shuts down runtime and removes only compose-owned images', async () => {
   const script = await readFile(new URL('../../wiki-workspace', import.meta.url), 'utf8');
+  const refresh = await readFile(new URL('../../bin/refresh-project.sh', import.meta.url), 'utf8');
 
   assert.match(script, /if \[\[ \$# -eq 1 && "\$1" == "refresh" \]\]; then\n    refresh_project/);
-  assert.match(script, /compose_for_workspace "\$workspace" down --rmi all --remove-orphans/);
+  assert.match(script, /source "\$ROOT_DIR\/bin\/refresh-project\.sh"/);
+  assert.match(refresh, /refresh_project\(\) \{\n  verify_project_configuration/);
+  const refreshBody = refresh.slice(refresh.indexOf('refresh_project() {'), refresh.indexOf('\n}', refresh.indexOf('refresh_project() {')));
+  assert.ok(refreshBody.indexOf('verify_project_configuration') < refreshBody.indexOf('runtime_command down'));
+  assert.match(refresh, /node "\$ROOT_DIR\/bin\/check-project-config\.js"/);
+  assert.match(script, /if ! _agents_dc config >\/dev\/null; then/);
+  assert.match(script, /_agents_dc config >\/dev\/null/);
+  assert.match(refresh, /compose_for_workspace "\$workspace" config >\/dev\/null/);
+  assert.match(refresh, /Configuration changes above take effect when the runtime and agent stacks are started again/);
+  assert.match(refresh, /compose_for_workspace "\$workspace" down --rmi all --remove-orphans/);
+  assert.match(refresh, /agents_compose purge/);
+  assert.doesNotMatch(refresh, /docker (?:image )?prune/);
   assert.match(script, /_agents_dc down --rmi all --remove-orphans/);
   assert.doesNotMatch(script, /docker (?:image )?prune/);
 });

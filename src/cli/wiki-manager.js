@@ -33,6 +33,7 @@ import { syncActivitiesToPlan, formatPlanStatus } from '../core/plan.js';
 import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../core/agentEvents.js';
 import { runAgentTurn, runAgenticLoop } from '../core/agentLoop.js';
 import { createStepNarrator } from '../runtime/stepNarrator.js';
+import { createRuntimeTracer } from '../runtime/traceLog.js';
 import { answerAsReport } from '../runtime/runReports.js';
 import { isLongAnswer, requestsReportDocument } from '../core/reports.js';
 import { containsSensitiveMemoryMaterial } from '../runtime/memoryExtract.js';
@@ -95,11 +96,22 @@ function unavailableRuntime(err) {
 
 // The user-facing reason a capability cannot start — one sentence, the likely
 // cause, and the fix. The raw registry goes to the logs, never to the chat.
-function capabilityUnavailableMessage(capabilityId, seen = []) {
+function capabilityUnavailableMessage(capabilityId, seen = [], session = null, resolutionReason = null) {
   const agentic = String(capabilityId).startsWith('agent.');
   const servicesDown = seen.some((entry) => /\[none\]$/.test(entry));
   if (agentic) {
-    return `No agent provides capability ${capabilityId} — the agentic runtime is not enabled or not reachable. Enable it (GATEWAY_ENABLED=true + wiki-workspace agents up) and check /status.`;
+    const runtimeIssue = (session?.runtimeProviderUnreachable ?? [])
+      .find((runtime) => (runtime.capabilities ?? []).some((capability) => capability.name === capabilityId));
+    if (runtimeIssue?.reachable === true) {
+      return `No agent provides capability ${capabilityId} — the gateway is reachable but does not serve it. Check agent-runtimes.json and the gateway config mount, then restart agents and the runtime.`;
+    }
+    if (runtimeIssue) {
+      return `No agent provides capability ${capabilityId} — runtime ${runtimeIssue.runtimeId} is unavailable (${runtimeIssue.error}). Start it with wiki-workspace agents up and check /status.`;
+    }
+    if (resolutionReason === 'capability_not_found') {
+      return `No agent provides capability ${capabilityId} — no configured provider declares it. Check agent-runtimes.json and the gateway config mount, then restart agents and the runtime.`;
+    }
+    return `No healthy agent provides capability ${capabilityId}. Check the runtime status and capability declaration in agent-runtimes.json.`;
   }
   if (servicesDown) {
     return `No agent provides capability ${capabilityId} — the workspace services are not running. Start them (wiki-workspace up <workspace>), then retry.`;
@@ -1075,6 +1087,15 @@ async function runRuntime(argv, agent) {
     ?? `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`;
 
   const store = openRuntimeStore({ stateDir });
+  // Every event of every session and turn reaches persistEvent — runtime_log
+  // included, which SQLite never keeps: mirror it to stdout (runtime.log) so
+  // `wiki-workspace runtime logs` shows what the Logs tab showed.
+  const traceRuntimeEvent = createRuntimeTracer();
+  const persistRuntimeEvent = store.persistEvent;
+  store.persistEvent = (event) => {
+    traceRuntimeEvent(event);
+    return persistRuntimeEvent(event);
+  };
   const memoryStore = openMemoryStore({ stateDir });
   let memoryFallbackAnnounced = false;
   let serverHandle = null;
@@ -1528,6 +1549,7 @@ async function runRuntime(argv, agent) {
     const parentStack = Array.isArray(session._skillStack) ? session._skillStack : [];
     const previousWorkspaceMemoryFacts = session.workspaceMemoryFacts;
     const hadWorkspaceMemoryFacts = Object.hasOwn(session, 'workspaceMemoryFacts');
+    let capabilityPlanPreflight = null;
     try {
       if (workspace && session.workspace !== workspace) {
         const result = await handleSlashCommand(`/use ${workspace}`, { packageJson, session });
@@ -1592,6 +1614,41 @@ async function runRuntime(argv, agent) {
         ? Math.max(1, Number(body.approvalTimeoutMs))
         : undefined;
       supervisor?.setRunSignal(signal);
+      // A skill with a declared capability (for example /curate) already
+      // knows its route. Resolve that route before asking for run approval so
+      // an unavailable capability cannot produce an approval request that is
+      // guaranteed to fail. The post-approval plan path resolves against the
+      // current session registry without repeating the gateway probes.
+      if (body.capabilityPlan?.capability) {
+        await refreshMcpRuntimeStatus(session);
+        await discoverAgentsOnce(session, { registry: session.agentRegistry });
+        await discoverRuntimeProvidersOnce(session);
+        const capabilityId = String(body.capabilityPlan.capability);
+        const registry = capabilityRegistryForSession(session);
+        const workspaceConfig = session?.wikircConfig ?? session?.wikirc?.config ?? {};
+        let provider = null;
+        let resolutionReason = null;
+        try {
+          const resolved = resolveCapability(capabilityId, { workspaceConfig, registry });
+          provider = (registry.providersFor(capabilityId) ?? [])
+            .find((item) => item.agentInstanceId === resolved.agentInstanceId) ?? null;
+        } catch (error) {
+          if (!(error instanceof CapabilityUnavailableError)) throw error;
+          resolutionReason = error.reason;
+        }
+        if (!provider) {
+          const error = new Error(capabilityUnavailableMessage(capabilityId, [], session, resolutionReason));
+          error.code = 'capability_unavailable';
+          throw error;
+        }
+        const requestedOperation = body.capabilityPlan.operation;
+        if (requestedOperation && !(provider.capability?.supportedOperations ?? []).includes(requestedOperation)) {
+          const error = new Error(`No agent provides operation ${requestedOperation} for capability ${capabilityId}.`);
+          error.code = 'capability_unavailable';
+          throw error;
+        }
+        capabilityPlanPreflight = { capability: capabilityId, provider };
+      }
       // Approve at launch, before any model call (runtime/launchApproval.js).
       const { requestLaunchApproval } = await import('../runtime/launchApproval.js');
       await requestLaunchApproval(session, { runId, publicInput: body.publicInput ?? input });
@@ -1662,15 +1719,8 @@ async function runRuntime(argv, agent) {
       if (body.capabilityPlan?.capability) {
         const { validateFragment } = await import('../orchestrator/planValidator.js');
         const { integrate } = await import('../orchestrator/planIntegrator.js');
-        // Same boot-race guard as prepareDelegation below: discovery is
-        // asynchronous at startup, so a structured capability run submitted
-        // right after boot must not observe the transient empty registry and
-        // fail while the provider is already healthy (first E2E run of the
-        // day did exactly that: "No agent provides capability agent.review"
-        // while the gateway answered /health).
-        await refreshMcpRuntimeStatus(session);
-        await discoverAgentsOnce(session, { registry: session.agentRegistry });
-        await discoverRuntimeProvidersOnce(session);
+        // The route was freshly discovered before launch approval. Resolve it
+        // again against the session registry, without repeating gateway probes.
         const registry = capabilityRegistryForSession(session);
         const capabilityId = String(body.capabilityPlan.capability);
         const candidates = registry.providersFor(capabilityId) ?? [];
@@ -1683,7 +1733,9 @@ async function runRuntime(argv, agent) {
         // disallowed or unhealthy agent while every other entry point honors
         // the routing config.
         const workspaceConfig = session?.wikircConfig ?? session?.wikirc?.config ?? {};
-        let provider = null;
+        let provider = capabilityPlanPreflight?.capability === capabilityId
+          ? capabilityPlanPreflight.provider
+          : null;
         let resolutionReason = null;
         try {
           const resolved = resolveCapability(capabilityId, { workspaceConfig, registry });
@@ -1713,7 +1765,7 @@ async function runRuntime(argv, agent) {
           // The raw registry stays for diagnosis, in the LOGS — never in the
           // user-facing message, which explains the likely cause instead.
           emitRuntimeLog(session, `capability-plan: ${capabilityId} unresolvable (${resolutionReason ?? 'no_candidate'}) — registry: ${seen.join('; ') || 'no agent answered agent_describe'}`);
-          const error = new Error(capabilityUnavailableMessage(capabilityId, seen));
+          const error = new Error(capabilityUnavailableMessage(capabilityId, seen, session, resolutionReason));
           error.code = 'capability_unavailable';
           throw error;
         }

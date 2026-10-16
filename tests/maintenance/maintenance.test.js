@@ -23,6 +23,29 @@ test('new content replaces the old decision; stale approval and cross-workspace 
 test('foreground pending before background admission wins the resource',async()=>{const w='priority';enableMaintenanceAdmission(w);const held=await admitExecution(w,{locks:['*']},{background:true});const order=[];const fore=admitExecution(w,{locks:['*']}).then(release=>{order.push('foreground');release();});const back=admitExecution(w,{locks:['*']},{background:true}).then(release=>{order.push('background');release();});held();await Promise.all([fore,back]);assert.deepEqual(order,['foreground','background']);});
 test('aborted waiter does not steal or leak admission',async()=>{enableMaintenanceAdmission('abort');const held=await admitExecution('abort',{},{background:true});const c=new AbortController();const pending=admitExecution('abort',{},{background:true,signal:c.signal});c.abort();await assert.rejects(pending);held();(await admitExecution('abort',{},{background:true}))();});
 test('disabled maintenance does not call tools or a model; scoped authority cannot approve',async()=>{const {db}=setup();let calls=0;const service=createMaintenanceService({db,getContext:async()=>{calls++;},readDocument:()=>({}),baseUrl:'http://localhost'});await service.tick('x');assert.equal(calls,0);assert.equal(service.authorizeBridge('unknown','token'),null);assert.equal(service.status('x').enabled,false);await service.close();db.close();});
+test('maintenance scan interval uses seconds and keeps legacy milliseconds compatible',async()=>{
+  const originalSetInterval=globalThis.setInterval,originalClearInterval=globalThis.clearInterval;
+  const originalSeconds=process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_SECONDS,originalMilliseconds=process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_MS;
+  let scheduled;
+  globalThis.setInterval=(_callback,delay)=>{scheduled=delay;return {unref(){}};};
+  globalThis.clearInterval=()=>{};
+  const intervalFor=async(seconds,milliseconds)=>{
+    if(seconds===undefined)delete process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_SECONDS;else process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_SECONDS=String(seconds);
+    if(milliseconds===undefined)delete process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_MS;else process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_MS=String(milliseconds);
+    const {db}=setup();const service=createMaintenanceService({db,getContext:async()=>null,readDocument:()=>({})});
+    service.start();const result=scheduled;await service.close();db.close();return result;
+  };
+  try{
+    assert.equal(await intervalFor(900,300_000),900_000,'900 seconds converts to 15 minutes and takes precedence over milliseconds');
+    assert.equal(await intervalFor(undefined,45_000),45_000,'legacy milliseconds remain supported');
+    assert.equal(await intervalFor(undefined,undefined),900_000,'the default remains 15 minutes');
+    assert.equal(await intervalFor(10,undefined),30_000,'the minimum interval remains 30 seconds');
+  }finally{
+    globalThis.setInterval=originalSetInterval;globalThis.clearInterval=originalClearInterval;
+    if(originalSeconds===undefined)delete process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_SECONDS;else process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_SECONDS=originalSeconds;
+    if(originalMilliseconds===undefined)delete process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_MS;else process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_MS=originalMilliseconds;
+  }
+});
 
 function harness({facts:override={},runtime=null,gate=null,statuses=[],curate=null,onStatus=null,now=undefined,refuseExecute=null,refuseOperation=null,cmeSources=null,cmeError=null,mergeError=null,workspacePath='/private/tmp/nonexistent-maintenance-test'}={}){
   const {db}=setup();let version='a';let executions=[];const statusChecks=[];const cancels=[];const merges=[];let access={maintenanceAccess:{defaults:{enabled:true,limits:{sourceQuietMinutes:0}}}};
@@ -50,7 +73,7 @@ test('a gateway recovery records the actual resume date on the maintenance cycle
     status:async()=>++statusCalls===1?{status:'recovering'}:{status:'completed'},
     cancel:async()=>{},
   };
-  const h=harness({facts:{pending:[],proposals:[]},runtime,now:()=>new Date(statusCalls===0?startedAt:resumedAt)});
+  const h=harness({facts:{pending:[],proposals:[]},runtime,curate:{execute:async()=>({runId:'gc'}),status:async()=>({status:'completed',result:{}}),cancel:async()=>{}},now:()=>new Date(statusCalls===0?startedAt:resumedAt)});
   try{
     await h.service.tick('x');
     for(let i=0;i<1200&&(h.service.status('x').cycles[0]?.status!=='completed'||h.service.isActive('x'));i++)await new Promise(resolve=>setTimeout(resolve,0));

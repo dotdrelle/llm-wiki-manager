@@ -1,6 +1,6 @@
 # Repository Guide
 
-Current coordinated release: **0.16.55** (see `package.json`, the only source
+Current coordinated release: **0.16.58** (see `package.json`, the only source
 of truth — this line keeps drifting, so trust the file, not the prose). Keep
 manager handshakes and the local `llm-wiki` engine version aligned across the
 coordinated repositories; `npm run check-versions` covers the fifteen places a
@@ -1224,6 +1224,11 @@ Before committing manager changes:
 ```bash
 pnpm run check
 ```
+
+`npm run check-file-sizes` walks `src/`, `bin/` and `wiki-workspace` against an
+800-line ceiling, with recorded ceilings for the modules still oversized (the
+splitting lead stays deliberately not engaged; the guard keeps the drift
+visible). It runs in CI.
 
 Also exercise relevant paths:
 

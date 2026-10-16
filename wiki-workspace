@@ -20,6 +20,7 @@ MANAGER_STATE_DIR="$(cd "$(dirname "$MANAGER_ENV_FILE")" && pwd)"
 MANAGER_COMPOSE_DIR="$MANAGER_STATE_DIR/.wiki/compose"
 MANAGER_RUNTIME_DIR="$MANAGER_STATE_DIR/.wiki/runtime"
 LEGACY_MANAGER_RUNTIME_DIR="$MANAGER_STATE_DIR/.wiki-manager"
+source "$ROOT_DIR/bin/refresh-project.sh"
 if [[ ! -e "$MANAGER_RUNTIME_DIR" && -d "$LEGACY_MANAGER_RUNTIME_DIR" ]]; then
   mkdir -p "$MANAGER_STATE_DIR/.wiki"
   mv "$LEGACY_MANAGER_RUNTIME_DIR" "$MANAGER_RUNTIME_DIR"
@@ -107,6 +108,7 @@ Commands:
   agents logs [args...]             Follow external agent logs
   agents pull                       Pull latest external agent images
   agents refresh                    Update only external agents currently running
+  agents config                     Validate the external-agent Compose configuration
   agents status                     Check reachability of configured MCP endpoints
 
   runtime up                        Start the single host agent-runtime on Node.js 22
@@ -427,6 +429,14 @@ agents_compose() {
     refresh)
       [[ $# -eq 0 ]] || die "agents refresh does not take arguments"
       refresh_running_services 'No running external agent containers to refresh' 'Refreshed running agents: %s' _agents_dc
+      ;;
+    config)
+      [[ $# -eq 0 ]] || die "agents config does not take arguments"
+      if ! _agents_dc config >/dev/null; then
+        printf 'External-agent Compose configuration is invalid.\n' >&2
+        return 1
+      fi
+      printf 'External-agent Compose configuration is valid.\n'
       ;;
     status)
       [[ $# -eq 0 ]] || die "agents status does not take arguments"
@@ -915,7 +925,7 @@ runtime_command() {
       fi
       if ! wait_for_runtime_health; then
         printf 'agent-runtime failed to become healthy at %s\n' "$(runtime_health_url)" >&2
-        [[ ! -f "$log_file" ]] || tail -20 "$log_file" >&2
+        [[ ! -f "$log_file" ]] || tail -n 20 "$log_file" >&2
         return 1
       fi
       printf 'agent-runtime healthy on http://127.0.0.1:%s (pid %s)\n' "$port" "$(cat "$pid_file")"
@@ -991,7 +1001,7 @@ runtime_command() {
         exit 1
       fi
       if [[ $# -eq 0 ]]; then
-        tail -100 -f "$log_file"
+        tail -n 100 -f "$log_file"
       else
         tail "$@" "$log_file"
       fi
@@ -1000,36 +1010,6 @@ runtime_command() {
       die "unknown runtime command: $subcommand (expected: up, down, status, logs)"
       ;;
   esac
-}
-
-refresh_project() {
-  printf 'Stopping shared runtime...\n'
-  runtime_command down
-
-  local entry workspace
-  for entry in "$WORKSPACES_DIR"/*; do
-    [[ -f "$entry/.env" ]] || continue
-    workspace="$(basename "$entry")"
-    printf 'Removing workspace stack and images: %s\n' "$workspace"
-    compose_for_workspace "$workspace" down --rmi all --remove-orphans
-  done
-
-  printf 'Removing external-agent stack and images...\n'
-  agents_compose purge
-
-  # `refresh` promet un état propre : le vérifier plutôt que l'affirmer. Un
-  # port encore tenu ici signifie qu'il l'est par un processus étranger, que
-  # `runtime down` refuse de tuer à raison — mais le taire ferait échouer le
-  # prochain démarrage sans que personne ne fasse le lien.
-  local leftover
-  leftover="$(runtime_port_pids "$(runtime_port)")"
-  if [[ -n "$leftover" ]]; then
-    printf 'Refresh incomplete: port %s is still held by pid(s) %s.\n' \
-      "$(runtime_port)" "$(printf '%s' "$leftover" | tr '\n' ' ')" >&2
-    printf 'It is not a wiki-manager runtime, so it was left running. Free the port, or set WIKI_MANAGER_RUNTIME_PORT to another one.\n' >&2
-    return 1
-  fi
-  printf 'Refresh complete. Persistent workspace and agent data were preserved.\n'
 }
 
 ensure_runtime_up() {

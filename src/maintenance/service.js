@@ -45,6 +45,19 @@ const CANCEL_CONFIRM_MS=120_000;
 const modeFor=(p,c)=>{const mode=actionMode(p,c.action,c.target);return c.humanEdit&&mode==='auto'?'ask':mode;};
 const terminal=(s)=>['done','completed','succeeded','failed','error','cancelled'].includes(s);
 const parse=(r)=>{if(r?.content){const text=formatMcpToolResult(r);try{return JSON.parse(text);}catch{return parseYaml(text);}}return r;};
+function configuredMaintenanceIntervalMs(env=process.env){
+  const seconds=env.WIKI_MANAGER_MAINTENANCE_INTERVAL_SECONDS;
+  if(seconds!=null&&String(seconds).trim()!==''){
+    const value=Number(seconds);
+    if(Number.isFinite(value)&&value>0)return value*1000;
+  }
+  const milliseconds=env.WIKI_MANAGER_MAINTENANCE_INTERVAL_MS;
+  if(milliseconds!=null&&String(milliseconds).trim()!==''){
+    const value=Number(milliseconds);
+    if(Number.isFinite(value)&&value>0)return value;
+  }
+  return DEFAULT_MAINTENANCE_SCAN_INTERVAL_MS;
+}
 // An agent restarted without its job record answers `{ok:false, error:"Unknown
 // jobId"}` (production) or `{error:{code:'unknown_job'}}` (CME) — a normal
 // result, not an MCP error, and without a status. Read as "not finished", it
@@ -53,8 +66,8 @@ const parse=(r)=>{if(r?.content){const text=formatMcpToolResult(r);try{return JS
 const lostJob=(r)=>r?.error?.code==='unknown_job'||(r?.ok===false&&/unknown jobid/i.test(String(r.error?.message??r.error??'')));
 const jobState=(r)=>lostJob(r)?{status:'failed',lost:true,error:'the agent no longer knows this job (restarted, or its record was removed)'}:r;
 const wait=(signal,ms=500)=>new Promise((resolve,reject)=>{const abort=()=>{clearTimeout(timer);reject(signal.reason??new Error('aborted'));};const timer=setTimeout(()=>{signal?.removeEventListener('abort',abort);resolve();},ms);if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});});
-export function createMaintenanceService({db,getContext,baseUrl,readDocument=readMaintenanceAccessDocument,callTool=callMcpTool,now=()=>new Date(),onEvent=null,onChange=null,discover=discoverRuntimeProvidersOnce,writeEnabled=setMaintenanceEnabled,writeMode=setMaintenanceMode,intervalMs=Number(process.env.WIKI_MANAGER_MAINTENANCE_INTERVAL_MS??DEFAULT_MAINTENANCE_SCAN_INTERVAL_MS)}) {
-  const store=createMaintenanceStore(db,{onChange:(workspace)=>onChange?.(workspace)});const active=new Map();const scans=new Set();const inflight=new Map();const sourceConfigFailures=new Set();const gatewayRetryTimers=new Map();const gatewayRetryAttempts=new Map();let timer;
+export function createMaintenanceService({db,getContext,baseUrl,readDocument=readMaintenanceAccessDocument,callTool=callMcpTool,now=()=>new Date(),onEvent=null,onChange=null,discover=discoverRuntimeProvidersOnce,writeEnabled=setMaintenanceEnabled,writeMode=setMaintenanceMode,intervalMs=configuredMaintenanceIntervalMs()}) {
+  const store=createMaintenanceStore(db,{onChange:(workspace)=>onChange?.(workspace)});const active=new Map();const scans=new Set();const inflight=new Map();const sourceConfigFailures=new Set();const unavailableActions=new Map();const gatewayRetryTimers=new Map();const gatewayRetryAttempts=new Map();let timer;
   // The actions executing right now, with their agent's last progress: the
   // served run graph draws them, so maintenance work is seen, not only logged.
   const live=new Map();
@@ -69,14 +82,15 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
   // the gateway was back, while everything was running.
   function scheduleGatewayRetry(workspace,probeTimeoutMs){if(gatewayRetryTimers.has(workspace))return;const attempt=gatewayRetryAttempts.get(workspace)??0;gatewayRetryAttempts.set(workspace,attempt+1);const delay=maintenanceGatewayRetryDelay(attempt,intervalMs,probeTimeoutMs);const retry=setTimeout(()=>{gatewayRetryTimers.delete(workspace);void tick(workspace);},delay);retry.unref?.();gatewayRetryTimers.set(workspace,retry);}
   function clearGatewayRetry(workspace){const retry=gatewayRetryTimers.get(workspace);if(retry)clearTimeout(retry);gatewayRetryTimers.delete(workspace);gatewayRetryAttempts.delete(workspace);}
-  function gatewayUnavailable(workspace,session,cause=null){const down=(session?.runtimeProviderUnreachable??[]).find((r)=>(r.capabilities??[]).some((c)=>c.name==='agent.maintain'));const reason=down?.error??(cause instanceof Error?cause.message:cause?String(cause):null)??'agent.maintain is absent from the manager declaration or the gateway capabilities';degradedOnce(workspace,`maintenance_gateway_unavailable: ${reason}`);scheduleGatewayRetry(workspace,down?.probeTimeoutMs);}
-  function gatewayBack(workspace){clearGatewayRetry(workspace);const last=store.events(workspace).filter((e)=>e.kind==='degraded'||e.kind==='recovered').at(-1);if(last?.kind==='degraded'&&/^maintenance_gateway_unavailable/.test(String(last.detail??'')))log(workspace,'recovered','the agentic runtime (gateway) answers again; maintenance cycles can run');}
+  function gatewayUnavailable(workspace,session,cause=null){const down=(session?.runtimeProviderUnreachable??[]).find((r)=>(r.capabilities??[]).some((c)=>c.name==='agent.maintain'));if(down?.reachable===true){degradedOnce(workspace,`maintenance_capability_unavailable: ${down.runtimeId} answers but does not serve agent.maintain; check agent-runtimes.json and the gateway config mount`);}else{const reason=down?.error??(cause instanceof Error?cause.message:cause?String(cause):null)??'agent.maintain is absent from the manager declaration or the gateway capabilities';degradedOnce(workspace,`maintenance_gateway_unavailable: ${reason}`);}scheduleGatewayRetry(workspace,down?.probeTimeoutMs);}
+  function gatewayBack(workspace){clearGatewayRetry(workspace);const last=store.events(workspace).filter((e)=>e.kind==='degraded'||e.kind==='recovered').at(-1);const detail=String(last?.detail??'');if(last?.kind==='degraded'&&(/^maintenance_gateway_unavailable/.test(detail)||/^maintenance_capability_unavailable/.test(detail)&&detail.includes('agent.maintain')))log(workspace,'recovered','the agentic runtime and its maintenance capability are available again; maintenance cycles can run');}
   async function context(workspace){const ctx=await getContext(workspace);if(!ctx?.session?.workspace)throw new Error('maintenance_workspace_unavailable');return ctx;}
   function providerFor(session,action,operation) {
     const spec=MAINTENANCE_ACTIONS[action];if(!spec)throw new Error('maintenance_unknown_action');
     const provider=capabilityRegistryForSession(session).providersFor(spec.capability).find((p)=>p.health!=='unavailable' && p.capability.supportedOperations?.includes(operation??spec.operation));
-    if(!provider)throw new Error(`maintenance_capability_unavailable: ${spec.capability}`);return provider;
+    if(!provider){const runtime=(session?.runtimeProviderUnreachable??[]).find((item)=>(item.capabilities??[]).some((capability)=>capability.name===spec.capability));const cause=runtime?.reachable===true?`${runtime.runtimeId} is reachable but does not serve ${spec.capability}; check agent-runtimes.json and the gateway config mount`:runtime?`${runtime.runtimeId} is unavailable (${runtime.error})`:spec.capability.startsWith('agent.')?`no healthy agent provides ${spec.capability}; check agent-runtimes.json and the gateway config mount`:`no healthy agent provides ${spec.capability}`;throw new Error(`maintenance_capability_unavailable: ${cause}`);}return provider;
   }
+  function candidateProviderAvailable(workspace,session,candidate){const spec=MAINTENANCE_ACTIONS[candidate.action];const operation=candidate.operation??spec?.operation;const key=`${spec?.capability}:${operation}`;let unavailable=unavailableActions.get(workspace);if(!unavailable)unavailableActions.set(workspace,unavailable=new Set());try{const provider=providerFor(session,candidate.action,operation);if(unavailable.delete(key))log(workspace,'recovered',`${candidate.summary}: its required agent capability is available again`,{action:candidate.action,target:candidate.target});return {provider,error:null};}catch(error){if(!unavailable.has(key))degradedOnce(workspace,error.message);unavailable.add(key);return {provider:null,error};}}
   async function physical(ctx,p) {
     const server=Object.entries(ctx.session.mcp??{}).find(([,entry])=>(entry.tools??[]).some((t)=>t.name==='wiki_maintenance_state'))?.[0];
     if(!server)throw new Error('maintenance_state_tool_unavailable');
@@ -232,6 +246,9 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
         return {status:'waiting',reason:'curation_pending'};
       }
     }
+    const ctx=await context(workspace);const spec=MAINTENANCE_ACTIONS[candidate.action];
+    const operation=candidate.operation??spec.operation;let provider;
+    const providerCheck=candidateProviderAvailable(workspace,ctx.session,candidate);provider=providerCheck.provider;if(!provider)throw providerCheck.error;
     const identity=fingerprint(candidate);
     const held=store.reserved(workspace,{kind:'actions',identity})[0];
     // One identity per candidate and day; a Stop that cancelled it opens a new
@@ -245,8 +262,6 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     const id=held?.id??(['consumed','released'].includes(last?.status)&&last.outcome==='cancelled'?`${base}:retry-${attempts.length}`:base);const previous=store.latestRequest(workspace,candidate.action,candidate.target);
     let approved=previous?.version===identity&&previous.status==='approved';
     if(mode==='ask'&&!approved){const request=store.propose(workspace,candidate);return {status:request.status,request:{id:request.id,version:request.version,summary:candidate.summary}};}
-    const ctx=await context(workspace);const spec=MAINTENANCE_ACTIONS[candidate.action];
-    const operation=candidate.operation??spec.operation;let provider=providerFor(ctx.session,candidate.action,operation);
     // Only actions that touch the workspace take an admission, scoped to what they
     // touch; a read, a worktree curation or a mail never holds a user's task.
     const scopes=spec.scopes?.(candidate.target)??null;
@@ -512,22 +527,22 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       // An `ask` candidate waits on a human, not on a model: its decision is
       // filed here (idempotent), so no gateway cycle starts for work the agent
       // must not do. On lyra, four rebuilds read as hand-edited started a model
-      // cycle every five minutes that ended on "no action", without a decision
+      // cycle every scan that ended on "no action", without a decision
       // ever reaching the panel.
       let filed=false;
       for(const c of view.candidates.filter((c)=>!ROUTINE.has(c.action)&&c.mode==='ask'&&!c.outsideWindow)){
-        const candidate=clean(c);const previous=store.latestRequest(workspace,candidate.action,candidate.target);
+        const candidate=clean(c);if(!candidateProviderAvailable(workspace,ctx.session,candidate).provider)continue;const previous=store.latestRequest(workspace,candidate.action,candidate.target);
         if(previous?.version===fingerprint(candidate)&&previous.status==='approved')continue;
         store.propose(workspace,candidate);filed=true;
       }
       if(filed)view=await state(workspace);
-      const actionable=view.candidates.filter((c)=>!ROUTINE.has(c.action)&&c.mode!=='off'&&!c.outsideWindow&&!decided(view,c));
+      const actionable=view.candidates.filter((c)=>!ROUTINE.has(c.action)&&c.mode!=='off'&&!c.outsideWindow&&!decided(view,c)&&Boolean(candidateProviderAvailable(workspace,ctx.session,c).provider));
       if(!actionable.length)return;
       if(!host){gatewayUnavailable(workspace,ctx.session,discoveryError);return;}
       // Every model call of a gateway cycle is admitted by the manager. When the
       // day's model-call budget is used up, starting one can only produce a
       // failed cycle: wait for tomorrow, announced once, instead of retrying
-      // every five minutes.
+      // every maintenance scan.
       const usedModelCalls=store.modelCallUsage(workspace);
       if(usedModelCalls>=p.limits.actionsPerDay){
         const message=`model-call budget for today is used up (${usedModelCalls}/${p.limits.actionsPerDay}); maintenance resumes tomorrow`;

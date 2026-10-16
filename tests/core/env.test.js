@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -34,6 +35,7 @@ test('scaffold copies the packaged examples into a fresh directory', () => {
     // through host.docker.internal, which a loopback bind refuses.
     assert.match(env, /^WIKI_MANAGER_RUNTIME_HOST=0\.0\.0\.0$/m);
     assert.match(env, /^# WIKI_MANAGER_RUNTIME_PORT=7788$/m);
+    assert.match(env, /^# WIKI_MANAGER_MAINTENANCE_INTERVAL_SECONDS=900$/m);
   });
 });
 
@@ -281,5 +283,65 @@ test('an existing packaged gateway entry gains agent.maintain once, a foreign en
     assert.ok(runtimes[0].capabilities.some((c) => c.name === 'agent.maintain'));
     assert.ok(!runtimes[1].capabilities.some((c) => c.name === 'agent.maintain'));
     assert.ok(!ensureManagerScaffold().some((line) => line.includes('gains agent.maintain')), 'idempotent');
+  });
+});
+
+test('refresh config check adds missing packaged capabilities and reports without replacing custom config', () => {
+  withTempManagerDir((dir) => {
+    const endpointsExample = JSON.parse(readFileSync(new URL('../../mcp.endpoints.example.json', import.meta.url), 'utf8'));
+    endpointsExample.mcpServers.custom = { url: 'http://localhost:9999/mcp' };
+    const endpointsFile = join(dir, 'custom-endpoints.json');
+    writeFileSync(endpointsFile, JSON.stringify(endpointsExample));
+
+    const runtimeExample = JSON.parse(readFileSync(new URL('../../agent-runtimes.example.json', import.meta.url), 'utf8'));
+    const expectedCurate = runtimeExample.runtimes[0].capabilities.find((capability) => capability.name === 'agent.curate');
+    runtimeExample.operatorSetting = 'keep-me';
+    runtimeExample.runtimes[0].capabilities = runtimeExample.runtimes[0].capabilities
+      .filter((capability) => capability.name !== 'agent.curate');
+    writeFileSync(join(dir, 'agent-runtimes.json'), JSON.stringify(runtimeExample));
+    writeFileSync(join(dir, '.env'), '');
+
+    const script = new URL('../../bin/check-project-config.js', import.meta.url);
+    const result = spawnSync(process.execPath, [script.pathname], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        WIKI_MANAGER_ENV_FILE: join(dir, '.env'),
+        WIKI_MANAGER_ENDPOINTS_FILE: endpointsFile,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /agent-runtimes\.json deepagents gains agent\.curate/);
+    assert.match(result.stdout, /Manager configuration is valid/);
+
+    const updatedEndpoints = JSON.parse(readFileSync(endpointsFile, 'utf8'));
+    assert.deepEqual(updatedEndpoints.mcpServers.custom, { url: 'http://localhost:9999/mcp' });
+    const updatedRuntimes = JSON.parse(readFileSync(join(dir, 'agent-runtimes.json'), 'utf8'));
+    assert.equal(updatedRuntimes.operatorSetting, 'keep-me');
+    assert.deepEqual(
+      updatedRuntimes.runtimes[0].capabilities.find((capability) => capability.name === 'agent.curate'),
+      expectedCurate,
+    );
+  });
+});
+
+test('refresh config check reports invalid operator JSON and leaves it unchanged', () => {
+  withTempManagerDir((dir) => {
+    const envFile = join(dir, '.env');
+    const endpointsFile = join(dir, 'custom-endpoints.json');
+    const invalid = '{ operator-owned invalid JSON';
+    writeFileSync(envFile, '');
+    writeFileSync(endpointsFile, invalid);
+    const result = spawnSync(process.execPath, [new URL('../../bin/check-project-config.js', import.meta.url).pathname], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        WIKI_MANAGER_ENV_FILE: envFile,
+        WIKI_MANAGER_ENDPOINTS_FILE: endpointsFile,
+      },
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /configuration check failed/);
+    assert.equal(readFileSync(endpointsFile, 'utf8'), invalid);
   });
 });

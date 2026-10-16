@@ -1039,7 +1039,10 @@ export async function handleRuntimeControlTool(session, tool, args = {}) {
       return `Delegation refused: ${refused}`;
     }
     if (tool === 'run_skill') {
-      const skillName = String(args.skillName ?? '').trim();
+      // Models sometimes copy the catalog's slash-command spelling into the
+      // tool argument. Accept both forms and pass the canonical name to
+      // recursion checks and dispatch.
+      const skillName = String(args.skillName ?? '').trim().replace(/^\/+/, '');
       if (!skillName) return JSON.stringify({ ok: false, terminal: false, code: 'skill_not_found', message: 'skillName is required: pass the exact skill name, or delegate the objective with runtime__delegate.', availableSkills: [] });
       const selectedSkill = findSkill(session, skillName);
       const suppliedArguments = args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)

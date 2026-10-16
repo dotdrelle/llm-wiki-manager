@@ -326,12 +326,16 @@ Environment, manager side:
 | variable | default | meaning |
 | --- | --- | --- |
 | `WIKI_MANAGER_AGENT_REGISTRY_INTERVAL_MS` | `60000` | how often the supervisor refreshes MCP and external runtime capabilities |
-| `WIKI_MANAGER_MAINTENANCE_INTERVAL_MS` | `300000` | how often enabled workspaces are scanned (min 30 s); each scan reads the engine's `wiki_maintenance_state` |
+| `WIKI_MANAGER_MAINTENANCE_INTERVAL_SECONDS` | `900` | how often enabled workspaces are scanned (15 min; min 30 s); each scan reads the engine's `wiki_maintenance_state` |
 | `WIKI_MANAGER_MAINTENANCE_URL` | runtime URL as seen from containers | the bridge URL the gateway calls back (`/maintenance/bridge`) |
 
-The maintenance capability itself must be declared in `agent-runtimes.json`
-(`agent.maintain`); the scaffold adds it once to the packaged gateway entry of
-an existing file.
+The maintenance interval is read when the runtime starts. Restart the runtime
+after changing it. `WIKI_MANAGER_MAINTENANCE_INTERVAL_MS` remains accepted for
+existing `.env` files; when both are set, the seconds variable takes precedence.
+
+Maintenance capabilities must be declared in `agent-runtimes.json` and served
+by the gateway. On startup, the scaffold adds missing packaged capabilities to
+matching existing runtime entries while preserving their existing settings.
 
 Start the shared agents once for all workspaces:
 
@@ -670,7 +674,7 @@ restart the runtime after changing it.
 Expiration uses the event timestamp against the current UTC instant, not a
 calendar-month boundary. Events older than the configured age are removed at
 store startup, log insertion, history reads, and the periodic maintenance
-clock (normally every five minutes), including dormant workspaces.
+clock (normally every 15 minutes), including dormant workspaces.
 Recent events are not deleted merely because more than 1,000 exist. Serve and
 Shell history pages include at most 100 events, plus actionable decisions;
 `history.eventsTotal` and `hasMore` allow browsing older retained pages.
@@ -679,3 +683,17 @@ This setting applies to the saved Maintenance activity journal. It does not
 change the existing retention of terminal runs, conversations, memory,
 proposals, approvals/refusals or budget/idempotency receipts, and does not
 rotate `runtime.log` or external agent/Docker log files.
+
+## Diagnostic logs
+
+Three logs, one per process, each one line per fact with a level
+(`INFO`/`WARN`/`ERROR`) and its scope:
+
+| command | what it shows | key |
+| --- | --- | --- |
+| `wiki-workspace runtime logs` | the manager runtime (`<state>/runtime.log`): runs, approvals, tool calls with their outcome (`FAILED — <code> — <reason>`), agent discovery when health or capabilities change, and every `runtime_log` line of the Logs tab — capability resolution, maintenance cycles — which SQLite never keeps | `WIKI_MANAGER_RUNTIME_TRACE` = `on` (default), `verbose` (adds the compact payload), `off` |
+| `wiki-workspace agents logs gateway` | the agentic gateway: runs started (capability, workspace), refused capabilities with the served list, a `401` with its cause (missing header vs a token that differs from `GATEWAY_AUTH_TOKEN`; one line per minute), roles, phases, `degraded`, findings, maintenance actions and their result | `GATEWAY_TRACE` = `on` (default), `tools` (adds each tool start/finish), `off` |
+| `wiki-workspace wiki <workspace> logs` | the workspace containers; `production-mcp` mirrors each job's `[start]`, `[step:…]`, `[error]` and `[finish]` lines, and on failure the last 20 lines of the job log | — |
+
+Content excerpts are bounded (a user message or answer to 160 characters);
+tokens and keys never enter these lines. `runtime.log` is not rotated.

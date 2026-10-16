@@ -172,7 +172,7 @@ export function listSkills(session = {}) {
 }
 
 export function findSkill(session, name) {
-  const normalized = String(name ?? '').toLowerCase();
+  const normalized = String(name ?? '').trim().replace(/^\/+/, '').toLowerCase();
   return listSkills(session).find((skill) => skill.name.toLowerCase() === normalized) ?? null;
 }
 

@@ -86,7 +86,7 @@ const ERRORS = [
   [/^maintenance_budget_exhausted:cycle/,'the action budget of this cycle is reached; it resumes at the next scan'],
   [/^maintenance_policy_changed/,'the maintenance settings changed during the cycle'],
   [/^maintenance_disabled_or_paused/,'maintenance is disabled or paused'],
-  [/^maintenance_capability_unavailable: (.+)/,(m)=>`no connected agent currently offers ${m[1]}`],
+  [/^maintenance_capability_unavailable: (.+)/,(m)=>`maintenance cannot start: ${m[1]}`],
   [/^maintenance_gateway_unavailable(?:: (.+))?/,(m)=>`the agentic runtime (gateway) is not available${m[1]?` (${m[1]})`:''}, so no maintenance cycle can run`],
   [/^maintenance_state_tool_unavailable/,'the wiki engine is not reachable, so the workspace state cannot be read'],
   [/^maintenance_arguments_invalid/,'the agent refused the request format'],

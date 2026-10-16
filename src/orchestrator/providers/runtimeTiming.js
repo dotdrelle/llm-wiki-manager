@@ -3,7 +3,8 @@
 // discovery refreshes runtime status, and Maintenance runs workspace cycles.
 export const DEFAULT_RUNTIME_PROBE_TIMEOUT_MS = 30_000;
 export const DEFAULT_RUNTIME_DISCOVERY_INTERVAL_MS = 60_000;
-export const DEFAULT_MAINTENANCE_SCAN_INTERVAL_MS = 300_000;
+export const DEFAULT_MAINTENANCE_SCAN_INTERVAL_MS = 900_000;
+const MAX_MAINTENANCE_GATEWAY_RETRY_MS = 300_000;
 export const MIN_MAINTENANCE_SCAN_INTERVAL_MS = 30_000;
 
 export function maintenanceGatewayRetryDelay(attempt, scanIntervalMs, probeTimeoutMs = DEFAULT_RUNTIME_PROBE_TIMEOUT_MS) {
@@ -21,7 +22,7 @@ export function maintenanceGatewayRetryDelay(attempt, scanIntervalMs, probeTimeo
   // cannot create a hot loop or retry before a slow probe could finish).
   const ceiling = Math.max(
     probeTimeout,
-    Math.min(DEFAULT_MAINTENANCE_SCAN_INTERVAL_MS, interval),
+    Math.min(MAX_MAINTENANCE_GATEWAY_RETRY_MS, interval),
   );
   const exponent = Math.min(4, Math.max(0, Math.floor(Number(attempt) || 0)));
   return Math.min(probeTimeout * (2 ** exponent), ceiling);

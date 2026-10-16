@@ -109,7 +109,7 @@ export function createMaintenanceStore(db, { now = () => new Date(), retentionDa
   // Model calls reserved and consumed for one workspace and day. A gateway cycle
   // whose first call is refused can only fail: the scan reads this before
   // starting one, so an exhausted model-call budget waits for tomorrow instead
-  // of piling up failed cycles every five minutes.
+  // of piling up failed cycles every maintenance scan.
   function modelCallUsage(workspace,period=new Date().toISOString().slice(0,10)){
     return Number(db.prepare("SELECT COALESCE((SELECT SUM(units) FROM maintenance_reservations WHERE workspace=? AND kind='modelCalls' AND status='reserved'),0)+COALESCE((SELECT SUM(units) FROM maintenance_reservations WHERE workspace=? AND kind='modelCalls' AND status='consumed' AND period=?),0) n").get(workspace,workspace,period).n);
   }

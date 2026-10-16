@@ -58,7 +58,9 @@ export function managerEnvFile() {
 }
 
 export function managerMcpEndpointsFile() {
-  return join(managerStateDir(), 'mcp.endpoints.json');
+  return process.env.WIKI_MANAGER_ENDPOINTS_FILE
+    ? resolve(process.env.WIKI_MANAGER_ENDPOINTS_FILE)
+    : join(managerStateDir(), 'mcp.endpoints.json');
 }
 
 export function managerAgentRuntimesFile() {
@@ -193,20 +195,19 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
       }
     }
   }
-  // External agent runtimes (RFC § 37) are optional and DISABLED in the
-  // packaged example: seeding a live endpoint would make every fresh install
-  // probe a runtime that does not ship. Copy once, never rewrite — an existing
-  // file is the operator's.
+  // External agent runtimes (RFC § 37) are seeded from the packaged example.
+  // Existing files remain operator-owned; the explicit compatibility
+  // migrations below only narrow a known legacy alias list and add missing
+  // packaged capabilities by name.
   const runtimesFile = managerAgentRuntimesFile();
   const runtimesExample = join(packageRoot, 'agent-runtimes.example.json');
   if (existsSync(runtimesExample) && !existsSync(runtimesFile)) {
     copyFileSync(runtimesExample, runtimesFile);
     created.push('agent-runtimes.json');
   }
-  // One recognizable packaged value is migrated, nothing else: agent.notify
-  // used to claim the generic aliases "send"/"email" (and "report"), which the
-  // resolver ranks first — every email request went to the report notifier
-  // instead of communication.send-email. A hand-edited alias list is left alone.
+  // Existing runtime files stay operator-owned. Apply only the recognizable
+  // notify alias migration and add missing packaged capabilities by name;
+  // all same-named records and unrelated settings remain untouched.
   else if (existsSync(runtimesFile)) {
     try {
       const runtimes = JSON.parse(readFileSync(runtimesFile, 'utf8'));
@@ -223,22 +224,29 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
         }
       }
       if (migrated) created.push('agent-runtimes.json agent.notify aliases narrowed (send/email now reach communication.send-email)');
-      // A new packaged capability reaches an existing file only by name. Do
-      // not require agent.curate as the migration marker: older installations
-      // can predate curation and would otherwise never receive agent.maintain,
-      // leaving the gateway healthy but invisible to Maintenance. The gateway
-      // still has to serve the capability, and maintenanceAccess still gates
-      // whether any maintenance cycle may run.
+      // Add every missing packaged capability to its matching runtime entry.
+      // Existing installations predate individual capabilities (including
+      // agent.curate); migrating the full packaged set keeps the manager's
+      // declaration and the gateway's mounted config in step. Existing
+      // same-named capability records remain operator-owned and untouched.
       if (existsSync(runtimesExample)) {
         const packaged = JSON.parse(readFileSync(runtimesExample, 'utf8'));
+        const configuredEntries = Array.isArray(runtimes)
+          ? runtimes
+          : (Array.isArray(runtimes?.runtimes) ? runtimes.runtimes : []);
         for (const example of Array.isArray(packaged?.runtimes) ? packaged.runtimes : []) {
-          const maintain = (example.capabilities ?? []).find((capability) => capability?.name === 'agent.maintain');
-          const runtime = maintain && (runtimes.runtimes ?? []).find((entry) => entry?.id === example.id && entry?.type === example.type);
-          const capabilities = Array.isArray(runtime?.capabilities) ? runtime.capabilities : null;
-          if (capabilities && !capabilities.some((c) => c?.name === 'agent.maintain')) {
-            capabilities.push(structuredClone(maintain));
+          const runtime = configuredEntries.find((entry) => entry?.id === example.id && entry?.type === example.type);
+          if (!runtime) continue;
+          if (!Array.isArray(runtime.capabilities)) {
+            if (runtime.capabilities != null) continue;
+            runtime.capabilities = [];
+          }
+          const capabilities = runtime.capabilities;
+          for (const capability of Array.isArray(example.capabilities) ? example.capabilities : []) {
+            if (!capability?.name || capabilities.some((current) => current?.name === capability.name)) continue;
+            capabilities.push(structuredClone(capability));
             migrated = true;
-            created.push(`agent-runtimes.json ${example.id} gains agent.maintain (maintenanceAccess still gates maintenance cycles)`);
+            created.push(`agent-runtimes.json ${example.id} gains ${capability.name}`);
           }
         }
       }

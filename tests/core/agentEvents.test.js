@@ -90,6 +90,22 @@ test('an independent queued skill invocation never inherits the active run ident
   assert.equal(event.workspace, 'docs');
 });
 
+test('a run narration that arrives after the run outcome is appended, never spliced before it', () => {
+  const state = reduceAgentEvents([
+    createAgentEvent('user_message', { origin: 'user', conversationId: 'c1', turnId: 't1', payload: { content: '/wiki-build x' } }),
+    createAgentEvent('assistant_message', { origin: 'runtime', conversationId: 'c1', runId: 'r1', payload: { content: 'Build done.' } }),
+    createAgentEvent('step_narrative', { origin: 'runtime', conversationId: 'c1', payload: {
+      scope: 'run:r1', runId: 'r1', turnId: null, conversationId: 'c1', final: true,
+      lines: [{ id: 'l1', state: 'done', text: 'Batch 1/5 built.' }],
+    } }),
+  ]);
+  // serve and the ShellUI index the thread positionally: an insertion before
+  // the answer shifted every later bubble onto its neighbour's text.
+  assert.deepEqual(state.conversation.map((entry) => entry.content), ['/wiki-build x', 'Build done.', 'Batch 1/5 built.']);
+  assert.equal(state.conversation[2].runId, 'r1');
+  assert.equal(state.conversation[0].turnId, 't1', 'a user entry keeps its turn id');
+});
+
 test('reduceAgentEvents: run_started clears stale plan', () => {
   const projection = reduceAgentEvents([
     createAgentEvent('activity_upserted', {

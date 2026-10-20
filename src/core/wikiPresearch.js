@@ -25,6 +25,7 @@ export function isProductHelpQuestion(input) {
 // announced on the step line and the turn continues with its normal tools.
 const WIKI_PRESEARCH_TOOL = 'wiki_search_context';
 const WIKI_COLLECT_TOOL = 'wiki_collect_context';
+const elapsedSeconds = (startedAt) => `${((Date.now() - startedAt) / 1000).toFixed(1)} s`;
 const SERVICE_NAME_NOISE = new Set([
   'agent', 'auth', 'authorize', 'check', 'connect', 'connector', 'connectors',
   'create', 'delete', 'disconnect', 'get', 'list', 'login', 'read', 'remove',
@@ -86,6 +87,7 @@ export async function wikiCollectContextMessage(input, session, allowedTools, on
     return null;
   }
   const { server } = parseToolCallName(qualified);
+  const startedAt = Date.now();
   try {
     onStep?.('Donna Searching the wiki and opening likely pages…');
     const result = await callMcpTool(
@@ -98,7 +100,7 @@ export async function wikiCollectContextMessage(input, session, allowedTools, on
     const formatted = formatMcpToolResult(result);
     let payload;
     try { payload = JSON.parse(formatted); } catch {
-      onStep?.('Fast wiki lookup returned an unreadable result; using the full search path.');
+      onStep?.(`Fast wiki lookup returned an unreadable result after ${elapsedSeconds(startedAt)}; using the full search path.`);
       return null;
     }
     const coverage = payload?.coverage ?? {};
@@ -108,15 +110,15 @@ export async function wikiCollectContextMessage(input, session, allowedTools, on
     // opened. Raw candidates and search excerpts are explicitly not evidence.
     if (!Number.isFinite(readPageCount) || readPageCount < 1
       || !Number.isFinite(truncatedPageCount) || truncatedPageCount > 0) {
-      onStep?.('Fast wiki lookup did not open complete pages; using the full search path.');
+      onStep?.(`Fast wiki lookup did not open complete pages after ${elapsedSeconds(startedAt)}; using the full search path.`);
       return null;
     }
     const content = truncateToolResult(formatted, 12_000).trim();
     if (!content) {
-      onStep?.('Fast wiki lookup returned no usable evidence; using the full search path.');
+      onStep?.(`Fast wiki lookup returned no usable evidence after ${elapsedSeconds(startedAt)}; using the full search path.`);
       return null;
     }
-    onStep?.(`Wiki pages opened: ${readPageCount}`);
+    onStep?.(`Wiki pages opened: ${readPageCount} (${elapsedSeconds(startedAt)})`);
     return {
       role: 'user',
       content:
@@ -128,7 +130,7 @@ export async function wikiCollectContextMessage(input, session, allowedTools, on
     };
   } catch (err) {
     if (err?.name === 'AbortError' && session._abortSignal?.aborted) throw err;
-    onStep?.(`Fast wiki lookup failed (${err instanceof Error ? err.message : String(err)}); using the full search path.`);
+    onStep?.(`Fast wiki lookup failed after ${elapsedSeconds(startedAt)} (${err instanceof Error ? err.message : String(err)}); using the full search path.`);
     return null;
   }
 }
@@ -147,6 +149,7 @@ export async function wikiSearchContextMessages(input, session, allowedTools, on
     .find((name) => parseToolCallName(name).tool === WIKI_PRESEARCH_TOOL);
   if (!qualified) return [];
   const { server } = parseToolCallName(qualified);
+  const startedAt = Date.now();
   try {
     onStep?.('Donna Searching...');
     const result = await callMcpTool(
@@ -158,9 +161,12 @@ export async function wikiSearchContextMessages(input, session, allowedTools, on
     );
     const formatted = formatMcpToolResult(result);
     const found = presearchFoundNote(formatted);
-    if (found) onStep?.(found);
+    if (found) onStep?.(`${found} (${elapsedSeconds(startedAt)})`);
     const content = truncateToolResult(formatted).trim();
-    if (!content) return [];
+    if (!content) {
+      if (!found) onStep?.(`Wiki pre-search returned no readable results (${elapsedSeconds(startedAt)}).`);
+      return [];
+    }
     return [{
       role: 'user',
       content:
@@ -174,7 +180,7 @@ export async function wikiSearchContextMessages(input, session, allowedTools, on
     }];
   } catch (err) {
     if (err?.name === 'AbortError' && session._abortSignal?.aborted) throw err;
-    onStep?.(`Wiki pre-search failed (${err instanceof Error ? err.message : String(err)}); answering without it.`);
+    onStep?.(`Wiki pre-search failed after ${elapsedSeconds(startedAt)} (${err instanceof Error ? err.message : String(err)}); answering without it.`);
     return [];
   }
 }

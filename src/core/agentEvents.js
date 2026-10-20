@@ -385,25 +385,22 @@ function applyEvent(state, event) {
       };
       const previous = (state.stepNarratives ?? []).find((item) => item.scope === scope);
       const seen = new Set((previous?.lines ?? []).map((line) => line.id));
-      const answerIndex = entry.final && !entry.turnId ? state.conversation.findIndex((message) =>
-        !message.progress && message.role === 'assistant' && message.streaming !== true
-        && (!entry.conversationId || message.conversationId === entry.conversationId)
-        && (!entry.turnId || message.turnId === entry.turnId)
-        && (!entry.runId || message.runId === entry.runId)) : -1;
-      let insertedBeforeAnswer = 0;
       // Run narrations remain in the thread history. Interactive-turn
       // narrations are transient: the served chat displays them in the live
       // Thinking bubble, in order, and they are not saved as extra answers.
+      // Always APPENDED: serve's merge and the ShellUI index the conversation
+      // positionally. A run's final narration arrives after its outcome, and
+      // splicing it in before that answer shifted every later entry by one —
+      // each bubble then showed its predecessor's text and an old answer
+      // reappeared at the bottom of the thread. The served chat files a late
+      // line under its run's narration by `runId`.
       for (const line of entry.turnId ? [] : entry.lines) {
         if (!line.id || seen.has(line.id) || !['done', 'failed'].includes(line.state) || !line.text.trim()) continue;
-        const message = {
+        state.conversation.push({
           role: 'assistant', content: line.text, progress: true,
           ...(entry.conversationId ? { conversationId: entry.conversationId } : {}),
-          ...(entry.turnId ? { turnId: entry.turnId } : {}),
           ...(entry.runId ? { runId: entry.runId } : {}),
-        };
-        if (answerIndex >= 0) state.conversation.splice(answerIndex + insertedBeforeAnswer++, 0, message);
-        else state.conversation.push(message);
+        });
       }
       state.stepNarratives = [...(state.stepNarratives ?? []).filter((item) => item.scope !== scope), entry].slice(-MAX_NARRATIVES);
       return;
@@ -416,7 +413,10 @@ function applyEvent(state, event) {
       state.lastHeartbeatElapsedMs = Number(event.payload?.elapsedMs) || 0;
       return;
     case 'user_message':
-      state.conversation.push({ role: 'user', content: String(event.payload?.content ?? ''), ...(event.conversationId ? { conversationId: event.conversationId } : {}) });
+      // The turn id lets the served chat give its waiting bubble only the
+      // narration of ITS turn: without it, every bubble matched every run
+      // narration (turnId null on both sides) and replayed old lines.
+      state.conversation.push({ role: 'user', content: String(event.payload?.content ?? ''), ...(event.conversationId ? { conversationId: event.conversationId } : {}), ...(event.turnId ? { turnId: event.turnId } : {}) });
       return;
     case 'conversation_reset':
       // A deliberate user action (the served chat's memory gauge): everything

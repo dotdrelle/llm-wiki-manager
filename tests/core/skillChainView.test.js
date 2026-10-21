@@ -72,3 +72,14 @@ test('a settled chain carries when it ended, a running one does not', () => {
   const [running] = projectSkillChains([{ id: 'a', chainId: 'c', chainSequence: 0, status: 'running' }]);
   assert.equal(running.finishedAt, undefined);
 });
+
+test('a step done with a warning keeps its chain visible as a warning, never failed', () => {
+  const [chain] = projectSkillChains([
+    { id: 'w0', chainId: 'chain-w', chainSequence: 0, skillName: 'new-template', status: 'done', warning: 'File name is not slugified.', input: '/new-template' },
+  ]);
+  assert.equal(chain.status, 'warning');
+  assert.equal(chain.steps[0].status, 'done');
+  assert.equal(chain.steps[0].symbol, '!');
+  assert.equal(chain.steps[0].warning, 'File name is not slugified.');
+  assert.match(renderSkillChain(chain), /done · warning: File name is not slugified\./);
+});

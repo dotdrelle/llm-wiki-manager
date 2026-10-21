@@ -753,7 +753,10 @@ function applyEvent(state, event) {
     case 'run_done':
       state.status = 'done';
       finishPendingPlanSteps(state.plan);
-      finishControlByRun(state.controlQueue, event.runId ?? event.payload?.runId ?? null, 'done', event.ts);
+      finishControlByRun(state.controlQueue, event.runId ?? event.payload?.runId ?? null, 'done', event.ts, event.payload?.warning);
+      // A run that ends done with a warning (the work ran; a convention was
+      // not met) says so in Logs — amber, never "Run failed".
+      if (event.payload?.warning) appendLog(state, `${logTime(event.ts)} Run finished with a warning: ${String(event.payload.warning)}`.trim());
       return;
     case 'run_cancelled':
       state.status = 'cancelled';
@@ -918,11 +921,12 @@ function patchIdFromEvent(event) {
   return event.payload?.id ?? event.payload?.patchId ?? event.id;
 }
 
-function finishControlByRun(queue, runId, status, finishedAt) {
+function finishControlByRun(queue, runId, status, finishedAt, warning = null) {
   if (!runId) return;
   const item = queue.find((entry) => entry.runId === runId && entry.status === 'running');
   if (!item) return;
   item.status = status;
+  if (warning) item.warning = String(warning);
   item.finishedAt = finishedAt;
   item.updatedAt = finishedAt;
 }

@@ -69,3 +69,28 @@ test('factsAsData never composes a sentence', () => {
   assert.equal(factsAsData({ a: 1, b: ['x', 'y'], c: { d: 2 } }), 'a: 1 · b: x, y · c: {"d":2}');
   assert.equal(factsAsData(null), '');
 });
+
+test('an evaluator verdict reaches the user through Donna, in the session language', async () => {
+  const { evaluationMessageForUser } = await import('../../src/runtime/userFacts.js');
+  const calls = [];
+  const session = { language: 'fr-FR', llm: { completeWithTools: async (request) => { calls.push(request); return { content: 'Le modèle est écrit, mais son nom ne suit pas la règle.' }; } } };
+  const reply = await evaluationMessageForUser(session, { ok: false, reason: 'filename is not slugified', suggestedAction: 'rename it' });
+  assert.equal(reply, 'Le modèle est écrit, mais son nom ne suit pas la règle.');
+  assert.match(calls[0].system, /fr-FR/);
+  assert.match(calls[0].messages.at(-1).content, /work ran and is kept.*filename is not slugified.*rename it/);
+});
+
+test('without a model the evaluator verdict is shown as data, never as a hardcoded sentence', async () => {
+  const { evaluationMessageForUser } = await import('../../src/runtime/userFacts.js');
+  const reply = await evaluationMessageForUser({}, { ok: false, reason: 'needs a template name' }, { awaitingInput: true });
+  assert.match(reply, /^The run stopped because it needs the user's input before acting\. Pending question: needs a template name\.$/);
+});
+
+test('the evaluator receives the run\'s tool calls with their outcome', async () => {
+  const { formatRunToolCalls } = await import('../../src/runtime/userFacts.js');
+  const text = formatRunToolCalls([
+    { type: 'tool', name: 'wiki__template_write', args: { path: 'templates/eas/x.md', confirm: true }, status: 'done', summary: 'written 4249 chars' },
+    { type: 'thought', name: 'ignored' },
+  ]);
+  assert.equal(text, '- wiki__template_write {"path":"templates/eas/x.md","confirm":true}: done — written 4249 chars');
+});

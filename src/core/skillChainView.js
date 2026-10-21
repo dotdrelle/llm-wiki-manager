@@ -67,8 +67,9 @@ export function projectSkillChains(controlQueue = []) {
       sequence: Number(item.chainSequence ?? 0),
       label: total > 1 ? `Step ${index + 1}/${total}` : chainStepLabel(item.input),
       status: String(item.status ?? 'queued'),
-      symbol: SYMBOLS[String(item.status ?? 'queued')] ?? '○',
+      symbol: item.warning ? '!' : SYMBOLS[String(item.status ?? 'queued')] ?? '○',
       optional: item.optional === true,
+      ...(item.warning ? { warning: item.warning } : {}),
       ...(item.skipReason ? { skipReason: item.skipReason } : {}),
       ...(item.runId ? { runId: item.runId } : {}),
       ...(item.finishedAt ? { finishedAt: item.finishedAt } : {}),
@@ -93,6 +94,8 @@ function chainStatus(steps) {
   if (steps.some((step) => step.status === 'failed')) return 'failed';
   if (steps.some((step) => step.status === 'cancelled')) return 'cancelled';
   if (steps.some((step) => step.status === 'skipped')) return 'incomplete';
+  // Done, but a check found a convention not met: kept visible, never red.
+  if (steps.some((step) => step.warning)) return 'warning';
   return 'done';
 }
 
@@ -102,7 +105,7 @@ export function renderSkillChain(chain) {
   const lines = [`${chain.skillName ?? 'skill'}`, ''];
   for (const step of chain.steps) {
     lines.push(`${step.symbol} ${step.label}`);
-    lines.push(`  ${step.status}${step.skipReason ? ` · ${step.skipReason}` : ''}`);
+    lines.push(`  ${step.status}${step.skipReason ? ` · ${step.skipReason}` : ''}${step.warning ? ` · warning: ${step.warning}` : ''}`);
   }
   return lines.join('\n');
 }

@@ -1426,3 +1426,48 @@ test('without a model, the outcome falls back to the English fact line, verifica
   assert.match(message.payload.content, /NOT finished/);
   assert.match(message.payload.content, /1 result\(s\) NOT observed/);
 });
+
+test('an evaluator warning ends the run done, never as a failure', async () => {
+  // The template was written; only its file name missed the skill's naming
+  // convention. That is a warning (amber), not "Run failed" (red).
+  const events = [];
+  let calls = 0;
+  const session = {
+    activities: {},
+    headlessPlan: [{ step: 1, description: 'Write template', status: 'done' }],
+    agentProjection: { conversation: [{ role: 'assistant', content: 'Template written.' }] },
+    llm: {
+      async completeWithTools() {
+        calls += 1;
+        return calls === 1
+          ? { content: '{"ok":false,"severity":"warning","reason":"File name is not slugified.","suggestedAction":"Rename it."}' }
+          : { content: 'Le modèle est écrit ; son nom ne suit pas la convention.' };
+      },
+    },
+    _onAgentEvent: (event) => events.push(event),
+  };
+
+  const result = await finishRuntimeRun(session, 'Create template', { runId: 'run-warn' });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.warning, true);
+  assert.equal(events.some((event) => event.type === 'run_error'), false);
+  assert.equal(events.at(-1).type, 'run_done');
+  assert.equal(events.at(-1).payload.warning, 'File name is not slugified.');
+  assert.equal(session.agentProjection.status, 'done');
+  assert.equal(session.agentProjection.conversation.at(-1).content, 'Le modèle est écrit ; son nom ne suit pas la convention.');
+  assert.match(session.agentProjection.logs.at(-1), /Run finished with a warning: File name is not slugified\./);
+});
+
+test('an evaluator error without a severity keeps failing the run', async () => {
+  const session = {
+    activities: {},
+    headlessPlan: [{ step: 1, description: 'Export', status: 'done' }],
+    agentProjection: { conversation: [] },
+    llm: { async completeWithTools() { return { content: '{"ok":false,"reason":"Export file missing."}' }; } },
+  };
+  const result = await finishRuntimeRun(session, 'Export', { runId: 'run-err' });
+  assert.equal(result.ok, false);
+  assert.equal(result.evaluation.severity, 'error');
+  assert.equal(session.agentProjection.status, 'error');
+});

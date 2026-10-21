@@ -320,7 +320,7 @@ export function useSession(props: { agent: unknown; packageJson: Record<string, 
         }
         const { chain, step } = entry;
         const position = `${step.sequence + 1}/${chain.steps.length}`;
-        const reason = step.skipReason ? ` (${step.skipReason})` : '';
+        const reason = step.skipReason ? ` (${step.skipReason})` : step.warning ? ` (warning: ${step.warning})` : '';
         return {
           ...item,
           id: item.id,

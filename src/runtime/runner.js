@@ -19,7 +19,7 @@ import { describePlanConcurrency, drainActive, startReadyTasks } from '../orches
 import { emitRuntimeLog, pollActivitiesOnce } from './supervisor.js';
 import { shortLogId } from '../core/runtimeLog.js';
 import { superviseObjective, successCheckWarranted, MAX_SUPERVISOR_CHECKPOINTS } from './objectiveSupervisor.js';
-import { phraseFactsForUser } from './userFacts.js';
+import { evaluationMessageForUser, finishWithEvaluationWarning, formatRunToolCalls, phraseFactsForUser } from './userFacts.js';
 
 // 0 by default: automatic replans turn evaluator/replanner TEXT into
 // executable pseudo-tasks (no capability, no operation) that stall at 0%
@@ -308,7 +308,7 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
           dispatchAgentEvent(session, createAgentEvent('assistant_message', {
             origin: 'runtime',
             runId,
-            payload: { content: clarificationMessageForEvaluation(evaluation) },
+            payload: { content: await evaluationMessageForUser(session, evaluation, { awaitingInput: isAwaitingUserInputEvaluation(evaluation), signal }) },
           }));
           dispatchAgentEvent(session, createAgentEvent('run_done', {
             origin: 'runtime',
@@ -317,6 +317,7 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
           }));
           return { ok: true, evaluation, clarified: true };
         }
+        if (evaluation.severity === 'warning') return finishWithEvaluationWarning(session, evaluation, { runId, signal });
         if (!usedParallelScheduler && replansLeft > 0) {
           const trigger = {
             kind: 'evaluation',
@@ -340,9 +341,7 @@ export async function runRuntimeAgenticWorkflow(agent, session, input, {
         dispatchAgentEvent(session, createAgentEvent('assistant_message', {
           origin: 'runtime',
           runId,
-          payload: {
-            content: `The run finished but the evaluation judged it incomplete: ${evaluation.reason}`,
-          },
+          payload: { content: await evaluationMessageForUser(session, evaluation, { awaitingInput: isAwaitingUserInputEvaluation(evaluation), signal }) },
         }));
         dispatchAgentEvent(session, createAgentEvent('run_error', {
           origin: 'runtime',
@@ -1254,7 +1253,7 @@ export async function finishRuntimeRun(session, input, {
         dispatchAgentEvent(session, createAgentEvent('assistant_message', {
           origin: 'runtime',
           runId,
-          payload: { content: clarificationMessageForEvaluation(evaluation) },
+          payload: { content: await evaluationMessageForUser(session, evaluation, { awaitingInput: isAwaitingUserInputEvaluation(evaluation), signal }) },
         }));
         dispatchAgentEvent(session, createAgentEvent('run_done', {
           origin: 'runtime',
@@ -1263,6 +1262,7 @@ export async function finishRuntimeRun(session, input, {
         }));
         return { ok: true, evaluation, clarified: true };
       }
+      if (evaluation.severity === 'warning') return finishWithEvaluationWarning(session, evaluation, { runId, signal });
       dispatchAgentEvent(session, createAgentEvent('run_error', {
         origin: 'runtime',
         runId,
@@ -1304,7 +1304,8 @@ export async function evaluateRuntimeRun(session, input, {
       system: [
         'You are a strict evaluator for an agentic runtime run.',
         'Inspect whether the original task was accomplished using the final plan and recent conversation.',
-        'Return only JSON with this exact shape: {"ok":boolean,"awaitingUserInput":boolean,"reason":"...","suggestedAction":string|null}.',
+        'Return only JSON with this exact shape: {"ok":boolean,"awaitingUserInput":boolean,"severity":"error"|"warning","reason":"...","suggestedAction":string|null}.',
+        'When ok=false, set severity="warning" if the tool calls show the requested work was actually done and only a convention or quality criterion is not met (a naming rule, a format detail); set severity="error" when the objective itself was not achieved or a required write is not shown in the tool calls.',
         'Use ok=false only when a concrete missing action, failed requirement, or wrong result is visible.',
         'Set awaitingUserInput=true when the run correctly stopped to obtain information or a decision only the user can provide (e.g. credentials, choosing between options, an explicit confirmation) — this is expected behaviour, NOT a failure or a missing action. In that case still set ok=false, put the pending question in reason, and do not treat the unasked configuration as a failed requirement.',
         'Otherwise set awaitingUserInput=false.',
@@ -1433,6 +1434,7 @@ function buildEvaluationPrompt(input, session, { runId = null } = {}) {
     .slice(-12)
     .map((activity) => `- ${activity.label ?? activity.id}: ${activity.status}${activity.error ? ` (${activity.error})` : ''}`)
     .join('\n');
+  const toolCalls = formatRunToolCalls(session.agentProjection?.chain);
   return [
     runId ? `Run id: ${runId}` : null,
     'Original task:',
@@ -1440,6 +1442,7 @@ function buildEvaluationPrompt(input, session, { runId = null } = {}) {
     '',
     session.headlessPlan ? `Final plan:\n${formatPlanStatus(session.headlessPlan)}` : 'Final plan: none',
     activities ? `Recent activities:\n${activities}` : null,
+    toolCalls ? `Tool calls of this run (status as returned by the tool):\n${toolCalls}` : null,
     recentConversation ? `Recent conversation:\n${recentConversation}` : null,
     '',
     'Return JSON only.',
@@ -1457,6 +1460,7 @@ function normalizeEvaluation(value) {
   return {
     ok: value?.ok === true,
     awaitingUserInput: value?.awaitingUserInput === true,
+    severity: value?.ok !== true && value?.severity === 'warning' ? 'warning' : 'error',
     reason: String(value?.reason ?? '').trim() || (value?.ok === true ? 'Task completed.' : 'Evaluator rejected the run.'),
     suggestedAction: value?.suggestedAction == null ? null : String(value.suggestedAction),
   };
@@ -1486,12 +1490,6 @@ function isAwaitingUserInputEvaluation(evaluation) {
   return /\b(awaiting user|await user|user input|user decision|user confirmation|needs? (?:the )?user|requires? (?:the )?user|what to modify|which .* (?:to|should)|ask(?:ed|ing)? the user|attend .* utilisateur|demande .* utilisateur)\b/.test(text);
 }
 
-function clarificationMessageForEvaluation(evaluation) {
-  const reason = String(evaluation?.reason ?? '').trim();
-  return reason
-    ? `Je dois clarifier la demande avant d'agir : ${reason}`
-    : "Je dois clarifier la demande avant d'agir.";
-}
 
 function fallbackEvaluation(reason) {
   return {

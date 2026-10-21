@@ -241,9 +241,14 @@ Set global defaults with `WIKI_MANAGER_MCP_RETRY_MAX_ATTEMPTS` and
 and per tool with `toolRetries`.
 
 After a clean runtime run, the manager runs a lightweight evaluator pass against
-the original task, final plan, recent activities, and recent conversation. The
-verdict is emitted as `run_evaluated` and appears in runtime state as
-`evaluation`. Disable it globally with `WIKI_MANAGER_EVALUATOR=0`, or per run by
+the original task, final plan, recent activities, the run's own tool calls with
+their outcome, and recent conversation. The verdict is emitted as
+`run_evaluated` and appears in runtime state as `evaluation`. A rejection carries
+a `severity`: `error` (the objective was not achieved) fails the run;
+`warning` (the work was done, a convention such as a naming rule was not met)
+ends it `run_done` with `payload.warning`, kept on the control item and shown
+amber in the skill chain — never red. Either verdict reaches the chat through
+Donna (`userFacts.js`), in the session language. Disable it globally with `WIKI_MANAGER_EVALUATOR=0`, or per run by
 posting `/run` with `"evaluate": false`.
 
 When evaluation fails, or when a watched activity ends in error, the runtime can

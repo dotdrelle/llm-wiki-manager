@@ -27,14 +27,21 @@ async function withEndpoints(fn) {
 
 test('UI-managed MCP endpoints persist with bearer auth and chat wildcard access', async () => {
   await withEndpoints(async (root) => {
-    upsertManagedMcpEndpoint({ name: 'exa', url: 'https://mcp.exa.ai/mcp', bearer: 'secret' });
+    upsertManagedMcpEndpoint({ name: 'exa', url: 'https://mcp.exa.ai/mcp', bearer: 'secret', timeoutMs: 30_000 });
     const raw = JSON.parse(readFileSync(join(root, 'mcp.endpoints.json'), 'utf8'));
     assert.equal(raw.mcpServers.exa.url, 'https://mcp.exa.ai/mcp');
     assert.equal(raw.mcpServers.exa.headers.Authorization, 'Bearer secret');
+    assert.equal(raw.mcpServers.exa.timeoutMs, 30_000);
     assert.equal(raw.chatAccess.servers.exa.allow, '*');
     assert.deepEqual(listManagedMcpEndpoints().find((item) => item.name === 'exa'), {
-      name: 'exa', url: 'https://mcp.exa.ai/mcp', bearer: 'secret', allow: '*',
+      name: 'exa', url: 'https://mcp.exa.ai/mcp', bearer: 'secret', timeoutMs: 30_000, allow: '*',
     });
+    assert.throws(
+      () => upsertManagedMcpEndpoint({ name: 'exa', url: 'https://mcp.exa.ai/mcp', timeoutMs: 999 }),
+      /between 1000 and 120000/,
+    );
+    upsertManagedMcpEndpoint({ name: 'exa', url: 'https://mcp.exa.ai/mcp', timeoutMs: null });
+    assert.equal(JSON.parse(readFileSync(join(root, 'mcp.endpoints.json'), 'utf8')).mcpServers.exa.timeoutMs, undefined);
   });
 });
 

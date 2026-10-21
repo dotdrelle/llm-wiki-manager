@@ -88,6 +88,7 @@ test('buildMcpStatus reads external MCP endpoints from mcp.endpoints.json', asyn
       mcpServers: {
         external: {
           url: 'http://127.0.0.1:9999/mcp/',
+          timeoutMs: 30_000,
           headers: {
             'x-api-key': 'secret',
             Authorization: 'Bearer token',
@@ -107,6 +108,7 @@ test('buildMcpStatus reads external MCP endpoints from mcp.endpoints.json', asyn
       authorization: 'Bearer token',
     });
     assert.equal(status.external.external, true);
+    assert.equal(status.external.timeoutMs, 30_000);
     assert.equal(status.cme, undefined);
   } finally {
     process.chdir(originalCwd);
@@ -361,6 +363,30 @@ test('callMcpTool injects active configPath for production_start_job', async () 
     });
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test('callMcpTool uses a per-endpoint timeout and reports when that deadline expires', async () => {
+  const originalFetch = globalThis.fetch;
+  resetMcpSessionsForTests();
+  let callCount = 0;
+  globalThis.fetch = async (_url, init) => {
+    callCount += 1;
+    return new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+    });
+  };
+  try {
+    await assert.rejects(
+      callMcpTool({
+        exa: { status: 'connected', url: 'https://mcp.exa.ai/mcp', timeoutMs: 1000 },
+      }, 'exa', 'web_search_exa', { query: 'ECMWF' }, undefined, { retry: { maxAttempts: 1, backoffMs: 0 } }),
+      /MCP request timed out after 1000 ms/,
+    );
+    assert.equal(callCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetMcpSessionsForTests();
   }
 });
 
@@ -940,4 +966,22 @@ test('buildLlmTools hands the model an object schema without top-level combinato
   assert.ok(statusSchema.oneOf, 'the server schema itself is left untouched');
   assert.equal(plain.function.description, 'Describe.');
   assert.deepEqual(bare.function.parameters, { type: 'object', properties: {} });
+});
+
+test('the prompts name the tools that reach the open web, from their MCP annotations', async () => {
+  // "cherche sur internet" went to an intranet search that never reaches the
+  // internet, while a web-search tool declared openWorldHint sat unused.
+  const { openWebToolsRule } = await import('../../src/core/llmToolSchema.js');
+  const tools = buildLlmTools({
+    intranet: { status: 'connected', tools: [{ name: 'intranet_search', description: 'Search the intranet.' }] },
+    web: { status: 'connected', tools: [
+      { name: 'web_search', description: 'Search the web.', annotations: { readOnlyHint: true, openWorldHint: true } },
+      { name: 'web_fetch', description: 'Fetch a URL.', annotations: { readOnlyHint: true, openWorldHint: true } },
+    ] },
+  });
+  assert.equal(tools.find((t) => t.function.name === 'intranet__intranet_search').openWorld, false);
+  const rule = openWebToolsRule(tools);
+  assert.match(rule, /open web: web__web_search, web__web_fetch\./);
+  assert.doesNotMatch(rule, /intranet__intranet_search/);
+  assert.equal(openWebToolsRule(tools.filter((t) => !t.openWorld)), '');
 });

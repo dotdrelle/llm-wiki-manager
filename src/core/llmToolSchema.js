@@ -27,3 +27,27 @@ export function llmToolFunction(name, description, inputSchema) {
   const { parameters, note } = llmToolParameters(inputSchema);
   return { name, description: [description, note].filter(Boolean).join(' '), parameters };
 }
+
+// MCP servers should declare openWorldHint. Some deployed servers omit or
+// misstate it, so recover a clearly described web operation from the
+// server-published name/description as well.
+export function toolReachesOpenWeb(tool) {
+  const declared = tool?.annotations?.openWorldHint;
+  if (declared === true) return true;
+  const text = `${tool?.name ?? ''} ${tool?.description ?? ''}`
+    .normalize('NFKD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+  return /\b(web|internet|online|website|webpage)\b/.test(text)
+    && /\b(search|fetch|crawl|read|retrieve|open)\b/.test(text);
+}
+
+// The tools that reach the open web, from their MCP annotation or an
+// unambiguous server-published web operation description — no connector named
+// in code. Listed without this, "cherche sur internet" went to an intranet
+// search (a Confluence connector) that never reaches the internet.
+export function openWebToolsRule(tools) {
+  const names = (Array.isArray(tools) ? tools : []).filter((item) => item?.openWorld).map((item) => item.function?.name).filter(Boolean);
+  if (!names.length) return '';
+  return `Tools that reach the open web: ${names.join(', ')}. For an internet/web request, call one of these before answering — another connector's search (an intranet, a document store, the wiki) does not reach the internet and is never a substitute.`;
+}

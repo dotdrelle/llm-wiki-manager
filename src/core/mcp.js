@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
-import { llmToolFunction } from './llmToolSchema.js';
+import { llmToolFunction, toolReachesOpenWeb } from './llmToolSchema.js';
+import { createMcpRequestTimeout, resolveMcpToolTimeout } from './mcpTimeout.js';
 
 const WIKI_MANAGER_VERSION = '0.16.60';
 
@@ -137,6 +138,7 @@ function readExternalMcpEndpoints() {
             url: normalizeExternalUrlForRuntime(interpolateEnv(String(endpoint.url))),
             configuredUrl: interpolateEnv(String(endpoint.url)),
             headers: normalizeHeaders(endpoint.headers),
+            timeoutMs: Number.isInteger(endpoint.timeoutMs) && endpoint.timeoutMs >= 1000 && endpoint.timeoutMs <= 120_000 ? endpoint.timeoutMs : undefined,
             // Tools the endpoint marks approval-gated: Donna may still call them
             // directly (they are single-step tools), but toolRequiresApproval
             // makes the call wait for the user's confirmation first (e.g. a
@@ -358,9 +360,9 @@ async function negotiateMcpSession(endpoint, requestSignal, headersFor) {
 
 async function mcpRequest(endpoint, method, params, signal, options = {}) {
   if (!endpoint.url) throw new Error('missing endpoint URL');
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 8000);
-  const requestSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
+  const timeoutMs = options.timeoutMs ?? 8000;
+  const deadline = createMcpRequestTimeout(timeoutMs, signal);
+  const requestSignal = deadline.signal;
   const key = sessionKey(endpoint);
 
   const headersFor = (sessionId) => {
@@ -407,8 +409,11 @@ async function mcpRequest(endpoint, method, params, signal, options = {}) {
     const payload = parseMcpResponse(text);
     if (payload?.error) throw new Error(payload.error.message ?? JSON.stringify(payload.error));
     return payload;
+  } catch (error) {
+    if (deadline.didTimeout()) throw new Error(`MCP request timed out after ${timeoutMs} ms`, { cause: error });
+    throw error;
   } finally {
-    clearTimeout(timeout);
+    deadline.clear();
   }
 }
 
@@ -429,11 +434,7 @@ export async function callMcpTool(mcpStatus, serverName, toolName, args = {}, si
   // bounded read a small transport margin so the manager does not abort it at
   // 8 s before CME can return its stable `unreachable` result. The default
   // retry policy can then make one fresh, idempotent search attempt.
-  const timeoutMs = serverName === 'documents' && toolName === 'documents_convert_to_markdown'
-    ? 600_000
-    : serverName === 'cme' && toolName === 'cme_confluence_search'
-      ? 20_000
-      : 8000;
+  const timeoutMs = resolveMcpToolTimeout(endpoint, serverName, toolName, options.timeoutMs);
   const retry = resolveRetryPolicy(endpoint, toolName, options.retry);
   return withRetry(async () => {
     await throttleMcpRequestStart(endpoint, signal);
@@ -749,6 +750,7 @@ export function buildLlmTools(mcpStatus) {
       tools.push({
         type: 'function',
         readOnly: tool.annotations?.readOnlyHint === true,
+        openWorld: toolReachesOpenWeb(tool),
         function: llmToolFunction(`${serverName}__${tool.name}`, clarifyToolDescription(serverName, tool.name, tool.description), tool.inputSchema),
       });
     }

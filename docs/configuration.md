@@ -260,7 +260,8 @@ UI. Values support `${VAR}` interpolation resolved from the process environment
     },
     "exa": {
       "url": "https://mcp.exa.ai/mcp",
-      "headers": { "x-api-key": "${EXA_MCP_API_KEY}" }
+      "headers": { "x-api-key": "${EXA_MCP_API_KEY}" },
+      "timeoutMs": 30000
     }
   }
 }
@@ -283,6 +284,13 @@ the runtime's `POST /mcp/endpoints`. Two keys belong to that path:
 A UI upsert also writes `chatAccess.servers.<name> = { "allow": "*" }` — without
 it the server would be invisible to `/chat` (see the `chatAccess` section of the
 README). Hand-declared servers keep whatever `allow` list you wrote.
+
+`mcpServers.<name>.timeoutMs` optionally sets a per-call HTTP deadline from
+1,000 to 120,000 ms. The default is 8,000 ms (with existing operation-specific
+defaults for long document conversion and Confluence search). The Serve
+Connectors panel exposes the same setting in seconds. A timed-out call reports
+its deadline explicitly; chat-step runtime traces record tool name, duration
+and outcome without copying tool arguments into the trace.
 `wiki`, `production`, `llm-wiki` and `wiki-production` are refused by that route:
 they belong to the workspace stack, not to the connectors file. Writes are
 rejected with **409 while a plan is running** — the served UI keeps the

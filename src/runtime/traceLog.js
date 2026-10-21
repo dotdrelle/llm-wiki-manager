@@ -101,9 +101,12 @@ export function formatTraceLine(event, { mode = 'on', seen = null } = {}) {
       text = result.text;
       break;
     }
-    case 'chat_step':
-      text = `${payload.name ?? '?'} ${clip(payload.arguments ?? '', 200)}`;
+    case 'chat_step': {
+      const duration = Number.isFinite(Number(payload.durationMs)) ? ` · ${(Number(payload.durationMs) / 1000).toFixed(1)} s` : '';
+      text = `${payload.name ?? '?'}${duration} · ${payload.ok === false ? 'failed' : 'ok'}`;
+      if (payload.ok === false) level = 'ERROR';
       break;
+    }
     case 'user_message':
     case 'control_message_received':
       text = `"${clip(payload.content ?? payload.input ?? '', 160)}"${payload.classification?.kind ? ` → ${payload.classification.kind}` : ''}`;

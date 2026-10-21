@@ -42,17 +42,29 @@ function normalizeUrl(value) {
   return url;
 }
 
+function normalizeTimeoutMs(value, { optional = false } = {}) {
+  if (optional && (value == null || value === '')) return null;
+  const timeoutMs = Number(value);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120_000) {
+    throw new Error('MCP timeout must be between 1000 and 120000 milliseconds.');
+  }
+  return timeoutMs;
+}
+
 export function listManagedMcpEndpoints() {
   const { raw } = readDocument();
   return Object.entries(raw.mcpServers).map(([name, endpoint]) => ({
     name,
     url: String(endpoint?.url ?? ''),
     bearer: String(endpoint?.headers?.Authorization ?? endpoint?.headers?.authorization ?? '').replace(/^Bearer\s+/i, ''),
+    timeoutMs: Number.isInteger(endpoint?.timeoutMs) && endpoint.timeoutMs >= 1000 && endpoint.timeoutMs <= 120_000
+      ? endpoint.timeoutMs
+      : null,
     allow: raw.chatAccess?.servers?.[name]?.allow ?? null,
   }));
 }
 
-export function upsertManagedMcpEndpoint({ name: rawName, previousName: rawPreviousName = null, url: rawUrl, bearer = '' } = {}) {
+export function upsertManagedMcpEndpoint({ name: rawName, previousName: rawPreviousName = null, url: rawUrl, bearer = '', timeoutMs: rawTimeoutMs } = {}) {
   const name = normalizeName(rawName);
   const previousName = rawPreviousName ? normalizeName(rawPreviousName) : name;
   const url = normalizeUrl(rawUrl);
@@ -66,12 +78,22 @@ export function upsertManagedMcpEndpoint({ name: rawName, previousName: rawPrevi
   const previous = raw.mcpServers[previousName] && typeof raw.mcpServers[previousName] === 'object'
     ? raw.mcpServers[previousName]
     : {};
+  const timeoutMs = rawTimeoutMs === undefined
+    ? (Number.isInteger(previous.timeoutMs) && previous.timeoutMs >= 1000 && previous.timeoutMs <= 120_000 ? previous.timeoutMs : null)
+    : normalizeTimeoutMs(rawTimeoutMs, { optional: true });
   const headers = { ...(previous.headers ?? {}) };
   delete headers.authorization;
   delete headers.Authorization;
   if (String(bearer).trim()) headers.Authorization = `Bearer ${String(bearer).trim()}`;
   const managedBy = previous.managedBy === 'serve-ui' ? 'serve-ui' : (Object.keys(previous).length ? null : 'serve-ui');
-  raw.mcpServers[name] = { ...previous, url, ...(managedBy ? { managedBy } : {}), ...(Object.keys(headers).length ? { headers } : {}) };
+  raw.mcpServers[name] = {
+    ...previous,
+    url,
+    ...(timeoutMs == null ? {} : { timeoutMs }),
+    ...(managedBy ? { managedBy } : {}),
+    ...(Object.keys(headers).length ? { headers } : {}),
+  };
+  if (timeoutMs == null) delete raw.mcpServers[name].timeoutMs;
   if (!Object.keys(headers).length) delete raw.mcpServers[name].headers;
   if (previousName !== name) {
     delete raw.mcpServers[previousName];
@@ -81,7 +103,7 @@ export function upsertManagedMcpEndpoint({ name: rawName, previousName: rawPrevi
   raw.chatAccess.servers[name] = { allow: '*' };
   raw.disabledMcpServers = raw.disabledMcpServers.filter((item) => item !== name);
   writeDocument(filePath, raw);
-  return { name, previousName, url, allow: '*', hasBearer: Boolean(String(bearer).trim()), origin: managedBy ? 'ui' : 'global' };
+  return { name, previousName, url, timeoutMs, allow: '*', hasBearer: Boolean(String(bearer).trim()), origin: managedBy ? 'ui' : 'global' };
 }
 
 export function deleteManagedMcpEndpoint(rawName) {

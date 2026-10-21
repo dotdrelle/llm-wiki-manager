@@ -20,8 +20,10 @@ import { serviceChoices as composeServiceChoices, serviceDescription } from '../
 import { extractActivity, mergePolledActivity, parseJsonText, sessionActivities } from '../core/activity.js';
 import { syncActivitiesToPlan } from '../core/plan.js';
 import { buildLlmTools, callMcpTool, formatMcpToolResult, parseToolCallName, resolveToolCallName, toolResultMaxChars } from '../core/mcp.js';
+import { openWebToolsRule } from '../core/llmToolSchema.js';
 import { runBoundedToolLoop } from '../core/toolLoop.js';
 import { isProductHelpQuestion, WIKI_INTERNET_RULE, wikiSearchContextMessages } from '../core/wikiPresearch.js';
+import { selectChatToolsForRequest } from '../core/openWebRouting.js';
 import { createAgentEvent, dispatchAgentEvent, dispatchRuntimeLog } from '../core/agentEvents.js';
 import { managerMcpEndpointsFile } from '../core/env.js';
 import { togglableAgentNames } from '../core/agentsCompose.js';
@@ -585,13 +587,13 @@ function externalChatToolsLine(allowedTools) {
     const sep = name.indexOf('__');
     if (sep === -1) continue;
     const server = name.slice(0, sep);
-    if (['wiki', 'production', 'runtime', 'shell', 'memory', 'conversation'].includes(server)) continue;
+    if (['wiki', 'llm-wiki', 'production', 'wiki-production', 'runtime', 'shell', 'memory', 'conversation'].includes(server)) continue;
     if (!byServer.has(server)) byServer.set(server, []);
     byServer.get(server).push(name);
   }
   if (byServer.size === 0) return null;
   const list = [...byServer].map(([server, names]) => `${server}: ${names.join(', ')}`).join('; ');
-  return `External read tools also offered for this turn (outside the workspace wiki): ${list}. For an internet/web search, call the matching tool directly — never answer that you cannot search the internet when one of these is offered, and never claim a search you did not run.`;
+  return [`External read tools also offered for this turn (outside the workspace wiki): ${list}. For an internet/web search, call the matching tool directly — never answer that you cannot search the internet when one of these is offered, and never claim a search you did not run.`, openWebToolsRule(allowedTools)].filter(Boolean).join(' ');
 }
 
 export function buildDirectChatSystemPrompt(session, rawOpenWikiPages, allowedTools = null) {
@@ -1709,6 +1711,7 @@ async function runChatToolLoop({ input, session, history, donnaMessage, onUpdate
     }
     let args = {};
     try { args = call.function?.arguments ? JSON.parse(call.function.arguments) : {}; } catch { args = {}; }
+    const toolStartedAt = Date.now();
     const publishChatStep = (result, ok = true) => dispatchAgentEvent(session, createAgentEvent('chat_step', {
       origin: 'tool',
       payload: {
@@ -1717,6 +1720,7 @@ async function runChatToolLoop({ input, session, history, donnaMessage, onUpdate
         arguments: JSON.stringify(args).slice(0, 1200),
         result: (typeof result === 'string' ? result : JSON.stringify(result ?? '')).slice(0, 1800),
         ok,
+        durationMs: Math.max(0, Date.now() - toolStartedAt),
       },
     }));
     try {
@@ -1794,10 +1798,13 @@ async function runChatToolLoop({ input, session, history, donnaMessage, onUpdate
   onUpdate?.();
 }
 
-function chatTurnTools(session, allowedTools) {
-  return allowedTools.length > 0 && session.llm
-    ? [...allowedTools, RUNTIME_SPAWN_AGENT_TOOL]
-    : allowedTools;
+function chatTurnTools(session, allowedTools, input, history) {
+  const { tools: selectedTools, webIntent } = selectChatToolsForRequest(allowedTools, input, history);
+  return selectedTools.length > 0 && session.llm
+    ? webIntent
+      ? selectedTools
+      : [...selectedTools, RUNTIME_SPAWN_AGENT_TOOL]
+    : selectedTools;
 }
 
 async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
@@ -1813,7 +1820,7 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
   messages.push(donnaMessage);
   onUpdate?.();
   const allowedTools = chatAllowedTools(session);
-  const turnTools = chatTurnTools(session, allowedTools);
+  const turnTools = chatTurnTools(session, allowedTools, input, history);
   const productHelpMessages = [
     ...await productHelpContextMessages(input, session, onStep),
     ...await wikiSearchContextMessages(input, session, allowedTools, onStep),
@@ -1879,7 +1886,7 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
 export async function runHeadlessChatTurn(session, input, { history = [], onStep, onTextDelta, onTextReset, openWikiPages, openWikiPage } = {}) {
   const donnaMessage = { role: 'donna', content: '' };
   const allowedTools = chatAllowedTools(session);
-  const turnTools = chatTurnTools(session, allowedTools);
+  const turnTools = chatTurnTools(session, allowedTools, input, history);
   // Keep the singular option as a compatibility input for older serve builds.
   // Only paths enter the prompt; reading remains the model's generic tool call.
   const selectedPages = sanitizeOpenWikiPages(openWikiPages ?? openWikiPage);

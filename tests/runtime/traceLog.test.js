@@ -29,6 +29,15 @@ test('a failed tool result is an ERROR with its code and message', () => {
   assert.match(line, /ERROR \[juno\] tool_call_result runtime\.run_skill FAILED — skill_not_found — No skill named/);
 });
 
+test('chat connector steps trace duration and failure without printing tool arguments', () => {
+  const line = formatTraceLine({
+    type: 'chat_step', ts, workspace: 'juno',
+    payload: { name: 'web_search_exa', ok: false, durationMs: 30_000, arguments: '{"query":"private query"}' },
+  });
+  assert.match(line, /ERROR \[juno\] chat_step web_search_exa · 30\.0 s · failed/);
+  assert.doesNotMatch(line, /private query/);
+});
+
 test('repeated agent registrations print only when health or capabilities change', () => {
   const seen = new Map();
   const event = (status) => ({

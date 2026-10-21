@@ -110,7 +110,13 @@ test('a completed mutation cannot be appended again and repeated plans are rejec
 
 test('cancellation interrupts a nonresponsive model without any execution', async () => {
   const { session } = fixture(); session.llm = { completeWithTools: () => new Promise(() => {}) };
-  await assert.rejects(investigateRun(session, {}, { runId: 'run', signal: AbortSignal.timeout(25) }), /timeout|aborted/i);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error('test timeout')), 25);
+  try {
+    await assert.rejects(investigateRun(session, {}, { runId: 'run', signal: controller.signal }), /timeout|aborted/i);
+  } finally {
+    clearTimeout(timeout);
+  }
 });
 
 test('supervisor uses persisted incident hints, reports degradation and enforces checkpoint budget', async () => {

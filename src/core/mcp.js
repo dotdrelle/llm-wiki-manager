@@ -3,7 +3,7 @@ import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
 import { llmToolFunction, toolReachesOpenWeb } from './llmToolSchema.js';
 import { createMcpRequestTimeout, resolveMcpToolTimeout } from './mcpTimeout.js';
 
-const WIKI_MANAGER_VERSION = '0.16.60';
+const WIKI_MANAGER_VERSION = '0.16.62';
 
 function envValue(key) {
   const filePath = managerEnvFile();

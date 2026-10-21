@@ -1,7 +1,7 @@
 # Using wikiLLM with Claude Desktop
 
 The recommended local integration uses the two packages built in
-`plugins/llm-wiki`:
+`plugins/claude-desktop`:
 
 - `dist/llm-wiki-claude.mcpb`: the local MCP extension. It starts the connector
   on the Mac and discovers the workspaces registered by `wiki-manager`.
@@ -59,7 +59,7 @@ Current limits of the multi-workspace mode:
 
 ## Update the integration
 
-`dist/` is not versioned. After pulling `plugins/llm-wiki`, rebuild both files,
+`dist/` is not versioned. After pulling `plugins/claude-desktop`, rebuild both files,
 reinstall the `.mcpb` (and re-import the `.plugin` if the skill changed), then
 disable and re-enable the extension. The workspace release script
 (`build-and-push.sh`) syncs the connector constant and both manifests to the
@@ -73,7 +73,7 @@ the source one:
 
 ```bash
 diff -q "$HOME/Library/Application Support/Claude/Claude Extensions/local.mcpb.dotdrelle.llm-wiki-claude/bin/llm-wiki-connect.mjs" \
-  plugins/llm-wiki/bin/llm-wiki-connect.mjs && echo "up to date"
+  plugins/claude-desktop/bin/llm-wiki-connect.mjs && echo "up to date"
 ```
 
 A connector older than 0.6.0 crashes on `wiki_ingest` (the ingestion keeps

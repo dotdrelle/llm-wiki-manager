@@ -916,6 +916,41 @@ test('subagent_started/finished track the collective timeline, reset per run', (
   assert.equal(session.agentProjection.subagents.length, 0, 'a new run starts a fresh timeline');
 });
 
+test('a manager subagent timeline carries its steps into the workflow graph', () => {
+  const session = { workspace: 'acme' };
+  dispatchAgentEvent(session, createAgentEvent('run_started', { origin: 'runtime', runId: 'r1', payload: {} }));
+  dispatchAgentEvent(session, createAgentEvent('subagent_started', {
+    runId: 'r1',
+    payload: { subagentId: 's1', subagent: 'verifier', objective: 'check the claim', maxSteps: 3, parentCallId: 'call-1' },
+  }));
+  dispatchAgentEvent(session, createAgentEvent('subagent_step', {
+    runId: 'r1',
+    payload: { subagentId: 's1', subagent: 'verifier', step: 1, maxSteps: 3, tool: 'wiki_read_pages', status: 'done' },
+  }));
+  dispatchAgentEvent(session, createAgentEvent('subagent_finished', {
+    runId: 'r1',
+    payload: { subagentId: 's1', subagent: 'verifier', status: 'done', step: 1, maxSteps: 3, toolCount: 1, durationMs: 1200 },
+  }));
+
+  const entry = session.agentProjection.subagents[0];
+  assert.equal(entry.id, 's1');
+  assert.equal(entry.status, 'done');
+  assert.equal(entry.objective, 'check the claim');
+  assert.equal(entry.parentCallId, 'call-1');
+  assert.equal(entry.toolCount, 1);
+  assert.equal(entry.durationMs, 1200);
+  assert.deepEqual(entry.steps, [{ step: 1, tool: 'wiki_read_pages', status: 'done' }]);
+
+  const nodes = session.agentProjection.workflow.nodes;
+  const subagent = nodes.find((node) => node.type === 'subagent');
+  const step = nodes.find((node) => node.type === 'subagent_step');
+  assert.equal(subagent.subagentId, 's1');
+  assert.equal(subagent.status, 'done');
+  assert.equal(step.label, 'wiki_read_pages');
+  assert.equal(step.status, 'done');
+  assert.ok(session.agentProjection.workflow.relations.some((rel) => rel.from === subagent.id && rel.to === step.id));
+});
+
 test('a runtime heartbeat sets liveness only, and a new run clears it', () => {
   const session = {};
   dispatchAgentEvent(session, createAgentEvent('run_started', { origin: 'runtime', runId: 'r1', payload: {} }));

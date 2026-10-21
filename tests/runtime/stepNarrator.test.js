@@ -73,6 +73,33 @@ test('an action turn is narrated in the session language, from data, once per ch
   assert.equal(h.narrator.size(), 0);
 });
 
+test('a subagent is narrated as one step when it finishes', async () => {
+  const h = harness();
+  const turn = { turnId: 'turn-subagent' };
+  h.narrator.observe(h.event('user_message', { ...turn, payload: { content: 'vérifie cette affirmation' } }), h.session);
+  h.narrator.observe(h.event('subagent_started', {
+    ...turn, payload: { subagentId: 's1', subagent: 'verifier', objective: 'check the claim', maxSteps: 3 },
+  }), h.session);
+  h.narrator.observe(h.event('subagent_step', {
+    ...turn, payload: { subagentId: 's1', subagent: 'verifier', step: 1, maxSteps: 3, tool: 'wiki_read_pages', status: 'done' },
+  }), h.session);
+  await h.flush();
+  assert.equal(h.calls.length, 0, 'a running subagent is not narrated as a finished step');
+
+  h.narrator.observe(h.event('subagent_finished', {
+    ...turn, payload: { subagentId: 's1', subagent: 'verifier', status: 'done', step: 1, maxSteps: 3, toolCount: 1, durationMs: 1200 },
+  }), h.session);
+  await h.flush();
+  assert.equal(h.calls.length, 1);
+  const sent = JSON.parse(h.calls[0].input);
+  assert.equal(sent.steps[0].id, 'subagent:s1');
+  assert.equal(sent.steps[0].kind, 'subagent');
+  assert.equal(sent.steps[0].state, 'done');
+  assert.equal(sent.steps[0].step, 1);
+  assert.equal(sent.steps[0].toolCount, 1);
+  assert.ok(h.published.some((event) => event.type === 'step_narrative'));
+});
+
 test('a consultation (read tools only) and plan bookkeeping are never narrated', async () => {
   const h = harness();
   const turn = { turnId: 'turn-2' };

@@ -4,6 +4,7 @@ import { admitExecution } from '../maintenance/admission.js';
 import { normalizeActivity } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { callMcpTool } from '../core/mcp.js';
+import { WIKI_INTERNET_RULE } from '../core/wikiPresearch.js';
 import { loadWorkspaceProfile } from '../core/profile.js';
 import { formatWorkspaceMemoryFacts } from '../core/workspaceMemory.js';
 import { reasoningEffortParam, supportsTemperature } from '../core/llmCapabilities.js';
@@ -12,7 +13,6 @@ import { mapRuntimeEvent } from '../core/runtimeEventAdapter.js';
 import { emitRuntimeLog, pollActivitiesOnce } from '../runtime/supervisor.js';
 import { APPROVAL_DEFAULT_CLASS, approvalCovered } from './approvalPolicy.js';
 import { isSuccessful, isTerminal } from './taskStatuses.js';
-
 
 // Distinguishes "the manager process is shutting down" from a genuine task
 // cancellation (/run cancel, /stop, /control cancel) on the SAME shared
@@ -781,7 +781,7 @@ export function activeRuntimeSystemPrompt(session, task, assignment, mcpPool = n
         hasWiki
           ? 'Search the workspace wiki FIRST; then use those external/web read tools for current, public or out-of-workspace facts the wiki does not cover.'
           : 'Use those external/web read tools for facts the workspace does not cover.',
-        'Never answer that you cannot search the internet or that you are limited to the wiki: when such a tool is listed here, call it.',
+        'Never answer that you cannot search the internet or that you are limited to the wiki: when such a tool is listed here, call it. ' + WIKI_INTERNET_RULE,
       ].join(' ')
     : null;
   return [

@@ -23,6 +23,7 @@ import { sayLines } from './donnaVoice.js';
 import { isSuccessful, isUnsuccessfulTerminal } from '../orchestrator/taskStatuses.js';
 
 const OBSERVED = new Set(['user_message', 'tool_call_started', 'tool_call_result', 'chat_step', 'activity_upserted', 'runtime_phase_started',
+  'subagent_started', 'subagent_step', 'subagent_finished',
   'task.completed', 'task.failed', 'run_done', 'run_error', 'run_cancelled', 'assistant_message']);
 const DECLARED_VERIFICATIONS = new Set(['verified', 'not_observed', 'unavailable', 'not_applicable']);
 
@@ -121,7 +122,7 @@ export function createStepNarrator({
     // run_done/run_error/run_cancelled).
     if (event.type === 'assistant_message' && (key.startsWith('run:') || !String(payload.content ?? '').trim())) return;
     if (event.type === 'user_message' && key.startsWith('run:')) return;
-    const scope = scopes.get(key) ?? (['user_message', 'tool_call_started', 'chat_step', 'activity_upserted', 'runtime_phase_started', 'task.completed', 'task.failed'].includes(event.type)
+    const scope = scopes.get(key) ?? (['user_message', 'tool_call_started', 'chat_step', 'activity_upserted', 'runtime_phase_started', 'subagent_started', 'subagent_step', 'subagent_finished', 'task.completed', 'task.failed'].includes(event.type)
       ? scopeFor(key, event, session) : null);
     if (!scope) return;
     if (event.type === 'user_message') {
@@ -157,6 +158,43 @@ export function createStepNarrator({
       scope.steps.set(id, {
         id, kind: 'phase', label: 'review progress', state: 'done',
         facts: { activity: PHASE_ACTIVITY.get(phase.toLowerCase()) ?? 'working through the requested review' },
+      });
+      scope.actionable = true;
+    } else if (event.type === 'subagent_started') {
+      const id = `subagent:${String(payload.subagentId ?? payload.subagent ?? 'subagent')}`;
+      scope.steps.set(id, {
+        id, kind: 'subagent', label: bounded(payload.subagent ?? 'subagent', 80), state: 'running',
+        ...(payload.objective ? { objective: bounded(payload.objective, 300) } : {}),
+        ...(Number(payload.maxSteps) ? { maxSteps: Number(payload.maxSteps) } : {}),
+      });
+      scope.actionable = true;
+    } else if (event.type === 'subagent_step') {
+      const id = `subagent:${String(payload.subagentId ?? payload.subagent ?? 'subagent')}`;
+      const previous = scope.steps.get(id) ?? {
+        id, kind: 'subagent', label: bounded(payload.subagent ?? 'subagent', 80), state: 'running',
+      };
+      scope.steps.set(id, {
+        ...previous,
+        state: payload.status === 'failed' ? 'failed' : 'running',
+        step: Number(payload.step) || previous.step || 0,
+        ...(Number(payload.maxSteps) ? { maxSteps: Number(payload.maxSteps) } : {}),
+        ...(payload.tool ? { tool: bounded(payload.tool, 80) } : {}),
+        ...(payload.error ? { error: bounded(payload.error, 240) } : {}),
+      });
+      scope.actionable = true;
+    } else if (event.type === 'subagent_finished') {
+      const id = `subagent:${String(payload.subagentId ?? payload.subagent ?? 'subagent')}`;
+      const previous = scope.steps.get(id) ?? {
+        id, kind: 'subagent', label: bounded(payload.subagent ?? 'subagent', 80), state: 'running',
+      };
+      scope.steps.set(id, {
+        ...previous,
+        state: payload.status === 'failed' ? 'failed' : 'done',
+        step: Number(payload.step) || previous.step || 0,
+        ...(Number(payload.maxSteps) ? { maxSteps: Number(payload.maxSteps) } : {}),
+        ...(Number(payload.toolCount) ? { toolCount: Number(payload.toolCount) } : {}),
+        ...(Number(payload.durationMs) ? { durationMs: Number(payload.durationMs) } : {}),
+        ...(payload.error ? { error: bounded(payload.error, 240) } : {}),
       });
       scope.actionable = true;
     } else if (event.type === 'activity_upserted') {

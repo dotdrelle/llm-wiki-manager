@@ -6,6 +6,7 @@ import { formatRuntimeLogPayload, isDispatchPlumbingLine, normalizeRuntimeLog, s
 import { projectSkillChains, TERMINAL as CONTROL_TERMINAL_STATUSES } from './skillChainView.js';
 import { projectWorkflow } from './workflow.js';
 import { compactLogLabel } from './logLabel.js';
+import { finishSubagent, startSubagent, stepSubagent } from './subagentTimeline.js';
 import { validateContractInDev } from '../contracts/schemas.js';
 import { isActive, isTerminal, isSuccessful, isUnknownStatus, normalizeTaskStatus } from '../orchestrator/taskStatuses.js';
 
@@ -35,6 +36,9 @@ const SESSION_PROJECTION_EVENTS = new Set([
   'task.failed',
   'plan.revision_changed',
   'activity_upserted',
+  'subagent_started',
+  'subagent_step',
+  'subagent_finished',
   'run_evaluated',
   'run_replanned',
   'run_pending_approval',
@@ -468,32 +472,15 @@ function applyEvent(state, event) {
     case 'tool_call_result':
       finishToolCall(state, event.payload);
       return;
-    case 'subagent_started': {
-      // A named role of the external runtime's collective (lot 2). Tracked as
-      // first-class state so the workflow projection renders each subagent as
-      // a child node of the run — the timeline the events describe, not just
-      // one more log line.
-      const name = String(event.payload?.subagent ?? 'subagent');
-      state.subagents = [
-        ...(state.subagents ?? []),
-        { subagent: name, status: 'running', startedAt: event.ts },
-      ];
+    case 'subagent_started':
+      state.subagents = startSubagent(state.subagents, event.payload, event.ts);
       return;
-    }
-    case 'subagent_finished': {
-      const name = String(event.payload?.subagent ?? 'subagent');
-      const list = [...(state.subagents ?? [])];
-      const entry = list.findLast((item) => item.subagent === name && item.status === 'running')
-        ?? list.find((item) => item.subagent === name);
-      if (entry) {
-        entry.status = 'done';
-        entry.finishedAt = event.ts;
-      } else {
-        list.push({ subagent: name, status: 'done', startedAt: event.ts, finishedAt: event.ts });
-      }
-      state.subagents = list;
+    case 'subagent_step':
+      state.subagents = stepSubagent(state.subagents, event.payload, event.ts);
       return;
-    }
+    case 'subagent_finished':
+      state.subagents = finishSubagent(state.subagents, event.payload, event.ts);
+      return;
     case 'activity_upserted':
       upsertActivity(state, event.payload?.activity);
       return;

@@ -156,6 +156,27 @@ exist (`{ "plan": "plan", "apply": "run" }`); it is propagated like
 `mutationClass`. Without it, the deterministic resolver falls back to
 `operations[0]`.
 
+## Temporary read-only subagents
+
+Donna can create a short-lived, read-only subagent for one bounded objective
+with `runtime__spawn_agent` (`src/agent/subagent.js`). It is a manager tool, not
+a discovered capability: the child gets the parent turn's read-only MCP pool
+(optionally narrowed by the caller), a role/objective prompt and a hard
+iteration cap, and returns its answer plus the tools it called. It cannot write,
+start a job, approve or delegate; those remain Donna's actions and follow the
+normal approval path. The tool is offered in chat and agent mode, but chat
+remains read-only: the subagent can research, never act. A child with no
+read-only tool is refused rather than given a write fallback.
+
+The child is visible while it runs: `subagent_started`, `subagent_step` and
+`subagent_finished` feed the same event projection as the external runtime's
+collective. The Plan panel shows a Subagents card (role, step, current tool,
+reads, elapsed), the execution graph shows a `subagent` node with one child
+node per tool step, and the step narrator words the finish in the session
+language. The live progress line shows the child's role and step. The child's
+answer and tool transcript stay in the parent tool result; its internal reads
+are not pasted into the chat thread.
+
 ## Memory
 
 The runtime keeps a **conversation memory per workspace**: the manager sends

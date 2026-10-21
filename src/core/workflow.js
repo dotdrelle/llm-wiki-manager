@@ -39,20 +39,49 @@ export function projectWorkflow(state = {}, events = []) {
   const approvalNodes = approvals.map(approvalNode);
   nodes.push(...planNodes, ...activityNodes, ...queueNodes, ...approvalNodes);
 
-  // The external runtime's collective (lot 2): each named subagent becomes a
-  // child node of the run node, so the Canvas shows the run's internal
-  // timeline instead of burying the roles in log lines.
+  // The external runtime's collective and Donna's own read-only subagent:
+  // each named role becomes a child node of the run, and its tool steps become
+  // children of that node. The Canvas shows the run's internal timeline instead
+  // of burying the roles in log lines.
   const subagentNodes = (Array.isArray(state.subagents) ? state.subagents : [])
     .map((entry, index) => ({
-      id: `subagent:${String(entry.subagent ?? 'subagent')}:${index}`,
+      id: `subagent:${String(entry.id ?? entry.subagent ?? 'subagent')}:${index}`,
       type: 'subagent',
       label: String(entry.subagent ?? 'subagent'),
-      status: entry.status === 'done' ? 'done' : 'running',
+      status: entry.status === 'failed' ? 'failed' : entry.status === 'done' ? 'done' : 'running',
       startedAt: entry.startedAt ?? null,
       finishedAt: entry.finishedAt ?? null,
       subagent: String(entry.subagent ?? 'subagent'),
+      subagentId: entry.id ?? null,
+      objective: entry.objective ?? null,
+      step: entry.step ?? 0,
+      maxSteps: entry.maxSteps ?? null,
+      tool: entry.tool ?? null,
+      toolCount: entry.toolCount ?? 0,
+      durationMs: entry.durationMs ?? null,
+      error: entry.error ?? null,
+      answerPreview: entry.answerPreview ?? null,
+      parentCallId: entry.parentCallId ?? null,
     }));
-  nodes.push(...subagentNodes);
+  const subagentStepNodes = (Array.isArray(state.subagents) ? state.subagents : []).flatMap((entry) => {
+    const parentId = `subagent:${String(entry.id ?? entry.subagent ?? 'subagent')}:${(state.subagents ?? []).indexOf(entry)}`;
+    return (Array.isArray(entry.steps) ? entry.steps : []).map((step, index) => ({
+      id: `subagent-step:${String(entry.id ?? entry.subagent ?? 'subagent')}:${step.step ?? index + 1}`,
+      type: 'subagent_step',
+      label: String(step.tool ?? `step ${step.step ?? index + 1}`),
+      status: step.status === 'failed' ? 'failed' : step.status === 'done' ? 'done' : 'running',
+      parentId,
+      subagentId: entry.id ?? null,
+      step: step.step ?? index + 1,
+      maxSteps: entry.maxSteps ?? null,
+      tool: step.tool ?? null,
+      error: step.error ?? null,
+    }));
+  });
+  nodes.push(...subagentNodes, ...subagentStepNodes);
+  for (const node of subagentStepNodes) {
+    relations.push({ type: 'contains', from: node.parentId, to: node.id });
+  }
 
   for (const node of [...planNodes, ...activityNodes, ...queueNodes, ...approvalNodes, ...subagentNodes]) {
     if (run) relations.push({ type: 'contains', from: run.id, to: node.id });

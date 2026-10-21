@@ -6,14 +6,14 @@ import { emitKeypressEvents } from 'node:readline';
 import { Transform } from 'node:stream';
 import { execFileSync } from 'node:child_process';
 import { statSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
 import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
 import { buildAgentSystemPrompt, formatLlmUnavailableMessage, isOrchestrationBypassTool } from '../agent/graph.js';
+import { handleSpawnAgent, RUNTIME_SPAWN_AGENT_TOOL } from '../agent/subagent.js';
 import { summarizeToolArguments } from '../core/progressNotes.js';
 import { openWikiPagesPromptLine } from '../core/openWikiPages.js';
+import { buildEvidenceLedgerMessage, readSelectedEvidence, readSelectedPageDocuments } from './selectedDocuments.js';
 import { conversationChannelPromptLine } from '../core/conversationChannel.js';
 import { handleSlashCommand, rawCommandAgentPrompt, refreshMcpRuntimeStatus } from '../commands/slash.js';
 import { serviceChoices as composeServiceChoices, serviceDescription } from '../core/compose.js';
@@ -21,7 +21,7 @@ import { extractActivity, mergePolledActivity, parseJsonText, sessionActivities 
 import { syncActivitiesToPlan } from '../core/plan.js';
 import { buildLlmTools, callMcpTool, formatMcpToolResult, parseToolCallName, resolveToolCallName, toolResultMaxChars } from '../core/mcp.js';
 import { runBoundedToolLoop } from '../core/toolLoop.js';
-import { isProductHelpQuestion, wikiSearchContextMessages } from '../core/wikiPresearch.js';
+import { isProductHelpQuestion, WIKI_INTERNET_RULE, wikiSearchContextMessages } from '../core/wikiPresearch.js';
 import { createAgentEvent, dispatchAgentEvent, dispatchRuntimeLog } from '../core/agentEvents.js';
 import { managerMcpEndpointsFile } from '../core/env.js';
 import { togglableAgentNames } from '../core/agentsCompose.js';
@@ -36,6 +36,8 @@ import { listWorkspaces } from '../core/workspaces.js';
 import { fetchRuntimeState, postRuntimeApprove, postRuntimeCancel, postRuntimeControl, postRuntimeRun, postRuntimeShutdown, postRuntimeTurn, requestRuntimeMemory, streamRuntimeEvents } from '../runtime/client.js';
 import { applyMaintenanceUpdate } from '../core/maintenanceUpdates.js';
 import { versionWithBuild } from '../core/buildInfo.js';
+
+export { readSelectedEvidence, readSelectedPageDocuments };
 
 // Code blocks: marked-terminal's default paints a dense background block
 // glued to the surrounding text. Indent the content, keep a plain style and
@@ -519,10 +521,16 @@ export function sanitizeOpenWikiPage(value) {
   // rendered as a chip and POSTed, then dropped here without a trace — the
   // model was told about zero pages while the user watched the document sit
   // selected in the composer.
+  //
+  // A report written by Donna is `raw/untracked/Donna/*.md.lock`: a locked
+  // pending source, readable and attachable like any other document. The lock
+  // suffix is accepted only under raw/untracked — `wiki/x.md.lock` is not a
+  // report.
   const supportedRoot = path.startsWith('wiki/')
     || path.startsWith('raw/untracked/')
     || path.startsWith('raw/ingested/');
-  if (!supportedRoot || !path.endsWith('.md') || path.includes('..') || path.includes('\\')) return null;
+  const lockedReport = path.endsWith('.md.lock') && path.startsWith('raw/untracked/');
+  if (!supportedRoot || (!path.endsWith('.md') && !lockedReport) || path.includes('..') || path.includes('\\')) return null;
   // This HTTP-provided value is embedded in Donna's system prompt. Quotes,
   // ASCII/C1 controls, and Unicode line separators could escape its quoted
   // data span and turn a forged path into prompt instructions.
@@ -535,74 +543,6 @@ export function sanitizeOpenWikiPages(values) {
   return [...new Set(candidates.map(sanitizeOpenWikiPage).filter(Boolean))].slice(0, 5);
 }
 
-
-// Tolerant [src: path] matcher, mirroring llm-wiki's own
-// src/utils/markdown.ts#extractSourceCitations (chained "[src: a.md ; src:
-// b.md]" included) without importing across the repo boundary for one regex.
-const SOURCE_CITATION_PATTERN = /\[\s*src\s*:\s*([^\]]+?)\s*\]/gi;
-
-function extractSourceCitationPaths(content) {
-  return [...content.matchAll(SOURCE_CITATION_PATTERN)].flatMap((match) =>
-    (match[1] ?? '')
-      .split(';')
-      .map((part) => part.trim().replace(/^src\s*:\s*/i, ''))
-      .filter(Boolean),
-  );
-}
-
-async function readWorkspaceFile(session, relPath, maxCharsPerDoc) {
-  try {
-    const absPath = path.resolve(session.workspacePath, relPath);
-    const rel = path.relative(session.workspacePath, absPath);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) return { path: relPath, content: null };
-    const raw = await readFile(absPath, 'utf8');
-    const content = raw.length > maxCharsPerDoc
-      ? `${raw.slice(0, maxCharsPerDoc).trimEnd()}\n[truncated]`
-      : raw;
-    return { path: relPath, content };
-  } catch {
-    return { path: relPath, content: null };
-  }
-}
-
-// Read the selected documents' content so chat can summarize them directly,
-// without depending on the model choosing to call a read tool (and without the
-// tool being offered at all). Paths are already sanitized to wiki/ or
-// raw/untracked/ .md files; the path.relative check is defence in depth. A doc
-// that cannot be read yields { content: null } so the caller can note it.
-//
-// A wiki page is a digest, not the evidence: it names its real sources inline
-// as [src: ...] citations. Reading only the digest is exactly the shortcut
-// that produced an answer covering one facet of a source ingest had split
-// into several concept leaves — the model reused the one digest already in
-// hand instead of going back to the source, even though it was told to.
-// Rather than hope a differently-prompted model chooses to call a read tool
-// for that source, follow each selected page's own citations one level deep
-// and attach them the same deterministic way, up to maxCitedDocs.
-export async function readSelectedPageDocuments(session, pages, { maxCharsPerDoc = 16000, maxCitedDocs = 5 } = {}) {
-  if (!Array.isArray(pages) || pages.length === 0 || !session?.workspacePath) return [];
-  const docs = [];
-  const seen = new Set();
-  for (const relPath of pages) {
-    docs.push(await readWorkspaceFile(session, relPath, maxCharsPerDoc));
-    seen.add(relPath);
-  }
-
-  const citedBy = new Map();
-  for (const doc of docs) {
-    if (typeof doc.content !== 'string') continue;
-    for (const citation of extractSourceCitationPaths(doc.content)) {
-      if (seen.has(citation) || citedBy.has(citation)) continue;
-      citedBy.set(citation, doc.path);
-    }
-  }
-  for (const [citation, citingPath] of [...citedBy.entries()].slice(0, maxCitedDocs)) {
-    const doc = await readWorkspaceFile(session, citation, maxCharsPerDoc);
-    docs.push({ ...doc, citedBy: citingPath });
-    seen.add(citation);
-  }
-  return docs;
-}
 
 // Fold the selected documents' content into the conversation as untrusted DATA
 // (user role, never the system prompt), so the model can summarize/answer from
@@ -643,7 +583,7 @@ function externalChatToolsLine(allowedTools) {
     const sep = name.indexOf('__');
     if (sep === -1) continue;
     const server = name.slice(0, sep);
-    if (server === 'wiki' || server === 'production') continue;
+    if (['wiki', 'production', 'runtime', 'shell', 'memory', 'conversation'].includes(server)) continue;
     if (!byServer.has(server)) byServer.set(server, []);
     byServer.get(server).push(name);
   }
@@ -686,6 +626,7 @@ export function buildDirectChatSystemPrompt(session, rawOpenWikiPages, allowedTo
     // option A was invented, the opposite of what the wiki says.
     'Your earlier answers in this conversation are not evidence: they keep your text, not the pages. For each new question, search the wiki again for every fact you have not quoted from a tool result in this very turn. Never fill a gap (an acronym expansion, a missing option, a figure) from general knowledge.',
     'When the conversation already contains attached document content (delimited by BEGIN/END ATTACHED DOCUMENT markers), read and summarize or answer from that content directly — you do NOT need a tool for it, and must not claim you cannot read the document.',
+    WIKI_INTERNET_RULE,
     'If no provided tool covers the request and no attached content answers it — or the request needs a service that is not connected — say plainly you cannot do it in chat mode and to switch to agent mode (/agent). Do not pretend to execute it and never guess. An action is allowed in chat only when its matching tool is explicitly provided for this turn.',
     // Observed on atlas: asked to email a report, chat mode listed the direct
     // Gmail tools (read/search/labels/modify), concluded no send existed and
@@ -1777,6 +1718,18 @@ async function runChatToolLoop({ input, session, history, donnaMessage, onUpdate
       },
     }));
     try {
+      if (rawName === 'runtime__spawn_agent') {
+        onStep?.('Chat: spawning a read-only subagent…');
+        const result = await handleSpawnAgent(
+          session,
+          session.llm,
+          args,
+          allowedTools.map((item) => item.function?.name).filter(Boolean),
+          call.id,
+        );
+        publishChatStep(result);
+        return result;
+      }
       if (server === 'memory') {
         onStep?.(`Chat: ${tool} workspace memory…`);
         const result = await session.memoryActions[tool](args);
@@ -1839,6 +1792,12 @@ async function runChatToolLoop({ input, session, history, donnaMessage, onUpdate
   onUpdate?.();
 }
 
+function chatTurnTools(session, allowedTools) {
+  return allowedTools.length > 0 && session.llm
+    ? [...allowedTools, RUNTIME_SPAWN_AGENT_TOOL]
+    : allowedTools;
+}
+
 async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
   if (!session.llm?.stream) {
     conversationMessages(session).push({ role: 'command', content: directChatUnavailableText(session) });
@@ -1852,11 +1811,12 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
   messages.push(donnaMessage);
   onUpdate?.();
   const allowedTools = chatAllowedTools(session);
+  const turnTools = chatTurnTools(session, allowedTools);
   const productHelpMessages = [
     ...await productHelpContextMessages(input, session, onStep),
     ...await wikiSearchContextMessages(input, session, allowedTools, onStep),
   ];
-  const canUseTools = allowedTools.length > 0 && typeof session.llm.completeWithTools === 'function';
+  const canUseTools = turnTools.length > 0 && typeof session.llm.completeWithTools === 'function';
   try {
     if (canUseTools) {
       await runChatToolLoop({
@@ -1866,7 +1826,7 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
         donnaMessage,
         onUpdate,
         onStep,
-        allowedTools,
+        allowedTools: turnTools,
         contextMessages: productHelpMessages,
       });
     } else {
@@ -1917,21 +1877,25 @@ async function runDirectChatTurn(input, { session, onUpdate, onStep }) {
 export async function runHeadlessChatTurn(session, input, { history = [], onStep, onTextDelta, onTextReset, openWikiPages, openWikiPage } = {}) {
   const donnaMessage = { role: 'donna', content: '' };
   const allowedTools = chatAllowedTools(session);
+  const turnTools = chatTurnTools(session, allowedTools);
   // Keep the singular option as a compatibility input for older serve builds.
   // Only paths enter the prompt; reading remains the model's generic tool call.
   const selectedPages = sanitizeOpenWikiPages(openWikiPages ?? openWikiPage);
   // Inline the selected documents' content so summarizing works whether or not
   // a read tool is offered or the model chooses to call it. Multiple documents
   // (up to five) are each folded in as their own delimited block.
-  const attachedDocs = await readSelectedPageDocuments(session, selectedPages);
+  const attached = await readSelectedEvidence(session, selectedPages, { onStep });
+  const attachedDocs = attached.docs;
   const contextMessages = [
     ...buildAttachedDocMessages(attachedDocs),
+    ...buildEvidenceLedgerMessage(attached.ledger),
     ...await productHelpContextMessages(input, session, onStep),
-    ...await wikiSearchContextMessages(input, session, allowedTools, onStep),
+    ...await wikiSearchContextMessages(input, session, allowedTools, onStep, selectedPages,
+      attachedDocs.map((doc) => doc.filePath ?? doc.path)),
   ];
-  const canUseTools = allowedTools.length > 0 && typeof session.llm?.completeWithTools === 'function';
+  const canUseTools = turnTools.length > 0 && typeof session.llm?.completeWithTools === 'function';
   if (canUseTools) {
-    await runChatToolLoop({ input, session, history, donnaMessage, onStep, onTextDelta, onTextReset, allowedTools, openWikiPages: selectedPages, contextMessages });
+    await runChatToolLoop({ input, session, history, donnaMessage, onStep, onTextDelta, onTextReset, allowedTools: turnTools, openWikiPages: selectedPages, contextMessages });
     return donnaMessage.content;
   }
   if (typeof session.llm?.stream === 'function') {

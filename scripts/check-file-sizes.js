@@ -14,10 +14,13 @@ const MAX_LINES = 800;
 // drop as extractions land. Raise one only when a change legitimately grows
 // that file. `wiki-workspace` is the bash deployment driver, guarded like the
 // other sources.
+// 0.16.60 follow-up: the read-only subagent (runtime__spawn_agent) adds a tool
+// definition and one dispatch branch to graph.js. The subagent itself lives in
+// src/agent/subagent.js.
 const LEGACY_LIMITS = new Map([
   ['src/runtime/server.js', 2783],
   ['src/shell/repl.js', 2639],
-  ['src/agent/graph.js', 2567],
+  ['src/agent/graph.js', 2572],
   ['src/cli/wiki-manager.js', 2577],
   ['src/commands/slash.js', 2011],
   ['wiki-workspace', 1845],

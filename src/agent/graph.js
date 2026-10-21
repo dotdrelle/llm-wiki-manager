@@ -1,4 +1,5 @@
 import { runtimeMaintenance } from '../runtime/client.js';
+import { handleSpawnAgent, RUNTIME_SPAWN_AGENT_TOOL } from './subagent.js';
 /**
  * @statuses-vocabulary
  *
@@ -38,7 +39,7 @@ import {
   isSimpleWorkspaceFactQuestion,
   isProductHelpQuestion,
   mentionsAvailableExternalService,
-  wikiCollectContextMessage,
+  WIKI_INTERNET_RULE, wikiCollectContextMessage,
   wikiSearchContextMessages,
 } from '../core/wikiPresearch.js';
 import { artifactFromToolCall, currentArtifactFor, currentArtifactPromptLine, rememberArtifact } from '../core/currentArtifact.js';
@@ -63,7 +64,7 @@ const MAX_SKILL_DEPTH = 3;
 const INTERNAL_TOOL_SERVERS = {
   wiki: ['plan_set', 'plan_done'],
   shell: ['run_command', 'read_command', 'profile_update'],
-  runtime: ['maintenance_status','maintenance_pause','maintenance_stop','kill', 'cancel', 'status', 'enqueue', 'delegate', 'run_skill'],
+  runtime: ['maintenance_status','maintenance_pause','maintenance_stop','kill', 'cancel', 'status', 'enqueue', 'delegate', 'run_skill', 'spawn_agent'],
   memory: MEMORY_TOOL_NAMES,
   conversation: ['search', 'read'],
 };
@@ -379,6 +380,7 @@ function toolDefinitionForCall(session, callName) {
     RUNTIME_ENQUEUE_TOOL,
     RUNTIME_DELEGATE_TOOL,
     RUNTIME_RUN_SKILL_TOOL,
+    RUNTIME_SPAWN_AGENT_TOOL,
     WIKI_PLAN_SET_TOOL,
     WIKI_PLAN_DONE_TOOL,
     ...MEMORY_TOOLS, CONVERSATION_SEARCH_TOOL, CONVERSATION_READ_TOOL,
@@ -1409,7 +1411,7 @@ export function buildAgentSystemPrompt(state) {
     // connected web-search read tool was available and offered right here. The
     // wiki stays first for workspace facts; the web tools cover the rest and
     // are never denied.
-    'A wiki-first rule covers workspace facts only. For an internet/web search the wiki cannot answer, use the connected web-search read tool directly when one is offered; otherwise delegate the objective to a research capability. Never answer that you cannot search the internet when a web-search tool is available, and never claim a search you did not run.',
+    'A wiki-first rule covers workspace facts only. For an internet/web search the wiki cannot answer, use the connected web-search read tool directly when one is offered; otherwise delegate the objective to a research capability. Never answer that you cannot search the internet when a web-search tool is available, and never claim a search you did not run. ' + WIKI_INTERNET_RULE,
     // Observed: « compare les options A et B » answered from the previous
     // answers alone — the history carries Donna's text, not the pages — and
     // option A was invented, the opposite of what the wiki says.
@@ -1418,7 +1420,7 @@ export function buildAgentSystemPrompt(state) {
     'Tool identifiers are private implementation details. Never print MCP tool names such as server__tool in a user-facing answer. Describe the human result instead.',
     'Internal data shapes are private too. Never quote raw JSON field names (e.g. pendingSources.files), internal directory paths (e.g. raw/untracked/), or config keys in a user-facing answer — translate them into plain language. Say "36 pages sources sont en attente d\'ingestion", not the field or path they came from.',
     'Never suggest a manual filesystem command or implementation workaround unless the user explicitly asks for manual instructions. For an action request, delegate the objective and let the specialized agent determine paths and operations from its live contract.',
-    'Choose an execution path in this exact order: (1) when the user explicitly names a discovered skill, call runtime__run_skill with that exact name; reserved primitive names require an explicit skill/workflow designation, (2) when one directly offered tool clearly performs the unitary request, call that direct tool, (3) when an imperative request strongly and uniquely matches a discovered skill name and description, call runtime__run_skill, (4) otherwise delegate a supported agent capability with runtime__delegate, (5) when two skills are close or the match is weak, ask which one and execute nothing.',
+    'Choose an execution path in this exact order: (1) when the user explicitly names a discovered skill, call runtime__run_skill with that exact name; reserved primitive names require an explicit skill/workflow designation, (2) when one directly offered tool clearly performs the unitary request, call that direct tool, (3) when an imperative request strongly and uniquely matches a discovered skill name and description, call runtime__run_skill, (4) otherwise delegate a supported agent capability with runtime__delegate, (5) when two skills are close or the match is weak, ask which one and execute nothing. For a bounded research or verification question that needs several reads, runtime__spawn_agent creates a temporary read-only subagent and returns its answer; it cannot act, so actions still go through runtime__delegate.',
     'An informational question such as "how does skill X work?" never executes the skill. Explain it in text. Never select a skill from domain intuition alone: only its name and untrusted description are selection data.',
     'Fill skill arguments only from values literally present in the user request. Emit only parameters declared in the catalog and leave every other declared value empty. Never invent a plausible source, space, file or template name.',
     'The prohibition on proposing a skill as a replacement for a missing execution path remains true AFTER a delegate blocker. It does not apply to normal skill selection under the hierarchy above.',
@@ -1515,6 +1517,7 @@ function toolsForClassification(classification, writeTools, session = null) {
     ...MAINTENANCE_CONTROL_TOOLS,
     RUNTIME_STATUS_TOOL, RUNTIME_CANCEL_TOOL, RUNTIME_KILL_TOOL, RUNTIME_ENQUEUE_TOOL,
   );
+  if (session?.llm) controlTools.push(RUNTIME_SPAWN_AGENT_TOOL);
   // Provider discovery and validation belong to the runtime. Hiding
   // delegation while the shell snapshot is temporarily empty forced Donna
   // to invent commands instead of submitting the objective.
@@ -1796,7 +1799,7 @@ export function createAgentGraph(options = {}) {
     const userTurn = fastWikiAnswer
       ? [fastWikiEvidence, { role: 'user', content: state.input }]
       : [
-          ...(userWords ? await wikiSearchContextMessages(state.input, state.session, tools, state.session._onStep) : []),
+          ...(userWords ? await wikiSearchContextMessages(state.input, state.session, tools, state.session._onStep, state.session.openWikiPages) : []),
           { role: 'user', content: state.input },
         ];
 
@@ -2195,7 +2198,7 @@ export function createAgentGraph(options = {}) {
         // worth a narration, a runtime launch (skill, delegation) is.
         internal: isInternalWikiTool,
         readOnly: isInternalCall
-          ? server !== 'runtime' || /(?:^|_)(?:status|list|describe|read|search)(?:_|$)/.test(String(tool))
+          ? server !== 'runtime' || /(?:^|_)(?:status|list|describe|read|search|spawn_agent)(?:_|$)/.test(String(tool))
           : isReadOnlyMcpCall(state.session, server, tool),
       });
       // The turn's own account of itself, in the conversation rather than in a
@@ -2259,6 +2262,8 @@ export function createAgentGraph(options = {}) {
           resultText = tool === 'search'
             ? await state.session.conversationActions.search(args)
             : await state.session.conversationActions.read(args);
+        } else if (server === 'runtime' && tool === 'spawn_agent') {
+          resultText = await handleSpawnAgent(state.session, llm, args, state.allowedToolNames, call.id);
         } else if (server === 'runtime') {
           const isCapabilityQuestion = tool === 'delegate'
             && !state.session._currentRunIdentity

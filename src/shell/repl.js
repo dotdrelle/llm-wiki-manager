@@ -515,12 +515,13 @@ export function sanitizeOpenWikiPage(value) {
   if (typeof value !== 'string') return null;
   const path = value.trim();
   if (!path || path.length > 400) return null;
-  // The three roots must match the browser's own validPageContext
+  // The four roots must match the browser's own validPageContext
   // (llm-wiki/src/chat/views/wikiPanelScript.ts) and the read tools'
   // allow-list. They did not: `raw/ingested/` was accepted by the browser,
   // rendered as a chip and POSTed, then dropped here without a trace — the
   // model was told about zero pages while the user watched the document sit
-  // selected in the composer.
+  // selected in the composer. Deliverables joined the readable set with the
+  // selected-document context.
   //
   // A report written by Donna is `raw/untracked/Donna/*.md.lock`: a locked
   // pending source, readable and attachable like any other document. The lock
@@ -528,7 +529,8 @@ export function sanitizeOpenWikiPage(value) {
   // report.
   const supportedRoot = path.startsWith('wiki/')
     || path.startsWith('raw/untracked/')
-    || path.startsWith('raw/ingested/');
+    || path.startsWith('raw/ingested/')
+    || path.startsWith('deliverables/');
   const lockedReport = path.endsWith('.md.lock') && path.startsWith('raw/untracked/');
   if (!supportedRoot || (!path.endsWith('.md') && !lockedReport) || path.includes('..') || path.includes('\\')) return null;
   // This HTTP-provided value is embedded in Donna's system prompt. Quotes,

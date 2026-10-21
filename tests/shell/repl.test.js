@@ -1495,6 +1495,7 @@ test('sanitizeOpenWikiPage accepts wiki and untracked markdown context paths', (
   // silently — the model was told about zero pages while the user watched the
   // document sit selected.
   assert.equal(sanitizeOpenWikiPage('raw/ingested/doc.md'), 'raw/ingested/doc.md');
+  assert.equal(sanitizeOpenWikiPage('deliverables/rapport.md'), 'deliverables/rapport.md');
   // Donna's reports are locked pending sources (`raw/untracked/Donna/*.md.lock`):
   // the Pending panel makes them draggable, so the server gate must accept
   // them. The lock suffix stays confined to raw/untracked.

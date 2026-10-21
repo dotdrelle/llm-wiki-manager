@@ -116,7 +116,9 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       const version=fingerprint([proposalId,view.facts.wikiHash]);
       try{
         const merged=await mergeCurationProposal(ctx,proposalId,signal);
-        log(workspace,'action_done',`Automatically approved and merged curation proposal ${proposalId} (${merged.merged??0} page(s)); curation will check the updated wiki before builds or exports`,{action:'curate',target:'wiki',proposalId,version});
+        const pathCanonicalizations=Array.isArray(merged.pathCanonicalizations)?merged.pathCanonicalizations:[];
+        const pathNote=pathCanonicalizations.length?`; corrected legacy path(s): ${pathCanonicalizations.map((entry)=>`${entry.from} → ${entry.to}`).join(', ')}`:'';
+        log(workspace,'action_done',`Automatically approved and merged curation proposal ${proposalId} (${merged.merged??0} page(s))${pathNote}; curation will check the updated wiki before builds or exports`,{action:'curate',target:'wiki',proposalId,version});
       }catch(error){
         if(!store.hasEvent(workspace,'failure',{version,target:'curation-auto-merge'}))log(workspace,'failure',`Automatic merge of curation proposal ${proposalId} failed — ${describeError(error.message)}`,{action:'curate',target:'curation-auto-merge',proposalId,version,detail:String(error.message)});
         return {blocked:true};

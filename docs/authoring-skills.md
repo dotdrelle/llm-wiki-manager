@@ -181,12 +181,26 @@ A skill may name the capability it targets, in the **frontmatter only**:
 
 ```yaml
 ---
-name: wiki-sync
-description: Export all configured Confluence sources into the pending inbox
-capability: external-source.export
+name: deliver
+description: Publish existing deliverables, with or without polishing
+capability: document.publish
 operation: export
+capability-arguments: {"deliverable":"deliverables[]"}
+operation-param: polish
+params:
+  - deliverable
+  - polish
 ---
 ```
+
+Parameterized skills can keep this deterministic route by mapping every
+declared parameter explicitly. `capability-arguments` is a JSON object from a
+skill parameter to a capability argument; a target ending in `[]` wraps the
+single supplied value in an array. `operation-param` names an optional
+parameter whose presence selects that operation, while `operation` remains
+the default. Here `/deliver file.md` plans an `export` for exactly that file,
+and `/deliver file.md polish` plans `polish` for it. Empty mapped values are
+omitted, so the capability's documented default behavior still applies.
 
 Without it, the capability is inferred from the body's prose by alias matching.
 That is text-similarity executor selection under another name, and the aliases
@@ -201,11 +215,13 @@ Rules, all enforced:
 - The body still names no agent, tool or server. Only the frontmatter declares.
 - `operation` requires `capability`. Both are rejected on a malformed value
   (`invalid_capability`, `invalid_operation`, `operation_without_capability`).
-- **The declaration is dropped, with a journal line, when it cannot be honoured:**
-  a body that compiled into several objectives (each step may target a different
-  capability), or a skill declaring parameters — the declared route calls
-  `agent_plan` directly and skips the argument extraction a selector such as
-  `<template>` needs, so `/wiki-build rapport` would widen to every template.
+- **Every declared parameter on a parameterized capability skill must be
+  mapped.** An unmapped parameter rejects the skill declaration; it cannot
+  silently fall back to text routing and broaden a selector.
+- **The declaration is dropped, with a journal line, when a body compiles into
+  several objectives:** each step may target a different capability. A single
+  objective with explicitly mapped parameters stays deterministic; its
+  arguments are passed directly to `agent_plan`.
 - **Declare only what the executor can actually plan.** A declaration needs a
   planner behind it: the production agent once advertised
   `workspace.diagnose`/`doctor` while `agent_plan` returned an empty fragment,

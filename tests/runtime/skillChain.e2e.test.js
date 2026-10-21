@@ -291,7 +291,9 @@ for (const [name, expected] of Object.entries(PERFORMANCE_TABLE)) {
       'wiki-sync': 'external-source.export',
       'wiki-ingest': null,
       'wiki-build': null,
-      deliver: null,
+      // deliver now maps its declared template/polish parameters to the
+      // document.publish capability, so it routes by declaration.
+      deliver: 'document.publish',
       diagnose: null,
       status: null,
       'new-template': null,

@@ -86,12 +86,10 @@ export async function runSkillChain(context, skill, {
   // - ONE objective. A body that split may target a different capability per
   //   step, and stamping one declaration onto all of them would route the wrong
   //   work confidently.
-  // - NO declared parameters. The capabilityPlan route calls agent_plan on the
-  //   resolved provider directly, skipping resolveExecutorArguments — the pass
-  //   that turns "User parameters: rapport" into structured arguments. Without
-  //   it a `/wiki-build <template>` would widen to every template, the exact
-  //   defect that pass exists to prevent. Extending the declaration to
-  //   parameterised skills means extracting the arguments here first.
+  // - Every declared parameter is mapped explicitly by the skill frontmatter
+  //   to a capability argument or operation. That keeps the direct route
+  //   bounded to the user's selected files while avoiding a second model call
+  //   to infer structured arguments from the compiled objective.
   //
   // What the old invariant ALSO forbade, and no longer needs to: it assumed
   // pre-resolving a capability would take planning away from the agent. It does
@@ -99,13 +97,31 @@ export async function runSkillChain(context, skill, {
   // the production capability keeps its own DAG and its own concurrency.
   const declaresCapability = Boolean(skill.capability);
   const hasParams = Array.isArray(skill.params) && skill.params.length > 0;
-  const declaredPlan = declaresCapability && objectives.length === 1 && !hasParams
-    ? { capability: skill.capability, ...(skill.operation ? { operation: skill.operation } : {}) }
+  const paramsRouted = !hasParams || skill.params.every((param) => (
+    Object.hasOwn(skill.capabilityArguments ?? {}, param) || param === skill.operationParam
+  ));
+  const capabilityArguments = {};
+  for (const [param, target] of Object.entries(skill.capabilityArguments ?? {})) {
+    const value = String(resolvedArgs[param] ?? '').trim();
+    if (!value) continue;
+    const isArray = target.endsWith('[]');
+    const name = isArray ? target.slice(0, -2) : target;
+    capabilityArguments[name] = isArray ? [value] : value;
+  }
+  const selectedOperation = skill.operationParam && String(resolvedArgs[skill.operationParam] ?? '').trim()
+    ? skill.operationParam
+    : skill.operation;
+  const declaredPlan = declaresCapability && objectives.length === 1 && paramsRouted
+    ? {
+      capability: skill.capability,
+      ...(selectedOperation ? { operation: selectedOperation } : {}),
+      ...(Object.keys(capabilityArguments).length ? { arguments: capabilityArguments } : {}),
+    }
     : undefined;
   if (declaresCapability && !declaredPlan) {
     const reason = objectives.length > 1
       ? `the body compiled into ${objectives.length} objectives`
-      : 'the skill declares parameters, which only the text-resolution path extracts';
+      : 'one or more declared parameters have no capability mapping';
     emitRuntimeLog(
       context.session,
       `Skill ${skill.name}: declared capability ${skill.capability} not applied — ${reason}; the objective is resolved from its text instead.`,

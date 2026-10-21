@@ -7,6 +7,7 @@ const DANGEROUS_PARAM_NAMES = new Set(['__proto__', 'prototype', 'constructor'])
 const DEFAULT_UI_SKILL_DIR = '.wiki/skills';
 const SKILL_CAPABILITY_RE = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9_-]*)+$/;
 const SKILL_OPERATION_RE = /^[a-z][a-z0-9_-]{0,63}$/;
+const SKILL_CAPABILITY_ARGUMENT_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const LEGACY_CURATE_DESCRIPTION = 'Curate the wiki — find duplicate, disagreeing, outdated or unsourced pages and propose corrections on a branch a human merges or discards';
 const LEGACY_CURATE_INTRO = 'Curate the wiki: find duplicate pages, pages that disagree or repeat each other, outdated or superseded pages, and claims with no cited source, then write the corrections on a dedicated branch.';
 // The CSI branch must come FIRST. `[` is 0x5B, inside the `[@-_]` range, so the
@@ -107,6 +108,32 @@ function inspectSkillFile(filePath, fallbackName, scope, root) {
   if (operation && !capability) {
     return { rejected: { relativePath, name, reason: 'operation_without_capability' } };
   }
+  let capabilityArguments = {};
+  if (meta['capability-arguments']) {
+    try {
+      capabilityArguments = JSON.parse(meta['capability-arguments']);
+    } catch {
+      return { rejected: { relativePath, name, reason: 'invalid_capability_arguments' } };
+    }
+    if (!capability || !capabilityArguments || typeof capabilityArguments !== 'object' || Array.isArray(capabilityArguments)) {
+      return { rejected: { relativePath, name, reason: 'invalid_capability_arguments' } };
+    }
+    const declaredParams = new Set(params);
+    const validMappings = Object.entries(capabilityArguments).every(([param, target]) => (
+      declaredParams.has(param)
+      && typeof target === 'string'
+      && SKILL_CAPABILITY_ARGUMENT_RE.test(target.replace(/\[\]$/, ''))
+      && !target.endsWith('[][]')
+    ));
+    if (!validMappings) return { rejected: { relativePath, name, reason: 'invalid_capability_arguments' } };
+  }
+  const operationParam = String(meta['operation-param'] || '').trim();
+  if (operationParam && (!capability || !params.includes(operationParam) || !SKILL_OPERATION_RE.test(operationParam))) {
+    return { rejected: { relativePath, name, reason: 'invalid_operation_param' } };
+  }
+  if (capability && params.some((param) => !Object.hasOwn(capabilityArguments, param) && param !== operationParam)) {
+    return { rejected: { relativePath, name, reason: 'unmapped_capability_param' } };
+  }
   const execution = String(meta.execution || 'orchestrated').trim().toLowerCase();
   if (!['orchestrated', 'direct'].includes(execution)) {
     return { rejected: { relativePath, name, reason: 'invalid_execution' } };
@@ -121,6 +148,8 @@ function inspectSkillFile(filePath, fallbackName, scope, root) {
     path: filePath,
     ...(capability ? { capability } : {}),
     ...(operation ? { operation } : {}),
+    ...(Object.keys(capabilityArguments).length ? { capabilityArguments } : {}),
+    ...(operationParam ? { operationParam } : {}),
   };
   const warnings = [];
   if (description.missing) warnings.push({ relativePath, name, reason: 'missing_description' });

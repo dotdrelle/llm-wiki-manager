@@ -1386,12 +1386,16 @@ function presearchSession(allow) {
 
 test('chat mode searches the wiki before the model answers a workspace question', async () => {
   const { session, seen } = presearchSession(['wiki_search_context', 'wiki_read_page']);
-  const { calls, restore } = stubWikiMcp(async () => ({ content: [{ type: 'text', text: 'wiki/concepts/a.md: option A, sans tracé manuel' }] }));
+  const { calls, restore } = stubWikiMcp(async ({ arguments: args }) => ({ content: [{ type: 'text', text: JSON.stringify({
+    question: args.question,
+    results: [{ path: 'wiki/concepts/a.md', excerpt: 'option A, sans tracé manuel', sourceKind: 'wiki-page', evidenceStatus: 'candidate-only' }],
+    sourceCandidates: [],
+  }) }] }));
   try {
     await runHeadlessChatTurn(session, 'compare les options A et B', { history: [] });
   } finally { restore(); }
   assert.deepEqual(calls.map((c) => [c.name, c.arguments.question]), [['wiki_search_context', 'compare les options A et B']]);
-  const context = seen[0].find((m) => /WIKI SEARCH RESULTS/.test(m.content));
+  const context = seen[0].find((m) => /WIKI SEARCH CANDIDATES/.test(m.content));
   assert.ok(context, 'the search results reach the model before its first call');
   assert.match(context.content, /sans tracé manuel/);
   assert.equal(seen[0].at(-1).content, 'compare les options A et B');
@@ -1405,7 +1409,7 @@ test('the wiki pre-search skips greetings and follows the chat allow-list', asyn
       await runHeadlessChatTurn(session, input, { history: [] });
     } finally { restore(); }
     assert.equal(calls.length, 0, `${input} / ${allow}`);
-    assert.ok(!seen[0].some((m) => /WIKI SEARCH RESULTS/.test(m.content)));
+    assert.ok(!seen[0].some((m) => /WIKI SEARCH CANDIDATES/.test(m.content)));
   }
 });
 
@@ -1466,11 +1470,15 @@ test('the chat prompt names the external read tools actually offered this turn',
 
 test('the wiki pre-search does not close the search when an external tool is offered', async () => {
   const { session, seen } = presearchSession(['wiki_search_context']);
-  const { restore } = stubWikiMcp(async () => ({ content: [{ type: 'text', text: 'aucune page' }] }));
+  const { restore } = stubWikiMcp(async ({ arguments: args }) => ({ content: [{ type: 'text', text: JSON.stringify({
+    question: args.question,
+    results: [],
+    sourceCandidates: [],
+  }) }] }));
   try {
     await runHeadlessChatTurn(session, 'que dit internet sur cet outil', { history: [] });
   } finally { restore(); }
-  const context = seen[0].find((m) => /WIKI SEARCH RESULTS/.test(m.content));
+  const context = seen[0].find((m) => /WIKI SEARCH CANDIDATES/.test(m.content));
   assert.ok(context);
   assert.match(context.content, /wiki’s silence does not mean the answer is unavailable/);
 });

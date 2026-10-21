@@ -1170,7 +1170,11 @@ async function agentFirstCallMessages(sessionOverrides, input = 'compare les opt
     let result = {};
     if (body.method === 'tools/call') {
       searched.push(body.params.arguments.question);
-      result = { content: [{ type: 'text', text: 'wiki/concepts/a.md: option A, sans tracé manuel' }] };
+      result = { content: [{ type: 'text', text: JSON.stringify({
+        question: body.params.arguments.question,
+        results: [{ path: 'wiki/concepts/a.md', excerpt: 'option A, sans tracé manuel', sourceKind: 'wiki-page', evidenceStatus: 'candidate-only' }],
+        sourceCandidates: [],
+      }) }] };
     }
     const text = JSON.stringify({ jsonrpc: '2.0', id: body.id ?? 1, result });
     return { ok: true, status: 200, headers: { get: () => null }, text: async () => text, json: async () => JSON.parse(text) };
@@ -1194,7 +1198,7 @@ async function agentFirstCallMessages(sessionOverrides, input = 'compare les opt
 test('an agent turn searches the wiki before its first model call', async () => {
   const { searched, first } = await agentFirstCallMessages({});
   assert.deepEqual(searched, ['compare les options A et B']);
-  const index = first.findIndex((m) => /WIKI SEARCH RESULTS/.test(m.content));
+  const index = first.findIndex((m) => /WIKI SEARCH CANDIDATES/.test(m.content));
   assert.ok(index >= 0);
   assert.equal(first[index + 1].content, 'compare les options A et B');
 });

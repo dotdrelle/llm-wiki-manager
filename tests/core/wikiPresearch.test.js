@@ -12,9 +12,9 @@ test('the pre-search says what it found, in counts', () => {
   const payload = (results) => JSON.stringify({ question: 'q', results });
   assert.equal(
     presearchFoundNote(payload([{ path: 'wiki/a.md', excerpt: 'secret' }, { path: 'wiki/a.md' }, { path: 'wiki/b.md' }])),
-    'Wiki search: 3 passages from 2 pages',
+    'Wiki search: 3 candidate passages from 2 wiki pages',
   );
-  assert.equal(presearchFoundNote(payload([{ path: 'wiki/a.md' }])), 'Wiki search: 1 passage from 1 page');
+  assert.equal(presearchFoundNote(payload([{ path: 'wiki/a.md' }])), 'Wiki search: 1 candidate passage from 1 wiki page');
   assert.equal(presearchFoundNote(payload([])), 'Wiki search: nothing found');
   assert.equal(presearchFoundNote('not json'), '');
   assert.equal(presearchFoundNote(JSON.stringify({ other: 1 })), '');
@@ -35,10 +35,18 @@ test('the fast fact lane accepts short factual questions and excludes report or 
 test('the fast wiki lookup accepts only complete pages and caps its local read', async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
-  const page = { path: 'wiki/sources/meeting-6.md', content: '# Meeting 6\nDate: 12 October 2026', truncated: false };
+  const page = {
+    path: 'wiki/sources/meeting-6.md',
+    found: true,
+    allowed: true,
+    content: '# Meeting 6\nDate: 12 October 2026',
+    truncated: false,
+  };
   const payload = {
     coverage: { readPageCount: 1, truncatedPageCount: 0 },
     readPages: [page],
+    candidateResults: [{ path: page.path, excerpt: 'WIKI_CANDIDATE_PREVIEW_ONLY' }],
+    sourceCandidates: [{ path: 'raw/ingested/private.md', evidenceStatus: 'unread' }],
     notReadRawSources: [],
   };
   let currentPayload = payload;
@@ -57,6 +65,10 @@ test('the fast wiki lookup accepts only complete pages and caps its local read',
       mcp: { wiki: { status: 'connected', url: endpoint, tools: [] } },
     }, [{ function: { name: 'wiki__wiki_collect_context' } }]);
     assert.ok(message?.content.includes('12 October 2026'));
+    assert.ok(message?.content.includes('WIKI EVIDENCE'));
+    assert.ok(message?.content.includes('raw/ingested/private.md'));
+    assert.ok(message?.content.includes('"status":"raw-source"'));
+    assert.ok(!message?.content.includes('WIKI_CANDIDATE_PREVIEW_ONLY'));
     assert.equal(calls.filter((call) => call.method === 'tools/call').length, 1);
     assert.equal(calls.find((call) => call.method === 'tools/call').params.arguments.maxResults, 3);
     assert.equal(calls.find((call) => call.method === 'tools/call').params.arguments.maxPageChars, 4000);
@@ -133,7 +145,7 @@ test('the pre-search reads pages through wiki_collect_context and excludes attac
   }
 });
 
-test('the pre-search falls back to excerpts when collect opens no readable page', async () => {
+test('the pre-search labels previews as candidates and strips unread raw-source excerpts', async () => {
   const { calls, session, restore } = stubWikiMcp(async (name) => {
     if (name === 'wiki_collect_context') {
       return {
@@ -150,7 +162,12 @@ test('the pre-search falls back to excerpts when collect opens no readable page'
     return {
       content: [{
         type: 'text',
-        text: JSON.stringify({ results: [{ path: 'wiki/concepts/a.md', excerpt: 'SEARCH_EXCERPT' }] }),
+        text: JSON.stringify({
+          results: [
+            { path: 'wiki/concepts/a.md', excerpt: 'WIKI_CANDIDATE_PREVIEW' },
+            { path: 'raw/ingested/source.md', excerpt: 'RAW_SOURCE_PRIVATE_EXCERPT' },
+          ],
+        }),
       }],
     };
   });
@@ -161,9 +178,12 @@ test('the pre-search falls back to excerpts when collect opens no readable page'
       { function: { name: 'wiki__wiki_search_context' } },
     ], (message) => steps.push(message));
     assert.deepEqual(calls.map((call) => call.params.name), ['wiki_collect_context', 'wiki_search_context']);
-    assert.match(messages[0].content, /WIKI SEARCH RESULTS/);
-    assert.match(messages[0].content, /SEARCH_EXCERPT/);
-    assert.ok(steps.some((message) => /falling back to search excerpts/.test(message)), steps.join(' | '));
+    assert.match(messages[0].content, /WIKI SEARCH CANDIDATES/);
+    assert.match(messages[0].content, /WIKI_CANDIDATE_PREVIEW/);
+    assert.match(messages[0].content, /raw\/ingested\/source\.md/);
+    assert.doesNotMatch(messages[0].content, /RAW_SOURCE_PRIVATE_EXCERPT/);
+    assert.match(messages[0].content, /not opened evidence/);
+    assert.ok(steps.some((message) => /candidate paths that still need to be opened/.test(message)), steps.join(' | '));
   } finally {
     restore();
   }

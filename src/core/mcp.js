@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { managerEnvFile, managerMcpEndpointsFile, readEnvFile } from './env.js';
+import { llmToolFunction } from './llmToolSchema.js';
 
 const WIKI_MANAGER_VERSION = '0.16.60';
 
@@ -748,11 +749,7 @@ export function buildLlmTools(mcpStatus) {
       tools.push({
         type: 'function',
         readOnly: tool.annotations?.readOnlyHint === true,
-        function: {
-          name: `${serverName}__${tool.name}`,
-          description: clarifyToolDescription(serverName, tool.name, tool.description),
-          parameters: tool.inputSchema ?? { type: 'object', properties: {} },
-        },
+        function: llmToolFunction(`${serverName}__${tool.name}`, clarifyToolDescription(serverName, tool.name, tool.description), tool.inputSchema),
       });
     }
   }

@@ -5,6 +5,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  buildLlmTools,
   buildMcpStatus,
   callMcpTool,
   discoverMcpTools,
@@ -911,4 +912,32 @@ test('formatMcpToolsForAgent stays silent about endpoints that simply are not ru
   });
 
   assert.doesNotMatch(listing, /Unreachable/);
+});
+
+test('buildLlmTools hands the model an object schema without top-level combinators', () => {
+  // gpt-5/6 endpoints answer HTTP 400 for the whole turn when one tool schema
+  // carries oneOf/anyOf/… at its root — agent-production's agent_status does.
+  const statusSchema = {
+    type: 'object',
+    properties: { jobId: { type: 'string' }, capability: { type: 'string' }, operation: { type: 'string' } },
+    oneOf: [{ required: ['jobId'] }, { required: ['capability', 'operation'] }],
+    additionalProperties: false,
+  };
+  const [status, plain, bare] = buildLlmTools({
+    production: { status: 'connected', tools: [
+      { name: 'agent_status', description: 'Read one task status.', inputSchema: statusSchema },
+      { name: 'agent_describe', description: 'Describe.', inputSchema: { type: 'object', properties: {} } },
+      { name: 'odd', description: 'Odd.', inputSchema: { anyOf: [{ type: 'object' }] } },
+    ] },
+  });
+
+  assert.deepEqual(status.function.parameters, {
+    type: 'object',
+    properties: statusSchema.properties,
+    additionalProperties: false,
+  });
+  assert.equal(status.function.description, 'Read one task status. Arguments: provide jobId, or capability + operation.');
+  assert.ok(statusSchema.oneOf, 'the server schema itself is left untouched');
+  assert.equal(plain.function.description, 'Describe.');
+  assert.deepEqual(bare.function.parameters, { type: 'object', properties: {} });
 });

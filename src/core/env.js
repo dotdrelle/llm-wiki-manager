@@ -101,6 +101,20 @@ export const REQUIRED_ENV_KEYS = {
   WIKI_MANAGER_RUNTIME_HOST: '0.0.0.0',
 };
 
+// Optional keys that still deserve to be *visible* in an operator's `.env` so
+// the switch is discoverable without reading the docs. The defaults preserve
+// the effective behaviour: the workspace page follows the runtime host, so
+// writing 0.0.0.0 into a loopback-only install would widen a public page
+// behind the operator's back.
+export function scaffoldEnvDefaults(env = {}) {
+  return {
+    ...REQUIRED_ENV_KEYS,
+    WIKI_MANAGER_HUB_PORT: '8080',
+    WIKI_MANAGER_HUB_HOST: env.WIKI_MANAGER_RUNTIME_HOST || '0.0.0.0',
+    WIKI_MANAGER_HUB: 'on',
+  };
+}
+
 function commentedAssignment(line, key) {
   return new RegExp(`^\\s*#+\\s*${key}=`).test(line);
 }
@@ -268,7 +282,8 @@ export function ensureManagerScaffold({ log = () => {} } = {}) {
     writeFileSync(envFile, content);
     created.push('.env');
   } else if (existsSync(envFile)) {
-    for (const [key, value] of Object.entries(REQUIRED_ENV_KEYS)) {
+    const defaults = scaffoldEnvDefaults(readEnvFile(envFile));
+    for (const [key, value] of Object.entries(defaults)) {
       if (writeEnvValueIfMissing(envFile, key, value)) created.push(`.env ${key}=${value}`);
     }
   }

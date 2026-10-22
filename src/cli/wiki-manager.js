@@ -1045,13 +1045,18 @@ async function runRuntime(argv, agent) {
   if (argv.includes('--help') || argv.includes('-h')) {
     console.log([
       'Usage: wiki-manager runtime [--host <host>] [--port <port>] [--state-dir <dir>]',
+      '                                [--hub-port <port>] [--hub-host <host>] [--no-hub]',
       '',
       'Runs the local agentic runtime used by wiki-manager Shell and llm-wiki serve.',
+      'The public workspace page is served on --hub-port (default 8080, no auth);',
+      'set WIKI_MANAGER_HUB=off or pass --no-hub to disable it.',
       '',
       'Defaults:',
       '  --host 127.0.0.1',
       '  --port 7788',
       '  --state-dir .wiki/runtime',
+      '  --hub-port 8080',
+      '  --hub-host same as --host',
     ].join('\n'));
     return;
   }
@@ -1073,6 +1078,15 @@ async function runRuntime(argv, agent) {
   const host = valueAfter(argv, '--host') ?? process.env.WIKI_MANAGER_RUNTIME_HOST ?? '0.0.0.0';
   const port = Number(valueAfter(argv, '--port') ?? process.env.WIKI_MANAGER_RUNTIME_PORT ?? 7788);
   const stateDir = valueAfter(argv, '--state-dir') ?? defaultRuntimeStateDir();
+  // The workspace page: public by design, so it can be turned off or kept on
+  // loopback without touching the runtime endpoint serve depends on.
+  const hubEnabled = !argv.includes('--no-hub')
+    && !/^(0|off|false|no)$/i.test(String(process.env.WIKI_MANAGER_HUB ?? 'on').trim());
+  const requestedHubPort = Number(valueAfter(argv, '--hub-port') ?? process.env.WIKI_MANAGER_HUB_PORT ?? 8080);
+  const hubPort = hubEnabled && Number.isInteger(requestedHubPort) && requestedHubPort > 0 && requestedHubPort <= 65535
+    ? requestedHubPort
+    : null;
+  const hubHost = valueAfter(argv, '--hub-host') ?? process.env.WIKI_MANAGER_HUB_HOST ?? host;
   // The TOTP login modules resolve their state directory from the ENV, not
   // from the CLI option: without this, `runtime --state-dir X` would store
   // totp.json/session.json in the DEFAULT manager state dir while the rest of
@@ -2244,6 +2258,8 @@ async function runRuntime(argv, agent) {
   serverHandle = await startRuntimeServer({
     host,
     port,
+    hubPort,
+    hubHost,
     // This process IS the runtime, however it was started (shell child or
     // `wiki-workspace runtime up`): /shutdown must end it, not leave a
     // listener-less process whose timers keep running.

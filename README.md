@@ -264,7 +264,9 @@ wiki-manager                              # then: /use demo
 > standalone `serve` without the manager runtime never pass through it.
 
 **6 — Check everything is live.**
-Before doing real work, confirm the wiring from the `donna` shell:
+`http://localhost:8080/` lists every workspace and whether it is running, with
+a link to the ones that are — no sign-in (disable it with
+`WIKI_MANAGER_HUB=off`). Then confirm the wiring from the `donna` shell:
 
 ```text
 /use demo            # activate the workspace

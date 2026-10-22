@@ -9,6 +9,7 @@ import { activeCacertPath } from '../core/cacert.js';
 import { normalizePlanPatch, rebasePlanPatch } from '../core/planPatch.js';
 import { validateContractInDev } from '../contracts/schemas.js';
 import { runtimeTokenFromEnv } from './auth.js';
+import { startHubServer } from './hub.js';
 import { controlMessage } from './controlMessages.js';
 import { tasksAwaitingApproval } from '../orchestrator/dependencyResolver.js';
 import { isActive, isCancelled, isFailed, isSuccessful } from '../orchestrator/taskStatuses.js';
@@ -101,7 +102,7 @@ function privateControlInputsFor(session) {
   return inputs;
 }
 
-export function startRuntimeServer({
+export async function startRuntimeServer({
   host = '127.0.0.1',
   port = 7788,
   token = runtimeTokenFromEnv(),
@@ -123,11 +124,23 @@ export function startRuntimeServer({
   cancelRunAgentJobs = defaultCancelRunAgentJobs,
   exitOnShutdown = process.env.WIKI_MANAGER_RUNTIME_CHILD === '1',
   containerStats = createContainerStats(),
+  // The public workspace page. Off unless a port is given: tests start this
+  // server on an ephemeral port and must not bind a second, shared one.
+  hubPort = null,
+  hubHost = host,
+  hubOptions = {},
 } = {}) {
   const loginAbout = {
     version: RUNTIME_PACKAGE_VERSION,
     startedAt: Date.now(),
     sessionTtlHours: Math.round(SESSION_TTL_MS / 36e5 * 10) / 10,
+  };
+  // /health reports the public page so the start script never prints a URL
+  // that failed to bind — a busy 8080 is logged and skipped, never fatal.
+  const hubState = {
+    enabled: Number.isInteger(hubPort) && hubPort >= 0,
+    port: null,
+    error: null,
   };
   const clients = new Set();
   const maintenanceEpoch = randomUUID();
@@ -383,6 +396,7 @@ export function startRuntimeServer({
           dbPath: store.dbPath,
           cacertPath: activeCacertPath(),
           nodeExtraCaCerts: process.env.NODE_EXTRA_CA_CERTS ?? null,
+          hub: { enabled: hubState.enabled, port: hubState.port, error: hubState.error },
         });
         return;
       }
@@ -1397,17 +1411,41 @@ export function startRuntimeServer({
     : null;
   corpusScanTimer?.unref?.();
 
+  // The workspace page is auxiliary: a busy port (another manager, an MLX
+  // server on 8080) must be announced and skipped, never take the runtime
+  // down with it. It is started before the main listener so /health can never
+  // report a page that is still binding.
+  let hub = null;
+  let hubError = null;
+  if (hubState.enabled) {
+    try {
+      hub = await startHubServer({ ...hubOptions, host: hubHost, port: hubPort });
+      hubState.port = hub.port;
+    } catch (error) {
+      hubError = error instanceof Error ? error.message : String(error);
+      hubState.error = hubError;
+      console.error(`[hub] workspaces page disabled on port ${hubPort}: ${hubError}`);
+    }
+  }
+
   return new Promise((resolve, reject) => {
-    server.once('error', reject);
+    server.once('error', (error) => {
+      if (hub) void hub.close().catch(() => {});
+      reject(error);
+    });
     server.listen(port, host, () => {
       server.off('error', reject);
       const address = server.address();
       resolve({
         host,
         port: typeof address === 'object' && address ? address.port : port,
+        hub,
+        hubError,
         publish,
         drainControl: (context) => drainControlQueue(context),
-        close: async () => { stopMaintenanceTransport(); containerStats.close(); await maintenance?.close(); return new Promise((closeResolve, closeReject) => {
+        close: async () => {
+          if (hub) await hub.close().catch(() => {});
+          stopMaintenanceTransport(); containerStats.close(); await maintenance?.close(); return new Promise((closeResolve, closeReject) => {
           clearInterval(loginAttemptPruneTimer);
           if (corpusScanTimer) clearInterval(corpusScanTimer);
           for (const client of clients) client.response.end();

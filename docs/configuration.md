@@ -79,6 +79,9 @@ workspace `.wikirc.yaml`.
 | `NO_PROXY` | recommended with a proxy | hosts that must remain direct, notably the local runtime and MCP endpoints |
 | `WIKI_MANAGER_CONNECTIVITY_URL` | no | HTTPS endpoint used by the ordered ShellUI startup connectivity probe |
 | `WIKI_MANAGER_RUNTIME_HOST` | yes (shipped active) | interface the host runtime binds. `0.0.0.0` by default: `serve` runs in Docker and reaches the runtime through `host.docker.internal`, which a `127.0.0.1` bind refuses. Exposing the port always generates `WIKI_MANAGER_RUNTIME_TOKEN` |
+| `WIKI_MANAGER_HUB_PORT` | no | port of the public workspace page served by the runtime (default `8080`). No sign-in, like the MCP connector's landing page |
+| `WIKI_MANAGER_HUB_HOST` | no | interface that page binds (default: same as `WIKI_MANAGER_RUNTIME_HOST`, so `0.0.0.0`). Set `127.0.0.1` to keep the workspace names on this machine |
+| `WIKI_MANAGER_HUB` | no | set to `off` to disable the public workspace page entirely |
 | `WIKI_MANAGER_TOTP` | no | set to `off` to disable the TOTP login gate (default: on). The gate is the **human** lock in front of the ShellUI and `serve`; headless/CI never passes through it |
 | `WIKI_MANAGER_SESSION_TTL_HOURS` | no | TOTP session lifetime in hours of inactivity, sliding (default `12`) |
 | `WIKI_MANAGER_MEMORY_AUTO` | no | set to `off` to disable background fact extraction; explicit `/remember` remains available |
@@ -90,6 +93,26 @@ The TOTP secret and the session live in the manager runtime state directory
 (`totp.json`, `session.json`, both 0600) — the runtime is the single login
 authority; `serve` validates its session cookie against it on every request.
 See `help-doc/13-login-totp.md` for the user-facing behaviour.
+
+### The public workspace page (port 8080)
+
+The runtime also serves one page that needs no sign-in, on its own port:
+`http://<manager-host>:8080/`. It lists every workspace of the registry, says
+whether its `serve` container is running, and links to the ones that are. It is
+the same idea as the MCP connector's landing page: a door, not a room.
+
+It carries workspace names, running state and the serve port — never a path, a
+run, an agent, a token or wiki content, and it is read-only (no Start/Open
+action). Docker state comes from one `docker ps`; if Docker cannot answer the
+page says so and probes each serve port instead, so a running workspace never
+disappears silently. The page refreshes itself every 15 s.
+
+`WIKI_MANAGER_HUB=off` removes it, `WIKI_MANAGER_HUB_PORT` moves it, and
+`WIKI_MANAGER_HUB_HOST=127.0.0.1` keeps it local. The scaffold writes the three
+keys into an existing `.env` when they are missing (host copied from
+`WIKI_MANAGER_RUNTIME_HOST`, never widened), and an active value is never
+overruled. A busy port is announced in `runtime.log` and skipped — the runtime
+and `serve` keep working.
 
 Leaving an agent's `*_MCP_AUTH_TOKEN` empty disables authentication on that
 agent — not recommended outside local development.
@@ -287,10 +310,12 @@ README). Hand-declared servers keep whatever `allow` list you wrote.
 
 `mcpServers.<name>.timeoutMs` optionally sets a per-call HTTP deadline from
 1,000 to 120,000 ms. The default is 8,000 ms (with existing operation-specific
-defaults for long document conversion and Confluence search). The Serve
-Connectors panel exposes the same setting in seconds. A timed-out call reports
-its deadline explicitly; chat-step runtime traces record tool name, duration
-and outcome without copying tool arguments into the trace.
+defaults for long document conversion and Confluence search; Serve chat uses
+60,000 ms when the endpoint sets nothing). This is a file setting only: the
+Serve Connectors panel does not expose it. A timed-out call reports its deadline
+explicitly — in Serve chat the line lands in the Logs tab of the Activity panel,
+and chat-step runtime traces record tool name, duration and outcome without
+copying tool arguments into the trace.
 `wiki`, `production`, `llm-wiki` and `wiki-production` are refused by that route:
 they belong to the workspace stack, not to the connectors file. Writes are
 rejected with **409 while a plan is running** — the served UI keeps the

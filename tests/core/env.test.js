@@ -88,6 +88,42 @@ test('an operator who deliberately kept the loopback bind is never overruled', (
   });
 });
 
+test('an install predating the workspace page receives its keys, on the runtime host', () => {
+  withTempManagerDir((dir) => {
+    const envFile = join(dir, '.env');
+    // Loopback-only install: the page must follow the runtime, not widen it.
+    writeFileSync(envFile, 'WIKI_MANAGER_RUNTIME_HOST=127.0.0.1\n');
+
+    const created = ensureManagerScaffold();
+    const env = readFileSync(envFile, 'utf8');
+    assert.match(env, /^WIKI_MANAGER_HUB_PORT=8080$/m);
+    assert.match(env, /^WIKI_MANAGER_HUB_HOST=127\.0\.0\.1$/m);
+    assert.match(env, /^WIKI_MANAGER_HUB=on$/m);
+    assert.ok(created.some((item) => item.includes('WIKI_MANAGER_HUB_PORT=8080')));
+    assert.ok(created.some((item) => item.includes('WIKI_MANAGER_HUB_HOST=127.0.0.1')));
+  });
+});
+
+test('an operator who disabled or moved the workspace page is never overruled', () => {
+  withTempManagerDir((dir) => {
+    const envFile = join(dir, '.env');
+    writeFileSync(envFile, [
+      'WIKI_MANAGER_RUNTIME_HOST=0.0.0.0',
+      'WIKI_MANAGER_HUB=off',
+      'WIKI_MANAGER_HUB_PORT=9090',
+      'WIKI_MANAGER_HUB_HOST=127.0.0.1',
+      '',
+    ].join('\n'));
+
+    const created = ensureManagerScaffold();
+    const env = readFileSync(envFile, 'utf8');
+    assert.match(env, /^WIKI_MANAGER_HUB=off$/m);
+    assert.match(env, /^WIKI_MANAGER_HUB_PORT=9090$/m);
+    assert.match(env, /^WIKI_MANAGER_HUB_HOST=127\.0\.0\.1$/m);
+    assert.ok(!created.some((item) => item.includes('WIKI_MANAGER_HUB')));
+  });
+});
+
 test('scaffold merges missing top-level keys into an existing endpoints file', () => {
   withTempManagerDir((dir) => {
     const endpointsFile = join(dir, 'mcp.endpoints.json');

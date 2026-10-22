@@ -112,6 +112,7 @@ Commands:
   agents status                     Check reachability of configured MCP endpoints
 
   runtime up                        Start the single host agent-runtime on Node.js 22
+                                    (also serves the public workspace page on :8080)
   runtime down                      Stop the host agent-runtime
   runtime status                    Check host agent-runtime health
   runtime logs [args...]            Show host agent-runtime logs
@@ -883,6 +884,40 @@ wait_for_runtime_health() {
   return 1
 }
 
+# One line from the runtime's /health: `up:<port>`, `error:<message>` or `off`.
+# Read from the authenticated endpoint (the public page has no /health of its
+# own beyond liveness) so a bind failure is reported, never guessed.
+runtime_hub_status() {
+  local token url node_bin
+  token="$(env_value "$MANAGER_ENV_FILE" WIKI_MANAGER_RUNTIME_TOKEN "")"
+  url="$(runtime_health_url)"
+  node_bin="$(runtime_node_bin)"
+  RUNTIME_URL="$url" RUNTIME_TOKEN="$token" "$node_bin" --input-type=module -e "
+const headers = process.env.RUNTIME_TOKEN ? { Authorization: 'Bearer ' + process.env.RUNTIME_TOKEN } : {};
+const response = await fetch(process.env.RUNTIME_URL, { headers });
+const body = await response.json().catch(() => ({}));
+const hub = body.hub || {};
+if (!hub.enabled) console.log('off');
+else if (hub.port) console.log('up:' + hub.port);
+else console.log('error:' + (hub.error || 'not started'));
+"
+}
+
+# The page is a convenience, so it never fails `runtime up`; but a busy port is
+# a degradation and says so. Silent only when the page is deliberately off.
+print_runtime_hub_status() {
+  local hub_status
+  hub_status="$(runtime_hub_status 2>/dev/null || true)"
+  case "$hub_status" in
+    up:*)
+      printf 'Workspace hub: http://localhost:%s/ (public status page, no sign-in)\n' "${hub_status#up:}"
+      ;;
+    error:*)
+      printf 'Workspace hub: unavailable — %s (see %s)\n' "${hub_status#error:}" "$(runtime_log_file)" >&2
+      ;;
+  esac
+}
+
 runtime_command() {
   local subcommand="$1"
   shift
@@ -903,6 +938,7 @@ runtime_command() {
       export WIKI_MANAGER_RUNTIME_TOKEN="$token"
       if runtime_health_check; then
         printf 'agent-runtime already healthy at %s\n' "$(runtime_health_url)"
+        print_runtime_hub_status
         return
       fi
       if runtime_pid_running; then
@@ -930,6 +966,9 @@ runtime_command() {
       fi
       printf 'agent-runtime healthy on http://127.0.0.1:%s (pid %s)\n' "$port" "$(cat "$pid_file")"
       printf 'state: %s\nlog:   %s\n' "$MANAGER_RUNTIME_DIR" "$log_file"
+      # The runtime reports its public page in /health: a busy port is skipped,
+      # never fatal, and the script must not print a URL that failed to bind.
+      print_runtime_hub_status
       ;;
     down|stop)
       [[ $# -eq 0 ]] || die "runtime down does not take arguments"

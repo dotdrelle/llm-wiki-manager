@@ -17,13 +17,15 @@ const MAX_LINES = 800;
 // 0.16.60 follow-up: the read-only subagent (runtime__spawn_agent) adds a tool
 // definition and one dispatch branch to graph.js. The subagent itself lives in
 // src/agent/subagent.js.
+// 0.16.62 follow-up: the public workspace page (src/runtime/hub.js) is started
+// by the runtime (server.js) and configured from the CLI (wiki-manager.js).
 const LEGACY_LIMITS = new Map([
-  ['src/runtime/server.js', 2783],
+  ['src/runtime/server.js', 2821],
   ['src/shell/repl.js', 2639],
   ['src/agent/graph.js', 2572],
-  ['src/cli/wiki-manager.js', 2577],
+  ['src/cli/wiki-manager.js', 2592],
   ['src/commands/slash.js', 2011],
-  ['wiki-workspace', 1845],
+  ['wiki-workspace', 1864],
   ['src/runtime/store.js', 1834],
   ['src/runtime/runner.js', 1743],
   ['src/shell/SetupWizard.tsx', 1434],

@@ -3009,7 +3009,7 @@ test('an incomplete DSML call is refused and retried, never shown', async () => 
 
 test('a tool note carries the argument written as a sentence, never an id or a secret', () => {
   assert.equal(toolArgumentSubject('{"objective":"Ingérer les fichiers Markdown en attente"}'), 'Ingérer les fichiers Markdown en attente');
-  assert.equal(toolArgumentSubject('{"workspace":"juno","pat":"abc123def","url":"http://conf/x"}'), '');
+  assert.equal(toolArgumentSubject('{"workspace":"demo","pat":"abc123def","url":"http://conf/x"}'), '');
   assert.equal(toolArgumentSubject('not json'), '');
   assert.equal(toolArgumentSubject(JSON.stringify({ question: 'mot '.repeat(100) })).length, 200);
 });

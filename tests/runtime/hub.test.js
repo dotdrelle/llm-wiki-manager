@@ -19,7 +19,7 @@ import { startRuntimeServer } from '../../src/runtime/server.js';
  */
 
 test('composeProjectName follows the wiki-workspace sanitizing rule', () => {
-  assert.equal(composeProjectName('juno'), 'wiki-juno');
+  assert.equal(composeProjectName('demo'), 'wiki-demo');
   assert.equal(composeProjectName('my.ws 2'), 'wiki-my-ws-2');
 });
 

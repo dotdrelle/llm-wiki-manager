@@ -5,7 +5,7 @@ import { createAgentEvent, dispatchAgentEvent, reduceAgentEvents } from '../../s
 import { reportFromToolResult, reportTitle, requestsReportDocument } from '../../src/core/reports.js';
 import { runOutcomeReports } from '../../src/runtime/runReports.js';
 
-const longReport = `## Curation juno — résultat de la passe\n\n${'- une ligne du rapport\n'.repeat(40)}`;
+const longReport = `## Curation demo — résultat de la passe\n\n${'- une ligne du rapport\n'.repeat(40)}`;
 
 test('a curation proposal becomes a fact and a button to its review page, never its report', async () => {
   const plan = [{ id: 'run-1:task-a', status: 'done', description: 'Curate', result: { rawStatus: { result: { worktreeProposal: {
@@ -14,7 +14,7 @@ test('a curation proposal becomes a fact and a button to its review page, never 
   const { facts, attachments } = await runOutcomeReports({}, plan);
   assert.match(facts, /Curation proposal ready for review: 2 changed file\(s\), 1 unresolved objection\(s\)/);
   assert.doesNotMatch(facts, /une ligne du rapport/);
-  assert.deepEqual(attachments, [{ kind: 'proposal', target: '/agent-proposals/run-1%3Atask-a', title: 'Curation juno — résultat de la passe' }]);
+  assert.deepEqual(attachments, [{ kind: 'proposal', target: '/agent-proposals/run-1%3Atask-a', title: 'Curation demo — résultat de la passe' }]);
 });
 
 test('a long agent report is written through the report tool and attached; a short one is a fact', async () => {
@@ -31,8 +31,8 @@ test('a long agent report is written through the report tool and attached; a sho
   const { facts, attachments } = await runOutcomeReports(session, plan, { callTool });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].tool, 'report_write');
-  assert.equal(calls[0].args.title, 'Curation juno — résultat de la passe');
-  assert.deepEqual(attachments, [{ kind: 'report', target: 'raw/untracked/Donna/2026-10-13-x.md.lock', title: 'Curation juno — résultat de la passe' }]);
+  assert.equal(calls[0].args.title, 'Curation demo — résultat de la passe');
+  assert.deepEqual(attachments, [{ kind: 'report', target: 'raw/untracked/Donna/2026-10-13-x.md.lock', title: 'Curation demo — résultat de la passe' }]);
   assert.match(facts, /written as a document titled/);
   assert.match(facts, /Agent report: Nothing to change\./);
 });

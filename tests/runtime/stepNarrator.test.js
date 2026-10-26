@@ -11,7 +11,7 @@ function harness({ reply = null, fail = null, llm = true, deferred = false, narr
   const held = [];
   let clock = Date.parse('2026-10-13T10:00:00Z');
   const session = {
-    workspace: 'juno',
+    workspace: 'demo',
     language: 'fr-FR',
     ...(llm ? {
       llm: {
@@ -36,7 +36,7 @@ function harness({ reply = null, fail = null, llm = true, deferred = false, narr
     now: () => clock,
     ...narratorOptions,
   });
-  const event = (type, fields) => ({ ...createAgentEvent(type, { origin: 'test', workspace: 'juno', ...fields }), ts: new Date(clock).toISOString() });
+  const event = (type, fields) => ({ ...createAgentEvent(type, { origin: 'test', workspace: 'demo', ...fields }), ts: new Date(clock).toISOString() });
   // A timer starts narrate() without awaiting it: let every pending call settle.
   const flush = async () => {
     for (let round = 0; round < 6; round += 1) {

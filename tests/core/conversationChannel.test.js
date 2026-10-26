@@ -13,7 +13,7 @@ test('the turn channel is sanitized: known shape only, bounded label, no control
   assert.equal(sanitizeConversationChannel({ kind: 'tchap', label: 'x'.repeat(500) }).label.length, 120);
 });
 
-// Observed on juno: "answer in this channel" was met with "no Tchap tool lets
+// Observed on a live workspace: "answer in this channel" was met with "no Tchap tool lets
 // me write there", while the reply was being posted to it.
 test('a Tchap thread tells Donna her replies are posted there and read on a phone', () => {
   const line = conversationChannelPromptLine({ kind: 'tchap', label: 'Donna-m' });

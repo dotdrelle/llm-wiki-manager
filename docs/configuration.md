@@ -309,6 +309,12 @@ A UI upsert also writes `chatAccess.servers.<name> = { "allow": "*" }` — witho
 it the server would be invisible to `/chat` (see the `chatAccess` section of the
 README). Hand-declared servers keep whatever `allow` list you wrote.
 
+The Connectors panel and `GET /mcp/endpoints` receive a display URL with
+user-info, query and fragment removed, plus a `hasUrlSecrets` flag. The manager
+keeps the complete URL for upstream calls. Saving the displayed URL unchanged
+preserves those hidden values; submitting a different URL replaces the saved
+one. Bearer values are write-only in the panel as well.
+
 `mcpServers.<name>.timeoutMs` optionally sets a per-call HTTP deadline from
 1,000 to 120,000 ms. The default is 8,000 ms (with existing operation-specific
 defaults for long document conversion and Confluence search; Serve chat uses
@@ -696,6 +702,11 @@ key is access to the model a workspace uses.**
 - `.wikirc.yaml` must be a valid YAML object; invalid YAML or a non-object root
   is rejected on load.
 - `.env` quoted values support basic escapes (`\"`, `\\`, `\n`, `\r`, `\t`).
+- The runtime requires its bearer token on every bind, including loopback. It
+  creates `.wiki/runtime/runtime.token` when no environment token is set. If a
+  reverse proxy reaches the runtime by a public DNS name, allow that exact name
+  with `WIKI_MANAGER_RUNTIME_ALLOWED_HOSTS`; unexpected Host values receive
+  421. Public POST routes require `application/json`.
 
 ## Maintenance log retention
 

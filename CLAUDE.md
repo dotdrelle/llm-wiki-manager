@@ -1,6 +1,6 @@
 # Repository Guide
 
-Current coordinated release: **0.16.58** (see `package.json`, the only source
+Current coordinated release: **0.16.65** (see `package.json`, the only source
 of truth — this line keeps drifting, so trust the file, not the prose). Keep
 manager handshakes and the local `llm-wiki` engine version aligned across the
 coordinated repositories; `npm run check-versions` covers the fifteen places a
@@ -887,6 +887,10 @@ than in the caller:
   `POST /config/use`: connector wiring must not change under a run that already
   resolved its agents. Callers must not read that as a broken connector —
   `llm-wiki`'s panel keeps the card connected and retries later.
+- The browser receives a display URL with user-info, query and fragment removed,
+  plus `hasUrlSecrets`; `GET /mcp/endpoints` and the upsert response never echo
+  those values. If an upsert sends that exact display URL back, preserve the
+  manager's full stored URL. A different URL is an explicit replacement.
 
 **Workspace profile injection.** `.wiki/profile.md` is loaded from disk into the
 system prompt of **both** shell modes through the single loader

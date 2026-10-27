@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { managerMcpEndpointsFile } from './env.js';
 
 const PROTECTED_SERVERS = new Set(['wiki', 'production', 'llm-wiki', 'wiki-production']);
@@ -18,11 +18,14 @@ function readDocument() {
   return { filePath, raw };
 }
 
+// Written IN PLACE, never temp + rename: every workspace's serve container
+// bind-mounts this single file, and a bind mount follows the inode. A rename
+// left each container on the deleted copy — `/mcp.endpoints.json` became
+// unreadable, and every external MCP (cme, documents, connectors…) vanished
+// from serve after a maintenance mode switch or a connector edit.
 function writeDocument(filePath, raw) {
-  const temporary = `${filePath}.tmp.${process.pid}`;
-  writeFileSync(temporary, `${JSON.stringify(raw, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(temporary, 0o600);
-  renameSync(temporary, filePath);
+  writeFileSync(filePath, `${JSON.stringify(raw, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(filePath, 0o600);
 }
 
 function normalizeName(value) {

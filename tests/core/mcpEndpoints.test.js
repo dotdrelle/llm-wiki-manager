@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { deleteManagedMcpEndpoint, listManagedMcpEndpoints, setMaintenanceEnabled, upsertManagedMcpEndpoint } from '../../src/core/mcpEndpoints.js';
+import { deleteManagedMcpEndpoint, listManagedMcpEndpoints, setMaintenanceEnabled, setMaintenanceMode, upsertManagedMcpEndpoint } from '../../src/core/mcpEndpoints.js';
 import { buildMcpStatus, discoverMcpTools, resetMcpSessionsForTests } from '../../src/core/mcp.js';
 import { chatAllowedTools } from '../../src/shell/repl.js';
 import { buildAgentSystemPrompt } from '../../src/agent/graph.js';
@@ -158,5 +158,16 @@ test('maintenance enable writes only the workspace switch and keeps the operator
     assert.deepEqual(after.maintenanceAccess.defaults, { enabled: false, limits: { buildsPerDay: 2 } });
     assert.deepEqual(after.mcpServers, doc.mcpServers);
     assert.throws(() => setMaintenanceEnabled('../escape', true));
+  });
+});
+
+test('writes keep the file inode, so a single-file bind mount keeps reading it', async () => {
+  await withEndpoints(async (root) => {
+    const file = join(root, 'mcp.endpoints.json');
+    const inode = statSync(file).ino;
+    setMaintenanceMode('lyra', 'human');
+    upsertManagedMcpEndpoint({ name: 'exa', url: 'https://mcp.example.com/mcp' });
+    assert.equal(statSync(file).ino, inode);
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).maintenanceAccess.workspaces.lyra.mode, 'human');
   });
 });

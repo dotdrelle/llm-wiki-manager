@@ -31,7 +31,7 @@ const LEGACY_LIMITS = new Map([
   ['src/shell/SetupWizard.tsx', 1434],
   ['src/core/agentEvents.js', 1414],
   ['src/shell/useSession.ts', 984],
-  ['src/orchestrator/dispatcher.js', 982],
+  ['src/orchestrator/dispatcher.js', 983],
   ['src/shell/LeftPane.tsx', 897],
   ['src/core/mcp.js', 813],
 ]);

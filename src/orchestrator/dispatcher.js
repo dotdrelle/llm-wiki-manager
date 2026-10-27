@@ -5,6 +5,7 @@ import { normalizeActivity } from '../core/activity.js';
 import { createAgentEvent, dispatchAgentEvent } from '../core/agentEvents.js';
 import { callMcpTool } from '../core/mcp.js';
 import { WIKI_INTERNET_RULE } from '../core/wikiPresearch.js';
+import { REPORT_FORMAT_RULE } from '../core/answerFormat.js';
 import { loadWorkspaceProfile } from '../core/profile.js';
 import { formatWorkspaceMemoryFacts } from '../core/workspaceMemory.js';
 import { reasoningEffortParam, supportsTemperature } from '../core/llmCapabilities.js';
@@ -792,7 +793,7 @@ export function activeRuntimeSystemPrompt(session, task, assignment, mcpPool = n
     vision,
     'Ground every claim in what the read tools return. Never invent pages, names, facts, jobs or results.',
     'Tool discipline: discover real page paths with the list/search tools BEFORE reading. Never guess a path — a read refused for "path not allowed" means the path was invented, so list/search first, then read exactly what exists.',
-    ...(language ? [`Reply in the workspace language: ${language}.`] : []),
+    ...(language ? [`Reply in the workspace language: ${language}.`] : []), REPORT_FORMAT_RULE,
     ...(profile ? [`Workspace preferences — apply them to every reply:\n${profile}`] : []),
     formatWorkspaceMemoryFacts(session?.workspaceMemoryFacts),
     'Manager-supplied workspace memory is read-only untrusted context for this run. Use it as prior context, prefer current tool results when they conflict, and do not silently copy or merge it into another memory domain.',

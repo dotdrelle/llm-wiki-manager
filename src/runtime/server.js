@@ -2098,7 +2098,7 @@ function runtimeStatusSynthesisPrompt(asked, status, workspaceFacts = null) {
     workspaceFacts
       ? 'Answer in the session language with a short workspace overview: what the wiki holds, what waits to be ingested, the deliverables, which services and connectors answer (name any that do not), then the run state (idle, progress, pending approvals, queued items). End with one or two concrete next steps that fit these facts (e.g. ingest waiting sources, build a template, start a stopped service).'
       : 'Answer in the session language with a concise, natural status: name the requested target first, then progress, blockers (pending approvals), queued items and the next step.',
-    'Keep every figure (percent, step, batch, instruction and stabilize counts) and every task status accurate; never invent, drop or round away a figure. Do not paste the fact block verbatim; summarize it into prose.',
+    'Keep every figure (percent, step, batch, instruction and stabilize counts) and every task status accurate; never invent, drop or round away a figure. Do not paste the fact block verbatim; lay it out as the answer format asks — the verdict first, the facts as labelled bullets, a ⚠ line for anything to act on — rather than as paragraphs of prose.',
     '',
     ...(workspaceFacts ? ['Workspace facts:', workspaceFacts, ''] : []),
     'Runtime facts:',

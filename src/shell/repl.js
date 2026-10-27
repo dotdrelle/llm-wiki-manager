@@ -14,7 +14,7 @@ import { handleSpawnAgent, RUNTIME_SPAWN_AGENT_TOOL } from '../agent/subagent.js
 import { summarizeToolArguments } from '../core/progressNotes.js';
 import { openWikiPagesPromptLine } from '../core/openWikiPages.js';
 import { buildEvidenceLedgerMessage, readSelectedEvidence, readSelectedPageDocuments } from './selectedDocuments.js';
-import { conversationChannelPromptLine } from '../core/conversationChannel.js';
+import { presentationPromptLines } from '../core/answerFormat.js';
 import { handleSlashCommand, rawCommandAgentPrompt, refreshMcpRuntimeStatus } from '../commands/slash.js';
 import { serviceChoices as composeServiceChoices, serviceDescription } from '../core/compose.js';
 import { extractActivity, mergePolledActivity, parseJsonText, sessionActivities } from '../core/activity.js';
@@ -665,7 +665,7 @@ export function buildDirectChatSystemPrompt(session, rawOpenWikiPages, allowedTo
     ] : []),
     currentArtifactPromptLine(currentArtifactFor(session)),
     openWikiPagesPromptLine(openWikiPages),
-    conversationChannelPromptLine(session.conversationChannel),
+    ...presentationPromptLines(session.conversationChannel),
     externalChatToolsLine(allowedTools),
   ].filter(Boolean).join('\n');
 }

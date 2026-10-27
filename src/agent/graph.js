@@ -31,7 +31,7 @@ import { say } from '../runtime/donnaVoice.js';
 import { summarizeToolArguments, toolArgumentSubject, toolResultNote, toolStartNote } from '../core/progressNotes.js';
 import { dsmlInvokedName, dsmlToolCalls, hasDsmlMarkup } from '../core/textArtifacts.js';
 import { openWikiPagesPromptLine } from '../core/openWikiPages.js';
-import { conversationChannelPromptLine } from '../core/conversationChannel.js';
+import { presentationPromptLines } from '../core/answerFormat.js';
 import { enqueueProductionJob, ensureJobQueue, formatQueue, productionLockBusy } from '../core/jobQueue.js';
 import { loadWorkspaceProfile, loadWorkspaceSystemPrompt, updateWorkspaceProfilePreference } from '../core/profile.js';
 import { formatLlmConfigFact } from '../core/wikirc.js';
@@ -1472,7 +1472,7 @@ export function buildAgentSystemPrompt(state) {
       ? `Workspace profile (.wiki/profile.md) — durable user preferences, apply these to every reply (tone, tutoiement/vouvoiement, formatting, etc.):\n${workspaceProfile}`
       : null,
     openWikiPagesPromptLine(state.session.openWikiPages),
-    conversationChannelPromptLine(state.session.conversationChannel),
+    ...presentationPromptLines(state.session.conversationChannel),
     currentArtifactPromptLine(currentArtifactFor(state.session)),
     'Runtime control: you have runtime__status, runtime__cancel, runtime__kill and runtime__enqueue. When the user asks to stop, remove, clean or kill the current run, its jobs or the queue ("supprime le job et la queue", "arr\u00eate tout"), call runtime__kill (or runtime__cancel for a soft stop of just the run) and confirm what was stopped. When the user explicitly asks to delete, reset, abandon or replace the current plan, call runtime__kill with purge=true; never set purge=true for a simple stop. For questions about what is running or queued, call runtime__status and answer from its data. You have no approval tool: a pending approval is granted only by the user through the approval button or the /approve command. Never grant, claim or report an approval yourself; when the user asks to proceed with pending mutations, tell them to use those controls. A request to approve, validate, confirm or accept a pending run is a human control action: NEVER call runtime__delegate (or any capability) for it — answer with the control to use and nothing else. When the user asks for a NEW action while a run is active: if one of your direct tools performs it (write or edit a template, a build-context file or a wiki page; a read or a check), do it now — a write may be refused because the running job is using that part of the workspace, and then say so plainly and offer runtime__enqueue. Heavier work (ingest, build, export, curate, rebuilding an index) is queued with runtime__enqueue (it runs after), or, if the user insists it replaces the current work, runtime__kill then the new action.',
     // Observed on lyra: "planifie curate dans 10 min" launched curate at once

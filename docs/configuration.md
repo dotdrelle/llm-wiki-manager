@@ -351,6 +351,7 @@ nothing and is reported by `/maintenance status`. User view:
 | `defaults.limits.buildsPerDay` | `50` | build attempts, reserved at admission — the build window is what groups builds; this is a runaway guard, not a quota |
 | `defaults.limits.actionsPerDay` / `actionsPerCycle` | `500` / `30` | every action, routine included; gateway cycles' LLM calls also count here (per-cycle ceiling: `actionsPerCycle × 3` calls) |
 | `defaults.limits.sourceQuietMinutes` | `10` | a pending file younger than this is not offered for ingest |
+| `defaults.limits.curationPassesPerDay` | `3` | auto mode only: completed curation passes per day. Each merged pass changes the wiki and starts a recheck; past this limit the chain stops for the day (announced once) and builds and exports use the wiki as it stands |
 
 The packaged example enables all listed actions and uses `human` mode. In older
 configurations with no `mode`, legacy per-action behavior is retained. Workspace

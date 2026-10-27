@@ -520,12 +520,17 @@ stream would accelerate one phase, not the run.
   reason}` — the Redactor ended on a `[rebuild-owned] <reason>` line because
   every finding sits on a generated `wiki/concepts/` pivot. That task
   completes, nothing is filed, and the run outcome tells Donna there is
-  nothing to review and that `/wiki-rebuild` is the next step.
+  nothing to review and that `/wiki-rebuild` is the next step. Likewise
+  `curationOutcome: {kind: 'clean', reason}` (a `[clean]` line: the review
+  retained nothing to correct) completes the task with nothing filed, and the
+  outcome says the curation found nothing to correct.
 
   Gateway-side ceilings for the hands (all optional, defaults in
-  parentheses): `GATEWAY_RECURSION_LIMIT` (200) graph steps, `GATEWAY_TOKEN_BUDGET`
-  (2 000 000) estimated tokens per agent — each role and the assembly has its
-  own; an overrun names the role and its counters, and every `phase ... done`
+  parentheses): `GATEWAY_RECURSION_LIMIT` (200) graph steps,
+  `GATEWAY_CURATION_MAX_FILES_PER_PASS` (8) files one curation pass corrects
+  (the rest `[deferred]` to the next pass), `GATEWAY_TOKEN_BUDGET` (no default:
+  unset is no token ceiling) estimated tokens per agent when set — each role
+  and the assembly has its own; an overrun names the role and its counters, and every `phase ... done`
   log line carries that role's model calls, estimated tokens (with the largest
   call), distinct pages and re-reads — `GATEWAY_WORKTREE_MAX_FILES` (40) /
   `GATEWAY_WORKTREE_MAX_DIFF_CHARS` (300 000) — beyond them the run fails

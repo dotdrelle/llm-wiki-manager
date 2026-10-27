@@ -42,7 +42,9 @@ const ACTION_CEILING_MINUTES={sync:30,ingest:120,index:60,rebuild:180,build:60,d
 const CURATE_SUMMARY='Review the wiki for duplicates, contradictions and unsourced claims, and prepare corrections';
 // After a stop request, how long the agent has to confirm the job ended.
 const CANCEL_CONFIRM_MS=120_000;
-const modeFor=(p,c)=>{const mode=actionMode(p,c.action,c.target);return c.humanEdit&&mode==='auto'?'ask':mode;};
+const modeFor=(p,c)=>{const mode=actionMode(p,c.action,c.target);return (c.humanEdit||c.afterFailures)&&mode==='auto'?'ask':mode;};
+// A failed curation is retried once on its own; the next failure asks a human.
+const CURATE_AUTOMATIC_ATTEMPTS=2;
 const terminal=(s)=>['done','completed','succeeded','failed','error','cancelled'].includes(s);
 const parse=(r)=>{if(r?.content){const text=formatMcpToolResult(r);try{return JSON.parse(text);}catch{return parseYaml(text);}}return r;};
 function configuredMaintenanceIntervalMs(env=process.env){
@@ -152,7 +154,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     }
     const conflicts=detectTaxoConflicts(await readTaxoConceptPagesAsync(ctx.session.workspacePath));
     if(conflicts.total>0||store.hasEvent(workspace,'rebuild_owned',{version:facts.wikiHash}))add('rebuild','wiki',fingerprint(conflicts),{},`Rebuild the TAXO fiches and tag pages: ${conflicts.total} inconsistency(ies) found (a tag filed in several families, or a tag page citing no fiche)`);
-    if(!facts.proposals?.length)add('curate','wiki',facts.wikiHash,{},CURATE_SUMMARY);
+    if(!facts.proposals?.length){const curate=curationCandidate(workspace,p,facts.wikiHash);if(curate)candidates.push(curate);}
     const day=now().toISOString().slice(0,10);
     add('doctor','workspace',day,{},'Daily check of the workspace configuration and services');
     // Sync source names come from the connector's read-only configuration, never the model.
@@ -204,6 +206,33 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     // retried by the agent at every cycle (maintenance_target_not_current).
     return {policy:p,paused:store.paused(workspace),facts,candidates:available.filter((c)=>!forAgent||!ROUTINE.has(c.action)).map((c)=>({...c,mode:modeFor(p,c),outsideWindow:c.action==='build'&&!inBuildWindow(p,now())})),requests:forAgent?requests.filter((r)=>!ROUTINE.has(r.action)):requests,reservations,cycles:store.cycles(workspace).map(({secret,...c})=>c),events:store.events(workspace)};
   }
+  // The curation candidate for the current wiki. A FAILED curation is a
+  // technical fact (a step limit, a gateway error), never a verdict on the
+  // wiki — yet it used to block builds and exports until the next day. Now
+  // the first failure is retried once, automatically; after the second one
+  // the curation asks a human (approve: try again; refuse: build without it).
+  // Each attempt has its own identity, so a failure never hides the next one.
+  // And in auto mode, merged passes chain until a pass is clean: past
+  // `limits.curationPassesPerDay` the chain stops for the day, said once,
+  // and builds use the wiki as it stands.
+  function curationCandidate(workspace,p,wikiHash){
+    const day=now().toISOString().slice(0,10);
+    const base={action:'curate',target:'wiki',version:wikiHash,args:{},summary:CURATE_SUMMARY};
+    const failedToday=new Set(store.relevantEvents(workspace,{kinds:['failure'],since:day}).filter((e)=>e.action==='curate').map((e)=>e.identity).filter(Boolean));
+    const attempt=(n)=>n===0?base
+      :n<CURATE_AUTOMATIC_ATTEMPTS?{...base,attempt:n,summary:`${CURATE_SUMMARY} (new attempt after a failed one)`}
+      :{...base,attempt:n,afterFailures:true,summary:`Curation of the current wiki failed ${n} times today. Approve to try again, or refuse to let builds and exports go ahead without it`};
+    let n=0;
+    while(failedToday.has(fingerprint(attempt(n))))n+=1;
+    if(modeFor(p,base)==='auto'){
+      const passes=store.reservations(workspace).filter((r)=>r.kind==='actions'&&r.period===day&&r.status==='consumed'&&r.candidate?.action==='curate'&&r.outcome==='done').length;
+      if(passes>=p.limits.curationPassesPerDay&&!store.wasCompleted(workspace,attempt(n),day)){
+        if(!store.hasEvent(workspace,'waiting',{version:day,target:'curation-passes'}))log(workspace,'waiting',`Curation paused for today: ${passes} pass(es) already ran (limits.curationPassesPerDay = ${p.limits.curationPassesPerDay}); builds and exports use the wiki as it stands, and the review resumes tomorrow`,{action:'curate',target:'curation-passes',version:day});
+        return null;
+      }
+    }
+    return attempt(n);
+  }
   function curationBarrier(workspace,view){
     if((view.facts.proposals??[]).length){
       if(modeFor(view.policy,{action:'curate',target:'wiki'})!=='auto')return `${view.facts.proposals.length} curation proposal(s) await human review; merge or discard them before building or exporting deliverables`;
@@ -218,12 +247,11 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       const candidate=Object.fromEntries(Object.entries(current).filter(([key])=>!['mode','outsideWindow'].includes(key)));
       const request=store.latestRequest(workspace,'curate','wiki');
       if(request?.version===fingerprint(candidate)&&request.status==='refused')return null;
-      return 'curation is still due; complete it before building or exporting deliverables';
+      return candidate.afterFailures
+        ?'curation failed repeatedly; approve a new attempt, or refuse it to build and export without it'
+        :'curation is still due; complete it before building or exporting deliverables';
     }
-    const identity=fingerprint({action:'curate',target:'wiki',version:view.facts.wikiHash,args:{},summary:CURATE_SUMMARY});
-    const failed=store.relevantEvents(workspace,{kinds:['failure'],since:now().toISOString().slice(0,10)})
-      .some((event)=>event.action==='curate'&&event.identity===identity);
-    return failed?'curation failed; resolve it before building or exporting deliverables':null;
+    return null;
   }
   function authorizeBridge(cycleId,token) {
     const cycle=db.prepare('SELECT payload FROM maintenance_cycles WHERE id=?').get(cycleId);
@@ -420,6 +448,8 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     // review: say what did not happen instead of reporting "Done".
     const nothingToCurate=result.result?.curationOutcome?.kind==='nothing_to_curate'
       ?(String(result.result.curationOutcome.reason??'').trim()||'no eligible wiki/sources fiches exist yet'):null;
+    const cleanReason=result.result?.curationOutcome?.kind==='clean'
+      ?(String(result.result.curationOutcome.reason??'').trim()||'the review found nothing to correct'):null;
     let autoMerged=null;
     let autoMergeFailure=null;
     if(candidate.action==='curate'){
@@ -444,7 +474,7 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       // The gateway reports `error` as a string (CME as a string too); reading
       // only `.message` silently dropped the reason and left a bare "Failed:".
       const rawError=typeof result.error==='string'?result.error:result.error?.message??result.result?.error;
-      log(workspace,outcome==='done'?'action_done':outcome==='cancelled'?'interrupted':'failure',`${outcome==='done'?'Done':outcome==='cancelled'?'Cancelled':'Failed'}: ${candidate.summary}${autoMerged?`; automatically approved and merged ${autoMerged.merged??0} page(s); curation will recheck the updated wiki before builds or exports`:''}${outcome==='failed'&&rawError?` — ${describeError(rawError)}`:''}${result.lost?'; its credit is settled and it was not replayed':''}`,{cycleId,action:candidate.action,target:candidate.target,identity:reservation.identity,jobId:reservation.jobId,...(outcome==='failed'&&rawError?{detail:String(rawError)}:{})});
+      log(workspace,outcome==='done'?'action_done':outcome==='cancelled'?'interrupted':'failure',`${outcome==='done'?'Done':outcome==='cancelled'?'Cancelled':'Failed'}: ${candidate.summary}${autoMerged?`; automatically approved and merged ${autoMerged.merged??0} page(s); curation will recheck the updated wiki before builds or exports`:''}${outcome==='done'&&cleanReason?`; nothing to correct — ${cleanReason}`:''}${outcome==='failed'&&rawError?` — ${describeError(rawError)}`:''}${result.lost?'; its credit is settled and it was not replayed':''}`,{cycleId,action:candidate.action,target:candidate.target,identity:reservation.identity,jobId:reservation.jobId,...(outcome==='failed'&&rawError?{detail:String(rawError)}:{})});
     }
     return outcome;
   }

@@ -485,6 +485,38 @@ test('a curation that wrote nothing on purpose (rebuild-owned) completes and nam
   }
 });
 
+test('a curation that found nothing to correct completes instead of failing', async () => {
+  const workspacePath = mkdtempSync(join(tmpdir(), 'worktree-proposal-'));
+  const session = { agentEvents: [], activities: {}, workspace: 'docs', workspacePath, headlessPlan: [] };
+  try {
+    await accept({
+      ok: true,
+      taskId: 't-curate-clean',
+      status: 'completed',
+      outputRefs: [],
+      rawStatus: {
+        runId: 'gateway-3',
+        status: 'completed',
+        result: {
+          status: 'completed', content: 'report',
+          worktreeProposal: { branch: 'agent/gateway-3', changedFiles: [], changes: [], diff: '' },
+          curationOutcome: { kind: 'clean', reason: '12 fiches agree with their sources' },
+        },
+      },
+    }, {
+      session,
+      runId: 'run-curate',
+      task: { id: 't-curate-clean', requiredCapability: 'agent.curate', operation: 'run' },
+    });
+    assert.equal(existsSync(join(workspacePath, '.wiki', 'agent-proposals')), false, 'nothing to review is persisted');
+    assert.ok(session.agentEvents.some((event) => /found nothing to correct.*12 fiches agree/.test(String(event.payload?.message ?? ''))));
+    assert.equal(session.agentEvents.some((event) => event.type === 'task.failed'), false);
+    assert.ok(session.agentEvents.some((event) => event.type === 'task.completed'), 'the task completes');
+  } finally {
+    rmSync(workspacePath, { recursive: true, force: true });
+  }
+});
+
 test('a curation with no source fiches completes without creating an empty proposal', async () => {
   const workspacePath = mkdtempSync(join(tmpdir(), 'worktree-proposal-'));
   const session = { agentEvents: [], activities: {}, workspace: 'docs', workspacePath, headlessPlan: [] };

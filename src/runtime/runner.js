@@ -14,7 +14,7 @@ import { blockedByFailedDependency, tasksAwaitingApproval } from '../orchestrato
 import { isCancelled, isFailed, isPending, isSkipped, isSuccessful, isTerminal, isUnknownStatus } from '../orchestrator/taskStatuses.js';
 import { assertValidatedFragment } from '../orchestrator/planValidator.js';
 import { runOutcomeReports } from './runReports.js';
-import { createResultAggregator, nothingToCurateReasonOf, rebuildOwnedReasonOf } from '../orchestrator/resultAggregator.js';
+import { cleanReasonOf, createResultAggregator, nothingToCurateReasonOf, rebuildOwnedReasonOf } from '../orchestrator/resultAggregator.js';
 import { describePlanConcurrency, drainActive, startReadyTasks } from '../orchestrator/scheduler.js';
 import { emitRuntimeLog, pollActivitiesOnce } from './supervisor.js';
 import { shortLogId } from '../core/runtimeLog.js';
@@ -381,7 +381,7 @@ export async function announceRunOutcome(session, { runId, ok, signal = null } =
   const knowledgeStats = {};
   let firstError = null;
   const rebuildOwned = [];
-  const nothingToCurate = [];
+  const nothingToCurate = [], clean = [];
   for (const step of plan) {
     const status = String(step?.status ?? '').toLowerCase();
     if (isFailed(status)) {
@@ -404,6 +404,7 @@ export async function announceRunOutcome(session, { runId, ok, signal = null } =
       if (rebuildReason) rebuildOwned.push(rebuildReason);
       const noSourceReason = nothingToCurateReasonOf(step?.result);
       if (noSourceReason) nothingToCurate.push(noSourceReason);
+      if (cleanReasonOf(step?.result)) clean.push(cleanReasonOf(step?.result));
       const stats = step?.result?.stats ?? step?.result?.result?.stats;
       if (stats && typeof stats === 'object') {
         for (const [key, value] of Object.entries(stats)) {
@@ -441,6 +442,7 @@ export async function announceRunOutcome(session, { runId, ok, signal = null } =
   const noSourceLine = nothingToCurate.length > 0
     ? ` Curation stopped before starting its roles because there are no eligible wiki/sources fiches yet (${nothingToCurate.join('; ')}); no curation roles ran. Ingest source documents first, then curate.`
     : '';
+  const cleanLine = clean.length ? ` Curation found nothing to correct, so there is nothing to review (${clean.join('; ')}).` : '';
   const factLine = (finished
     ? `Plan finished successfully — ${completed}/${total} task(s) succeeded.`
     : `Plan NOT finished — ${completed}/${total} task(s) succeeded` +
@@ -448,7 +450,7 @@ export async function announceRunOutcome(session, { runId, ok, signal = null } =
       `${failed ? `, ${failed} failed` : ''}` +
       `${cancelled ? `, ${cancelled} cancelled` : ''}` +
       `${skipped ? `, ${skipped} skipped because an earlier step did not succeed` : ''}.` +
-      `${firstError ? ` First error: ${firstError}.` : ''}`) + statsLine + verificationLine + rebuildLine + noSourceLine;
+      `${firstError ? ` First error: ${firstError}.` : ''}`) + statsLine + verificationLine + rebuildLine + noSourceLine + cleanLine;
   // A proposal or a long agent report is opened from a button, never pasted
   // into the thread (runReports.js).
   const reports = await runOutcomeReports(session, plan);

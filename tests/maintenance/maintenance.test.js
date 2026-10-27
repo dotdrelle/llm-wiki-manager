@@ -520,6 +520,74 @@ test('auto mode merges a curation proposal, rechecks the changed wiki, then buil
     assert.ok(h.service.status('x').events.some((event)=>/automatically approved and merged/.test(event.message)));
   }finally{await h.service.close();h.db.close();rmSync(workspacePath,{recursive:true,force:true});}
 });
+test('a failed curation is retried once, then asks a human; refusing it lets builds go ahead',async()=>{
+  // A failure is a technical fact, never a verdict on the wiki: it used to
+  // block builds and exports until the next day (juno, a Redactor out of budget).
+  let runs=0;
+  const curate={execute:async()=>({runId:`c${++runs}`}),status:async()=>({status:'failed',error:'gateway error'}),cancel:async()=>{}};
+  const h=harness({curate,facts:{pending:[],proposals:[],deliverables:[
+    {template:'templates/build.md',output:'deliverables/build.md',version:'build-v1',fresh:false,reasons:['knowledge_changed'],artifacts:{export:false,polish:false}},
+  ]}});
+  const build=()=>h.service.runCandidate('x','cycle',{action:'build',target:'templates/build.md'});
+  const curation=async()=>(await h.service.state('x')).candidates.find((c)=>c.action==='curate');
+  try{
+    h.policy({maintenanceAccess:{defaults:{enabled:true,mode:'auto',actions:{build:'auto',curate:'auto'},buildSchedule:{mode:'window',start:'00:00',end:'23:59',timezone:'UTC'},limits:{sourceQuietMinutes:0}}}});
+    assert.equal((await h.service.runCandidate('x','cycle',{action:'curate',target:'wiki'})).status,'failed');
+    const retry=await curation();
+    assert.equal(retry.mode,'auto','the first failure is retried without asking');
+    assert.equal(retry.attempt,1);
+    assert.equal((await build()).status,'waiting');
+    assert.equal((await h.service.runCandidate('x','cycle',{action:'curate',target:'wiki'})).status,'failed');
+    assert.equal(runs,2);
+    const decision=await curation();
+    assert.equal(decision.mode,'ask','the second failure asks a human');
+    assert.match(decision.summary,/failed 2 times today/);
+    const asked=await h.service.runCandidate('x','cycle',{action:'curate',target:'wiki'});
+    assert.equal(asked.status,'pending');
+    assert.equal(runs,2,'asking starts nothing');
+    assert.equal((await build()).status,'waiting');
+    assert.match(h.service.status('x').events.filter((e)=>e.kind==='waiting').at(-1).message,/approve a new attempt, or refuse it/);
+    await h.service.decide('x',asked.request.id,asked.request.version,false);
+    assert.equal((await build()).status,'done','a refused curation no longer blocks builds');
+  }finally{await h.service.close();h.db.close();}
+});
+test('approving a curation after two failures runs a new attempt',async()=>{
+  let runs=0;
+  const curate={execute:async()=>({runId:`c${++runs}`}),status:async()=>(runs<3?{status:'failed',error:'gateway error'}:{status:'completed',result:{content:'clean'}}),cancel:async()=>{}};
+  const h=harness({curate,facts:{pending:[],proposals:[]}});
+  try{
+    h.policy({maintenanceAccess:{defaults:{enabled:true,mode:'auto',actions:{curate:'auto'},limits:{sourceQuietMinutes:0}}}});
+    await h.service.runCandidate('x','cycle',{action:'curate',target:'wiki'});
+    await h.service.runCandidate('x','cycle',{action:'curate',target:'wiki'});
+    const asked=await h.service.runCandidate('x','cycle',{action:'curate',target:'wiki'});
+    await h.service.decide('x',asked.request.id,asked.request.version,true);
+    assert.equal((await h.service.runCandidate('x','cycle',{action:'curate',target:'wiki'})).status,'done');
+    assert.equal(runs,3);
+    assert.ok(!(await h.service.state('x')).candidates.some((c)=>c.action==='curate'),'a curation that succeeded is not offered again');
+  }finally{await h.service.close();h.db.close();}
+});
+test('auto mode stops chaining curation passes at the daily limit, says so once, and lets builds go ahead',async()=>{
+  const workspacePath=mkdtempSync(join(tmpdir(),'maintenance-curation-cap-'));
+  let runs=0;
+  const curate={execute:async()=>({runId:`pass-${++runs}`}),status:async()=>({status:'completed',result:{worktreeProposal:{
+    workspace:'x',branch:`agent/pass-${runs}`,worktreePath:join(workspacePath,`.wiki/agent-worktrees/pass-${runs}`),
+    worktreeRelativePath:`.wiki/agent-worktrees/pass-${runs}`,justification:'Corrected',changedFiles:[{status:'M',path:'wiki/sources/a.md'}],
+    changes:[{status:'M',path:'wiki/sources/a.md',content:`# A\npass ${runs}\n`}],diff:'diff',
+  }}}),cancel:async()=>{}};
+  const h=harness({curate,workspacePath,facts:{pending:[],proposals:[],deliverables:[
+    {template:'templates/build.md',output:'deliverables/build.md',version:'build-v1',fresh:false,reasons:['knowledge_changed'],artifacts:{export:false,polish:false}},
+  ]}});
+  try{
+    h.policy({maintenanceAccess:{defaults:{enabled:true,mode:'auto',actions:{build:'auto',curate:'auto'},buildSchedule:{mode:'window',start:'00:00',end:'23:59',timezone:'UTC'},limits:{sourceQuietMinutes:0,curationPassesPerDay:2}}}});
+    for(let i=0;i<2;i++)assert.equal((await h.service.runCandidate('x','cycle',{action:'curate',target:'wiki'})).status,'done');
+    assert.equal(h.merges.length,2,'every pass merged, so the wiki changed each time');
+    assert.ok(!(await h.service.state('x')).candidates.some((c)=>c.action==='curate'),'no third pass today');
+    await h.service.state('x');
+    const capped=h.service.status('x').events.filter((e)=>e.kind==='waiting'&&/Curation paused for today/.test(e.message));
+    assert.equal(capped.length,1,'announced once');
+    assert.equal((await h.service.runCandidate('x','cycle',{action:'build',target:'templates/build.md'})).status,'done');
+  }finally{await h.service.close();h.db.close();rmSync(workspacePath,{recursive:true,force:true});}
+});
 test('auto maintenance never merges a proposal created outside an automatic maintenance curation',async()=>{
   const h=harness({facts:{pending:[],proposals:['manual.json'],proposalIds:['manual'],autoMergeProposalIds:[],deliverables:[
     {template:'templates/build.md',output:'deliverables/build.md',version:'build-v1',fresh:false,reasons:['knowledge_changed'],artifacts:{export:false,polish:false}},

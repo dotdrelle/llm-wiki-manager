@@ -1324,6 +1324,21 @@ test('announceRunOutcome says a rebuild-owned curation has nothing to review and
   assert.match(message.payload.content, /\/wiki-rebuild/);
 });
 
+test('announceRunOutcome says a clean curation has nothing to review', async () => {
+  const session = {
+    agentEvents: [],
+    agentProjection: null,
+    headlessPlan: [{
+      id: 'curate-clean', description: 'Curate', status: 'done',
+      result: { rawStatus: { result: { curationOutcome: { kind: 'clean', reason: 'the fiches agree with their sources' } } } },
+    }],
+  };
+  await announceRunOutcome(session, { runId: 'run-clean', ok: true });
+  const message = session.agentEvents.find((event) => event.type === 'assistant_message');
+  assert.match(message.payload.content, /found nothing to correct/);
+  assert.match(message.payload.content, /the fiches agree with their sources/);
+});
+
 test('announceRunOutcome tells the user to ingest before curating an empty wiki', async () => {
   const session = {
     agentEvents: [],

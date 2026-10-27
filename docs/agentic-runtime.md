@@ -523,7 +523,12 @@ stream would accelerate one phase, not the run.
   nothing to review and that `/wiki-rebuild` is the next step. Likewise
   `curationOutcome: {kind: 'clean', reason}` (a `[clean]` line: the review
   retained nothing to correct) completes the task with nothing filed, and the
-  outcome says the curation found nothing to correct.
+  outcome says the curation found nothing to correct. In automatic
+  maintenance, `wiki_maintenance_merge_proposal` is called with
+  `discardIfRefused`: a proposal the engine refuses on its content (422
+  `provenance_invalid`, 400 nothing mergeable — never a 409 busy workspace) is
+  discarded by the engine, wiki untouched, and logged as a failed curation
+  attempt, which maintenance retries once and then asks a human about.
 
   Gateway-side ceilings for the hands (all optional, defaults in
   parentheses): `GATEWAY_RECURSION_LIMIT` (200) graph steps,

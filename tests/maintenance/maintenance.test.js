@@ -47,12 +47,12 @@ test('maintenance scan interval uses seconds and keeps legacy milliseconds compa
   }
 });
 
-function harness({facts:override={},runtime=null,gate=null,statuses=[],curate=null,onStatus=null,now=undefined,refuseExecute=null,refuseOperation=null,cmeSources=null,cmeError=null,mergeError=null,workspacePath='/private/tmp/nonexistent-maintenance-test'}={}){
+function harness({facts:override={},runtime=null,gate=null,statuses=[],curate=null,onStatus=null,now=undefined,refuseExecute=null,refuseOperation=null,cmeSources=null,cmeError=null,mergeError=null,mergeRefusal=null,workspacePath='/private/tmp/nonexistent-maintenance-test'}={}){
   const {db}=setup();let version='a';let executions=[];const statusChecks=[];const cancels=[];const merges=[];let access={maintenanceAccess:{defaults:{enabled:true,limits:{sourceQuietMinutes:0}}}};
   const facts=()=>({wikiHash:'wiki',pending:[{path:'raw/untracked/a.md',hash:version,stable:true,protected:false}],index:{enabled:false,fresh:true},deliverables:[],publications:[],proposals:[],proposalIds:[],autoMergeProposalIds:[],...override});
   const provider={serverName:'production',health:'available',capability:{supportedOperations:['ingest','doctor','index','ingest_rebuild','build','export','polish','send'],inputSchema:{type:'object',additionalProperties:true}}};
   const session={workspace:'x',workspacePath,mcp:{wiki:{tools:[{name:'wiki_maintenance_state'},{name:'wiki_maintenance_merge_proposal'}]},...(cmeSources?{cme:{tools:[{name:'cme_sources_list'}]}}:{})},capabilityRegistry:{providersFor:(capability)=>capability==='agent.maintain'?(runtime?[{runtimeProvider:runtime,runtimeId:'gw',health:'available',capability:{supportedOperations:['run']}}]:[]):capability==='agent.curate'&&curate?[{runtimeProvider:curate,runtimeId:'gw-curate',health:'available',capability:{supportedOperations:['run'],inputSchema:{type:'object',additionalProperties:true}}}]:[provider]}};
-  const service=createMaintenanceService({db,baseUrl:'http://localhost',discover:async(session)=>{session.runtimeProviderAgents=[];},getContext:async()=>({session}),readDocument:()=>access,callTool:async(_mcp,_server,tool,args)=>{if(tool==='wiki_maintenance_state')return facts();if(tool==='wiki_maintenance_merge_proposal'){merges.push(args);if(mergeError){override.proposals=['curation.json'];override.proposalIds=[args.proposalId];override.autoMergeProposalIds=[args.proposalId];throw new Error(mergeError);}override.proposals=[];override.proposalIds=[];override.autoMergeProposalIds=[];override.wikiHash='merged-'+(override.wikiHash??'wiki');return {ok:true,merged:1,files:['wiki/sources/a.md']};}if(tool==='cme_sources_list'){if(cmeError)throw new Error(cmeError);return {sources:cmeSources.map((name)=>({name}))};}if(tool==='agent_execute'){executions.push(args);if(refuseExecute&&(!refuseOperation||args.operation===refuseOperation))return {accepted:false,error:refuseExecute};return {accepted:true,jobId:'job-'+executions.length};}if(tool==='agent_status'){statusChecks.push(args.jobId);if(gate)await gate;if(onStatus)return onStatus(args.jobId,cancels);return {status:statuses.shift()??'done',result:{}};}if(tool==='agent_cancel'){cancels.push(args.jobId);return {ok:true};}throw new Error(tool);},...(now?{now}:{})});
+  const service=createMaintenanceService({db,baseUrl:'http://localhost',discover:async(session)=>{session.runtimeProviderAgents=[];},getContext:async()=>({session}),readDocument:()=>access,callTool:async(_mcp,_server,tool,args)=>{if(tool==='wiki_maintenance_state')return facts();if(tool==='wiki_maintenance_merge_proposal'){merges.push(args);if(mergeRefusal&&args.discardIfRefused){override.proposals=[];override.proposalIds=[];override.autoMergeProposalIds=[];return {ok:false,error:mergeRefusal,discarded:true,diagnostics:[{path:'wiki/concepts/a/b.md'}]};}if(mergeError){override.proposals=['curation.json'];override.proposalIds=[args.proposalId];override.autoMergeProposalIds=[args.proposalId];throw new Error(mergeError);}override.proposals=[];override.proposalIds=[];override.autoMergeProposalIds=[];override.wikiHash='merged-'+(override.wikiHash??'wiki');return {ok:true,merged:1,files:['wiki/sources/a.md']};}if(tool==='cme_sources_list'){if(cmeError)throw new Error(cmeError);return {sources:cmeSources.map((name)=>({name}))};}if(tool==='agent_execute'){executions.push(args);if(refuseExecute&&(!refuseOperation||args.operation===refuseOperation))return {accepted:false,error:refuseExecute};return {accepted:true,jobId:'job-'+executions.length};}if(tool==='agent_status'){statusChecks.push(args.jobId);if(gate)await gate;if(onStatus)return onStatus(args.jobId,cancels);return {status:statuses.shift()??'done',result:{}};}if(tool==='agent_cancel'){cancels.push(args.jobId);return {ok:true};}throw new Error(tool);},...(now?{now}:{})});
   return {db,service,executions,statusChecks,cancels,merges,provider,session,change:(v)=>{version=v;},policy:(p)=>{access=p;}};
 }
 test('pending ingestion does not prevent an independent diagnostic; approval is exact and dispatch reserves',async()=>{const h=harness();try{const pending=await h.service.runCandidate('x','cycle',{action:'ingest',target:'raw/untracked'});assert.equal(pending.status,'pending');assert.equal(h.executions.length,0);const doctor=await h.service.runCandidate('x','cycle',{action:'doctor',target:'workspace'});assert.equal(doctor.status,'done');await h.service.decide('x',pending.request.id,pending.request.version,true);const result=await h.service.runCandidate('x','cycle2',{action:'ingest',target:'raw/untracked'});assert.equal(result.status,'done');assert.equal(h.executions.length,2);assert.deepEqual(h.executions[1].arguments.maintenanceSelection,[{path:'raw/untracked/a.md',hash:'a'}]);assert.ok(h.service.store.reservations('x').every(r=>r.status==='consumed'));}finally{await h.service.close();h.db.close();}});
@@ -599,6 +599,34 @@ test('auto maintenance never merges a proposal created outside an automatic main
     assert.equal((await h.service.runCandidate('x','cycle',{action:'build',target:'templates/build.md'})).status,'waiting','the unrelated proposal remains a human review barrier');
     assert.deepEqual(h.executions.map((item)=>item.operation),['doctor'],'routine diagnostics may still run; no build starts');
   }finally{await h.service.close();h.db.close();}
+});
+test('a proposal the engine refuses is discarded and counts as a failed attempt, never a pending review',async()=>{
+  // juno: a Redactor wrote an unanchored citation into a generated pivot; the
+  // refused proposal stayed pending, was refused again at every scan, and
+  // builds waited on it with nothing telling the user what to do.
+  const workspacePath=mkdtempSync(join(tmpdir(),'maintenance-discarded-merge-'));
+  let runs=0;
+  const curate={execute:async()=>({runId:`c${++runs}`}),status:async()=>({status:'completed',result:{worktreeProposal:{
+    workspace:'x',branch:`agent/c${runs}`,worktreePath:join(workspacePath,`.wiki/agent-worktrees/c${runs}`),
+    worktreeRelativePath:`.wiki/agent-worktrees/c${runs}`,justification:'Curation changes',changedFiles:[{status:'M',path:'wiki/concepts/a/b.md'}],
+    changes:[{status:'M',path:'wiki/concepts/a/b.md',content:'# B\n'}],diff:'diff',
+  }}}),cancel:async()=>{}};
+  const h=harness({workspacePath,curate,mergeRefusal:'provenance_invalid',facts:{pending:[],proposals:[],proposalIds:[],autoMergeProposalIds:[],deliverables:[
+    {template:'templates/build.md',output:'deliverables/build.md',version:'build-v1',fresh:false,reasons:['knowledge_changed'],artifacts:{export:false,polish:false}},
+  ]}});
+  try{
+    h.policy({maintenanceAccess:{defaults:{enabled:true,mode:'auto',actions:{build:'auto',curate:'auto'},buildSchedule:{mode:'window',start:'00:00',end:'23:59',timezone:'UTC'},limits:{sourceQuietMinutes:0}}}});
+    assert.equal((await h.service.runCandidate('x','cycle',{action:'curate',target:'wiki'})).status,'done');
+    assert.equal(h.merges[0].discardIfRefused,true,'the manager asks the engine to discard what it refuses');
+    const refusal=h.service.status('x').events.find((event)=>event.kind==='failure'&&event.target==='curation-auto-merge');
+    assert.match(refusal.message,/refused — .*provenance_invalid.*wiki\/concepts\/a\/b\.md.*discarded and the wiki is unchanged/);
+    const retry=(await h.service.state('x')).candidates.find((c)=>c.action==='curate');
+    assert.equal(retry?.attempt,1,'the discarded proposal is a failed attempt, retried automatically');
+    assert.equal(retry.mode,'auto');
+    assert.equal((await h.service.runCandidate('x','cycle',{action:'build',target:'templates/build.md'})).status,'waiting');
+    assert.equal((await h.service.runCandidate('x','cycle',{action:'curate',target:'wiki'})).status,'done');
+    assert.equal((await h.service.state('x')).candidates.find((c)=>c.action==='curate')?.mode,'ask','a second refusal asks a human');
+  }finally{await h.service.close();h.db.close();rmSync(workspacePath,{recursive:true,force:true});}
 });
 test('a refused automatic merge settles curation and leaves build blocked',async()=>{
   const workspacePath=mkdtempSync(join(tmpdir(),'maintenance-refused-merge-'));

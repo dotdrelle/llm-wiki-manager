@@ -101,9 +101,20 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
   async function mergeCurationProposal(ctx,proposalId,signal){
     const server=Object.entries(ctx.session.mcp??{}).find(([,entry])=>(entry.tools??[]).some((tool)=>tool.name==='wiki_maintenance_merge_proposal'))?.[0];
     if(!server)throw new Error('maintenance_auto_merge_tool_unavailable: wiki_maintenance_merge_proposal');
-    const result=parse(await callTool(ctx.session.mcp,server,'wiki_maintenance_merge_proposal',{proposalId,confirm:true},signal,{retry:false}));
-    if(result?.ok!==true)throw new Error(result?.error??'maintenance_auto_merge_refused');
+    // A proposal the engine refuses on its content is discarded by the engine
+    // (wiki untouched): left pending, it was retried and refused at every
+    // scan while builds waited on it (juno, an unanchored pivot citation).
+    const result=parse(await callTool(ctx.session.mcp,server,'wiki_maintenance_merge_proposal',{proposalId,confirm:true,discardIfRefused:true},signal,{retry:false}));
+    if(result?.ok!==true)throw Object.assign(new Error(result?.error??'maintenance_auto_merge_refused'),{discarded:result?.discarded===true,diagnostics:result?.diagnostics});
     return result;
+  }
+  // What a refused automatic merge says: why, and what happens next. A
+  // discarded proposal counts as a failed curation attempt — retried once,
+  // then asked of a human — never as a pending review nobody was told about.
+  function autoMergeRefusal(proposalId,error){
+    const where=(error.diagnostics??[]).map((entry)=>entry?.path).filter(Boolean).slice(0,3).join(', ');
+    return `Automatic merge of curation proposal ${proposalId} refused — ${describeError(error.message)}${where?` (${where})`:''}`
+      +(error.discarded?'; the proposal was discarded and the wiki is unchanged; curation tries again, then asks you':'; the proposal remains pending and builds or exports are blocked');
   }
   async function autoMergePendingProposals(workspace,ctx,view,signal){
     if(modeFor(view.policy,{action:'curate',target:'wiki'})!=='auto'||!(view.facts.proposals??[]).length)return {blocked:false};
@@ -122,7 +133,8 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
         const pathNote=pathCanonicalizations.length?`; corrected legacy path(s): ${pathCanonicalizations.map((entry)=>`${entry.from} → ${entry.to}`).join(', ')}`:'';
         log(workspace,'action_done',`Automatically approved and merged curation proposal ${proposalId} (${merged.merged??0} page(s))${pathNote}; curation will check the updated wiki before builds or exports`,{action:'curate',target:'wiki',proposalId,version});
       }catch(error){
-        if(!store.hasEvent(workspace,'failure',{version,target:'curation-auto-merge'}))log(workspace,'failure',`Automatic merge of curation proposal ${proposalId} failed — ${describeError(error.message)}`,{action:'curate',target:'curation-auto-merge',proposalId,version,detail:String(error.message)});
+        if(!store.hasEvent(workspace,'failure',{version,target:'curation-auto-merge'}))log(workspace,'failure',autoMergeRefusal(proposalId,error),{action:'curate',target:'curation-auto-merge',proposalId,version,detail:String(error.message)});
+        if(error.discarded)return {blocked:false,merged:true};
         return {blocked:true};
       }
     }
@@ -451,7 +463,6 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
     const cleanReason=result.result?.curationOutcome?.kind==='clean'
       ?(String(result.result.curationOutcome.reason??'').trim()||'the review found nothing to correct'):null;
     let autoMerged=null;
-    let autoMergeFailure=null;
     if(candidate.action==='curate'){
       const automaticApproval=modeFor(policy(workspace),candidate)==='auto';
       const persisted=persistWorktreeProposal(ctx.session,result,{runId:cycleId,taskId:id,automaticApproval});
@@ -459,9 +470,8 @@ export function createMaintenanceService({db,getContext,baseUrl,readDocument=rea
       if(persisted.path&&outcome==='done'&&automaticApproval){
         try{autoMerged=await mergeCurationProposal(ctx,id,signal);}
         catch(error){
-          autoMergeFailure=describeError(error.message);
           const version=fingerprint([id,wikiHash]);
-          if(!store.hasEvent(workspace,'failure',{version,target:'curation-auto-merge'}))log(workspace,'failure','Automatic merge of curation proposal '+id+' failed — '+autoMergeFailure+'; the proposal remains pending and builds or exports are blocked',{cycleId,action:'curate',target:'curation-auto-merge',identity:reservation.identity,proposalId:id,version,detail:String(error.message)});
+          if(!store.hasEvent(workspace,'failure',{version,target:'curation-auto-merge'}))log(workspace,'failure',autoMergeRefusal(id,error),{cycleId,action:'curate',target:'curation-auto-merge',identity:reservation.identity,proposalId:id,version,detail:String(error.message)});
         }
       }
     }

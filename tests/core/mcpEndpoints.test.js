@@ -34,14 +34,28 @@ test('UI-managed MCP endpoints persist with bearer auth and chat wildcard access
     assert.equal(raw.mcpServers.exa.timeoutMs, 30_000);
     assert.equal(raw.chatAccess.servers.exa.allow, '*');
     assert.deepEqual(listManagedMcpEndpoints().find((item) => item.name === 'exa'), {
-      name: 'exa', url: 'https://mcp.exa.ai/mcp', bearer: 'secret', timeoutMs: 30_000, allow: '*',
+      name: 'exa', url: 'https://mcp.exa.ai/mcp', hasUrlSecrets: false, hasBearer: true, timeoutMs: 30_000, allow: '*',
     });
+    assert.equal(JSON.stringify(listManagedMcpEndpoints()).includes('secret'), false, 'the listing never carries the token');
     assert.throws(
       () => upsertManagedMcpEndpoint({ name: 'exa', url: 'https://mcp.exa.ai/mcp', timeoutMs: 999 }),
       /between 1000 and 120000/,
     );
     upsertManagedMcpEndpoint({ name: 'exa', url: 'https://mcp.exa.ai/mcp', timeoutMs: null });
     assert.equal(JSON.parse(readFileSync(join(root, 'mcp.endpoints.json'), 'utf8')).mcpServers.exa.timeoutMs, undefined);
+  });
+});
+
+test('an upsert without a bearer keeps the saved token; an empty one removes it', async () => {
+  await withEndpoints(async (root) => {
+    upsertManagedMcpEndpoint({ name: 'exa', url: 'https://mcp.exa.ai/mcp', bearer: 'secret' });
+    const renamed = upsertManagedMcpEndpoint({ name: 'exa-search', previousName: 'exa', url: 'https://mcp.exa.ai/v2/mcp' });
+    assert.equal(renamed.hasBearer, true);
+    const read = () => JSON.parse(readFileSync(join(root, 'mcp.endpoints.json'), 'utf8')).mcpServers['exa-search'];
+    assert.equal(read().headers.Authorization, 'Bearer secret');
+    const cleared = upsertManagedMcpEndpoint({ name: 'exa-search', url: 'https://mcp.exa.ai/v2/mcp', bearer: '' });
+    assert.equal(cleared.hasBearer, false);
+    assert.equal(read().headers, undefined);
   });
 });
 

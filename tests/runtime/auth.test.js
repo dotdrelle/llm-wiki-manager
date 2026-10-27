@@ -6,10 +6,13 @@ import test from 'node:test';
 import { resolveRuntimeAuthToken } from '../../src/runtime/auth.js';
 import { assertRuntimeNode, runtimeNodeExecutable } from '../../src/runtime/lifecycle.js';
 
-test('resolveRuntimeAuthToken: loopback host does not require token', () => {
-  const result = resolveRuntimeAuthToken({ host: '127.0.0.1', explicitToken: null });
-  assert.equal(result.token, null);
-  assert.equal(result.source, 'none');
+test('resolveRuntimeAuthToken: a loopback or LAN bind gets a token too', () => {
+  for (const host of ['127.0.0.1', '192.168.1.10']) {
+    const stateDir = mkdtempSync(join(tmpdir(), 'wiki-manager-runtime-auth-'));
+    const result = resolveRuntimeAuthToken({ host, stateDir, explicitToken: null });
+    assert.equal(result.source, 'generated', host);
+    assert.match(result.token, /^[0-9a-f]{64}$/, host);
+  }
 });
 
 test('resolveRuntimeAuthToken: exposed host generates and reuses token', () => {

@@ -78,7 +78,8 @@ workspace `.wikirc.yaml`.
 | `HTTP_PROXY` / `HTTPS_PROXY` | behind an HTTP proxy | proxy URL, including its scheme and port |
 | `NO_PROXY` | recommended with a proxy | hosts that must remain direct, notably the local runtime and MCP endpoints |
 | `WIKI_MANAGER_CONNECTIVITY_URL` | no | HTTPS endpoint used by the ordered ShellUI startup connectivity probe |
-| `WIKI_MANAGER_RUNTIME_HOST` | yes (shipped active) | interface the host runtime binds. `0.0.0.0` by default: `serve` runs in Docker and reaches the runtime through `host.docker.internal`, which a `127.0.0.1` bind refuses. Exposing the port always generates `WIKI_MANAGER_RUNTIME_TOKEN` |
+| `WIKI_MANAGER_RUNTIME_HOST` | yes (shipped active) | interface the host runtime binds. `0.0.0.0` by default: `serve` runs in Docker and reaches the runtime through `host.docker.internal`, which a `127.0.0.1` bind refuses. Whatever the bind — `0.0.0.0`, `127.0.0.1` or one LAN address — the runtime requires `WIKI_MANAGER_RUNTIME_TOKEN`, generated into `.wiki/runtime/runtime.token` when absent |
+| `WIKI_MANAGER_RUNTIME_ALLOWED_HOSTS` | no | comma-separated host NAMES the runtime answers to, beyond `localhost`, `host.docker.internal` and a named bind host (DNS-rebinding guard). IP addresses are always accepted. Set it to the public name when the runtime sits behind a reverse proxy; a refused name is answered `421` and logged once in `runtime.log` |
 | `WIKI_MANAGER_HUB_PORT` | no | port of the public workspace page served by the runtime (default `8080`). No sign-in, like the MCP connector's landing page |
 | `WIKI_MANAGER_HUB_HOST` | no | interface that page binds (default: same as `WIKI_MANAGER_RUNTIME_HOST`, so `0.0.0.0`). Set `127.0.0.1` to keep the workspace names on this machine |
 | `WIKI_MANAGER_HUB` | no | set to `off` to disable the public workspace page entirely |

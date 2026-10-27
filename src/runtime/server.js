@@ -56,6 +56,7 @@ import {
 } from './loginSession.js';
 import { loginEnrollmentFragment, loginPageHtml, loginSuccessFragment } from './loginPage.js';
 import { createContainerStats } from './containerStats.js';
+import { refuseByRequestGuards } from './requestGuards.js';
 
 /*
  What the public login page and `/login/status` may say about this runtime:
@@ -233,7 +234,8 @@ export async function startRuntimeServer({
 
   const server = createServer(async (request, response) => {
     try {
-      const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+      if (refuseByRequestGuards(request, response, host)) return; // Host (rebinding) + JSON on public POSTs
+      const url = new URL(request.url ?? '/', 'http://runtime.local');
 
       // ── TOTP login surface — public by design: it is the door, not a room ──
       if (url.pathname === '/login' && request.method === 'GET') {
@@ -298,8 +300,7 @@ export async function startRuntimeServer({
         return;
       }
       if (url.pathname === '/login/status' && request.method === 'GET') {
-        sendJson(response, 200, { ok: true, ...loginStatus(), about: loginAbout });
-        return;
+        return sendJson(response, 200, { ok: true, ...loginStatus(), about: loginAbout });
       }
       if (url.pathname === '/logout' && request.method === 'POST') {
         const body = await readJson(request).catch(() => ({}));
@@ -307,9 +308,7 @@ export async function startRuntimeServer({
         // sits before the bearer gate by design, so the token itself is the
         // only proof that the caller is the session being revoked, not an
         // unauthenticated third party forcing the operator out.
-        const revoked = revokeSession(body?.token ?? null);
-        sendJson(response, 200, { ok: true, revoked });
-        return;
+        return sendJson(response, 200, { ok: true, revoked: revokeSession(body?.token ?? null) });
       }
       if (request.method === 'GET' && url.pathname === '/session/verify') {
         // Public on purpose: the token IS the credential being checked — the

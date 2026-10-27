@@ -42,6 +42,24 @@ function normalizeUrl(value) {
   return url;
 }
 
+/* The Connectors panel needs a display/edit URL, but never credentials, query
+ * values or fragments. When it sends this exact projection back unchanged,
+ * upsertManagedMcpEndpoint keeps the original URL in the manager's file. */
+function browserSafeUrl(value) {
+  const raw = String(value ?? '');
+  try {
+    const url = new URL(raw);
+    const hasUrlSecrets = Boolean(url.username || url.password || url.search || url.hash);
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return { url: url.toString(), hasUrlSecrets };
+  } catch {
+    return { url: '', hasUrlSecrets: Boolean(raw) };
+  }
+}
+
 function normalizeTimeoutMs(value, { optional = false } = {}) {
   if (optional && (value == null || value === '')) return null;
   const timeoutMs = Number(value);
@@ -55,8 +73,9 @@ export function listManagedMcpEndpoints() {
   const { raw } = readDocument();
   return Object.entries(raw.mcpServers).map(([name, endpoint]) => ({
     name,
-    url: String(endpoint?.url ?? ''),
-    bearer: String(endpoint?.headers?.Authorization ?? endpoint?.headers?.authorization ?? '').replace(/^Bearer\s+/i, ''),
+    ...browserSafeUrl(endpoint?.url),
+    // Listed to the served Connectors panel: whether a token is set, never the token.
+    hasBearer: /^Bearer\s+\S/i.test(String(endpoint?.headers?.Authorization ?? endpoint?.headers?.authorization ?? '')),
     timeoutMs: Number.isInteger(endpoint?.timeoutMs) && endpoint.timeoutMs >= 1000 && endpoint.timeoutMs <= 120_000
       ? endpoint.timeoutMs
       : null,
@@ -64,10 +83,13 @@ export function listManagedMcpEndpoints() {
   }));
 }
 
-export function upsertManagedMcpEndpoint({ name: rawName, previousName: rawPreviousName = null, url: rawUrl, bearer = '', timeoutMs: rawTimeoutMs } = {}) {
+// `bearer`: a string replaces the token ('' removes it); omitted, the saved
+// token is kept — the browser no longer holds it, so a rename or a URL change
+// must not erase it.
+export function upsertManagedMcpEndpoint({ name: rawName, previousName: rawPreviousName = null, url: rawUrl, bearer, timeoutMs: rawTimeoutMs } = {}) {
   const name = normalizeName(rawName);
   const previousName = rawPreviousName ? normalizeName(rawPreviousName) : name;
-  const url = normalizeUrl(rawUrl);
+  const submittedUrl = normalizeUrl(rawUrl);
   const { filePath, raw } = readDocument();
   if (previousName !== name && !Object.hasOwn(raw.mcpServers, previousName)) {
     throw new Error(`MCP server to rename was not found: ${previousName}`);
@@ -78,13 +100,21 @@ export function upsertManagedMcpEndpoint({ name: rawName, previousName: rawPrevi
   const previous = raw.mcpServers[previousName] && typeof raw.mcpServers[previousName] === 'object'
     ? raw.mcpServers[previousName]
     : {};
+  const previousUrl = String(previous.url ?? '');
+  // The browser sends the redacted URL for an unchanged endpoint. Retain its
+  // server-side query/userinfo instead of silently replacing a working URL.
+  const url = previousUrl && submittedUrl === browserSafeUrl(previousUrl).url
+    ? previousUrl
+    : submittedUrl;
   const timeoutMs = rawTimeoutMs === undefined
     ? (Number.isInteger(previous.timeoutMs) && previous.timeoutMs >= 1000 && previous.timeoutMs <= 120_000 ? previous.timeoutMs : null)
     : normalizeTimeoutMs(rawTimeoutMs, { optional: true });
   const headers = { ...(previous.headers ?? {}) };
-  delete headers.authorization;
-  delete headers.Authorization;
-  if (String(bearer).trim()) headers.Authorization = `Bearer ${String(bearer).trim()}`;
+  if (bearer !== undefined && bearer !== null) {
+    delete headers.authorization;
+    delete headers.Authorization;
+    if (String(bearer).trim()) headers.Authorization = `Bearer ${String(bearer).trim()}`;
+  }
   const managedBy = previous.managedBy === 'serve-ui' ? 'serve-ui' : (Object.keys(previous).length ? null : 'serve-ui');
   raw.mcpServers[name] = {
     ...previous,
@@ -103,7 +133,7 @@ export function upsertManagedMcpEndpoint({ name: rawName, previousName: rawPrevi
   raw.chatAccess.servers[name] = { allow: '*' };
   raw.disabledMcpServers = raw.disabledMcpServers.filter((item) => item !== name);
   writeDocument(filePath, raw);
-  return { name, previousName, url, timeoutMs, allow: '*', hasBearer: Boolean(String(bearer).trim()), origin: managedBy ? 'ui' : 'global' };
+  return { name, previousName, ...browserSafeUrl(url), timeoutMs, allow: '*', hasBearer: /^Bearer\s+\S/i.test(String(headers.Authorization ?? headers.authorization ?? '')), origin: managedBy ? 'ui' : 'global' };
 }
 
 export function deleteManagedMcpEndpoint(rawName) {

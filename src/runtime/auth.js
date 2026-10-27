@@ -11,13 +11,19 @@ export function runtimeTokenFromEnv() {
   return process.env.WIKI_MANAGER_RUNTIME_TOKEN ?? process.env.RUNTIME_AUTH_TOKEN ?? null;
 }
 
+/*
+ * A token is resolved whatever the bind host. Only the wildcard binds used to
+ * get one: a runtime on 127.0.0.1 — or on one LAN address — answered every
+ * route unauthenticated, so any web page the operator visited could POST a
+ * turn or an approval to it (no CORS preflight for a text/plain body), and a
+ * LAN bind was open to the whole network. `host` is kept in the signature for
+ * the callers; it no longer changes the answer.
+ */
 export function resolveRuntimeAuthToken({
-  host = '127.0.0.1',
   stateDir = defaultRuntimeStateDir(),
   explicitToken = runtimeTokenFromEnv(),
 } = {}) {
   if (explicitToken) return { token: explicitToken, source: 'env', tokenPath: null };
-  if (!isExposedHost(host)) return { token: null, source: 'none', tokenPath: null };
 
   const tokenPath = runtimeTokenPath(stateDir);
   if (existsSync(tokenPath)) {

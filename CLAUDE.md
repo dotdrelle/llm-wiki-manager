@@ -419,8 +419,8 @@ raw system commands through this tool without a separate allowlist design.
 `wiki-manager runtime` starts a persistent HTTP/SSE server (default
 `127.0.0.1:7788`) that shares orchestration state between the Shell UI and
 `llm-wiki serve`. The Shell sends agent runs to the runtime; serve proxies the
-same runs from the web. `--host 0.0.0.0` is an explicit exposed-host mode and
-requires bearer-token protection.
+same runs from the web. Every bind, `0.0.0.0` or loopback, requires the bearer
+token (`auth.js`) and passes the Host/JSON guards (`requestGuards.js`).
 
 This runtime is the deterministic executor. The **external agentic runtime**
 is a separate engine beside it — discovered through `agent-runtimes.json`,
@@ -559,9 +559,16 @@ Key modules in `src/runtime/`:
   runtime, spawns a child Node 22 process if absent, injects token into both
   parent and child env. When the shell runs under Bun, uses
   `WIKI_MANAGER_NODE_BIN ?? 'node'` instead of `process.execPath`.
-- **`auth.js`**: Bearer token required when `--host 0.0.0.0`. Read from env
+- **`auth.js`**: Bearer token required whatever the bind host (a loopback or
+  LAN bind used to run unauthenticated). Read from env
   `WIKI_MANAGER_RUNTIME_TOKEN`, then `.wiki/runtime/runtime.token`, then
-  auto-generated (32-byte hex) on first exposed-host start.
+  auto-generated (32-byte hex) on first start.
+- **`requestGuards.js`**: in front of every route, before the bearer gate — a
+  Host check against DNS rebinding (IP literals, `localhost`,
+  `host.docker.internal`, a named bind host and
+  `WIKI_MANAGER_RUNTIME_ALLOWED_HOSTS` pass; anything else is `421`, logged
+  once), and `application/json` required on the public POST routes (`/login/*`,
+  `/logout`, `/maintenance/bridge`), `415` otherwise.
 - **`client.js`**: HTTP client for `/run`, `/cancel`, `/resume`, `/approve`,
   `/state`, `/events/stream`.
 - **`queueStore.js`**: SQLite-backed `QueueStore` for runtime sessions.
@@ -1121,9 +1128,9 @@ remain the source of truth. Queue state is workspace-scoped.
   (`wiki-workspace runtime up`, `ensureRuntime`, `wiki-manager runtime`) agrees,
   and `.env.example` ships `WIKI_MANAGER_RUNTIME_HOST=0.0.0.0` active. A
   loopback bind is invisible to `serve`, which runs in Docker and connects
-  through `host.docker.internal`. Exposing the port always resolves an auth
-  token (`resolveRuntimeAuthToken` generates `.wiki/runtime/runtime.token`,
-  mode 0600), so it is never an unauthenticated bind. Set
+  through `host.docker.internal`. Every start resolves an auth token,
+  whatever the bind (`resolveRuntimeAuthToken` generates
+  `.wiki/runtime/runtime.token`, mode 0600), so no bind is unauthenticated. Set
   `WIKI_MANAGER_RUNTIME_HOST=127.0.0.1` to opt out when nothing runs in a
   container; `ensureManagerScaffold` never overwrites that choice. State lives
   under `.wiki/runtime/`.

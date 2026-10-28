@@ -118,8 +118,7 @@ test('required .env keys agree with the compose defaults they mirror', async () 
   }
 });
 
-test('documents agent has no deployment-level LLM configuration', async () => {
-  // Markdown polishing may use only the target workspace's .wikirc profile.
+test('documents agent makes no LLM calls and has no LLM configuration', async () => {
   const agents = await readFile(new URL('../../agents.docker-compose.yml', import.meta.url), 'utf8');
   const envExample = await readFile(new URL('../../.env.example', import.meta.url), 'utf8');
 

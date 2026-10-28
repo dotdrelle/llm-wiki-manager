@@ -91,7 +91,6 @@ services:
       - DOCUMENT_OUTPUT_DIR=/documents/output
       - WORKSPACES_ROOT=/workspaces
       - DOCUMENT_MAX_UPLOAD_BYTES=${DOCUMENT_MAX_UPLOAD_BYTES:-52428800}
-      - HF_HOME=/var/cache/huggingface
       - INDRA_OCR_THREADS=${INDRA_OCR_THREADS:-4}
       # HTTPS — uncomment and place cert files in AGENTS_DATA_DIR/certs/
       #- MCP_SSL_CERTFILE=/certs/server.crt
@@ -99,7 +98,6 @@ services:
     volumes:
       - ${AGENTS_DATA_DIR:-./.agents-data}/documents/input:/documents/input
       - ${AGENTS_DATA_DIR:-./.agents-data}/documents/output:/documents/output
-      - documents-indra-cache:/var/cache/huggingface
       - ${WORKSPACES_ROOT:?Set WORKSPACES_ROOT to the directory containing all workspace folders}:/workspaces
       #- ${AGENTS_DATA_DIR:-./.agents-data}/certs:/certs:ro
     restart: unless-stopped
@@ -213,6 +211,3 @@ services:
       - ${AGENT_RUNTIMES_FILE:?Set AGENT_RUNTIMES_FILE}:/config/agent-runtimes.json:ro
       - ${WORKSPACES_ROOT:?Set WORKSPACES_ROOT to the directory containing all workspace folders}:/workspaces
     restart: unless-stopped
-
-volumes:
-  documents-indra-cache:

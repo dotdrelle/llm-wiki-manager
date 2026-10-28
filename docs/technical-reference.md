@@ -744,9 +744,9 @@ the documents agent to `<workspace>/raw/untracked/`. If the documents agent is
 down, the upload remains stored and can be converted later.
 Images, PDFs, and raster images embedded in ZIP-based Office files are converted
 by Indra locally on CPU; source files are not sent to an OCR provider. The model
-is downloaded from Hugging Face on first use and retained in the documents
-agent's persistent cache volume. Optional Markdown polishing uses only the
-selected workspace's `.wikirc.yaml` LLM profile; no separate LLM settings exist.
+is bundled in the documents image and loaded with Hugging Face offline mode. The
+agent writes MarkItDown/Indra output directly and does not read `.wikirc.yaml` or
+call an LLM.
 
 In the served web Chat, a successful conversion also adds the new
 `raw/untracked/*.md` path as a document-context badge. Up to five wiki or

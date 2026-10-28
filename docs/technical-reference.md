@@ -63,7 +63,7 @@ keys** (`apiKey` + `baseUrl` that *reach a model*).
 
 | File | Owner | Scope | Holds |
 | --- | --- | --- | --- |
-| `.env` | manager | global | shared secrets: agent MCP tokens, OCR LLM, port overrides, variables for any user-declared external MCP |
+| `.env` | manager | global | shared secrets: agent MCP tokens, port overrides, variables for any user-declared external MCP |
 | `mcp.endpoints.json` | manager | global | where each external agent lives + which `Bearer`/header to send |
 | `workspaces/<name>/.env` | manager | per workspace | ports, workspace path, the wiki's own MCP tokens |
 | `workspaces/<name>/.wikirc.yaml` (+ `.wikirc.yaml.<profile>`) | workspace | per workspace | LLM & vector keys (provider/model/apiKey/baseUrl/retrieval) |
@@ -742,12 +742,11 @@ Original files are stored under
 `.agents-data/documents/input/<workspace>/`. Converted Markdown is written by
 the documents agent to `<workspace>/raw/untracked/`. If the documents agent is
 down, the upload remains stored and can be converted later.
-Image files, scanned PDFs, and images detected inside PDF or Office documents
-are sent through LLM OCR automatically. The bundled agent stack defaults to
-the Albert-compatible endpoint and
-[`lightonai/LightOnOCR-2-1B`](https://huggingface.co/lightonai/LightOnOCR-2-1B);
-configure it with `DOCUMENT_LLM_BASE_URL`, `DOCUMENT_LLM_MODEL`, and the
-dedicated `DOCUMENT_LLM_API_KEY` (an ambient `OPENAI_API_KEY` is not used).
+Images, PDFs, and raster images embedded in ZIP-based Office files are converted
+by Indra locally on CPU; source files are not sent to an OCR provider. The model
+is downloaded from Hugging Face on first use and retained in the documents
+agent's persistent cache volume. Optional Markdown polishing uses only the
+selected workspace's `.wikirc.yaml` LLM profile; no separate LLM settings exist.
 
 In the served web Chat, a successful conversion also adds the new
 `raw/untracked/*.md` path as a document-context badge. Up to five wiki or

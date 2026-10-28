@@ -29,7 +29,7 @@ Mapped onto the four configuration files:
 
 | File | Owner | Scope | Holds |
 | --- | --- | --- | --- |
-| `llm-wiki-manager/.env` | manager | **global** | shared secrets: packaged agent MCP tokens, OCR LLM, optional provider keys, port overrides |
+| `llm-wiki-manager/.env` | manager | **global** | shared secrets: packaged agent MCP tokens, optional provider keys, port overrides |
 | `llm-wiki-manager/mcp.endpoints.json` | manager | global | where each external agent lives + which `Bearer`/header to send |
 | `workspaces/<name>/.env` | manager | per workspace | ports, workspace path, and the wiki's own MCP tokens |
 | `workspaces/<name>/.wikirc.yaml` (+ `.wikirc.yaml.<profile>`) | workspace | per workspace | the LLM and vector configuration (provider/model/apiKey/baseUrl/retrieval) |
@@ -68,10 +68,7 @@ workspace `.wikirc.yaml`.
 | `CONNECTORS_BRIDGE_ENABLED` | no | Tchap bridge — talk to Donna from a Tchap forum (default `true`). Each workspace is still connected from the chat and activated from the forum; `false` forbids it for the deployment and removes the `connectors_tchap_*` tools. The service reaches the host runtime with `WIKI_MANAGER_RUNTIME_URL`/`WIKI_MANAGER_RUNTIME_TOKEN`, like `serve`. User view: `llm-wiki/help-doc/15-tchap-bridge.md` |
 | `CONNECTORS_BRIDGE_MAX_AGE_SECONDS` | no | a forum message older than this (sent while the workstation was off) is not relayed, and the bridge says how many it dropped (default `600`) |
 | `OAUTH_STATE_SECRET` / `OAUTH_START_TOKEN` | for Gmail OAuth | distinct generated secrets for signed state and protected OAuth start |
-| `DOCUMENT_LLM_BASE_URL` | for OCR | OpenAI-compatible vision endpoint for document OCR. No default: image OCR stays off until this, the model and the key are all set |
-| `DOCUMENT_LLM_MODEL` | for OCR | OCR model name, matching the endpoint above |
-| `DOCUMENT_LLM_API_KEY` | for OCR | key for the OCR provider (or reuse `OPENAI_API_KEY`) |
-| `DOCUMENT_LLM_TIMEOUT_SECONDS` | no | OCR request timeout |
+| `INDRA_OCR_THREADS` | no | CPU threads used by local document OCR (default `4`) |
 | `EXA_MCP_API_KEY` | only if Exa enabled | used by `mcp.endpoints.json` when the Exa endpoint is declared |
 | `CME_MCP_PORT` / `DOCUMENTS_MCP_PORT` | no | port overrides (defaults `3336` / `3337`) |
 | `NODE_USE_ENV_PROXY` | behind an HTTP proxy | set to `1` so the Node runtime's `fetch` calls use `HTTP_PROXY` / `HTTPS_PROXY` |

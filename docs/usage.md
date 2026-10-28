@@ -133,9 +133,13 @@ Drive it from the shell:
 ```
 
 Originals are stored under `.agents-data/documents/input/<workspace>/`; converted
-Markdown lands in `<workspace>/raw/untracked/`. Images, scanned PDFs, and images
-embedded in PDF/Office documents are sent through LLM OCR automatically. If the
-agent is down, uploads stay staged and can be converted later.
+Markdown lands in `<workspace>/raw/untracked/`. Images, PDFs, and raster images
+embedded in ZIP-based Office files are processed by local Indra OCR on CPU;
+their contents are not sent to an OCR provider. Indra's model downloads from
+Hugging Face on first use and stays in the agent's persistent model cache. An
+optional polish pass reuses the selected workspace's `.wikirc.yaml` LLM profile;
+it is skipped if that profile is unavailable. If the agent is down, uploads
+stay staged and can be converted later.
 
 ### Endpoints & tokens recap
 

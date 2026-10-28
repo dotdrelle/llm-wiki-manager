@@ -118,18 +118,13 @@ test('required .env keys agree with the compose defaults they mirror', async () 
   }
 });
 
-test('no compose default points a deployment at an LLM provider it did not choose', async () => {
-  // A hardcoded `${DOCUMENT_LLM_BASE_URL:-https://…}` sent every install to a
-  // third-party endpoint the operator never saw, since the key ships commented.
-  // The .env is the only source; an empty value also neutralises the image's
-  // own ENV fallback.
+test('documents agent has no deployment-level LLM configuration', async () => {
+  // Markdown polishing may use only the target workspace's .wikirc profile.
   const agents = await readFile(new URL('../../agents.docker-compose.yml', import.meta.url), 'utf8');
   const envExample = await readFile(new URL('../../.env.example', import.meta.url), 'utf8');
 
-  for (const key of ['DOCUMENT_LLM_BASE_URL', 'DOCUMENT_LLM_MODEL', 'DOCUMENT_LLM_API_KEY']) {
-    assert.match(agents, new RegExp(`- ${key}=\\$\\{${key}:-\\}`), `${key} must have an empty compose default`);
-    assert.doesNotMatch(envExample, new RegExp(`^${key}=.+$`, 'm'), `${key} must stay commented in .env.example`);
-  }
+  assert.doesNotMatch(agents, /DOCUMENT_LLM_/);
+  assert.doesNotMatch(envExample, /^DOCUMENT_LLM_/m);
 });
 
 test('log reading resolves service aliases like start and stop do', async () => {
@@ -164,8 +159,7 @@ test('agent compose services run as the host uid and gid', async () => {
   assert.ok(connectorsEnv.includes('CONNECTORS_BRIDGE_ENABLED=${CONNECTORS_BRIDGE_ENABLED:-true}'));
   assert.ok(connectorsEnv.some((entry) => entry.startsWith('NO_PROXY=') && entry.includes('host.docker.internal')));
   assert.deepEqual(agentsCompose.services.connectors.extra_hosts, ['host.docker.internal:host-gateway']);
-  // OCR endpoint, model and key carry no default — see the dedicated test.
-  assert.equal(agentsCompose.services.documents.environment.includes('DOCUMENT_LLM_API_KEY=${DOCUMENT_LLM_API_KEY:-}'), true);
+  assert.equal(agentsCompose.services.documents.environment.some((entry) => entry.startsWith('DOCUMENT_LLM_')), false);
 });
 
 test('serve proxies connector OAuth through the host agent endpoint', async () => {

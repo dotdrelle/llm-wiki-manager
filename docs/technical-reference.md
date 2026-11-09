@@ -645,6 +645,17 @@ Everything the workspace produced, cached or logged goes — `wiki/`,
 `deliverables/`, `raw/untracked/`, `raw/ingested/`, `.wiki/` (vector index,
 cache, logs, tmp, build state, skills, profile, system prompt), `CLAUDE.md`,
 `.gitignore` — then `wiki init` puts the empty structure back.
+CME's delivery list for the workspace (`.agents-data/cme/<workspace>/delivery-manifest.json`)
+goes too, so the next `/wiki-sync` delivers every page of the CME export mirror
+into `raw/untracked/` again — a full sync → ingest cycle restarts from scratch
+without a new Confluence export (the mirror and `sources-manifest.yaml` stay).
+The list is cleared as soon as the workspace is empty, before re-scaffolding; the summary always says
+what it found (cleared, nothing to clear, or the CME folder not found — then
+check `AGENTS_DATA_DIR`), and a list the CLI cannot delete (owned by the CME
+container user) is announced without failing the reset. Because the CME agent
+is global and keeps running, `reset` also refuses while the runtime lists a run
+or a maintenance cycle on the workspace — where CME exports run. On an already
+empty workspace it only clears the list.
 
 Three things worth knowing:
 

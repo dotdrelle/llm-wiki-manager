@@ -168,6 +168,17 @@ die() {
   exit 1
 }
 
+# The host .agents-data directory that `agents up` mounts into the CME
+# container: manager .env pin, else the exported value, else next to the
+# workspaces root; a relative value resolves against this CLI's manager
+# directory ($PWD), as `agents up` always did. (The manager's resolveAgentsDataDir
+# also falls back to a session's workspace parent; the agents stack never does.)
+resolve_agents_data_dir() {
+  local workspaces_root
+  workspaces_root="$(absolute_path "$WORKSPACES_DIR" "$DEFAULT_MANAGER_DIR")"
+  absolute_path "$(env_value "$MANAGER_ENV_FILE" AGENTS_DATA_DIR "${AGENTS_DATA_DIR:-$workspaces_root/.agents-data}")" "$DEFAULT_MANAGER_DIR"
+}
+
 workspace_env_file() {
   local workspace="$1"
   printf '%s/%s/.env\n' "$WORKSPACES_DIR" "$workspace"
@@ -293,9 +304,7 @@ agents_compose() {
   # stores and the Google token looked lost on every restart. The manager .env
   # now pins the absolute path (written below on `up`); the app's own env still
   # wins when it deliberately exports one.
-  local agents_data_config
-  agents_data_config="$(env_value "$MANAGER_ENV_FILE" AGENTS_DATA_DIR "${AGENTS_DATA_DIR:-$workspaces_root/.agents-data}")"
-  agents_data_dir="$(absolute_path "$agents_data_config" "$DEFAULT_MANAGER_DIR")"
+  agents_data_dir="$(resolve_agents_data_dir)"
 
   local compose_env_args=()
   [[ -f "$MANAGER_ENV_FILE" ]] && compose_env_args+=(--env-file "$MANAGER_ENV_FILE")
@@ -903,6 +912,22 @@ else console.log('error:' + (hub.error || 'not started'));
 "
 }
 
+# Runs and maintenance cycles active on one workspace, from /health's
+# activeRuns. Prints `http:<status>` when the runtime answers but refuses (a
+# token mismatch is a 401, not an absent runtime); fails (non-zero) when it
+# does not answer.
+runtime_active_runs() {
+  local token
+  token="$(env_value "$MANAGER_ENV_FILE" WIKI_MANAGER_RUNTIME_TOKEN "")"
+  RUNTIME_URL="$(runtime_health_url)" RUNTIME_TOKEN="$token" WORKSPACE="$1" "$(runtime_node_bin)" --input-type=module -e "
+const headers = process.env.RUNTIME_TOKEN ? { Authorization: 'Bearer ' + process.env.RUNTIME_TOKEN } : {};
+const response = await fetch(process.env.RUNTIME_URL, { headers, signal: AbortSignal.timeout(3000) });
+if (!response.ok) { console.log('http:' + response.status); process.exit(0); }
+const { activeRuns = [] } = await response.json();
+console.log(activeRuns.filter((run) => run && run.workspace === process.env.WORKSPACE).length);
+"
+}
+
 # The page is a convenience, so it never fails `runtime up`; but a busy port is
 # a degradation and says so. Silent only when the page is deliberately off.
 print_runtime_hub_status() {
@@ -1371,6 +1396,34 @@ workspace_reset_keep() {
   esac
 }
 
+# CME's delivery list for one workspace. Without it the next sync re-delivers
+# every page of CME's export mirror into raw/untracked/ — no Confluence
+# re-export; the mirror and the sources manifest stay. Every case is said: a
+# list not found where `agents up` mounts CME is exactly the silent "the next
+# sync delivers nothing" failure.
+describe_cme_manifest() {
+  local manifest="$1"
+  if [[ -f "$manifest" ]]; then
+    printf 'CME:    %s (cleared last: the next sync re-delivers every exported page)\n' "$manifest"
+  elif [[ -d "$(dirname "$manifest")" ]]; then
+    printf 'CME:    no delivery list in %s — nothing to clear\n' "$(dirname "$manifest")"
+  else
+    printf 'CME:    %s not found — if this workspace was synced, check AGENTS_DATA_DIR in %s\n' "$(dirname "$manifest")" "$MANAGER_ENV_FILE"
+  fi
+}
+
+# Optional cleanup: a failure (the file belongs to the CME container's user)
+# is announced with its consequence, never fatal to the reset.
+clear_cme_manifest() {
+  local manifest="$1"
+  [[ -f "$manifest" ]] || return 0
+  if rm -f -- "$manifest" 2>/dev/null && [[ ! -e "$manifest" ]]; then
+    printf 'CME delivery list cleared: the next sync re-delivers every exported page.\n'
+  else
+    printf 'Warning: could not remove %s (owned by the CME container user?) — remove it by hand, or the next sync delivers nothing.\n' "$manifest" >&2
+  fi
+}
+
 # Destructive, and deliberately reachable ONLY from this CLI: no `wiki reset`
 # subcommand, no production job type, no MCP tool, no skill. Nothing Donna can
 # call may erase a workspace.
@@ -1403,6 +1456,17 @@ reset_workspace() {
   if [[ ${#running_services[@]} -gt 0 ]]; then
     die "workspace services are still running (${running_services[*]}) — stop them first: wiki-workspace wiki $workspace down"
   fi
+  # CME is global and keeps running, and a delivery rewrites its whole list at
+  # the end — an export in flight would undo the clearing below. CME exports
+  # run only inside runtime runs or maintenance cycles, which /health lists.
+  local active_runs
+  active_runs="$(runtime_active_runs "$workspace" 2>/dev/null || printf 'unreachable')"
+  case "$active_runs" in
+    0) ;;
+    unreachable|'') printf 'Note: the runtime is not reachable, so no run can be exporting — a CME export started outside the runtime cannot be ruled out.\n' >&2 ;;
+    http:*) printf 'Warning: the runtime answered %s, so its active runs could not be checked — a CME export in flight would restore the delivery list cleared below.\n' "${active_runs#http:}" >&2 ;;
+    *) die "$active_runs run(s) or maintenance cycle(s) are active on $workspace (a CME export may be delivering) — wait for them or cancel them first" ;;
+  esac
 
   local entry name
   local removed=() kept=()
@@ -1419,9 +1483,15 @@ reset_workspace() {
   printf 'Workspace: %s (%s)\n' "$workspace" "$ws_path"
   printf 'Keep:   %s\n' "${kept[*]:-(nothing)}"
   printf 'Reset:  %s\n' "${removed[*]:-(nothing)}"
+  local cme_manifest
+  cme_manifest="$(resolve_agents_data_dir)/cme/$workspace/delivery-manifest.json"
+  describe_cme_manifest "$cme_manifest"
 
   if [[ ${#removed[@]} -eq 0 ]]; then
     printf 'Nothing to reset.\n'
+    # An already-empty workspace still needs CME's list cleared to sync again;
+    # nothing else is touched, so no confirmation is asked.
+    [[ $dry_run -eq 1 ]] || clear_cme_manifest "$cme_manifest"
     return
   fi
 
@@ -1442,6 +1512,13 @@ reset_workspace() {
     rm -rf -- "${ws_path:?}/$name" \
       || die "could not remove $ws_path/$name — check file ownership (containers run as the node user), then retry"
   done
+
+  # Once the workspace really is empty, and before anything that can still
+  # fail: dropping it earlier and then dying on a removal would make the next
+  # sync re-deliver every page beside a wiki that still holds them, while
+  # keeping it past a failed `init` (set -e) would leave an emptied workspace
+  # whose next sync delivers nothing.
+  clear_cme_manifest "$cme_manifest"
 
   # Puts the structure back: empty raw/wiki/deliverables trees, .wiki/skills,
   # system-prompt, an empty profile, CLAUDE.md, .gitignore, and a fresh history
@@ -1860,4 +1937,5 @@ main() {
   esac
 }
 
-main "$@"
+# Tests source the functions without running a command.
+[[ "${WIKI_WORKSPACE_SOURCE_ONLY:-}" == 1 ]] || main "$@"

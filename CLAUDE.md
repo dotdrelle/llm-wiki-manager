@@ -1181,7 +1181,21 @@ script) empties a workspace and keeps the method: `.wikirc*`, `templates/`,
 `build-context/`, `.git/` when present — and `.env`. The keep list lives in one
 place, `workspace_reset_keep`; everything else under the workspace root is
 removed, then `wiki init` restores the empty structure (it never overwrites an
-existing file, which is what makes the kept entries survive).
+existing file, which is what makes the kept entries survive). It also removes
+CME's `<agents-data>/cme/<workspace>/delivery-manifest.json` (path from
+`resolve_agents_data_dir`, shared with `agents up`), so the next sync
+re-delivers every page of the CME export mirror — without it a reset workspace
+synced nothing, CME believing every page already delivered. The mirror and the
+sources manifest stay: no Confluence re-export. The list goes once every
+removal has succeeded and before `init` (a failed removal must not leave a full
+wiki whose pages the next sync re-delivers; a failed `init` must not leave an
+emptied workspace whose next sync delivers nothing), a failure to delete it is
+announced, not fatal, and its absence is said; reset also refuses while the
+runtime's `/health` lists a run or maintenance cycle on the workspace
+(`runtime_active_runs`), since a CME delivery rewrites its whole list at the
+end — and a runtime that answers but refuses the check (`http:<status>`) is
+announced as such, never as an absent runtime. Pinned by `tests/core/wikiWorkspace.test.js`, which sources the
+script (`WIKI_WORKSPACE_SOURCE_ONLY=1`) with Docker and the runtime stubbed.
 
 `.env` is on that list for a stronger reason than method. It carries the
 workspace's registration — ports, MCP auth tokens, `WIKI_WORKSPACE_PATH` — and

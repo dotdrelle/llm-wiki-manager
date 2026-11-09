@@ -19,13 +19,17 @@ const MAX_LINES = 800;
 // src/agent/subagent.js.
 // 0.16.62 follow-up: the public workspace page (src/runtime/hub.js) is started
 // by the runtime (server.js) and configured from the CLI (wiki-manager.js).
+// Reset follow-up (after 0.16.68): `wiki <workspace> reset` also clears CME's
+// delivery list (describe/clear_cme_manifest), refuses while the runtime lists
+// a run on the workspace (runtime_active_runs), and resolve_agents_data_dir is
+// shared with `agents up` (wiki-workspace).
 const LEGACY_LIMITS = new Map([
   ['src/runtime/server.js', 2821],
   ['src/shell/repl.js', 2639],
   ['src/agent/graph.js', 2572],
   ['src/cli/wiki-manager.js', 2592],
   ['src/commands/slash.js', 2011],
-  ['wiki-workspace', 1864],
+  ['wiki-workspace', 1942],
   ['src/runtime/store.js', 1834],
   ['src/runtime/runner.js', 1743],
   ['src/shell/SetupWizard.tsx', 1434],

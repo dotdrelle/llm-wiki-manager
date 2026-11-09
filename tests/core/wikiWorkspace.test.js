@@ -182,6 +182,86 @@ test('reset re-scaffolds through run_wiki, which requires the workspace env', as
   assert.match(script, /workspace_env_file\(\) \{\n  local workspace="\$1"\n  printf '%s\/%s\/\.env\\n'/);
 });
 
+// Reset clears CME's delivery list so the next sync re-delivers every page.
+// Exercised on the real reset_workspace, sourced with Docker and the runtime
+// stubbed: the list goes once the workspace is empty (a failed removal must not leave a full wiki
+// whose pages the next sync would deliver again), a failure to clear it is
+// announced but not fatal, and an active run refuses the reset.
+async function runReset({ activeRuns = '0', failRemoval = false, failInit = false, manifest = true, args = ['--yes'] } = {}) {
+  const { spawnSync } = await import('node:child_process');
+  const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const scriptPath = new URL('../../wiki-workspace', import.meta.url).pathname;
+  const dir = await mkdtemp(join(tmpdir(), 'wiki-workspace-reset-'));
+  const ws = join(dir, 'workspaces', 'demo');
+  const cme = join(dir, 'workspaces', '.agents-data', 'cme', 'demo');
+  await mkdir(join(ws, 'wiki'), { recursive: true });
+  await mkdir(join(cme, 'export'), { recursive: true });
+  await writeFile(join(ws, '.env'), `WIKI_WORKSPACE_PATH=${ws}\n`);
+  await writeFile(join(ws, 'wiki', 'page.md'), '# Page');
+  if (manifest) await writeFile(join(cme, 'delivery-manifest.json'), '{}');
+  const stubs = [
+    'compose_for_workspace() { :; }',
+    `runtime_active_runs() { printf '%s' '${activeRuns}'; }`,
+    failInit ? 'run_wiki() { return 1; }' : 'run_wiki() { mkdir -p "$WORKSPACES_DIR/$1/wiki"; }',
+    failRemoval ? 'rm() { if [[ "$*" == *" -- "*"/wiki" ]]; then return 1; fi; command rm "$@"; }' : '',
+  ].join('\n');
+  const result = spawnSync('bash', ['-c', `WIKI_WORKSPACE_SOURCE_ONLY=1 source "$0"\n${stubs}\nreset_workspace demo ${args.join(' ')}`, scriptPath], {
+    cwd: dir, encoding: 'utf8', env: { ...process.env, AGENTS_DATA_DIR: '', WIKI_WORKSPACES_DIR: join(dir, 'workspaces'), WIKI_MANAGER_ENV_FILE: join(dir, '.env') },
+  });
+  const { existsSync } = await import('node:fs');
+  const state = { status: result.status, output: `${result.stdout}${result.stderr}`, manifest: existsSync(join(cme, 'delivery-manifest.json')), mirror: existsSync(join(cme, 'export')), page: existsSync(join(ws, 'wiki', 'page.md')) };
+  await rm(dir, { recursive: true, force: true });
+  return state;
+}
+
+test('reset clears the CME delivery list last and keeps the export mirror', async () => {
+  const done = await runReset();
+  assert.equal(done.status, 0, done.output);
+  assert.equal(done.page, false);
+  assert.equal(done.manifest, false);
+  assert.equal(done.mirror, true);
+  assert.match(done.output, /CME delivery list cleared/);
+
+  const dry = await runReset({ args: ['--dry-run'] });
+  assert.equal(dry.manifest, true);
+  assert.match(dry.output, /CME: +.*delivery-manifest\.json \(cleared last/);
+});
+
+test('reset keeps the CME list when a removal fails, and says when there is none', async () => {
+  const failed = await runReset({ failRemoval: true });
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.output, /could not remove .*\/wiki/);
+  assert.equal(failed.manifest, true, 'the list must survive an aborted reset');
+
+  const none = await runReset({ manifest: false });
+  assert.equal(none.status, 0, none.output);
+  assert.match(none.output, /no delivery list in .*cme\/demo — nothing to clear/);
+});
+
+test('reset clears the CME list before re-scaffolding, so a failed init cannot keep it', async () => {
+  const failed = await runReset({ failInit: true });
+  assert.notEqual(failed.status, 0);
+  assert.equal(failed.page, false);
+  assert.equal(failed.manifest, false, 'an emptied workspace must sync again');
+});
+
+test('reset says when the runtime refuses the active-run check', async () => {
+  const refused = await runReset({ activeRuns: 'http:401' });
+  assert.equal(refused.status, 0, refused.output);
+  assert.match(refused.output, /runtime answered 401, so its active runs could not be checked/);
+  assert.doesNotMatch(refused.output, /not reachable/);
+});
+
+test('reset refuses while the runtime lists a run on the workspace', async () => {
+  const busy = await runReset({ activeRuns: '1' });
+  assert.notEqual(busy.status, 0);
+  assert.match(busy.output, /1 run\(s\) or maintenance cycle\(s\) are active on demo/);
+  assert.equal(busy.page, true);
+  assert.equal(busy.manifest, true);
+});
+
 test('runtime down posts to /shutdown, not to /health/shutdown', async () => {
   // runtime_health_url ends with /health. Appending /shutdown to it hit a 404:
   // the node fetch exited 1, `set -e` ended the script silently and the
